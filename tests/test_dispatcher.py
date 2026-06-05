@@ -4,7 +4,7 @@ import pytest
 
 from sphero_rvr_core.dispatcher import Dispatcher
 from sphero_rvr_core.fake_transport import FakeTransport
-from sphero_rvr_core.packet import Packet
+from sphero_rvr_core.packet import FLAG_HAS_SOURCE, FLAG_IS_RESPONSE, Packet
 
 
 @pytest.mark.asyncio
@@ -17,7 +17,15 @@ async def test_dispatcher_matches_response_by_sequence_id():
     pending = asyncio.create_task(dispatcher.request(request, timeout=0.2))
     await transport.wait_for_write()
 
-    await transport.inject_read(Packet(device_id=1, command_id=2, sequence_id=7, payload=b"ok").encode())
+    await transport.inject_read(Packet(
+        device_id=1,
+        command_id=2,
+        sequence_id=7,
+        payload=b"ok",
+        flags=FLAG_IS_RESPONSE | FLAG_HAS_SOURCE,
+        source=1,
+        error=0,
+    ).encode())
 
     response = await pending
     await dispatcher.stop()

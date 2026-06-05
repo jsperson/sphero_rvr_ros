@@ -9,6 +9,8 @@ from typing import Optional
 
 import serial
 
+from .packet import EOP, SOP
+
 
 class SerialTransport:
     def __init__(self, port: str = "/dev/ttyAMA0", baud_rate: int = 115200, read_timeout: float = 0.1):
@@ -40,18 +42,25 @@ class SerialTransport:
             raise RuntimeError("serial transport is closed")
 
         def _read_one_packet() -> bytes:
-            # Initial internal test framing: start byte + four-byte header, then payload.
+            in_frame = False
+            frame = bytearray()
+
             while True:
-                first = self._serial.read(1)
-                if first == b"\x8d":
-                    break
-            header = self._serial.read(4)
-            if len(header) != 4:
-                raise TimeoutError("timed out reading packet header")
-            payload_len = header[3]
-            payload = self._serial.read(payload_len)
-            if len(payload) != payload_len:
-                raise TimeoutError("timed out reading packet payload")
-            return first + header + payload
+                byte = self._serial.read(1)
+                if byte == b"":
+                    if in_frame:
+                        raise TimeoutError("timed out reading complete packet")
+                    continue
+
+                value = byte[0]
+                if not in_frame:
+                    if value == SOP:
+                        in_frame = True
+                        frame.append(value)
+                    continue
+
+                frame.append(value)
+                if value == EOP:
+                    return bytes(frame)
 
         return await asyncio.to_thread(_read_one_packet)
