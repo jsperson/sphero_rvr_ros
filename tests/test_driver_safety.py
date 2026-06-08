@@ -18,7 +18,7 @@ async def test_stale_velocity_command_causes_stop_packet():
     await driver.disconnect()
 
     command_ids = [Packet.decode(raw).command_id for raw in transport.writes]
-    assert driver.commands.DRIVE_RC in command_ids
+    assert driver.commands.CID_RAW_MOTORS in command_ids
     assert driver.commands.STOP in command_ids
 
 
@@ -37,4 +37,4 @@ async def test_emergency_stop_preempts_velocity_and_blocks_drive_until_cleared()
 
     packets = [Packet.decode(raw) for raw in transport.writes]
     estop_index = next(i for i, p in enumerate(packets) if p.command_id == driver.commands.EMERGENCY_STOP)
-    assert all(p.command_id != driver.commands.DRIVE_RC for p in packets[estop_index + 1:])
+    assert all(p.command_id != driver.commands.CID_RAW_MOTORS for p in packets[estop_index + 1:])

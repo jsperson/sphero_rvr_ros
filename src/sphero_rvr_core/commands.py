@@ -146,14 +146,27 @@ class RVRCommands:
         return Packet(DID_DRIVE, self.CLEAR_EMERGENCY_STOP, sequence_id, target=TARGET_MCU)
 
     def drive_rc(self, sequence_id: int, linear_mps: float, angular_rad_s: float) -> Packet:
-        """Temporary velocity-intent packet used by current fake-driver tests.
+        """Map ROS-style velocity intent to hardware-real raw motor command.
 
-        This is intentionally not claimed as a hardware-validated RVR command.
-        A later TDD slice should replace ROS velocity control with a real
-        drive-with-heading/raw-motor mapping and hardware smoke tests.
+        Both inputs are expected to be clamped by the driver before reaching
+        this method. Values are normalized into -1.0..1.0 tank-track commands:
+        left = linear + angular, right = linear - angular.
         """
-        payload = struct.pack(">ff", float(linear_mps), float(angular_rad_s))
-        return Packet(DID_DRIVE, self.DRIVE_RC, sequence_id, payload, target=TARGET_MCU)
+        left = float(linear_mps) + float(angular_rad_s)
+        right = float(linear_mps) - float(angular_rad_s)
+        max_value = max(abs(left), abs(right), 1.0)
+        left /= max_value
+        right /= max_value
+        left_mode, left_speed = self._track_mode_and_speed(left)
+        right_mode, right_speed = self._track_mode_and_speed(right)
+        return self.raw_motors(sequence_id, left_mode, left_speed, right_mode, right_speed)
+
+    @staticmethod
+    def _track_mode_and_speed(value: float):
+        speed = max(0, min(255, int(abs(value) * 255)))
+        if speed == 0:
+            return 0, 0
+        return (2 if value < 0 else 1), speed
 
     def reset_yaw(self, sequence_id: int) -> Packet:
         return self._packet(DID_DRIVE, self.CID_RESET_YAW, sequence_id, TARGET_MCU)
