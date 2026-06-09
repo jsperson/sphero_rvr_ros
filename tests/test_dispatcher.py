@@ -44,3 +44,17 @@ async def test_dispatcher_times_out_missing_response_without_hanging():
         await dispatcher.request(Packet(device_id=1, command_id=2, sequence_id=8), timeout=0.01)
 
     await dispatcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_send_writes_without_waiting_for_response():
+    transport = FakeTransport()
+    dispatcher = Dispatcher(transport)
+    await dispatcher.start()
+
+    packet = Packet(device_id=1, command_id=2, sequence_id=9, payload=b"go")
+    await asyncio.wait_for(dispatcher.send(packet), timeout=0.05)
+
+    await dispatcher.stop()
+
+    assert transport.writes == [packet.encode()]

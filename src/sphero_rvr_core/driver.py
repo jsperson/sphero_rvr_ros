@@ -7,7 +7,7 @@ from .command_queue import CommandPriority, PriorityCommandQueue
 from .commands import RVRCommands
 from .dispatcher import Dispatcher
 from . import responses
-from .packet import TARGET_BT, TARGET_MCU
+from .packet import FLAG_REQUEST_ERROR_ONLY, FLAG_REQUEST_RESPONSE, TARGET_BT, TARGET_MCU
 from .safety import clamp_velocity, is_stale, now_seconds
 from .state import RVRState, VelocityCommand
 from .transport import Transport
@@ -268,7 +268,10 @@ class RVRDriver:
     async def _send(self, packet_factory, priority: CommandPriority):
         sequence_id = self._next_sequence_id()
         packet = packet_factory(sequence_id)
-        return await self._queue.submit(lambda: self._dispatcher.request(packet), priority=priority)
+        expects_response = packet.flags & (FLAG_REQUEST_RESPONSE | FLAG_REQUEST_ERROR_ONLY)
+        if expects_response:
+            return await self._queue.submit(lambda: self._dispatcher.request(packet), priority=priority)
+        return await self._queue.submit(lambda: self._dispatcher.send(packet), priority=priority)
 
     def _next_sequence_id(self) -> int:
         self._sequence_id = (self._sequence_id + 1) % 256

@@ -53,6 +53,19 @@ class Dispatcher:
         finally:
             self._pending.pop(key, None)
 
+    async def send(self, packet: Packet) -> None:
+        """Send a packet that does not require a response.
+
+        Fire-and-forget commands still go through the dispatcher's single write
+        lock so they serialize cleanly with request/response traffic, but they
+        do not create a pending future that can hang waiting for an ACK the RVR
+        firmware never promised to send.
+        """
+        if not self._started:
+            raise RuntimeError("dispatcher is not started")
+        async with self._write_lock:
+            await self._transport.write(packet.encode())
+
     async def _read_loop(self) -> None:
         while True:
             raw = await self._transport.read_packet()

@@ -60,13 +60,13 @@ async def test_driver_query_methods_parse_typed_responses():
 
 @pytest.mark.asyncio
 async def test_driver_fire_and_forget_methods_use_command_catalog():
-    transport = FakeTransport(auto_ack=True)
+    transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(transport=transport)
-    await driver.connect()
+    await asyncio.wait_for(driver.connect(), timeout=0.05)
 
-    await driver.set_all_leds(1, 2, 3)
-    await driver.reset_yaw()
-    await driver.send_ir_message(code=4, strength=32)
+    await asyncio.wait_for(driver.set_all_leds(1, 2, 3), timeout=0.05)
+    await asyncio.wait_for(driver.reset_yaw(), timeout=0.05)
+    await asyncio.wait_for(driver.send_ir_message(code=4, strength=32), timeout=0.05)
 
     packets = [Packet.decode(raw) for raw in transport.writes]
     command_ids = [packet.command_id for packet in packets]
@@ -74,4 +74,4 @@ async def test_driver_fire_and_forget_methods_use_command_catalog():
     assert driver.commands.CID_RESET_YAW in command_ids
     assert driver.commands.CID_SEND_IR_MESSAGE in command_ids
 
-    await driver.disconnect()
+    await asyncio.wait_for(driver.disconnect(), timeout=0.05)
