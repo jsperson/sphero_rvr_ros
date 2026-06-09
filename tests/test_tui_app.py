@@ -133,5 +133,13 @@ def test_repeated_turn_keypresses_continue_turning(monkeypatch):
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
     now = 100.26
     tui._maintain_motion()
+    now = 100.47
+    tui._maintain_motion()
 
-    assert client.published == [(0.0, 0.35), (0.0, 0.35), (0.0, 0.35), (0.0, 0.0)]
+    assert client.published == [
+        (0.0, 0.35),
+        (0.0, 0.35),
+        (0.0, 0.35),
+        (0.0, 0.35),
+        (0.0, 0.0),
+    ]

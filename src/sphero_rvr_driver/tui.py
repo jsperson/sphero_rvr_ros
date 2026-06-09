@@ -15,6 +15,7 @@ DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
 KEY_STOP_SECONDS = 0.30
 TURN_KEY_STOP_SECONDS = 0.09
+TURN_HOLD_DETECT_SECONDS = 0.30
 KEY_REPEAT_SECONDS = 0.10
 
 
@@ -49,6 +50,8 @@ class RVRTUI:
         self._active_angular_rad_s = 0.0
         self._active_stop_seconds = KEY_STOP_SECONDS
         self._active_repeat_enabled = True
+        self._last_turn_signature: Optional[float] = None
+        self._last_turn_key_at: Optional[float] = None
         self._motion_active = False
         self._quit = False
 
@@ -88,11 +91,11 @@ class RVRTUI:
             if not self.state.armed:
                 self.state.log("Ignored drive key while disarmed. Use /arm.")
                 return
+            now = time.monotonic()
             self._publish_motion(action.linear_mps, action.angular_rad_s)
             self._motion_active = True
-            self._last_motion_at = time.monotonic()
-            self._active_stop_seconds = self._stop_seconds_for_motion(action.linear_mps, action.angular_rad_s)
-            self._active_repeat_enabled = self._repeat_enabled_for_motion(action.linear_mps, action.angular_rad_s)
+            self._last_motion_at = now
+            self._configure_motion_mode(action.linear_mps, action.angular_rad_s, now)
             self.state.log(f"cmd_vel linear={action.linear_mps:.2f} angular={action.angular_rad_s:.2f}")
             return
 
@@ -205,15 +208,25 @@ class RVRTUI:
         self.client.publish_velocity(linear_mps, angular_rad_s)
         self._last_motion_publish_at = time.monotonic()
 
-    @staticmethod
-    def _stop_seconds_for_motion(linear_mps: float, angular_rad_s: float) -> float:
-        if abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9:
-            return TURN_KEY_STOP_SECONDS
-        return KEY_STOP_SECONDS
+    def _configure_motion_mode(self, linear_mps: float, angular_rad_s: float, now: float) -> None:
+        is_turn_only = abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9
+        if not is_turn_only:
+            self._active_stop_seconds = KEY_STOP_SECONDS
+            self._active_repeat_enabled = True
+            self._last_turn_signature = None
+            self._last_turn_key_at = None
+            return
 
-    @staticmethod
-    def _repeat_enabled_for_motion(linear_mps: float, angular_rad_s: float) -> bool:
-        return not (abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9)
+        turn_signature = 1.0 if angular_rad_s > 0 else -1.0
+        is_held_turn = (
+            self._last_turn_signature == turn_signature
+            and self._last_turn_key_at is not None
+            and now - self._last_turn_key_at <= TURN_HOLD_DETECT_SECONDS
+        )
+        self._active_stop_seconds = KEY_STOP_SECONDS if is_held_turn else TURN_KEY_STOP_SECONDS
+        self._active_repeat_enabled = is_held_turn
+        self._last_turn_signature = turn_signature
+        self._last_turn_key_at = now
 
     def _draw(self, screen, command_prompt: str = "> ") -> None:
         screen.erase()
