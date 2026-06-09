@@ -1,10 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "sphero-rvr-ros"
+name = "sphero-rvr-driver"
 version = "0.1.0"
 description = "Concurrency-safe Sphero RVR core driver and ROS 2 adapter"
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
+license = { file = "LICENSE" }
 authors = [{ name = "Jason Scott Person" }]
 dependencies = ["pyserial>=3.5"]
 
@@ -12,12 +16,14 @@ dependencies = ["pyserial>=3.5"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 ros2 = []
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.scripts]
+rvr_node = "sphero_rvr_driver.rvr_node:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/sphero_rvr_core", "src/sphero_rvr_driver"]
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

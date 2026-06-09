@@ -26,6 +26,33 @@ Implemented for the base ROS 2 driver slice:
   - raw motor duty cap: `64`
   - stale `/cmd_vel` timeout: `0.5s`
 
+## Install
+
+### ROS 2 workspace install
+
+On the Raspberry Pi, after ROS 2 is installed and sourced:
+
+```bash
+mkdir -p ~/ros2_ws/src
+cd ~/ros2_ws/src
+git clone https://github.com/jsperson/sphero_rvr_ros.git
+cd ~/ros2_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### Core-only development install
+
+For local development without ROS 2:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+python -m pytest -q
+```
+
 ## Launch
 
 On the Raspberry Pi, from a sourced ROS 2 workspace:
