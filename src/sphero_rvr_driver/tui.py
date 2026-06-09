@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import curses
-import os
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -15,7 +14,6 @@ from .tui_ros import RVRROSClient
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
 KEY_STOP_SECONDS = 0.25
-MOTION_ENABLE_ENV = "RVR_TUI_ENABLE_MOTION"
 
 
 @dataclass
@@ -99,13 +97,6 @@ class RVRTUI:
                 for line in HELP_TEXT:
                     self.state.log(line)
             elif name == "arm":
-                if os.environ.get(MOTION_ENABLE_ENV) != "1":
-                    self.state.armed = False
-                    self.state.log(
-                        "Motion disabled by default after unsafe behavior report. "
-                        f"Set {MOTION_ENABLE_ENV}=1 only after the driver is fixed."
-                    )
-                    return
                 self.state.armed = True
                 if command.value == "confirm":
                     self.state.log("Armed. Keyboard drive commands can start the RVR motors.")
@@ -113,8 +104,8 @@ class RVRTUI:
                     self.state.log("Armed. Keyboard drive commands can start the RVR motors. Use /disarm to disable.")
             elif name == "disarm":
                 self.state.armed = False
-                self._safe_stop()
-                self.state.log("Disarmed and stopped.")
+                self._publish_zero_velocity()
+                self.state.log("Disarmed and published zero velocity.")
             elif name == "speed":
                 if command.value is None:
                     raise ValueError("/speed requires a value")
@@ -181,12 +172,15 @@ class RVRTUI:
 
     def _safe_stop(self) -> None:
         try:
-            self.client.stop(timeout_sec=1.0)
+            self._publish_zero_velocity()
         except Exception:
-            try:
-                self.client.publish_velocity(0.0, 0.0)
-            except Exception:
-                pass
+            pass
+
+    def _publish_zero_velocity(self) -> None:
+        try:
+            self.client.publish_velocity(0.0, 0.0)
+        finally:
+            self._motion_active = False
 
     def _draw(self, screen, command_prompt: str = "> ") -> None:
         screen.erase()

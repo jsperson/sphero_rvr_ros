@@ -57,7 +57,7 @@ class RVRCommands:
 
     # Legacy test aliases. `drive_rc` remains a high-level/core convenience for
     # now; full ROS velocity mapping can be revisited after command cataloging.
-    STOP: ClassVar[int] = CID_DRIVE_WITH_HEADING
+    STOP: ClassVar[int] = CID_RAW_MOTORS
     DRIVE_RC: ClassVar[int] = 0xF0
 
     # IO command IDs.
@@ -134,13 +134,10 @@ class RVRCommands:
         return self._packet(DID_DRIVE, self.CID_RAW_MOTORS, sequence_id, TARGET_MCU, payload)
 
     def stop(self, sequence_id: int) -> Packet:
-        return self.drive_with_heading(sequence_id, speed=0, heading=0, flags=0)
+        return self.raw_motors(sequence_id, 0, 0, 0, 0)
 
     def emergency_stop(self, sequence_id: int) -> Packet:
-        # No dedicated RVR protocol command has been validated yet; keep this as
-        # an internal control-plane marker until hardware smoke testing decides
-        # whether emergency stop should map to raw motors, drive stop, or both.
-        return Packet(DID_DRIVE, self.EMERGENCY_STOP, sequence_id, target=TARGET_MCU)
+        return self.raw_motors(sequence_id, 0, 0, 0, 0)
 
     def clear_emergency_stop(self, sequence_id: int) -> Packet:
         return Packet(DID_DRIVE, self.CLEAR_EMERGENCY_STOP, sequence_id, target=TARGET_MCU)

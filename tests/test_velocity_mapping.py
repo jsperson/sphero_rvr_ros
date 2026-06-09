@@ -34,3 +34,17 @@ def test_drive_rc_caps_normalized_angular_mix():
 
     assert packet.command_id == RVRCommands.CID_RAW_MOTORS
     assert packet.payload == bytes([1, 64, 2, 64])
+
+
+def test_stop_uses_validated_raw_motor_off_packet():
+    packet = RVRCommands().stop(sequence_id=6)
+
+    assert packet.command_id == RVRCommands.CID_RAW_MOTORS
+    assert packet.payload == bytes([0, 0, 0, 0])
+
+
+def test_emergency_stop_uses_validated_raw_motor_off_packet():
+    packet = RVRCommands().emergency_stop(sequence_id=7)
+
+    assert packet.command_id == RVRCommands.CID_RAW_MOTORS
+    assert packet.payload == bytes([0, 0, 0, 0])

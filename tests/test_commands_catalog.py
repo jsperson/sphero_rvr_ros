@@ -39,11 +39,11 @@ def test_drive_with_heading_packs_speed_heading_and_flags_for_mcu():
     assert packet.payload == bytes([64, 0, 90, 1])
 
 
-def test_stop_is_zero_speed_drive_with_heading():
+def test_stop_is_validated_raw_motor_off_packet():
     packet = RVRCommands().stop(sequence_id=0x12)
 
     assert packet.device_id == DID_DRIVE
-    assert packet.command_id == RVRCommands.CID_DRIVE_WITH_HEADING
+    assert packet.command_id == RVRCommands.CID_RAW_MOTORS
     assert packet.target == TARGET_MCU
     assert packet.payload == bytes([0, 0, 0, 0])
 

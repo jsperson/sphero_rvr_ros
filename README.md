@@ -333,7 +333,7 @@ Or use the startup wrapper from the repo checkout:
 ~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console
 ```
 
-The wrapper sources ROS, sources the workspace, starts the driver launch if needed, verifies required topics/services, starts the TUI, and calls `/stop` on exit.
+The wrapper sources ROS, sources the workspace, starts the driver launch if needed, verifies required topics/services, starts the TUI, and logs cleanup on exit. It does not call the ROS `/stop` service during shell cleanup; the TUI publishes zero `/cmd_vel` on exit, and the driver shutdown path sends the validated raw-motor-off packet.
 
 TUI behavior:
 
@@ -343,7 +343,6 @@ TUI behavior:
   - subscribes `/battery_state`, `/diagnostics`
 - Does not import `RVRDriver` or open `/dev/ttyAMA0`; the ROS driver node remains the only UART owner.
 - Starts disarmed. Non-zero drive keys do nothing until the user explicitly arms the TUI.
-- **Motion arming is disabled by default after unsafe queued-motion behavior was observed.** `/arm` refuses to enable keyboard drive unless `RVR_TUI_ENABLE_MOTION=1` is set. Leave it disabled until the control/stop path is fixed and revalidated.
 - Supports keyboard driving with arrow keys and/or WASD, plus space for stop.
 - Supports slash commands: `/battery`, `/status`, `/speed <mps>`, `/turn <rad_s>`, `/stop`, `/estop`, `/clear-estop`, `/arm`, `/disarm`, `/help`, and `/quit`.
 - Stops on key timeout, quit, crash, or Ctrl+C.

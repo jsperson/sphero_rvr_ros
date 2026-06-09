@@ -6,9 +6,11 @@ from sphero_rvr_core.driver import RVRDriver
 from sphero_rvr_core.fake_transport import FakeTransport
 from sphero_rvr_core.packet import Packet
 
+RAW_OFF = bytes([0, 0, 0, 0])
+
 
 @pytest.mark.asyncio
-async def test_stale_velocity_command_causes_stop_packet():
+async def test_stale_velocity_command_causes_validated_raw_motor_off_packet():
     transport = FakeTransport(auto_ack=True)
     driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=0.03)
     await driver.connect()
@@ -17,13 +19,14 @@ async def test_stale_velocity_command_causes_stop_packet():
     await asyncio.sleep(0.08)
     await driver.disconnect()
 
-    command_ids = [Packet.decode(raw).command_id for raw in transport.writes]
-    assert driver.commands.CID_RAW_MOTORS in command_ids
-    assert driver.commands.STOP in command_ids
+    packets = [Packet.decode(raw) for raw in transport.writes]
+    raw_motor_packets = [packet for packet in packets if packet.command_id == driver.commands.CID_RAW_MOTORS]
+    assert any(packet.payload != RAW_OFF for packet in raw_motor_packets)
+    assert any(packet.payload == RAW_OFF for packet in raw_motor_packets)
 
 
 @pytest.mark.asyncio
-async def test_emergency_stop_preempts_velocity_and_blocks_drive_until_cleared():
+async def test_emergency_stop_preempts_velocity_with_raw_motor_off_and_blocks_drive_until_cleared():
     transport = FakeTransport(auto_ack=True)
     driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
     await driver.connect()
@@ -36,8 +39,32 @@ async def test_emergency_stop_preempts_velocity_and_blocks_drive_until_cleared()
     await driver.disconnect()
 
     packets = [Packet.decode(raw) for raw in transport.writes]
-    estop_index = next(i for i, p in enumerate(packets) if p.command_id == driver.commands.EMERGENCY_STOP)
-    assert all(p.command_id != driver.commands.CID_RAW_MOTORS for p in packets[estop_index + 1:])
+    estop_index = next(
+        i
+        for i, packet in enumerate(packets)
+        if packet.command_id == driver.commands.CID_RAW_MOTORS and packet.payload == RAW_OFF
+    )
+    assert all(
+        not (packet.command_id == driver.commands.CID_RAW_MOTORS and packet.payload != RAW_OFF)
+        for packet in packets[estop_index + 1 :]
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_emergency_stop_is_software_only_until_new_velocity_arrives():
+    transport = FakeTransport(auto_ack=True)
+    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
+    await driver.connect()
+
+    await driver.emergency_stop()
+    before_clear_count = len(transport.writes)
+    await driver.clear_emergency_stop()
+    await asyncio.sleep(0.02)
+    await driver.disconnect()
+
+    # clear_estop should not send the old unvalidated fake 0xFD hardware command.
+    assert len(transport.writes) == before_clear_count + 1  # disconnect raw-motor-off only
+    assert Packet.decode(transport.writes[-1]).payload == RAW_OFF
 
 
 @pytest.mark.asyncio

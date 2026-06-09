@@ -8,7 +8,7 @@ def test_rvr_console_script_sources_ros_and_workspace():
     assert "source $WORKSPACE/install/setup.bash" in script
     assert "ros2 launch sphero_rvr_driver rvr.launch.py" in script
     assert "ros2 run sphero_rvr_driver rvr_tui" in script
-    assert "ros2 service call /stop" in script
+    assert "ros2 service call /stop" not in script
 
 
 def test_rvr_console_script_logs_startup_and_driver_details():

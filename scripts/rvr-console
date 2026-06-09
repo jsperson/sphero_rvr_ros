@@ -25,10 +25,6 @@ log() {
 cleanup() {
   set +e
   log "cleanup started"
-  if command -v ros2 >/dev/null 2>&1; then
-    log "calling /stop"
-    ros2 service call /stop std_srvs/srv/Trigger {} >>"$LOG_FILE" 2>&1 || true
-  fi
   if [[ -n "${DRIVER_PID}" ]]; then
     log "stopping driver process pid=$DRIVER_PID"
     kill "${DRIVER_PID}" >/dev/null 2>&1 || true

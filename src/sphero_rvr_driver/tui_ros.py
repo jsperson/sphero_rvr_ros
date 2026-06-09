@@ -51,10 +51,6 @@ class RVRROSClient:
         self._spin_thread.start()
 
     def close(self) -> None:
-        try:
-            self.stop(timeout_sec=1.0)
-        except Exception:
-            pass
         self._running = False
         self._rclpy.shutdown()
         self._spin_thread.join(timeout=2)

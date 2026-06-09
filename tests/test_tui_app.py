@@ -1,4 +1,4 @@
-from sphero_rvr_driver.tui import MOTION_ENABLE_ENV, RVRTUI
+from sphero_rvr_driver.tui import RVRTUI
 from sphero_rvr_driver.tui_commands import TUICommand
 from sphero_rvr_driver.tui_keymap import KeyAction
 
@@ -33,21 +33,7 @@ class FakeClient:
         return "cleared"
 
 
-def test_slash_arm_refuses_motion_when_safety_env_is_absent(monkeypatch):
-    monkeypatch.delenv(MOTION_ENABLE_ENV, raising=False)
-    client = FakeClient()
-    tui = RVRTUI(client)
-
-    tui._run_command(TUICommand("arm"))
-    tui._apply_key_action(KeyAction.motion(0.1, 0.0))
-
-    assert tui.state.armed is False
-    assert client.published == []
-    assert any("Motion disabled" in line for line in tui.state.history)
-
-
-def test_slash_arm_enables_keyboard_motion_when_safety_env_is_set(monkeypatch):
-    monkeypatch.setenv(MOTION_ENABLE_ENV, "1")
+def test_slash_arm_enables_keyboard_motion():
     client = FakeClient()
     tui = RVRTUI(client)
 
@@ -58,14 +44,35 @@ def test_slash_arm_enables_keyboard_motion_when_safety_env_is_set(monkeypatch):
     assert client.published == [(0.1, 0.0)]
 
 
-def test_arm_confirm_remains_supported_alias(monkeypatch):
-    monkeypatch.setenv(MOTION_ENABLE_ENV, "1")
+def test_arm_confirm_remains_supported_alias():
     client = FakeClient()
     tui = RVRTUI(client)
 
     tui._run_command(TUICommand("arm", "confirm"))
 
     assert tui.state.armed is True
+
+
+def test_disarm_publishes_zero_velocity_without_calling_stop_service():
+    client = FakeClient()
+    tui = RVRTUI(client)
+
+    tui._run_command(TUICommand("arm"))
+    tui._run_command(TUICommand("disarm"))
+
+    assert tui.state.armed is False
+    assert client.published == [(0.0, 0.0)]
+    assert client.stopped is False
+
+
+def test_safe_stop_on_exit_publishes_zero_velocity_without_calling_stop_service():
+    client = FakeClient()
+    tui = RVRTUI(client)
+
+    tui._safe_stop()
+
+    assert client.published == [(0.0, 0.0)]
+    assert client.stopped is False
 
 
 def test_disarmed_keyboard_motion_is_ignored():

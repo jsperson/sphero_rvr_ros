@@ -82,7 +82,6 @@ class RVRDriver:
         await self._send(self.commands.emergency_stop, CommandPriority.EMERGENCY)
 
     async def clear_emergency_stop(self) -> None:
-        await self._send(self.commands.clear_emergency_stop, CommandPriority.HIGH)
         self._emergency_stopped = False
 
     async def reset_yaw(self) -> None:
