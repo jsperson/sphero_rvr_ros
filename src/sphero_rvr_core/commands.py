@@ -145,25 +145,30 @@ class RVRCommands:
     def clear_emergency_stop(self, sequence_id: int) -> Packet:
         return Packet(DID_DRIVE, self.CLEAR_EMERGENCY_STOP, sequence_id, target=TARGET_MCU)
 
-    def drive_rc(self, sequence_id: int, linear_mps: float, angular_rad_s: float) -> Packet:
+    def drive_rc(self, sequence_id: int, linear_mps: float, angular_rad_s: float, max_speed: int = 255) -> Packet:
         """Map ROS-style velocity intent to hardware-real raw motor command.
 
         Both inputs are expected to be clamped by the driver before reaching
         this method. Values are normalized into -1.0..1.0 tank-track commands:
         left = linear + angular, right = linear - angular.
+
+        `max_speed` caps the generated raw-motor duty cycle. Keep this lower
+        for floor testing so ordinary `/cmd_vel` inputs cannot jump straight to
+        the full 255 duty range.
         """
         left = float(linear_mps) + float(angular_rad_s)
         right = float(linear_mps) - float(angular_rad_s)
         max_value = max(abs(left), abs(right), 1.0)
         left /= max_value
         right /= max_value
-        left_mode, left_speed = self._track_mode_and_speed(left)
-        right_mode, right_speed = self._track_mode_and_speed(right)
+        max_speed = max(0, min(255, int(max_speed)))
+        left_mode, left_speed = self._track_mode_and_speed(left, max_speed)
+        right_mode, right_speed = self._track_mode_and_speed(right, max_speed)
         return self.raw_motors(sequence_id, left_mode, left_speed, right_mode, right_speed)
 
     @staticmethod
-    def _track_mode_and_speed(value: float):
-        speed = max(0, min(255, int(abs(value) * 255)))
+    def _track_mode_and_speed(value: float, max_speed: int = 255):
+        speed = max(0, min(max_speed, int(abs(value) * max_speed)))
         if speed == 0:
             return 0, 0
         return (2 if value < 0 else 1), speed

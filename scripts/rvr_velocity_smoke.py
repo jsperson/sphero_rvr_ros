@@ -41,8 +41,9 @@ async def main_async() -> int:
     parser.add_argument("--duration", type=float, default=0.25, help="seconds to keep velocity command fresh")
     parser.add_argument("--control-period", type=float, default=0.05)
     parser.add_argument("--command-timeout", type=float, default=0.30)
-    parser.add_argument("--max-linear", type=float, default=0.5)
-    parser.add_argument("--max-angular", type=float, default=0.5)
+    parser.add_argument("--max-linear", type=float, default=0.25)
+    parser.add_argument("--max-angular", type=float, default=0.4)
+    parser.add_argument("--max-duty", type=int, default=64, help="raw motor duty cap for driver velocity control")
     parser.add_argument("--settle", type=float, default=0.35)
     parser.add_argument("--armed", action="store_true", help="allow set_velocity() to start motors")
     args = parser.parse_args()
@@ -54,6 +55,7 @@ async def main_async() -> int:
         command_timeout=args.command_timeout,
         max_linear_mps=args.max_linear,
         max_angular_rad_s=args.max_angular,
+        max_raw_motor_duty=args.max_duty,
     )
 
     print(f"opened driver on {args.port} @ 115200")
@@ -61,7 +63,8 @@ async def main_async() -> int:
         "config "
         f"linear={args.linear:.3f} angular={args.angular:.3f} "
         f"duration={args.duration:.2f}s command_timeout={args.command_timeout:.2f}s "
-        f"control_period={args.control_period:.2f}s max_linear={args.max_linear:.3f} max_angular={args.max_angular:.3f}"
+        f"control_period={args.control_period:.2f}s max_linear={args.max_linear:.3f} "
+        f"max_angular={args.max_angular:.3f} max_duty={args.max_duty}"
     )
 
     await driver.connect()

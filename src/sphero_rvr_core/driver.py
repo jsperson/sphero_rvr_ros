@@ -21,6 +21,7 @@ class RVRDriver:
         command_timeout: float = 0.5,
         max_linear_mps: float = 1.0,
         max_angular_rad_s: float = 3.0,
+        max_raw_motor_duty: int = 64,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -29,6 +30,7 @@ class RVRDriver:
         self._command_timeout = command_timeout
         self._max_linear_mps = max_linear_mps
         self._max_angular_rad_s = max_angular_rad_s
+        self._max_raw_motor_duty = max(0, min(255, int(max_raw_motor_duty)))
         self._desired_velocity: Optional[VelocityCommand] = None
         self._last_velocity_update: Optional[float] = None
         self._connected = False
@@ -261,7 +263,12 @@ class RVRDriver:
             stop_sent_for_stale = False
             velocity = self._desired_velocity
             await self._send(
-                lambda seq: self.commands.drive_rc(seq, velocity.linear_mps, velocity.angular_rad_s),
+                lambda seq: self.commands.drive_rc(
+                    seq,
+                    velocity.linear_mps,
+                    velocity.angular_rad_s,
+                    max_speed=self._max_raw_motor_duty,
+                ),
                 CommandPriority.NORMAL,
             )
 

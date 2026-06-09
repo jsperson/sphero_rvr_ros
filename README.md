@@ -10,3 +10,40 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - `sphero_rvr_driver`: ROS 2-facing adapter/node package
 
 First hardware milestone: `/cmd_vel` teleop with timeout stop, emergency stop, diagnostics, and battery publishing.
+
+## Base driver status
+
+Implemented for the base ROS 2 driver slice:
+
+- `/cmd_vel` subscriber using `geometry_msgs/msg/Twist`
+- `stop`, `estop`, and `clear_estop` services using `std_srvs/srv/Trigger`
+- `battery_state` publisher using `sensor_msgs/msg/BatteryState`
+- `diagnostics` publisher using `diagnostic_msgs/msg/DiagnosticArray`
+- conservative safety defaults in `config/rvr.yaml`:
+  - serial port: `/dev/serial0`
+  - max linear: `0.25 m/s`
+  - max angular: `0.4 rad/s`
+  - raw motor duty cap: `64`
+  - stale `/cmd_vel` timeout: `0.5s`
+
+## Launch
+
+On the Raspberry Pi, from a sourced ROS 2 workspace:
+
+```bash
+ros2 launch sphero_rvr_driver rvr.launch.py
+```
+
+Smoke the no-motion surfaces first:
+
+```bash
+ros2 topic echo /battery_state --once
+ros2 topic echo /diagnostics --once
+ros2 service call /stop std_srvs/srv/Trigger {}
+```
+
+⚠️ **Motor warning:** publishing non-zero `/cmd_vel` starts the RVR motors. Keep the robot suspended/restrained for the first validation run.
+
+```bash
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{linear: {x: 0.1}, angular: {z: 0.0}}'
+```
