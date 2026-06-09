@@ -97,5 +97,7 @@ def test_active_motion_is_republished_until_key_timeout(monkeypatch):
     tui._maintain_motion()
     now = 100.26
     tui._maintain_motion()
+    now = 100.76
+    tui._maintain_motion()
 
-    assert client.published == [(0.1, 0.0), (0.1, 0.0), (0.0, 0.0)]
+    assert client.published == [(0.1, 0.0), (0.1, 0.0), (0.1, 0.0), (0.0, 0.0)]
