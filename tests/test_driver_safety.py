@@ -120,7 +120,7 @@ async def test_driver_scales_velocity_against_configured_limits_before_raw_motor
 
 
 @pytest.mark.asyncio
-async def test_driver_scales_configured_max_turn_to_tank_turn_duty_cap():
+async def test_driver_scales_configured_max_left_turn_to_tank_turn_duty_cap():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
@@ -142,4 +142,4 @@ async def test_driver_scales_configured_max_turn_to_tank_turn_duty_cap():
         if packet.command_id == driver.commands.CID_RAW_MOTORS
     ]
     assert raw_motor_packets
-    assert raw_motor_packets[0].payload == bytes([1, 64, 2, 64])
+    assert raw_motor_packets[0].payload == bytes([2, 64, 1, 64])

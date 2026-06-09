@@ -147,14 +147,14 @@ class RVRCommands:
 
         Both inputs are expected to be clamped by the driver before reaching
         this method. Values are normalized into -1.0..1.0 tank-track commands:
-        left = linear + angular, right = linear - angular.
+        left = linear - angular, right = linear + angular.
 
         `max_speed` caps the generated raw-motor duty cycle. Keep this lower
         for floor testing so ordinary `/cmd_vel` inputs cannot jump straight to
         the full 255 duty range.
         """
-        left = float(linear_mps) + float(angular_rad_s)
-        right = float(linear_mps) - float(angular_rad_s)
+        left = float(linear_mps) - float(angular_rad_s)
+        right = float(linear_mps) + float(angular_rad_s)
         max_value = max(abs(left), abs(right), 1.0)
         left /= max_value
         right /= max_value
