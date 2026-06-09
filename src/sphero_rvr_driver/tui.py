@@ -14,6 +14,7 @@ from .tui_ros import RVRROSClient
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
 KEY_STOP_SECONDS = 0.30
+TURN_KEY_STOP_SECONDS = 0.09
 KEY_REPEAT_SECONDS = 0.10
 
 
@@ -46,6 +47,8 @@ class RVRTUI:
         self._last_motion_publish_at: Optional[float] = None
         self._active_linear_mps = 0.0
         self._active_angular_rad_s = 0.0
+        self._active_stop_seconds = KEY_STOP_SECONDS
+        self._active_repeat_enabled = True
         self._motion_active = False
         self._quit = False
 
@@ -88,6 +91,8 @@ class RVRTUI:
             self._publish_motion(action.linear_mps, action.angular_rad_s)
             self._motion_active = True
             self._last_motion_at = time.monotonic()
+            self._active_stop_seconds = self._stop_seconds_for_motion(action.linear_mps, action.angular_rad_s)
+            self._active_repeat_enabled = self._repeat_enabled_for_motion(action.linear_mps, action.angular_rad_s)
             self.state.log(f"cmd_vel linear={action.linear_mps:.2f} angular={action.angular_rad_s:.2f}")
             return
 
@@ -170,11 +175,13 @@ class RVRTUI:
         if not self._motion_active or self._last_motion_at is None:
             return
         now = time.monotonic()
-        if now - self._last_motion_at > KEY_STOP_SECONDS:
+        if now - self._last_motion_at > self._active_stop_seconds:
             self.client.publish_velocity(0.0, 0.0)
             self._motion_active = False
             self._last_motion_publish_at = None
             self.state.log("Stopped after key timeout.")
+            return
+        if not self._active_repeat_enabled:
             return
         if self._last_motion_publish_at is None or now - self._last_motion_publish_at >= KEY_REPEAT_SECONDS:
             self._publish_motion(self._active_linear_mps, self._active_angular_rad_s)
@@ -197,6 +204,16 @@ class RVRTUI:
         self._active_angular_rad_s = angular_rad_s
         self.client.publish_velocity(linear_mps, angular_rad_s)
         self._last_motion_publish_at = time.monotonic()
+
+    @staticmethod
+    def _stop_seconds_for_motion(linear_mps: float, angular_rad_s: float) -> float:
+        if abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9:
+            return TURN_KEY_STOP_SECONDS
+        return KEY_STOP_SECONDS
+
+    @staticmethod
+    def _repeat_enabled_for_motion(linear_mps: float, angular_rad_s: float) -> bool:
+        return not (abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9)
 
     def _draw(self, screen, command_prompt: str = "> ") -> None:
         screen.erase()
