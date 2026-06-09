@@ -127,13 +127,13 @@ def test_repeated_turn_keypresses_continue_turning(monkeypatch):
     tui._run_command(TUICommand("arm"))
 
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 100.50
+    now = 100.08
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 100.90
+    now = 100.16
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 101.20
+    now = 100.26
     tui._maintain_motion()
-    now = 101.36
+    now = 100.47
     tui._maintain_motion()
 
     assert client.published == [

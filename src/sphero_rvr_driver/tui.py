@@ -15,8 +15,7 @@ DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
 KEY_STOP_SECONDS = 0.30
 TURN_KEY_STOP_SECONDS = 0.09
-TURN_HOLD_STOP_SECONDS = 0.45
-TURN_HOLD_DETECT_SECONDS = 0.80
+TURN_HOLD_DETECT_SECONDS = 0.30
 KEY_REPEAT_SECONDS = 0.10
 
 
@@ -224,7 +223,7 @@ class RVRTUI:
             and self._last_turn_key_at is not None
             and now - self._last_turn_key_at <= TURN_HOLD_DETECT_SECONDS
         )
-        self._active_stop_seconds = TURN_HOLD_STOP_SECONDS if is_held_turn else TURN_KEY_STOP_SECONDS
+        self._active_stop_seconds = KEY_STOP_SECONDS if is_held_turn else TURN_KEY_STOP_SECONDS
         self._active_repeat_enabled = is_held_turn
         self._last_turn_signature = turn_signature
         self._last_turn_key_at = now
