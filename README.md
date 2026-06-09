@@ -315,6 +315,50 @@ ros2 service call /stop std_srvs/srv/Trigger {}
 
 The driver also has a stale-command timeout, but call `/stop` afterward anyway. Belt, suspenders, and robot treads.
 
+## Planned terminal control app
+
+The driver package should include a small text user interface so operators do not have to remember raw ROS commands during normal bring-up and testing.
+
+Target command:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 run sphero_rvr_driver rvr_tui
+```
+
+Requirements:
+
+- Ship with `sphero_rvr_driver`; do not require a separate repo.
+- Talk to the robot only through ROS 2 topics/services:
+  - publish `/cmd_vel`
+  - call `/stop`, `/estop`, `/clear_estop`
+  - subscribe `/battery_state`, `/diagnostics`
+- Do not import `RVRDriver` or open `/dev/ttyAMA0`; the ROS driver node remains the only UART owner.
+- Start disarmed. Non-zero drive keys should do nothing until the user explicitly arms the TUI.
+- Provide keyboard driving with arrow keys and/or WASD, plus space for stop.
+- Provide slash commands such as `/battery`, `/status`, `/speed <mps>`, `/turn <rad_s>`, `/stop`, `/estop`, `/clear-estop`, `/arm`, `/disarm`, `/help`, and `/quit`.
+- Stop on key release, quit, crash, or Ctrl+C.
+- Include a startup script/wrapper so the user does not need to remember the ROS setup and launch commands. The script should source ROS, source the workspace, optionally launch or verify the driver node, and start the TUI with one command.
+
+Suggested startup command:
+
+```bash
+rvr-console
+```
+
+Suggested script behavior:
+
+```text
+rvr-console
+  -> source /opt/ros/jazzy/setup.bash
+  -> source ~/ros2_ws/install/setup.bash
+  -> verify sphero_rvr_driver is discoverable
+  -> verify /cmd_vel, /battery_state, /diagnostics, /stop exist or start the driver launch
+  -> run ros2 run sphero_rvr_driver rvr_tui
+  -> call /stop on exit if the TUI exits cleanly
+```
+
 ## Development install without ROS 2
 
 For core-driver development on a non-ROS machine:
