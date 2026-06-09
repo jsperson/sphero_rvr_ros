@@ -12,6 +12,7 @@ setup(
         ("share/sphero_rvr_driver", ["package.xml"]),
         ("share/sphero_rvr_driver/launch", ["launch/rvr.launch.py"]),
         ("share/sphero_rvr_driver/config", ["config/rvr.yaml"]),
+        ("share/sphero_rvr_driver/scripts", ["scripts/rvr-console"]),
     ],
     install_requires=["setuptools", "pyserial"],
     extras_require={"dev": ["pytest>=8.0", "pytest-asyncio>=0.23"]},
@@ -23,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "rvr_node = sphero_rvr_driver.rvr_node:main",
+            "rvr_tui = sphero_rvr_driver.tui:main",
         ],
     },
 )

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+WORKSPACE=${RVR_WORKSPACE:-$HOME/ros2_ws}
+ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
+DRIVER_LAUNCHED=0
+DRIVER_PID=""
+
+cleanup() {
+  set +e
+  if command -v ros2 >/dev/null 2>&1; then
+    ros2 service call /stop std_srvs/srv/Trigger {} >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${DRIVER_PID}" ]]; then
+    kill "${DRIVER_PID}" >/dev/null 2>&1 || true
+    wait "${DRIVER_PID}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [[ ! -f "${ROS_SETUP}" ]]; then
+  echo "ROS setup not found: ${ROS_SETUP}" >&2
+  exit 1
+fi
+# shellcheck source=/opt/ros/jazzy/setup.bash
+source /opt/ros/jazzy/setup.bash
+
+if [[ ! -f "$WORKSPACE/install/setup.bash" ]]; then
+  echo "Workspace setup not found: $WORKSPACE/install/setup.bash" >&2
+  echo "Build the driver first: cd $WORKSPACE && colcon build --symlink-install --packages-select sphero_rvr_driver" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source $WORKSPACE/install/setup.bash
+
+if ! ros2 pkg prefix sphero_rvr_driver >/dev/null 2>&1; then
+  echo "sphero_rvr_driver is not discoverable. Did you source the workspace?" >&2
+  exit 1
+fi
+
+if ! timeout 2 ros2 topic list 2>/dev/null | grep -qx '/cmd_vel'; then
+  echo "Starting sphero_rvr_driver..."
+  ros2 launch sphero_rvr_driver rvr.launch.py >/tmp/rvr-console-driver.log 2>&1 &
+  DRIVER_PID=$!
+  DRIVER_LAUNCHED=1
+  for _ in {1..30}; do
+    if timeout 2 ros2 topic list 2>/dev/null | grep -qx '/cmd_vel'; then
+      break
+    fi
+    sleep 0.5
+  done
+fi
+
+for topic in /cmd_vel /battery_state /diagnostics; do
+  if ! timeout 2 ros2 topic list 2>/dev/null | grep -qx "$topic"; then
+    echo "Required topic missing: $topic" >&2
+    if [[ "$DRIVER_LAUNCHED" == "1" ]]; then
+      echo "Driver log: /tmp/rvr-console-driver.log" >&2
+    fi
+    exit 1
+  fi
+done
+
+if ! timeout 2 ros2 service list 2>/dev/null | grep -qx '/stop'; then
+  echo "Required service missing: /stop" >&2
+  exit 1
+fi
+
+ros2 run sphero_rvr_driver rvr_tui
