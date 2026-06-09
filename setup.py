@@ -14,6 +14,7 @@ setup(
         ("share/sphero_rvr_driver/config", ["config/rvr.yaml"]),
     ],
     install_requires=["setuptools", "pyserial"],
+    extras_require={"dev": ["pytest>=8.0", "pytest-asyncio>=0.23"]},
     zip_safe=True,
     maintainer="Jason Scott Person",
     maintainer_email="jsperson@users.noreply.github.com",

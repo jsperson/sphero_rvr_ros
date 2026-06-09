@@ -2,29 +2,6 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[project]
-name = "sphero-rvr-driver"
-version = "0.1.0"
-description = "Concurrency-safe Sphero RVR core driver and ROS 2 adapter"
-readme = "README.md"
-requires-python = ">=3.9"
-license = { file = "LICENSE" }
-authors = [{ name = "Jason Scott Person" }]
-dependencies = ["pyserial>=3.5"]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
-ros2 = []
-
-[project.scripts]
-rvr_node = "sphero_rvr_driver.rvr_node:main"
-
-[tool.setuptools]
-package-dir = { "" = "src" }
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
