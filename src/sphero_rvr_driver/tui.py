@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import curses
+import os
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -14,6 +15,7 @@ from .tui_ros import RVRROSClient
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
 KEY_STOP_SECONDS = 0.25
+MOTION_ENABLE_ENV = "RVR_TUI_ENABLE_MOTION"
 
 
 @dataclass
@@ -97,6 +99,13 @@ class RVRTUI:
                 for line in HELP_TEXT:
                     self.state.log(line)
             elif name == "arm":
+                if os.environ.get(MOTION_ENABLE_ENV) != "1":
+                    self.state.armed = False
+                    self.state.log(
+                        "Motion disabled by default after unsafe behavior report. "
+                        f"Set {MOTION_ENABLE_ENV}=1 only after the driver is fixed."
+                    )
+                    return
                 self.state.armed = True
                 if command.value == "confirm":
                     self.state.log("Armed. Keyboard drive commands can start the RVR motors.")
