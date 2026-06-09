@@ -26,7 +26,7 @@ class RVRNodeConfig:
     control_period: float = 0.05
     max_linear_mps: float = 0.25
     max_angular_rad_s: float = 0.4
-    max_raw_motor_duty: int = 96
+    max_raw_motor_duty: int = 160
     battery_publish_period: float = 5.0
     diagnostics_publish_period: float = 1.0
 
