@@ -6,7 +6,8 @@ Updated: 2026-06-09T22:52:00Z
 
 - Branch: `main`
 - Latest deployed code baseline before this status update: `a344718 Revert "tune: tolerate slower RVR turn key repeat"`
-- `HEAD` matches `origin/main` locally and on `sphero-pi-2`.
+- Local `HEAD` matches `origin/main` after this status update.
+- `sphero-pi-2` was verified on the deployed code baseline `a344718` before this docs-only update; a follow-up SSH pull for this status file timed out.
 - Local test suite at handoff: `86 passed`.
 - Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros`
 - Target Pi install: pulled/rebuilt with `colcon build --symlink-install --packages-select sphero_rvr_driver`
