@@ -91,3 +91,55 @@ async def test_driver_caps_raw_motor_duty_for_velocity_control():
     ]
     assert raw_motor_packets
     assert raw_motor_packets[0].payload == bytes([1, 64, 1, 64])
+
+
+@pytest.mark.asyncio
+async def test_driver_scales_velocity_against_configured_limits_before_raw_motor_mapping():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=1.0,
+        max_linear_mps=0.25,
+        max_angular_rad_s=0.4,
+        max_raw_motor_duty=64,
+    )
+    await driver.connect()
+
+    await driver.set_velocity(linear_mps=0.25, angular_rad_s=0.0)
+    await asyncio.sleep(0.03)
+    await driver.disconnect()
+
+    raw_motor_packets = [
+        packet
+        for packet in (Packet.decode(raw) for raw in transport.writes)
+        if packet.command_id == driver.commands.CID_RAW_MOTORS
+    ]
+    assert raw_motor_packets
+    assert raw_motor_packets[0].payload == bytes([1, 64, 1, 64])
+
+
+@pytest.mark.asyncio
+async def test_driver_scales_configured_max_turn_to_tank_turn_duty_cap():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=1.0,
+        max_linear_mps=0.25,
+        max_angular_rad_s=0.4,
+        max_raw_motor_duty=64,
+    )
+    await driver.connect()
+
+    await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.4)
+    await asyncio.sleep(0.03)
+    await driver.disconnect()
+
+    raw_motor_packets = [
+        packet
+        for packet in (Packet.decode(raw) for raw in transport.writes)
+        if packet.command_id == driver.commands.CID_RAW_MOTORS
+    ]
+    assert raw_motor_packets
+    assert raw_motor_packets[0].payload == bytes([1, 64, 2, 64])

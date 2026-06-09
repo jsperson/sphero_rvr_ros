@@ -261,11 +261,13 @@ class RVRDriver:
                 continue
             stop_sent_for_stale = False
             velocity = self._desired_velocity
+            linear_fraction = velocity.linear_mps / self._max_linear_mps if self._max_linear_mps else 0.0
+            angular_fraction = velocity.angular_rad_s / self._max_angular_rad_s if self._max_angular_rad_s else 0.0
             await self._send(
                 lambda seq: self.commands.drive_rc(
                     seq,
-                    velocity.linear_mps,
-                    velocity.angular_rad_s,
+                    linear_fraction,
+                    angular_fraction,
                     max_speed=self._max_raw_motor_duty,
                 ),
                 CommandPriority.NORMAL,

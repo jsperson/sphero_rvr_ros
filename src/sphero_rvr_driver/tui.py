@@ -14,6 +14,7 @@ from .tui_ros import RVRROSClient
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
 KEY_STOP_SECONDS = 0.25
+KEY_REPEAT_SECONDS = 0.10
 
 
 @dataclass
@@ -42,6 +43,9 @@ class RVRTUI:
         self.client = client
         self.state = TUIState()
         self._last_motion_at: Optional[float] = None
+        self._last_motion_publish_at: Optional[float] = None
+        self._active_linear_mps = 0.0
+        self._active_angular_rad_s = 0.0
         self._motion_active = False
         self._quit = False
 
@@ -60,7 +64,7 @@ class RVRTUI:
                 key_code = screen.getch()
                 if key_code != -1:
                     self._handle_key(screen, key_code)
-                self._stop_if_key_stale()
+                self._maintain_motion()
         finally:
             self._safe_stop()
             self.client.close()
@@ -81,7 +85,7 @@ class RVRTUI:
             if not self.state.armed:
                 self.state.log("Ignored drive key while disarmed. Use /arm.")
                 return
-            self.client.publish_velocity(action.linear_mps, action.angular_rad_s)
+            self._publish_motion(action.linear_mps, action.angular_rad_s)
             self._motion_active = True
             self._last_motion_at = time.monotonic()
             self.state.log(f"cmd_vel linear={action.linear_mps:.2f} angular={action.angular_rad_s:.2f}")
@@ -162,13 +166,18 @@ class RVRTUI:
         finally:
             curses.curs_set(0)
 
-    def _stop_if_key_stale(self) -> None:
+    def _maintain_motion(self) -> None:
         if not self._motion_active or self._last_motion_at is None:
             return
-        if time.monotonic() - self._last_motion_at > KEY_STOP_SECONDS:
+        now = time.monotonic()
+        if now - self._last_motion_at > KEY_STOP_SECONDS:
             self.client.publish_velocity(0.0, 0.0)
             self._motion_active = False
+            self._last_motion_publish_at = None
             self.state.log("Stopped after key timeout.")
+            return
+        if self._last_motion_publish_at is None or now - self._last_motion_publish_at >= KEY_REPEAT_SECONDS:
+            self._publish_motion(self._active_linear_mps, self._active_angular_rad_s)
 
     def _safe_stop(self) -> None:
         try:
@@ -181,6 +190,13 @@ class RVRTUI:
             self.client.publish_velocity(0.0, 0.0)
         finally:
             self._motion_active = False
+            self._last_motion_publish_at = None
+
+    def _publish_motion(self, linear_mps: float, angular_rad_s: float) -> None:
+        self._active_linear_mps = linear_mps
+        self._active_angular_rad_s = angular_rad_s
+        self.client.publish_velocity(linear_mps, angular_rad_s)
+        self._last_motion_publish_at = time.monotonic()
 
     def _draw(self, screen, command_prompt: str = "> ") -> None:
         screen.erase()

@@ -1,3 +1,4 @@
+import sphero_rvr_driver.tui as tui_module
 from sphero_rvr_driver.tui import RVRTUI
 from sphero_rvr_driver.tui_commands import TUICommand
 from sphero_rvr_driver.tui_keymap import KeyAction
@@ -82,3 +83,19 @@ def test_disarmed_keyboard_motion_is_ignored():
     tui._apply_key_action(KeyAction.motion(0.1, 0.0))
 
     assert client.published == []
+
+
+def test_active_motion_is_republished_until_key_timeout(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm"))
+
+    tui._apply_key_action(KeyAction.motion(0.1, 0.0))
+    now = 100.11
+    tui._maintain_motion()
+    now = 100.26
+    tui._maintain_motion()
+
+    assert client.published == [(0.1, 0.0), (0.1, 0.0), (0.0, 0.0)]
