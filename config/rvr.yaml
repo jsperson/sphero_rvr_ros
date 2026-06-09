@@ -1,6 +1,6 @@
 sphero_rvr_driver:
   ros__parameters:
-    serial_port: /dev/serial0
+    serial_port: /dev/ttyAMA0
     baud_rate: 115200
     cmd_vel_timeout: 0.5
     control_period: 0.05

@@ -20,7 +20,7 @@ from .twist_mapper import TwistLike, map_twist_to_velocity
 
 @dataclass(frozen=True)
 class RVRNodeConfig:
-    serial_port: str = "/dev/serial0"
+    serial_port: str = "/dev/ttyAMA0"
     baud_rate: int = 115200
     cmd_vel_timeout: float = 0.5
     control_period: float = 0.05

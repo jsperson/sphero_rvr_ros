@@ -6,7 +6,7 @@ from sphero_rvr_core.fake_transport import FakeTransport
 def test_default_node_config_uses_pi_serial_alias_and_safe_motor_duty():
     config = RVRNodeConfig()
 
-    assert config.serial_port == "/dev/serial0"
+    assert config.serial_port == "/dev/ttyAMA0"
     assert config.baud_rate == 115200
     assert config.max_raw_motor_duty == 64
     assert config.battery_publish_period == 5.0

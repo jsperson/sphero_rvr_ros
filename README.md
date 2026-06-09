@@ -20,7 +20,7 @@ Implemented for the base ROS 2 driver slice:
 - `battery_state` publisher using `sensor_msgs/msg/BatteryState`
 - `diagnostics` publisher using `diagnostic_msgs/msg/DiagnosticArray`
 - conservative safety defaults in `config/rvr.yaml`:
-  - serial port: `/dev/serial0`
+  - serial port: `/dev/ttyAMA0`
   - max linear: `0.25 m/s`
   - max angular: `0.4 rad/s`
   - raw motor duty cap: `64`
