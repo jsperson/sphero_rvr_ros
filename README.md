@@ -344,8 +344,9 @@ TUI behavior:
 - Does not import `RVRDriver` or open `/dev/ttyAMA0`; the ROS driver node remains the only UART owner.
 - Starts disarmed. Non-zero drive keys do nothing until the user explicitly arms the TUI.
 - Supports keyboard driving with arrow keys and/or WASD, plus space for stop.
-- Supports slash commands: `/battery`, `/status`, `/speed <mps>`, `/turn <rad_s>`, `/stop`, `/estop`, `/clear-estop`, `/arm`, `/arm confirm`, `/disarm`, `/help`, and `/quit`.
+- Supports slash commands: `/battery`, `/status`, `/speed <mps>`, `/turn <rad_s>`, `/stop`, `/estop`, `/clear-estop`, `/arm`, `/disarm`, `/help`, and `/quit`.
 - Stops on key timeout, quit, crash, or Ctrl+C.
+- Logs startup, driver launch, topic/service verification, and cleanup details to `~/.local/state/sphero_rvr/rvr-console.log`; driver output goes to `~/.local/state/sphero_rvr/rvr-driver.log`.
 
 Suggested one-command install convenience:
 

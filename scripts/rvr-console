@@ -3,67 +3,100 @@ set -eo pipefail
 
 WORKSPACE=${RVR_WORKSPACE:-$HOME/ros2_ws}
 ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
+LOG_DIR=${RVR_LOG_DIR:-$HOME/.local/state/sphero_rvr}
+LOG_FILE=${RVR_CONSOLE_LOG:-$LOG_DIR/rvr-console.log}
+DRIVER_LOG=${RVR_DRIVER_LOG:-$LOG_DIR/rvr-driver.log}
 DRIVER_LAUNCHED=0
 DRIVER_PID=""
 
+mkdir -p "$LOG_DIR"
+
+timestamp() {
+  date -Is
+}
+
+log() {
+  local line
+  line="[$(timestamp)] $*"
+  printf '%s\n' "$line" >>"$LOG_FILE"
+  printf '%s\n' "$line" >&2
+}
+
 cleanup() {
   set +e
+  log "cleanup started"
   if command -v ros2 >/dev/null 2>&1; then
-    ros2 service call /stop std_srvs/srv/Trigger {} >/dev/null 2>&1 || true
+    log "calling /stop"
+    ros2 service call /stop std_srvs/srv/Trigger {} >>"$LOG_FILE" 2>&1 || true
   fi
   if [[ -n "${DRIVER_PID}" ]]; then
+    log "stopping driver process pid=$DRIVER_PID"
     kill "${DRIVER_PID}" >/dev/null 2>&1 || true
     wait "${DRIVER_PID}" >/dev/null 2>&1 || true
   fi
+  log "cleanup finished"
 }
 trap cleanup EXIT INT TERM
 
+log "rvr-console starting"
+log "workspace=$WORKSPACE ros_setup=$ROS_SETUP"
+
 if [[ ! -f "${ROS_SETUP}" ]]; then
-  echo "ROS setup not found: ${ROS_SETUP}" >&2
+  log "ERROR: ROS setup not found: ${ROS_SETUP}"
   exit 1
 fi
 # shellcheck source=/opt/ros/jazzy/setup.bash
 source /opt/ros/jazzy/setup.bash
+log "sourced ROS setup"
 
 if [[ ! -f "$WORKSPACE/install/setup.bash" ]]; then
-  echo "Workspace setup not found: $WORKSPACE/install/setup.bash" >&2
-  echo "Build the driver first: cd $WORKSPACE && colcon build --symlink-install --packages-select sphero_rvr_driver" >&2
+  log "ERROR: workspace setup not found: $WORKSPACE/install/setup.bash"
+  log "Build the driver first: cd $WORKSPACE && colcon build --symlink-install --packages-select sphero_rvr_driver"
   exit 1
 fi
 # shellcheck source=/dev/null
 source $WORKSPACE/install/setup.bash
+log "sourced workspace setup"
 
-if ! ros2 pkg prefix sphero_rvr_driver >/dev/null 2>&1; then
-  echo "sphero_rvr_driver is not discoverable. Did you source the workspace?" >&2
+if ! ros2 pkg prefix sphero_rvr_driver >>"$LOG_FILE" 2>&1; then
+  log "ERROR: sphero_rvr_driver is not discoverable. Did you source the workspace?"
   exit 1
 fi
+log "sphero_rvr_driver package is discoverable"
 
-if ! timeout 2 ros2 topic list 2>/dev/null | grep -qx '/cmd_vel'; then
-  echo "Starting sphero_rvr_driver..."
-  ros2 launch sphero_rvr_driver rvr.launch.py >/tmp/rvr-console-driver.log 2>&1 &
+if ! timeout 2 ros2 topic list 2>>"$LOG_FILE" | tee -a "$LOG_FILE" | grep -qx '/cmd_vel'; then
+  log "starting sphero_rvr_driver; driver_log=$DRIVER_LOG"
+  ros2 launch sphero_rvr_driver rvr.launch.py >>"$DRIVER_LOG" 2>&1 &
   DRIVER_PID=$!
   DRIVER_LAUNCHED=1
+  log "driver pid=$DRIVER_PID"
   for _ in {1..30}; do
-    if timeout 2 ros2 topic list 2>/dev/null | grep -qx '/cmd_vel'; then
+    if timeout 2 ros2 topic list 2>>"$LOG_FILE" | tee -a "$LOG_FILE" | grep -qx '/cmd_vel'; then
       break
     fi
     sleep 0.5
   done
+else
+  log "existing driver detected"
 fi
 
 for topic in /cmd_vel /battery_state /diagnostics; do
-  if ! timeout 2 ros2 topic list 2>/dev/null | grep -qx "$topic"; then
-    echo "Required topic missing: $topic" >&2
+  if ! timeout 2 ros2 topic list 2>>"$LOG_FILE" | tee -a "$LOG_FILE" | grep -qx "$topic"; then
+    log "ERROR: required topic missing: $topic"
     if [[ "$DRIVER_LAUNCHED" == "1" ]]; then
-      echo "Driver log: /tmp/rvr-console-driver.log" >&2
+      log "Driver log: $DRIVER_LOG"
     fi
     exit 1
   fi
+  log "verified topic $topic"
 done
 
-if ! timeout 2 ros2 service list 2>/dev/null | grep -qx '/stop'; then
-  echo "Required service missing: /stop" >&2
+if ! timeout 2 ros2 service list 2>>"$LOG_FILE" | tee -a "$LOG_FILE" | grep -qx '/stop'; then
+  log "ERROR: required service missing: /stop"
   exit 1
 fi
+log "verified service /stop"
 
+log "starting rvr_tui"
 ros2 run sphero_rvr_driver rvr_tui
+log "rvr_tui exited"

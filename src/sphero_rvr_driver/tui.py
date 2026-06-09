@@ -21,7 +21,7 @@ class TUIState:
     armed: bool = False
     speed: float = DEFAULT_SPEED
     turn: float = DEFAULT_TURN
-    last_message: str = "Type /help. Use /arm then /arm confirm before driving."
+    last_message: str = "Type /help. Use /arm before driving."
     history: List[str] = field(default_factory=list)
 
     def log(self, message: str) -> None:
@@ -32,7 +32,7 @@ class TUIState:
 
 HELP_TEXT = [
     "Controls: arrows/WASD drive when armed, space=/stop, e=/estop, q=/quit",
-    "Commands: /arm, /arm confirm, /disarm, /battery, /status, /speed <mps>, /turn <rad_s>",
+    "Commands: /arm, /disarm, /battery, /status, /speed <mps>, /turn <rad_s>",
     "          /stop, /estop, /clear-estop, /help, /quit",
 ]
 
@@ -79,7 +79,7 @@ class RVRTUI:
     def _apply_key_action(self, action: KeyAction) -> None:
         if action.kind == "motion":
             if not self.state.armed:
-                self.state.log("Ignored drive key while disarmed. Use /arm then /arm confirm.")
+                self.state.log("Ignored drive key while disarmed. Use /arm.")
                 return
             self.client.publish_velocity(action.linear_mps, action.angular_rad_s)
             self._motion_active = True
@@ -97,11 +97,11 @@ class RVRTUI:
                 for line in HELP_TEXT:
                     self.state.log(line)
             elif name == "arm":
+                self.state.armed = True
                 if command.value == "confirm":
-                    self.state.armed = True
                     self.state.log("Armed. Keyboard drive commands can start the RVR motors.")
                 else:
-                    self.state.log("WARNING: /arm confirm enables keyboard motor commands. Keep RVR restrained.")
+                    self.state.log("Armed. Keyboard drive commands can start the RVR motors. Use /disarm to disable.")
             elif name == "disarm":
                 self.state.armed = False
                 self._safe_stop()
