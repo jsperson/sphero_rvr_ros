@@ -50,13 +50,13 @@ Driver velocity scaling and turn direction have been tuned from live floor testi
 - TUI timing constants:
   - `KEY_STOP_SECONDS = 0.30`
   - `TURN_KEY_STOP_SECONDS = 0.09`
-  - `TURN_HOLD_DETECT_SECONDS = 0.30`
+  - `TURN_HOLD_DETECT_SECONDS = 0.15`
   - `KEY_REPEAT_SECONDS = 0.10`
 
 Pure turn behavior:
 
 - First left/right tap is a short nudge: one turn command, then zero after `0.09s`.
-- If the same turn key repeats within `0.30s`, the TUI treats it as a held turn and internally republishes at `0.10s` cadence until the normal `0.30s` timeout.
+- If the same turn key repeats within `0.15s`, the TUI treats it as a held turn and internally republishes at `0.10s` cadence until the normal `0.30s` timeout.
 - Forward/reverse still use the normal `0.30s` timeout and internal repeat.
 
 ## Live floor-test findings

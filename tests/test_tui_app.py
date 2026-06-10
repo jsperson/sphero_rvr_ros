@@ -143,3 +143,26 @@ def test_repeated_turn_keypresses_continue_turning(monkeypatch):
         (0.0, 0.35),
         (0.0, 0.0),
     ]
+
+
+def test_turn_taps_outside_hold_window_remain_discrete(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm"))
+
+    tui._apply_key_action(KeyAction.motion(0.0, 0.35))
+    now = 100.10
+    tui._maintain_motion()
+    now = 100.16
+    tui._apply_key_action(KeyAction.motion(0.0, 0.35))
+    now = 100.26
+    tui._maintain_motion()
+
+    assert client.published == [
+        (0.0, 0.35),
+        (0.0, 0.0),
+        (0.0, 0.35),
+        (0.0, 0.0),
+    ]
