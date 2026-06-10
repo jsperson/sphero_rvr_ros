@@ -28,6 +28,7 @@ class RVRNodeConfig:
     max_angular_rad_s: float = 0.4
     max_raw_motor_duty: int = 160
     battery_publish_period: float = 5.0
+    temperature_publish_period: float = 2.0
     diagnostics_publish_period: float = 1.0
 
 
@@ -92,7 +93,10 @@ def main(args=None):
             self._driver_thread.start()
 
             self._battery_future = None
+            self._temperature_future = None
             self._battery_pub = self.create_publisher(BatteryState, "battery_state", 10)
+            self._left_motor_temperature_pub = self.create_publisher(Temperature, "left_motor_temperature", 10)
+            self._right_motor_temperature_pub = self.create_publisher(Temperature, "right_motor_temperature", 10)
             self._diagnostics_pub = self.create_publisher(DiagnosticArray, "diagnostics", 10)
 
             self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
@@ -100,6 +104,7 @@ def main(args=None):
             self.create_service(Trigger, "estop", self._on_estop)
             self.create_service(Trigger, "clear_estop", self._on_clear_estop)
             self.create_timer(self._config.battery_publish_period, self._poll_battery)
+            self.create_timer(self._config.temperature_publish_period, self._poll_temperature)
             self.create_timer(self._config.diagnostics_publish_period, self._publish_diagnostics)
 
         def _declare_parameters(self):
@@ -112,6 +117,7 @@ def main(args=None):
             self.declare_parameter("max_angular_rad_s", defaults.max_angular_rad_s)
             self.declare_parameter("max_raw_motor_duty", defaults.max_raw_motor_duty)
             self.declare_parameter("battery_publish_period", defaults.battery_publish_period)
+            self.declare_parameter("temperature_publish_period", defaults.temperature_publish_period)
             self.declare_parameter("diagnostics_publish_period", defaults.diagnostics_publish_period)
 
         def _read_config(self) -> RVRNodeConfig:
@@ -124,6 +130,7 @@ def main(args=None):
                 max_angular_rad_s=float(self.get_parameter("max_angular_rad_s").value),
                 max_raw_motor_duty=int(self.get_parameter("max_raw_motor_duty").value),
                 battery_publish_period=float(self.get_parameter("battery_publish_period").value),
+                temperature_publish_period=float(self.get_parameter("temperature_publish_period").value),
                 diagnostics_publish_period=float(self.get_parameter("diagnostics_publish_period").value),
             )
 
@@ -189,6 +196,44 @@ def main(args=None):
             msg.percentage = fields.percentage
             msg.voltage = fields.voltage
             self._battery_pub.publish(msg)
+
+        def _poll_temperature(self):
+            if self._temperature_future is not None and not self._temperature_future.done():
+                return
+            self._temperature_future = self._driver_thread.run(self._driver_thread.driver.get_temperature())
+            self._temperature_future.add_done_callback(self._publish_temperature_from_future)
+
+        def _publish_temperature_from_future(self, future):
+            try:
+                readings = future.result()
+            except Exception as exc:
+                self.get_logger().warn(f"temperature query failed: {exc}")
+                return
+
+            stamp = self.get_clock().now().to_msg()
+            if readings.left_motor is not None:
+                self._publish_temperature(
+                    self._left_motor_temperature_pub,
+                    frame_id="left_motor",
+                    stamp=stamp,
+                    temperature=readings.left_motor,
+                )
+            if readings.right_motor is not None:
+                self._publish_temperature(
+                    self._right_motor_temperature_pub,
+                    frame_id="right_motor",
+                    stamp=stamp,
+                    temperature=readings.right_motor,
+                )
+
+        @staticmethod
+        def _publish_temperature(publisher, *, frame_id: str, stamp, temperature: float) -> None:
+            msg = Temperature()
+            msg.header.stamp = stamp
+            msg.header.frame_id = frame_id
+            msg.temperature = float(temperature)
+            msg.variance = 0.0
+            publisher.publish(msg)
 
         def _publish_diagnostics(self):
             state = self._driver_thread.driver.get_state()

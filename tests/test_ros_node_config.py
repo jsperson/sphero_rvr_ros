@@ -10,6 +10,7 @@ def test_default_node_config_uses_pi_serial_alias_and_floor_turn_motor_duty():
     assert config.baud_rate == 115200
     assert config.max_raw_motor_duty == 160
     assert config.battery_publish_period == 5.0
+    assert config.temperature_publish_period == 2.0
     assert config.diagnostics_publish_period == 1.0
 
 
