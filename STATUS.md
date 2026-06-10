@@ -9,6 +9,7 @@ Updated: 2026-06-09T22:52:00Z
 - Local `HEAD` matches `origin/main` after this status update.
 - `sphero-pi-2` was verified on the deployed code baseline `a344718` before this docs-only update; a follow-up SSH pull for this status file timed out.
 - Local test suite at handoff: `86 passed`.
+- Driver capability coverage now has a sentinel test for every public async `RVRDriver` method; latest local suite: `127 passed`.
 - Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros`
 - Target Pi install: pulled/rebuilt with `colcon build --symlink-install --packages-select sphero_rvr_driver`
 - Background driver running through `ros2 launch sphero_rvr_driver rvr.launch.py`.
