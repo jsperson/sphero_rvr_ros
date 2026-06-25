@@ -4,9 +4,23 @@ sphero_rvr_driver:
     baud_rate: 115200
     cmd_vel_timeout: 0.5
     control_period: 0.05
-    max_linear_mps: 0.25
+    max_linear_mps: 0.10
     max_angular_rad_s: 0.4
-    max_raw_motor_duty: 160
+    max_raw_motor_duty: 64
     battery_publish_period: 5.0
     temperature_publish_period: 2.0
     diagnostics_publish_period: 1.0
+    diagnostics_metadata_period: 30.0
+    ambient_light_publish_period: 2.0
+    odom_publish_period: 0.1
+    # Encoder odometry is a rough mapping/localization aid. Tune these from live measurements.
+    odom_counts_per_meter: 4337.768
+    odom_wheel_track_m: 0.18
+    odom_frame_id: odom
+    base_frame_id: base_link
+    odom_publish_tf: true
+    # Honest uncertainty defaults for scan-matching SLAM: nonzero, tunable, and not a promise.
+    odom_pose_xy_covariance: 0.05
+    odom_pose_yaw_covariance: 0.25
+    odom_twist_linear_covariance: 0.10
+    odom_twist_angular_covariance: 0.50

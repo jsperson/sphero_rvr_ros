@@ -4,17 +4,33 @@ Concurrency-safe Sphero RVR core driver plus a ROS 2 adapter package.
 
 This project is intentionally starting fresh from the older MCP implementation. The MCP repo remains useful as a protocol reference, but this repo is built around ROS 2 needs: one serial owner, request/response dispatching, safety preemption, and continuous velocity control.
 
+## Documentation map for operators and maintainers
+
+- [docs/rvr_capability_matrix.md](docs/rvr_capability_matrix.md) is the full official SDK/protocol capability matrix. It is the source of truth for core API parity, ROS exposure decisions, and required validation tokens.
+- [docs/rvr_ros_exposure_policy.md](docs/rvr_ros_exposure_policy.md) explains the ROS exposure policy: full API parity belongs in `sphero_rvr_core`; ROS exposes only typed, bounded, operational surfaces.
+- [docs/rvr_api_gap_report.md](docs/rvr_api_gap_report.md) is the parity handoff: what is implemented, what remains intentionally core-only/omitted, and which commands validate the state.
+- [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
+
 ## Current base-driver status
 
-Implemented and hardware-smoked on a Raspberry Pi 5 running Ubuntu Server 24.04 + ROS 2 Jazzy:
+Hardware-smoked on a Raspberry Pi 5 running Ubuntu Server 24.04 + ROS 2 Jazzy:
 
 - `/cmd_vel` subscriber using `geometry_msgs/msg/Twist`
 - `stop`, `estop`, and `clear_estop` services using `std_srvs/srv/Trigger`
 - `battery_state` publisher using `sensor_msgs/msg/BatteryState`
 - `diagnostics` publisher using `diagnostic_msgs/msg/DiagnosticArray`
+
+Implemented locally with ROS-free fake/unit coverage and pending Pi/ROS validation:
+
+- `reset_yaw`, `reset_locator`, and `release_led_requests` services using `std_srvs/srv/Trigger`
+- `set_all_leds` subscriber using `std_msgs/msg/ColorRGBA` for bounded operator feedback LEDs
+- `left_motor_temperature` and `right_motor_temperature` publishers using `sensor_msgs/msg/Temperature`
+- `ambient_light` publisher using `sensor_msgs/msg/Illuminance`
+- `odom` publisher using `nav_msgs/msg/Odometry`, plus `odom -> base_link` TF from encoder-count deltas
+  - design/limitations: [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md)
 - conservative safety defaults in `config/rvr.yaml`:
   - serial port: `/dev/ttyAMA0`
-  - max linear: `0.25 m/s`
+  - max linear: `0.10 m/s`
   - max angular: `0.4 rad/s`
   - raw motor duty cap: `64`
   - stale `/cmd_vel` timeout: `0.5s`
@@ -28,6 +44,216 @@ ros2 topic pub /cmd_vel
   -> UART /dev/ttyAMA0
   -> RVR motors
 ```
+
+## SLAMTEC RPLIDAR C1 lidar
+
+The Pi is configured to expose the SLAMTEC C1 USB adapter as a stable serial alias:
+
+```text
+/dev/rplidar -> /dev/ttyUSB0
+```
+
+The C1 requires the newer upstream `rplidar_ros` ROS 2 branch; the Ubuntu apt package can identify the device but failed to start scanning on this module. The working path is:
+
+```bash
+cd ~/ros2_ws
+vcs import src < src/sphero_rvr_ros/workspace.repos
+colcon build --symlink-install --packages-select rplidar_ros sphero_rvr_driver
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch sphero_rvr_driver lidar.launch.py
+```
+
+The `/dev/rplidar` alias is documented in `docs/udev/99-rplidar.rules`. Install it on the Pi with:
+
+```bash
+sudo cp ~/ros2_ws/src/sphero_rvr_ros/docs/udev/99-rplidar.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger /dev/ttyUSB0 || true
+ls -l /dev/rplidar /dev/ttyUSB0 /dev/serial/by-id/*
+```
+
+Verified C1 settings:
+
+```text
+serial_port: /dev/rplidar
+serial_baudrate: 460800
+frame_id: laser
+scan_mode: Standard
+scan topic: /scan
+```
+
+`lidar.launch.py` also publishes a static `base_link -> laser` transform. Measure the final mount and override the defaults as needed:
+
+```bash
+ros2 launch sphero_rvr_driver lidar.launch.py laser_x:=0.0 laser_y:=0.0 laser_z:=0.15 laser_yaw:=0.0
+```
+
+This launch file is lidar-only and does not talk to the RVR motors. Full mapping still needs odometry / TF integration before `slam_toolbox` should be treated as a real robot map.
+
+## Mapping scaffold
+
+A conservative SLAM Toolbox scaffold is available after lidar + odometry bring-up:
+
+```bash
+ros2 launch sphero_rvr_driver mapping.launch.py
+```
+
+By default this starts lidar + SLAM only and **does not** start the live RVR driver:
+
+```text
+start_rvr:=false
+```
+
+Full live mapping is motor-capable because it exposes `/cmd_vel` through the RVR driver:
+
+```bash
+ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true
+```
+
+See `docs/mapping.md` before running live mapping.
+
+## Roadmap: lidar, SLAM, cameras, autonomy, and AI commands
+
+Near-term roadmap after the base driver/TUI is stable:
+
+1. **Lidar + scan visualization** — add a ROS 2-supported USB 2D lidar, publish `/scan`, add `base_link -> laser`, and verify in RViz while stationary.
+2. **Manual SLAM mapping** — run `slam_toolbox`, drive slowly with teleop/TUI, and save room maps with `nav2_map_server`.
+3. **Camera + object recognition** — start with a cheap USB webcam or Raspberry Pi Camera Module 3 for object inventory; keep the software interface swappable for a later depth camera such as a used RealSense D435 or Luxonis OAK-D Lite.
+4. **Semantic map labels** — combine object detections with robot pose, camera bearing, and later depth estimates to place labels on the saved map.
+5. **Localization + cautious Nav2** — only after map save/load, odometry/tf, stop/estop, stale-command timeout, and localization are reliable.
+6. **AI command layer** — support high-level requests such as “map the room” or “map the room and identify objects” by mapping natural language to allowlisted deterministic ROS workflows/actions. The LLM must not directly publish arbitrary `/cmd_vel` or bypass motor safety gates.
+
+Target AI shape:
+
+```text
+User: “map the room”
+  -> AI parses intent: map_the_room
+  -> checks prerequisites and safety gates
+  -> calls deterministic ROS workflow/action
+  -> workflow launches lidar + SLAM + manual mapping helpers
+  -> map files are saved, verified, and reported
+
+User: “map the room and identify all objects”
+  -> AI parses intent: semantic_map_room
+  -> checks lidar, camera, detector, tf, SLAM, and safety gates
+  -> workflow launches lidar + SLAM + camera + object detector
+  -> operator manually drives the mapping route
+  -> occupancy map + semantic object layer are saved and verified
+```
+
+Detailed planning lives in [STATUS.md](STATUS.md#lidar-slam-and-autonomy-roadmap), [STATUS.md](STATUS.md#camera-object-recognition-and-semantic-mapping-roadmap), and [STATUS.md](STATUS.md#ai-command-layer-roadmap).
+
+## Safe ROS operational surface notes
+
+The ROS adapter deliberately exposes only the safe subset selected in `docs/rvr_ros_exposure_policy.md`:
+
+- routine motion stays on `/cmd_vel`, bounded by the existing velocity, stale-timeout, stop, and software-estop safety path;
+- read-only telemetry is published as typed topics (`battery_state`, motor temperatures, `ambient_light`, `odom`) and diagnostics key-values;
+- `reset_yaw` and `reset_locator` are explicit reference-frame reset services, not hidden side effects;
+- LEDs are limited to bounded `ColorRGBA` all-LED feedback plus `release_led_requests`; raw LED masks/palettes remain core-only;
+- raw motors, firmware/admin/update/factory operations, calibration flows, opaque streaming bytes, and identifier publishing remain out of the default ROS graph.
+
+ROS-free validation on development hosts:
+
+```bash
+PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests/test_ros_safe_surfaces.py tests/test_ros_node_config.py tests/test_diagnostics.py -q
+PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests -q
+PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m compileall -q src
+```
+
+ROS-environment validation on the Pi after sourcing ROS and the workspace:
+
+```bash
+colcon build --symlink-install --packages-select sphero_rvr_driver
+source install/setup.bash
+ros2 launch sphero_rvr_driver rvr.launch.py
+ros2 topic list | grep -E 'cmd_vel|battery_state|diagnostics|ambient_light|odom|set_all_leds'
+ros2 service list | grep -E 'stop|estop|clear_estop|reset_yaw|reset_locator|release_led_requests'
+ros2 topic echo /odom --once
+ros2 run tf2_ros tf2_echo odom base_link
+```
+
+Per `STATUS.md`, get explicit approval before launching anything that can talk to the live RVR driver because the node owns motor-capable command paths. Tiny robot, still a robot.
+
+## API parity validation checklist
+
+Use these gates to validate the RVR API parity surface without blurring fake/unit tests, ROS environment checks, and live hardware smoke.
+
+### macOS / no-ROS fake validation
+
+These commands are safe on development hosts because they use fake transports and do not open the RVR UART. They are the default validation path for code and documentation changes on macOS:
+
+```bash
+python3 -m venv /tmp/sphero-rvr-ros-test
+/tmp/sphero-rvr-ros-test/bin/python -m pip install -e '.[dev]'
+
+PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest \
+  tests/test_missing_command_builders.py \
+  tests/test_response_parsers.py \
+  tests/test_dispatcher.py \
+  tests/test_driver_capability_coverage.py -q
+
+PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest \
+  tests/test_ros_safe_surfaces.py \
+  tests/test_ros_node_config.py \
+  tests/test_diagnostics.py -q
+
+PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests -q
+PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m compileall -q src
+git diff --check
+```
+
+Expected coverage gates:
+
+- every capability matrix row has an explicit `Test status` token (`builder-test`, `parser-test`, `driver-test`, `notification-test`, `ros-exposure-test`, `fake-transport-test`, or `documented-omission`);
+- packet builders, parsers, driver methods, dispatcher notification routes, fake transport fixtures, and ROS-safe node/config surfaces have fake/unit coverage;
+- documented protocol mismatches and unsafe/admin/ROS omissions stay classified instead of becoming silent gaps.
+
+### Pi / ROS environment no-motion validation
+
+Run this on `sphero-pi-2` after sourcing ROS and rebuilding the workspace. This verifies install/package wiring and importable ROS surfaces; it does not launch the motor-capable driver and does not publish motion commands.
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install --packages-select sphero_rvr_driver
+source install/setup.bash
+ros2 pkg executables sphero_rvr_driver
+python3 - <<'PY'
+from sphero_rvr_driver.rvr_node import RVRNodeConfig
+print(RVRNodeConfig())
+PY
+```
+
+If the driver is launched for ROS graph inspection, treat it as live hardware access and apply the warning/approval rule below first, even when the intended check is “no motion.” The node owns `/dev/ttyAMA0` and has motor-capable command paths.
+
+### Live hardware smoke gate
+
+Live motor-capable validation remains opt-in. Before running `rvr-console`, `ros2 launch sphero_rvr_driver rvr.launch.py`, `/stop`, `/cmd_vel`, or any command that talks to the live driver, explicitly warn:
+
+```text
+WARNING: this can start the RVR motors
+```
+
+Only after approval, keep the robot suspended or restrained for the first run and scope the smoke narrowly:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch sphero_rvr_driver rvr.launch.py
+
+# In a second approved shell:
+ros2 topic echo /battery_state --once
+ros2 topic echo /diagnostics --once
+ros2 topic echo /odom --once
+ros2 service call /stop std_srvs/srv/Trigger {}
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{linear: {x: 0.1}, angular: {z: 0.0}}'
+ros2 service call /stop std_srvs/srv/Trigger {}
+```
+
+Anything beyond that smoke — sustained driving, mapping, TUI operation, or autonomy — needs a separate explicit scope and approval.
 
 ## Recommended hardware/software
 
@@ -257,7 +483,13 @@ RVRNodeConfig(serial_port='/dev/ttyAMA0', ...)
 
 ## No-motion smoke test
 
-Power on the RVR, then launch the driver:
+This is a live-hardware smoke because it launches the driver against the RVR UART. Before running it, explicitly warn the operator and get approval:
+
+```text
+WARNING: this can start the RVR motors
+```
+
+After approval, power on the RVR, keep it restrained/suspended for first bring-up, then launch the driver:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -272,9 +504,12 @@ source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
 
 ros2 topic list
-ros2 service list | grep -E 'stop|estop|clear_estop'
+ros2 service list | grep -E 'stop|estop|clear_estop|reset_yaw|reset_locator|release_led_requests'
 ros2 topic echo /diagnostics --once
 ros2 topic echo /battery_state --once
+ros2 topic echo /ambient_light --once
+ros2 topic echo /odom --once
+ros2 run tf2_ros tf2_echo odom base_link
 ros2 service call /stop std_srvs/srv/Trigger {}
 ```
 
@@ -284,8 +519,13 @@ Expected topics:
 /battery_state
 /cmd_vel
 /diagnostics
+/ambient_light
+/left_motor_temperature
+/right_motor_temperature
+/odom
 /parameter_events
 /rosout
+/set_all_leds
 ```
 
 Expected services:
@@ -293,10 +533,13 @@ Expected services:
 ```text
 /clear_estop
 /estop
+/release_led_requests
+/reset_locator
+/reset_yaw
 /stop
 ```
 
-A successful no-motion smoke should show diagnostics connected, battery voltage/percentage, and a successful stop response.
+A successful no-motion smoke should show diagnostics connected, battery voltage/percentage, typed sensor topics publishing when the RVR responds, odometry/TF available from encoder polling, and a successful stop response.
 
 ## First motor test
 

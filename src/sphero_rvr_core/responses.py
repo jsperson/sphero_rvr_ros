@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import struct
-from typing import Optional
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,38 @@ class DetectedColor:
     blue: int
     confidence: int
     color_classification_id: int
+
+
+@dataclass(frozen=True)
+class SleepEvent:
+    kind: str
+
+
+@dataclass(frozen=True)
+class MotorStallEvent:
+    motor_index: int
+    is_triggered: bool
+
+
+@dataclass(frozen=True)
+class MotorFaultEvent:
+    is_fault: bool
+
+
+@dataclass(frozen=True)
+class GyroMaxEvent:
+    flags: int
+
+
+@dataclass(frozen=True)
+class InfraredMessageEvent:
+    infrared_code: int
+
+
+@dataclass(frozen=True)
+class StreamingServiceData:
+    token: int
+    sensor_data: bytes
 
 
 @dataclass(frozen=True)
@@ -78,9 +110,43 @@ class IRReadings:
     back_left: int
 
 
+@dataclass(frozen=True)
+class ActiveColorPalette:
+    rgb_index_bytes: bytes
+
+    @property
+    def rgb_triplets(self) -> Tuple[Tuple[int, int, int], ...]:
+        return tuple(
+            (self.rgb_index_bytes[index], self.rgb_index_bytes[index + 1], self.rgb_index_bytes[index + 2])
+            for index in range(0, len(self.rgb_index_bytes), 3)
+        )
+
+
+@dataclass(frozen=True)
+class ColorIdentificationEntry:
+    color_index: int
+    confidence: int
+
+
+@dataclass(frozen=True)
+class ColorIdentificationReport:
+    index_confidence_bytes: bytes
+    entries: Tuple[ColorIdentificationEntry, ...]
+
+
 def require_length(payload: bytes, minimum: int, name: str) -> None:
     if len(payload) < minimum:
         raise ValueError(f"{name} payload too short: need {minimum}, got {len(payload)}")
+
+
+def require_exact_length(payload: bytes, expected: int, name: str) -> None:
+    if len(payload) != expected:
+        raise ValueError(f"{name} payload length invalid: need {expected}, got {len(payload)}")
+
+
+def parse_echo(payload: bytes) -> bytes:
+    require_exact_length(payload, 16, "echo")
+    return payload
 
 
 def parse_battery_percentage(payload: bytes) -> int:
@@ -104,6 +170,11 @@ def parse_battery_thresholds(payload: bytes) -> BatteryThresholds:
     require_length(payload, 12, "battery thresholds")
     critical, low, hysteresis = struct.unpack(">fff", payload[:12])
     return BatteryThresholds(critical=critical, low=low, hysteresis=hysteresis)
+
+
+def parse_current_sense_amplifier_current(payload: bytes) -> float:
+    require_length(payload, 4, "current sense amplifier current")
+    return struct.unpack(">f", payload[:4])[0]
 
 
 def parse_rgbc_sensor_values(payload: bytes) -> RGBCSensorValues:
@@ -176,9 +247,18 @@ def parse_null_terminated_ascii(payload: bytes) -> str:
     return payload.split(b"\x00")[0].decode("ascii", errors="ignore")
 
 
+def parse_bluetooth_advertising_name(payload: bytes) -> str:
+    return parse_null_terminated_ascii(payload)
+
+
 def parse_board_revision(payload: bytes) -> int:
     require_length(payload, 1, "board revision")
     return payload[0]
+
+
+def parse_stats_id(payload: bytes) -> int:
+    require_length(payload, 2, "stats ID")
+    return struct.unpack(">H", payload[:2])[0]
 
 
 def parse_core_uptime(payload: bytes) -> int:
@@ -191,6 +271,43 @@ def parse_motor_fault_state(payload: bytes) -> bool:
     return payload[0] != 0
 
 
+def parse_sleep_event(payload: bytes, kind: str) -> SleepEvent:
+    require_exact_length(payload, 0, f"{kind} sleep event")
+    return SleepEvent(kind=kind)
+
+
+def parse_will_sleep_event(payload: bytes) -> SleepEvent:
+    return parse_sleep_event(payload, "will_sleep")
+
+
+def parse_did_sleep_event(payload: bytes) -> SleepEvent:
+    return parse_sleep_event(payload, "did_sleep")
+
+
+def parse_motor_stall_event(payload: bytes) -> MotorStallEvent:
+    require_exact_length(payload, 2, "motor stall event")
+    return MotorStallEvent(motor_index=payload[0], is_triggered=payload[1] != 0)
+
+
+def parse_motor_fault_event(payload: bytes) -> MotorFaultEvent:
+    return MotorFaultEvent(is_fault=parse_motor_fault_state(payload))
+
+
+def parse_gyro_max_event(payload: bytes) -> GyroMaxEvent:
+    require_length(payload, 1, "gyro max event")
+    return GyroMaxEvent(flags=payload[0])
+
+
+def parse_infrared_message_event(payload: bytes) -> InfraredMessageEvent:
+    require_length(payload, 1, "infrared message event")
+    return InfraredMessageEvent(infrared_code=payload[0])
+
+
+def parse_streaming_service_data(payload: bytes) -> StreamingServiceData:
+    require_length(payload, 1, "streaming service data")
+    return StreamingServiceData(token=payload[0], sensor_data=payload[1:])
+
+
 def parse_ir_readings(payload: bytes) -> IRReadings:
     require_length(payload, 4, "IR readings")
     sensor_data = struct.unpack(">I", payload[:4])[0]
@@ -200,3 +317,17 @@ def parse_ir_readings(payload: bytes) -> IRReadings:
         back_right=(sensor_data >> 16) & 0xFF,
         back_left=(sensor_data >> 24) & 0xFF,
     )
+
+
+def parse_active_color_palette(payload: bytes) -> ActiveColorPalette:
+    require_exact_length(payload, 48, "active color palette")
+    return ActiveColorPalette(rgb_index_bytes=payload)
+
+
+def parse_color_identification_report(payload: bytes) -> ColorIdentificationReport:
+    require_exact_length(payload, 24, "color identification report")
+    entries = tuple(
+        ColorIdentificationEntry(color_index=payload[index], confidence=payload[index + 1])
+        for index in range(0, len(payload), 2)
+    )
+    return ColorIdentificationReport(index_confidence_bytes=payload, entries=entries)

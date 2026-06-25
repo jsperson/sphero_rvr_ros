@@ -10,9 +10,23 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/sphero_rvr_driver"]),
         ("share/sphero_rvr_driver", ["package.xml"]),
-        ("share/sphero_rvr_driver/launch", ["launch/rvr.launch.py"]),
-        ("share/sphero_rvr_driver/config", ["config/rvr.yaml"]),
-        ("share/sphero_rvr_driver/scripts", ["scripts/rvr-console"]),
+        ("share/sphero_rvr_driver/launch", ["launch/rvr.launch.py", "launch/lidar.launch.py", "launch/mapping.launch.py"]),
+        ("share/sphero_rvr_driver/config", ["config/rvr.yaml", "config/lidar.yaml", "config/slam_toolbox.yaml"]),
+        (
+            "share/sphero_rvr_driver/scripts",
+            [
+                "scripts/rvr-console",
+                "scripts/rvr_motion_calibration.py",
+            ],
+        ),
+        (
+            "share/sphero_rvr_driver/docs",
+            [
+                "docs/mapping.md",
+                "docs/motion_calibration.md",
+            ],
+        ),
+        ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
     ],
     install_requires=["setuptools", "pyserial"],
     extras_require={"dev": ["pytest>=8.0", "pytest-asyncio>=0.23"]},

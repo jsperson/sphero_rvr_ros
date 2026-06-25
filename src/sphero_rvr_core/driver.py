@@ -1,13 +1,21 @@
 """High-level concurrency-safe RVR driver."""
 
 import asyncio
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from .command_queue import CommandPriority, PriorityCommandQueue
 from .commands import RVRCommands
-from .dispatcher import Dispatcher
+from .dispatcher import Dispatcher, Subscription
 from . import responses
-from .packet import FLAG_REQUEST_ERROR_ONLY, FLAG_REQUEST_RESPONSE, TARGET_BT, TARGET_MCU
+from .packet import (
+    DID_DRIVE,
+    DID_POWER,
+    DID_SENSOR,
+    FLAG_REQUEST_ERROR_ONLY,
+    FLAG_REQUEST_RESPONSE,
+    TARGET_BT,
+    TARGET_MCU,
+)
 from .safety import clamp_velocity, is_stale, now_seconds
 from .state import RVRState, VelocityCommand
 from .transport import Transport
@@ -90,7 +98,7 @@ class RVRDriver:
     async def reset_locator(self) -> None:
         await self._send(self.commands.reset_locator, CommandPriority.HIGH)
 
-    async def set_all_leds(self, r: int, g: int, b: int) -> None:
+    async def set_all_leds(self, r: int, g=None, b: Optional[int] = None) -> None:
         await self._send(lambda seq: self.commands.set_all_leds(seq, r, g, b), CommandPriority.LOW)
 
     async def set_led_group(self, group_name: str, r: int, g: int, b: int) -> None:
@@ -119,12 +127,19 @@ class RVRDriver:
             CommandPriority.NORMAL,
         )
 
+    async def echo(self, data: bytes, target: int = TARGET_BT) -> bytes:
+        response = await self._send(lambda seq: self.commands.echo(seq, data, target), CommandPriority.LOW)
+        return responses.parse_echo(response.payload)
+
+    async def sleep(self) -> None:
+        await self._send(self.commands.sleep, CommandPriority.HIGH)
+
     async def get_battery_percentage(self) -> int:
         response = await self._send(self.commands.get_battery_percentage, CommandPriority.LOW)
         return responses.parse_battery_percentage(response.payload)
 
-    async def get_battery_voltage(self) -> float:
-        response = await self._send(self.commands.get_battery_voltage, CommandPriority.LOW)
+    async def get_battery_voltage(self, reading_type: int = 0) -> float:
+        response = await self._send(lambda seq: self.commands.get_battery_voltage(seq, reading_type), CommandPriority.LOW)
         return responses.parse_battery_voltage(response.payload)
 
     async def get_battery_voltage_state(self) -> responses.BatteryVoltageState:
@@ -135,9 +150,25 @@ class RVRDriver:
         response = await self._send(self.commands.get_battery_thresholds, CommandPriority.LOW)
         return responses.parse_battery_thresholds(response.payload)
 
+    async def enable_battery_voltage_state_change_notify(self, enabled: bool = True) -> None:
+        await self._send(lambda seq: self.commands.enable_battery_voltage_state_change_notify(seq, enabled), CommandPriority.LOW)
+
+    async def get_current_sense_amplifier_current(self, amplifier_id: int) -> float:
+        response = await self._send(
+            lambda seq: self.commands.get_current_sense_amplifier_current(seq, amplifier_id),
+            CommandPriority.LOW,
+        )
+        return responses.parse_current_sense_amplifier_current(response.payload)
+
     async def get_rgbc_sensor_values(self) -> responses.RGBCSensorValues:
         response = await self._send(self.commands.get_rgbc_sensor_values, CommandPriority.LOW)
         return responses.parse_rgbc_sensor_values(response.payload)
+
+    async def enable_gyro_max_notify(self, enabled: bool = True) -> None:
+        await self._send(lambda seq: self.commands.enable_gyro_max_notify(seq, enabled), CommandPriority.LOW)
+
+    async def set_locator_flags(self, flags: int) -> None:
+        await self._send(lambda seq: self.commands.set_locator_flags(seq, flags), CommandPriority.LOW)
 
     async def get_ambient_light(self) -> float:
         response = await self._send(self.commands.get_ambient_light, CommandPriority.LOW)
@@ -161,6 +192,24 @@ class RVRDriver:
         response = await self._send(self.commands.get_current_detected_color, CommandPriority.LOW)
         return responses.parse_current_detected_color(response.payload)
 
+    async def configure_streaming_service(self, token: int, configuration: bytes, target: int = TARGET_BT) -> None:
+        await self._send(
+            lambda seq: self.commands.configure_streaming_service(seq, token, configuration, target),
+            CommandPriority.LOW,
+        )
+
+    async def start_streaming_service(self, period: int, target: int = TARGET_BT) -> None:
+        await self._send(lambda seq: self.commands.start_streaming_service(seq, period, target), CommandPriority.LOW)
+
+    async def stop_streaming_service(self, target: int = TARGET_BT) -> None:
+        await self._send(lambda seq: self.commands.stop_streaming_service(seq, target), CommandPriority.LOW)
+
+    async def clear_streaming_service(self, target: int = TARGET_BT) -> None:
+        await self._send(lambda seq: self.commands.clear_streaming_service(seq, target), CommandPriority.LOW)
+
+    async def enable_robot_infrared_message_notify(self, enabled: bool = True) -> None:
+        await self._send(lambda seq: self.commands.enable_robot_infrared_message_notify(seq, enabled), CommandPriority.LOW)
+
     async def get_temperature(self) -> responses.TemperatureReadings:
         response = await self._send(self.commands.get_temperature, CommandPriority.LOW)
         return responses.parse_temperature(response.payload)
@@ -168,6 +217,12 @@ class RVRDriver:
     async def get_thermal_protection_status(self) -> responses.ThermalProtectionStatus:
         response = await self._send(self.commands.get_thermal_protection_status, CommandPriority.LOW)
         return responses.parse_thermal_protection_status(response.payload)
+
+    async def enable_motor_thermal_protection_status_notify(self, enabled: bool = True) -> None:
+        await self._send(
+            lambda seq: self.commands.enable_motor_thermal_protection_status_notify(seq, enabled),
+            CommandPriority.LOW,
+        )
 
     async def get_encoder_counts(self) -> responses.EncoderCounts:
         response = await self._send(self.commands.get_encoder_counts, CommandPriority.LOW)
@@ -194,9 +249,17 @@ class RVRDriver:
         response = await self._send(lambda seq: self.commands.get_main_app_version(seq, target), CommandPriority.LOW)
         return responses.parse_firmware_version(response.payload)
 
+    async def get_bootloader_version(self, target: int = TARGET_BT) -> responses.FirmwareVersion:
+        response = await self._send(lambda seq: self.commands.get_bootloader_version(seq, target), CommandPriority.LOW)
+        return responses.parse_firmware_version(response.payload)
+
     async def get_mac_address(self) -> str:
         response = await self._send(self.commands.get_mac_address, CommandPriority.LOW)
         return responses.parse_null_terminated_ascii(response.payload)
+
+    async def get_stats_id(self) -> int:
+        response = await self._send(self.commands.get_stats_id, CommandPriority.LOW)
+        return responses.parse_stats_id(response.payload)
 
     async def get_board_revision(self, target: int = TARGET_BT) -> int:
         response = await self._send(lambda seq: self.commands.get_board_revision(seq, target), CommandPriority.LOW)
@@ -213,6 +276,39 @@ class RVRDriver:
     async def get_core_uptime(self, target: int = TARGET_BT) -> int:
         response = await self._send(lambda seq: self.commands.get_core_uptime(seq, target), CommandPriority.LOW)
         return responses.parse_core_uptime(response.payload)
+
+    async def get_bluetooth_advertising_name(self) -> str:
+        response = await self._send(self.commands.get_bluetooth_advertising_name, CommandPriority.LOW)
+        return responses.parse_bluetooth_advertising_name(response.payload)
+
+    async def get_active_color_palette(self) -> responses.ActiveColorPalette:
+        response = await self._send(self.commands.get_active_color_palette, CommandPriority.LOW)
+        return responses.parse_active_color_palette(response.payload)
+
+    async def set_active_color_palette(self, rgb_index_bytes: bytes) -> None:
+        await self._send(lambda seq: self.commands.set_active_color_palette(seq, rgb_index_bytes), CommandPriority.LOW)
+
+    async def get_color_identification_report(
+        self,
+        red: int,
+        green: int,
+        blue: int,
+        confidence_threshold: int,
+    ) -> responses.ColorIdentificationReport:
+        response = await self._send(
+            lambda seq: self.commands.get_color_identification_report(seq, red, green, blue, confidence_threshold),
+            CommandPriority.LOW,
+        )
+        return responses.parse_color_identification_report(response.payload)
+
+    async def load_color_palette(self, palette_index: int) -> None:
+        await self._send(lambda seq: self.commands.load_color_palette(seq, palette_index), CommandPriority.LOW)
+
+    async def save_color_palette(self, palette_index: int) -> None:
+        await self._send(lambda seq: self.commands.save_color_palette(seq, palette_index), CommandPriority.LOW)
+
+    async def release_led_requests(self) -> None:
+        await self._send(self.commands.release_led_requests, CommandPriority.LOW)
 
     async def send_ir_message(self, code: int, strength: int = 32) -> None:
         await self._send(lambda seq: self.commands.send_ir_message(seq, code, strength), CommandPriority.LOW)
@@ -239,12 +335,67 @@ class RVRDriver:
         response = await self._send(self.commands.get_ir_readings, CommandPriority.LOW)
         return responses.parse_ir_readings(response.payload)
 
+    def on_will_sleep_notify(self, callback: Callable[[responses.SleepEvent], Any]) -> Subscription:
+        return self._subscribe(DID_POWER, 0x19, TARGET_BT, callback)
+
+    def on_did_sleep_notify(self, callback: Callable[[responses.SleepEvent], Any]) -> Subscription:
+        return self._subscribe(DID_POWER, 0x1A, TARGET_BT, callback)
+
+    def on_battery_voltage_state_change_notify(
+        self,
+        callback: Callable[[responses.BatteryVoltageState], Any],
+    ) -> Subscription:
+        return self._subscribe(DID_POWER, 0x1C, TARGET_BT, callback)
+
+    def get_cached_battery_voltage_state_change(self) -> Optional[responses.BatteryVoltageState]:
+        return self._dispatcher.get_cached_event(DID_POWER, 0x1C, TARGET_BT)
+
+    def on_motor_stall_notify(self, callback: Callable[[responses.MotorStallEvent], Any]) -> Subscription:
+        return self._subscribe(DID_DRIVE, 0x26, TARGET_MCU, callback)
+
+    def on_motor_fault_notify(self, callback: Callable[[responses.MotorFaultEvent], Any]) -> Subscription:
+        return self._subscribe(DID_DRIVE, 0x28, TARGET_MCU, callback)
+
+    def on_gyro_max_notify(self, callback: Callable[[responses.GyroMaxEvent], Any]) -> Subscription:
+        return self._subscribe(DID_SENSOR, 0x10, TARGET_MCU, callback)
+
+    def on_robot_to_robot_infrared_message_received_notify(
+        self,
+        callback: Callable[[responses.InfraredMessageEvent], Any],
+    ) -> Subscription:
+        return self._subscribe(DID_SENSOR, 0x2C, TARGET_MCU, callback)
+
+    def on_color_detection_notify(self, callback: Callable[[responses.DetectedColor], Any]) -> Subscription:
+        return self._subscribe(DID_SENSOR, 0x36, TARGET_BT, callback)
+
+    def on_streaming_service_data_notify(
+        self,
+        callback: Callable[[responses.StreamingServiceData], Any],
+        target: int = TARGET_BT,
+    ) -> Subscription:
+        return self._subscribe(DID_SENSOR, 0x3D, target, callback)
+
+    def on_motor_thermal_protection_status_notify(
+        self,
+        callback: Callable[[responses.ThermalProtectionStatus], Any],
+    ) -> Subscription:
+        return self._subscribe(DID_SENSOR, 0x4D, TARGET_MCU, callback)
+
     def get_state(self) -> RVRState:
         return RVRState(
             connected=self._connected,
             emergency_stopped=self._emergency_stopped,
             latest_velocity=self._desired_velocity,
         )
+
+    def _subscribe(
+        self,
+        device_id: int,
+        command_id: int,
+        source: Optional[int],
+        callback: Callable[[Any], Any],
+    ) -> Subscription:
+        return self._dispatcher.subscribe(device_id, command_id, source, callback)
 
     async def _control_loop(self) -> None:
         stop_sent_for_stale = False

@@ -32,6 +32,8 @@ async def test_driver_query_methods_parse_typed_responses():
     driver = RVRDriver(transport=transport)
     await driver.connect()
     transport.auto_ack = False
+    transport.writes.clear()
+    transport._write_event.clear()
 
     battery_task = asyncio.create_task(driver.get_battery_percentage())
     battery_request = await respond_to_next_write(transport, bytes([88]))

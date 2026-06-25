@@ -3,7 +3,20 @@
 import asyncio
 from typing import List
 
-from .packet import Packet
+from .packet import FLAG_HAS_SOURCE, Packet
+
+
+def unsolicited_packet(did: int, cid: int, source: int, payload: bytes = b"", seq: int = 0x7F) -> bytes:
+    """Build an unsolicited device-to-host notification/event fixture."""
+    return Packet(
+        did,
+        cid,
+        seq,
+        payload=payload,
+        target=None,
+        source=source,
+        flags=FLAG_HAS_SOURCE,
+    ).encode()
 
 
 class FakeTransport:

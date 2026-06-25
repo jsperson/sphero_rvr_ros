@@ -1,0 +1,6 @@
+# SLAMTEC RPLIDAR C1M1 USB adapter on sphero-pi-2.
+# Install with:
+#   sudo cp docs/udev/99-rplidar.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger /dev/ttyUSB0
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="d8e187224370f011bb918c301045c30f", GROUP="dialout", MODE="0660", SYMLINK+="rplidar"
