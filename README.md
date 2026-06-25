@@ -10,6 +10,9 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_ros_exposure_policy.md](docs/rvr_ros_exposure_policy.md) explains the ROS exposure policy: full API parity belongs in `sphero_rvr_core`; ROS exposes only typed, bounded, operational surfaces.
 - [docs/rvr_api_gap_report.md](docs/rvr_api_gap_report.md) is the parity handoff: what is implemented, what remains intentionally core-only/omitted, and which commands validate the state.
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
+- [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
+- [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
+- [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
 ## Current base-driver status
 
@@ -467,6 +470,8 @@ Verify the package:
 ```bash
 ros2 pkg prefix sphero_rvr_driver
 ros2 pkg executables sphero_rvr_driver
+ros2 launch sphero_rvr_driver lidar.launch.py --show-args
+ros2 launch sphero_rvr_driver mapping.launch.py --show-args
 python3 - <<'PY'
 from sphero_rvr_driver.rvr_node import RVRNodeConfig
 print(RVRNodeConfig())
@@ -478,8 +483,16 @@ Expected:
 ```text
 /home/jsperson/ros2_ws/install/sphero_rvr_driver
 sphero_rvr_driver rvr_node
+sphero_rvr_driver rvr_tui
 RVRNodeConfig(serial_port='/dev/ttyAMA0', ...)
 ```
+
+Installed package data includes:
+
+- launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`
+- config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`
+- docs: `mapping.md`, `motion_calibration.md`, `udev/99-rplidar.rules`
+- helper scripts: `rvr-console`, `rvr_motion_calibration.py`
 
 ## No-motion smoke test
 

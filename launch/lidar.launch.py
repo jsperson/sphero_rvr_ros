@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -5,6 +8,9 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    pkg_share = Path(get_package_share_directory("sphero_rvr_driver"))
+    lidar_config = pkg_share / "config" / "lidar.yaml"
+
     serial_port = LaunchConfiguration("serial_port")
     serial_baudrate = LaunchConfiguration("serial_baudrate")
     frame_id = LaunchConfiguration("frame_id")
@@ -44,13 +50,13 @@ def generate_launch_description():
             executable="rplidar_node",
             name="rplidar_node",
             output="screen",
-            parameters=[{
-                "serial_port": serial_port,
-                "serial_baudrate": serial_baudrate,
-                "frame_id": frame_id,
-                "inverted": False,
-                "angle_compensate": True,
-                "scan_mode": "Standard",
-            }],
+            parameters=[
+                str(lidar_config),
+                {
+                    "serial_port": serial_port,
+                    "serial_baudrate": serial_baudrate,
+                    "frame_id": frame_id,
+                },
+            ],
         ),
     ])
