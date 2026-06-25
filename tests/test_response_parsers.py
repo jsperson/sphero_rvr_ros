@@ -42,6 +42,8 @@ def test_parse_system_info_payloads():
     version = responses.parse_firmware_version(struct.pack(">HHH", 1, 2, 345))
     assert version.major == 1
     assert version.revision == 345
+    assert responses.parse_echo(bytes(range(16))) == bytes(range(16))
+    assert responses.parse_stats_id(struct.pack(">H", 0x1234)) == 0x1234
     assert responses.parse_null_terminated_ascii(b"RVR-123\x00ignored") == "RVR-123"
     assert responses.parse_board_revision(bytes([9])) == 9
     assert responses.parse_core_uptime(struct.pack(">Q", 123456789)) == 123456789
@@ -56,8 +58,31 @@ def test_parse_motor_fault_and_ir_readings():
     assert readings.back_left == 0x44
 
 
+def test_parse_new_query_payloads():
+    assert responses.parse_current_sense_amplifier_current(struct.pack(">f", 1.25)) == pytest.approx(1.25)
+    assert responses.parse_bluetooth_advertising_name(b"RVR-BT\x00ignored") == "RVR-BT"
+
+    palette = responses.parse_active_color_palette(bytes(range(48)))
+    assert palette.rgb_index_bytes == bytes(range(48))
+    assert palette.rgb_triplets[0] == (0, 1, 2)
+    assert palette.rgb_triplets[-1] == (45, 46, 47)
+
+    report = responses.parse_color_identification_report(bytes(range(24)))
+    assert len(report.index_confidence_bytes) == 24
+    assert report.entries[0].color_index == 0
+    assert report.entries[0].confidence == 1
+    assert report.entries[-1].color_index == 22
+    assert report.entries[-1].confidence == 23
+
+
 def test_parsers_reject_short_payloads():
     with pytest.raises(ValueError, match="battery percentage"):
         responses.parse_battery_percentage(b"")
     with pytest.raises(ValueError, match="firmware version"):
         responses.parse_firmware_version(b"\x00")
+    with pytest.raises(ValueError, match="echo"):
+        responses.parse_echo(bytes(range(15)))
+    with pytest.raises(ValueError, match="active color palette"):
+        responses.parse_active_color_palette(bytes(range(47)))
+    with pytest.raises(ValueError, match="color identification report"):
+        responses.parse_color_identification_report(bytes(range(23)))
