@@ -154,6 +154,8 @@ These are the only motor-capable TUI commands. The UI must list them under a `MO
 | `/nudge-right <degrees> confirm` | yes | Run one calibrated in-place right turn nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. |
 | Keyboard `↑/w`, `↓/s`, `←/a`, `→/d` | gated by prior `/arm confirm` | Publish bounded nonzero `/cmd_vel` only while armed and not ESTOP-inhibited. Prefer nudge commands for mapping; keyboard drive is secondary. |
 
+Current nudge implementation note: the fixed-distance nudge sleeps for the calibrated duration before publishing zero velocity. That keeps the initial supervised/restrained calibration path simple, but the curses loop cannot process keyboard STOP/ESTOP during that short sleep window. Before free-field use, replace this with a ticked or asynchronous nudge loop that can observe STOP/ESTOP mid-nudge.
+
 No other slash command may publish nonzero `/cmd_vel`. If a future command can move the robot, it must be added to this table before implementation.
 
 ## STOP behavior

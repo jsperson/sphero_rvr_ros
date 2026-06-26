@@ -294,9 +294,6 @@ class RVRROSClient:
         self.status.cmd_vel_publisher_count = int(self._node.count_publishers("/cmd_vel"))
         return self._cmd_pub
 
-    def enable_cmd_vel_publisher(self):
-        return self.enable_velocity_publisher()
-
     def disable_velocity_publisher(self) -> None:
         if self._cmd_pub is None:
             self.status.cmd_vel_available = False

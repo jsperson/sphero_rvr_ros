@@ -27,7 +27,7 @@ class FakeClient:
     def publish_velocity(self, linear_mps, angular_rad_s):
         self.published.append((linear_mps, angular_rad_s))
 
-    def enable_cmd_vel_publisher(self):
+    def enable_velocity_publisher(self):
         self.cmd_vel_enable_count += 1
 
     def stop(self, timeout_sec=2.0):
@@ -254,6 +254,18 @@ def test_nudge_requires_armed_state():
 
     assert client.published == []
     assert "Use /arm confirm" in tui.state.last_message
+
+
+def test_confirmed_nudge_requires_enabled_velocity_sink():
+    client = VelocityLifecycleClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    assert client.published == []
+    assert tui.state.armed is True
+    assert tui.state.last_message == "Nudge rejected: velocity publisher not enabled."
 
 
 def test_confirmed_forward_nudge_publishes_motion_then_zero_and_disarms(monkeypatch):

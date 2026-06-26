@@ -226,6 +226,9 @@ class RVRTUI:
         if not self.state.armed:
             self.state.log("Nudge rejected while disarmed. Use /arm confirm first.")
             return
+        if not self._velocity_sink_available():
+            self.state.log("Nudge rejected: velocity publisher not enabled.")
+            return
 
         velocity = NUDGE_LINEAR_MPS if nudge.direction == "forward" else -NUDGE_LINEAR_MPS
         duration = nudge.distance_m / NUDGE_CALIBRATED_METERS_PER_SECOND
@@ -314,8 +317,6 @@ class RVRTUI:
 
     def _enable_motion_publisher_if_supported(self) -> None:
         enable = getattr(self.client, "enable_velocity_publisher", None)
-        if enable is None:
-            enable = getattr(self.client, "enable_cmd_vel_publisher", None)
         if callable(enable):
             enable()
 

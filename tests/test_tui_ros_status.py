@@ -118,7 +118,7 @@ def test_ros_client_does_not_create_cmd_vel_publisher_during_init(monkeypatch):
     assert client.status.cmd_vel_publisher_count == 0
 
 
-def test_ros_client_enables_cmd_vel_publisher_once_before_publishing(monkeypatch):
+def test_ros_client_enables_velocity_publisher_once_before_publishing(monkeypatch):
     node = install_fake_ros_modules(monkeypatch)
     client = RVRROSClient()
 
@@ -129,8 +129,8 @@ def test_ros_client_enables_cmd_vel_publisher_once_before_publishing(monkeypatch
     with pytest.raises(RuntimeError, match="cmd_vel publisher is not enabled"):
         client.publish_velocity(0.1, 0.0)
 
-    publisher = client.enable_cmd_vel_publisher()
-    assert client.enable_cmd_vel_publisher() is publisher
+    publisher = client.enable_velocity_publisher()
+    assert client.enable_velocity_publisher() is publisher
     assert len(node.created_publishers) == 1
     assert node.created_publishers[0][1:3] == ("cmd_vel", 10)
 
