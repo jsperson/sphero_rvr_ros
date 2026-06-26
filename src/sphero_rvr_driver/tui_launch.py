@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -48,9 +51,12 @@ class SubprocessLaunchRunner:
         self._processes: dict[int, subprocess.Popen] = {}
 
     def start(self, command: Sequence[str]) -> int:
-        process = subprocess.Popen(list(command))
+        process = subprocess.Popen(list(command), start_new_session=True)
         self._processes[process.pid] = process
         return process.pid
+
+    def run(self, command: Sequence[str], timeout_sec: float = 10.0) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(list(command), capture_output=True, text=True, check=False, timeout=timeout_sec)
 
     def stop(self, pid: int, timeout_sec: float = 5.0) -> None:
         process = self._processes.pop(pid, None)
@@ -58,12 +64,30 @@ class SubprocessLaunchRunner:
             return
         if process.poll() is not None:
             return
-        process.terminate()
+        self._signal_process_group(process, signal.SIGINT)
         try:
             process.wait(timeout=timeout_sec)
+            return
         except subprocess.TimeoutExpired:
+            self._signal_process_group(process, signal.SIGTERM)
+        try:
+            process.wait(timeout=timeout_sec)
+            return
+        except subprocess.TimeoutExpired:
+            self._signal_process_group(process, signal.SIGKILL)
             process.kill()
             process.wait(timeout=timeout_sec)
+
+    def _signal_process_group(self, process: subprocess.Popen, sig: signal.Signals) -> None:
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return
+        except Exception:
+            if sig is signal.SIGKILL:
+                process.kill()
+            else:
+                process.terminate()
 
 
 class SubprocessMapSaveRunner:
@@ -160,7 +184,18 @@ class LaunchManager:
         ]
         profile = LaunchProfile.MAPPING_MOTOR if start_rvr else LaunchProfile.MAPPING_LIDAR
         mode = MappingMode.MOTOR_CAPABLE if start_rvr else MappingMode.LIDAR_ONLY
-        return self._start(command, profile, mode)
+        state = self._start(command, profile, mode)
+        if state.mode in {MappingMode.LIDAR_ONLY, MappingMode.MOTOR_CAPABLE} and not self._dry_run:
+            lifecycle_message = self._activate_slam_toolbox()
+            if self.state.mode is MappingMode.FAILED_LAUNCH:
+                return self.state
+            self.state = LaunchState(
+                mode=state.mode,
+                profile=state.profile,
+                pid=state.pid,
+                message=f"{state.message} {lifecycle_message}",
+            )
+        return self.state
 
     def stop(self) -> LaunchState:
         pid = self.state.pid
@@ -182,6 +217,34 @@ class LaunchManager:
             return self.state
         self.state = LaunchState(message="Managed launch stopped.")
         return self.state
+
+    def _activate_slam_toolbox(self) -> str:
+        for transition in ("configure", "activate"):
+            result = self._run_lifecycle_transition(transition)
+            if result.returncode == 0:
+                continue
+            detail = (result.stderr or result.stdout or "").strip()
+            self.stop()
+            self.state = LaunchState(
+                mode=MappingMode.FAILED_LAUNCH,
+                profile=LaunchProfile.NONE,
+                message=f"Failed to {transition} slam_toolbox lifecycle node: {detail}",
+            )
+            return ""
+        return "slam_toolbox lifecycle active."
+
+    def _run_lifecycle_transition(self, transition: str) -> subprocess.CompletedProcess[str]:
+        command = ("ros2", "lifecycle", "set", "/slam_toolbox", transition)
+        last_result: subprocess.CompletedProcess[str] | None = None
+        for _attempt in range(20):
+            last_result = self._runner.run(command, timeout_sec=5.0)
+            if last_result.returncode == 0:
+                return last_result
+            output = (last_result.stderr or last_result.stdout or "").lower()
+            if "waiting for service" not in output and "not available" not in output:
+                return last_result
+            time.sleep(0.5)
+        return last_result if last_result is not None else subprocess.CompletedProcess(command, 1, "", "not attempted")
 
     def _start(self, command: Sequence[str], profile: LaunchProfile, mode: MappingMode) -> LaunchState:
         if self.state.pid is not None or self.state.profile is not LaunchProfile.NONE:

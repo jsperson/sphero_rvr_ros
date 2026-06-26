@@ -19,6 +19,7 @@
   <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>rplidar_ros</exec_depend>
 
   <test_depend>python3-pytest</test_depend>

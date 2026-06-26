@@ -66,6 +66,9 @@ class RecordingRunner:
     def stop(self, pid, timeout_sec=5.0):
         self.stopped.append((pid, timeout_sec))
 
+    def run(self, command, timeout_sec=5.0):
+        return type("Completed", (), {"returncode": 0, "stdout": "Transition successful", "stderr": ""})()
+
 
 class FailingRunner(RecordingRunner):
     def start(self, command):

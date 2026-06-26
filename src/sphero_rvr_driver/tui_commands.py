@@ -62,6 +62,11 @@ def parse_command(raw: str) -> TUICommand:
     name = ALIASES.get(parts[0].lower(), parts[0].lower())
     args = parts[1:]
 
+    if name == "clear-estop":
+        if not args or args == ["confirm"]:
+            return TUICommand(name="clear-estop")
+        raise CommandParseError("use /clear-estop or /clear-estop confirm")
+
     if name in _NO_ARG_COMMANDS:
         if args:
             raise CommandParseError(f"/{name} does not take arguments")
