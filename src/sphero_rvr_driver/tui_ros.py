@@ -337,10 +337,13 @@ class RVRROSClient:
         if not client.wait_for_service(timeout_sec=timeout_sec):
             raise TimeoutError(f"service {client.srv_name} is unavailable")
         future = client.call_async(self._Trigger.Request())
-        deadline = timeout_sec
-        while not future.done() and deadline > 0:
-            self._rclpy.spin_once(self._node, timeout_sec=0.05)
-            deadline -= 0.05
+        deadline = time.monotonic() + timeout_sec
+        while not future.done() and time.monotonic() < deadline:
+            # The ROS subscriptions/status path is already handled by the background
+            # spin thread. Spinning this same node again here can raise
+            # RuntimeError("Executor is already spinning") in live TUI use; wait for
+            # the background spinner to service the future instead.
+            time.sleep(0.01)
         if not future.done():
             raise TimeoutError(f"service {client.srv_name} timed out")
         response = future.result()
