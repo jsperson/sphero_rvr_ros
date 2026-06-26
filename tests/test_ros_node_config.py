@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from sphero_rvr_driver.rvr_node import RVRNodeConfig, create_driver
 from sphero_rvr_core.driver import RVRDriver
 from sphero_rvr_core.fake_transport import FakeTransport
@@ -32,3 +34,9 @@ def test_create_driver_passes_base_driver_safety_limits():
     assert driver._max_linear_mps == 0.3
     assert driver._max_angular_rad_s == 0.6
     assert driver._max_raw_motor_duty == 42
+
+def test_checked_in_rvr_yaml_preserves_floor_turn_motor_duty():
+    config_text = Path(__file__).resolve().parents[1].joinpath("config", "rvr.yaml").read_text()
+
+    assert "max_raw_motor_duty: 160" in config_text
+    assert "max_raw_motor_duty: 64" not in config_text
