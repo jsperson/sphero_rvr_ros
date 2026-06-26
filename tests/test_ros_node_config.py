@@ -11,6 +11,8 @@ def test_default_node_config_uses_pi_serial_alias_and_floor_turn_motor_duty():
     assert config.serial_port == "/dev/ttyAMA0"
     assert config.baud_rate == 115200
     assert config.max_raw_motor_duty == 160
+    assert config.max_linear_raw_motor_duty == 64
+    assert config.max_angular_raw_motor_duty == 160
     assert config.battery_publish_period == 5.0
     assert config.temperature_publish_period == 2.0
     assert config.diagnostics_publish_period == 1.0
@@ -24,6 +26,8 @@ def test_create_driver_passes_base_driver_safety_limits():
         max_linear_mps=0.3,
         max_angular_rad_s=0.6,
         max_raw_motor_duty=42,
+        max_linear_raw_motor_duty=21,
+        max_angular_raw_motor_duty=84,
     )
 
     driver = create_driver(config, transport=transport)
@@ -34,9 +38,12 @@ def test_create_driver_passes_base_driver_safety_limits():
     assert driver._max_linear_mps == 0.3
     assert driver._max_angular_rad_s == 0.6
     assert driver._max_raw_motor_duty == 42
+    assert driver._max_linear_raw_motor_duty == 21
+    assert driver._max_angular_raw_motor_duty == 84
 
 def test_checked_in_rvr_yaml_preserves_floor_turn_motor_duty():
     config_text = Path(__file__).resolve().parents[1].joinpath("config", "rvr.yaml").read_text()
 
     assert "max_raw_motor_duty: 160" in config_text
-    assert "max_raw_motor_duty: 64" not in config_text
+    assert "max_linear_raw_motor_duty: 64" in config_text
+    assert "max_angular_raw_motor_duty: 160" in config_text

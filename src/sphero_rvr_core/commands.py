@@ -171,30 +171,60 @@ class RVRCommands:
     def clear_emergency_stop(self, sequence_id: int) -> Packet:
         return Packet(DID_DRIVE, self.CLEAR_EMERGENCY_STOP, sequence_id, target=TARGET_MCU)
 
-    def drive_rc(self, sequence_id: int, linear_mps: float, angular_rad_s: float, max_speed: int = 255) -> Packet:
+    def drive_rc(
+        self,
+        sequence_id: int,
+        linear_mps: float,
+        angular_rad_s: float,
+        max_speed: int = 255,
+        *,
+        max_linear_speed: Optional[int] = None,
+        max_angular_speed: Optional[int] = None,
+    ) -> Packet:
         """Map ROS-style velocity intent to hardware-real raw motor command.
 
         Both inputs are expected to be clamped by the driver before reaching
         this method. Values are normalized into -1.0..1.0 tank-track commands:
         left = linear - angular, right = linear + angular.
 
-        `max_speed` caps the generated raw-motor duty cycle. Keep this lower
-        for floor testing so ordinary `/cmd_vel` inputs cannot jump straight to
-        the full 255 duty range.
+        By default `max_speed` caps the generated raw-motor duty cycle for both
+        linear and angular commands. Callers can pass separate linear/angular
+        caps so straight driving stays gentle while in-place turns get enough
+        floor torque to overcome static friction.
         """
-        left = float(linear_mps) - float(angular_rad_s)
-        right = float(linear_mps) + float(angular_rad_s)
-        max_value = max(abs(left), abs(right), 1.0)
-        left /= max_value
-        right /= max_value
         max_speed = max(0, min(255, int(max_speed)))
-        left_mode, left_speed = self._track_mode_and_speed(left, max_speed)
-        right_mode, right_speed = self._track_mode_and_speed(right, max_speed)
+        if max_linear_speed is None and max_angular_speed is None:
+            left = float(linear_mps) - float(angular_rad_s)
+            right = float(linear_mps) + float(angular_rad_s)
+            max_value = max(abs(left), abs(right), 1.0)
+            left /= max_value
+            right /= max_value
+            left_mode, left_speed = self._track_mode_and_speed(left, max_speed)
+            right_mode, right_speed = self._track_mode_and_speed(right, max_speed)
+            return self.raw_motors(sequence_id, left_mode, left_speed, right_mode, right_speed)
+
+        linear_cap = max(0, min(255, int(max_linear_speed if max_linear_speed is not None else max_speed)))
+        angular_cap = max(0, min(255, int(max_angular_speed if max_angular_speed is not None else max_speed)))
+        left = float(linear_mps) * linear_cap - float(angular_rad_s) * angular_cap
+        right = float(linear_mps) * linear_cap + float(angular_rad_s) * angular_cap
+        max_value = max(abs(left), abs(right), 255.0)
+        if max_value > 255.0:
+            left = left / max_value * 255.0
+            right = right / max_value * 255.0
+        left_mode, left_speed = self._track_mode_and_duty(left)
+        right_mode, right_speed = self._track_mode_and_duty(right)
         return self.raw_motors(sequence_id, left_mode, left_speed, right_mode, right_speed)
 
     @staticmethod
     def _track_mode_and_speed(value: float, max_speed: int = 255):
         speed = max(0, min(max_speed, int(abs(value) * max_speed)))
+        if speed == 0:
+            return 0, 0
+        return (2 if value < 0 else 1), speed
+
+    @staticmethod
+    def _track_mode_and_duty(value: float):
+        speed = max(0, min(255, int(abs(value))))
         if speed == 0:
             return 0, 0
         return (2 if value < 0 else 1), speed
