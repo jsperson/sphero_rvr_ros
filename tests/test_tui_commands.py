@@ -11,6 +11,7 @@ from sphero_rvr_driver.tui_commands import CommandParseError, NudgeCommand, pars
         ("/stop", "stop", None),
         ("/estop", "estop", None),
         ("/clear-estop", "clear-estop", None),
+        ("/clear-estop confirm", "clear-estop", None),
         ("/arm", "arm", None),
         ("/arm confirm", "arm", "confirm"),
         ("/disarm", "disarm", None),
