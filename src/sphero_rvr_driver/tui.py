@@ -19,8 +19,11 @@ NUDGE_LINEAR_MPS = 0.05
 NUDGE_CALIBRATED_METERS_PER_SECOND = 0.2286
 NUDGE_ODOM_COUNTS_PER_METER = 4337.768
 KEY_STOP_SECONDS = 0.30
-TURN_STOP_SECONDS = 1.00
-KEY_REPEAT_SECONDS = 0.05
+TURN_TAP_STOP_SECONDS = 0.16
+TURN_HOLD_STOP_SECONDS = 0.45
+TURN_HOLD_WINDOW_SECONDS = 0.22
+TURN_TAP_RAD_S = 0.16
+KEY_REPEAT_SECONDS = 0.08
 
 
 @dataclass
@@ -106,8 +109,9 @@ class RVRTUI:
                 self.state.log("Ignored drive key while disarmed. Use /arm.")
                 return
             now = time.monotonic()
+            linear_mps, angular_rad_s = self._motion_for_key_action(action, now)
             try:
-                self._publish_motion(action.linear_mps, action.angular_rad_s)
+                self._publish_motion(linear_mps, angular_rad_s)
             except Exception as exc:
                 self._motion_active = False
                 self._last_motion_publish_at = None
@@ -116,8 +120,8 @@ class RVRTUI:
                 return
             self._motion_active = True
             self._last_motion_at = now
-            self._configure_motion_mode(action.linear_mps, action.angular_rad_s, now)
-            self.state.log(self._motion_log_text(action.linear_mps, action.angular_rad_s))
+            self._configure_motion_mode(linear_mps, angular_rad_s, now)
+            self.state.log(self._motion_log_text(linear_mps, angular_rad_s))
             return
 
         if action.kind == "command":
@@ -281,6 +285,25 @@ class RVRTUI:
         finally:
             curses.curs_set(0)
 
+
+    def _motion_for_key_action(self, action: KeyAction, now: float) -> tuple[float, float]:
+        linear_mps = action.linear_mps
+        angular_rad_s = action.angular_rad_s
+        is_turn_only = abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9
+        if not is_turn_only:
+            return linear_mps, angular_rad_s
+
+        signature = 1.0 if angular_rad_s > 0 else -1.0
+        held = (
+            self._last_turn_signature == signature
+            and self._last_turn_key_at is not None
+            and now - self._last_turn_key_at <= TURN_HOLD_WINDOW_SECONDS
+        )
+        if held:
+            return 0.0, angular_rad_s
+        tap_turn = min(abs(angular_rad_s), TURN_TAP_RAD_S)
+        return 0.0, signature * tap_turn
+
     def _maintain_motion(self) -> None:
         if not self._motion_active or self._last_motion_at is None:
             return
@@ -351,12 +374,16 @@ class RVRTUI:
             self._last_turn_key_at = None
             return
 
-        # Turning on carpet/floor needs continuous command refresh from the first
-        # keypress. The old short-tap/hold-detection path let the RVR twitch and
-        # then bog down before terminal key repeat caught up.
-        self._active_stop_seconds = TURN_STOP_SECONDS
-        self._active_repeat_enabled = True
-        self._last_turn_signature = 1.0 if angular_rad_s > 0 else -1.0
+        signature = 1.0 if angular_rad_s > 0 else -1.0
+        held = (
+            self._last_turn_signature == signature
+            and self._last_turn_key_at is not None
+            and now - self._last_turn_key_at <= TURN_HOLD_WINDOW_SECONDS
+            and abs(angular_rad_s) > TURN_TAP_RAD_S + 1e-9
+        )
+        self._active_stop_seconds = TURN_HOLD_STOP_SECONDS if held else TURN_TAP_STOP_SECONDS
+        self._active_repeat_enabled = held
+        self._last_turn_signature = signature
         self._last_turn_key_at = now
 
     def _draw(self, screen, command_prompt: str = "> ") -> None:
