@@ -107,7 +107,14 @@ class RVRTUI:
                 self.state.log("Ignored drive key while disarmed. Use /arm.")
                 return
             now = time.monotonic()
-            self._publish_motion(action.linear_mps, action.angular_rad_s)
+            try:
+                self._publish_motion(action.linear_mps, action.angular_rad_s)
+            except Exception as exc:
+                self._motion_active = False
+                self._last_motion_publish_at = None
+                self.state.armed = False
+                self.state.log(f"Motion rejected and disarmed: {exc}")
+                return
             self._motion_active = True
             self._last_motion_at = now
             self._configure_motion_mode(action.linear_mps, action.angular_rad_s, now)
@@ -124,6 +131,7 @@ class RVRTUI:
                 for line in HELP_TEXT:
                     self.state.log(line)
             elif name == "arm":
+                self._enable_motion_publisher_if_supported()
                 self.state.armed = True
                 if command.value == "confirm":
                     self.state.log("Armed. Keyboard drive commands can start the RVR motors.")
@@ -287,7 +295,13 @@ class RVRTUI:
         if not self._active_repeat_enabled:
             return
         if self._last_motion_publish_at is None or now - self._last_motion_publish_at >= KEY_REPEAT_SECONDS:
-            self._publish_motion(self._active_linear_mps, self._active_angular_rad_s)
+            try:
+                self._publish_motion(self._active_linear_mps, self._active_angular_rad_s)
+            except Exception as exc:
+                self._motion_active = False
+                self._last_motion_publish_at = None
+                self.state.armed = False
+                self.state.log(f"Motion repeat failed and disarmed: {exc}")
 
     def _safe_stop(self) -> None:
         try:

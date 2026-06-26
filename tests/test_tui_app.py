@@ -52,6 +52,20 @@ class VelocityLifecycleClient(FakeClient):
         self.velocity_publisher_enabled = True
 
 
+class StrictVelocityLifecycleClient(VelocityLifecycleClient):
+    def publish_velocity(self, linear_mps, angular_rad_s):
+        if not self.velocity_publisher_enabled and (
+            abs(linear_mps) > 1e-9 or abs(angular_rad_s) > 1e-9
+        ):
+            raise RuntimeError("cmd_vel publisher is not enabled")
+        super().publish_velocity(linear_mps, angular_rad_s)
+
+
+class FailingVelocityClient(FakeClient):
+    def publish_velocity(self, linear_mps, angular_rad_s):
+        raise RuntimeError("cmd_vel publisher is not enabled")
+
+
 class RecordingRunner:
     def __init__(self):
         self.started = []
@@ -94,6 +108,29 @@ def test_arm_confirm_remains_supported_alias():
     tui._run_command(TUICommand("arm", "confirm"))
 
     assert tui.state.armed is True
+
+
+def test_slash_arm_enables_velocity_publisher_before_keyboard_motion():
+    client = StrictVelocityLifecycleClient()
+    tui = RVRTUI(client)
+
+    tui._run_command(TUICommand("arm"))
+    tui._apply_key_action(KeyAction.motion(0.1, 0.0))
+
+    assert client.enable_velocity_publisher_calls == 1
+    assert tui.state.armed is True
+    assert client.published == [(0.1, 0.0)]
+
+
+def test_keyboard_motion_publish_failure_logs_and_disarms_instead_of_crashing():
+    client = FailingVelocityClient()
+    tui = RVRTUI(client)
+    tui.state.armed = True
+
+    tui._apply_key_action(KeyAction.motion(0.1, 0.0))
+
+    assert tui.state.armed is False
+    assert tui.state.last_message == "Motion rejected and disarmed: cmd_vel publisher is not enabled"
 
 
 def test_disarm_publishes_zero_velocity_without_calling_stop_service():
@@ -262,7 +299,7 @@ def test_nudge_requires_armed_state():
 def test_confirmed_nudge_requires_enabled_velocity_sink():
     client = VelocityLifecycleClient()
     tui = RVRTUI(client)
-    tui._run_command(TUICommand("arm", "confirm"))
+    tui.state.armed = True
 
     tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
 
