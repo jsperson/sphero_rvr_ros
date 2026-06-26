@@ -195,7 +195,7 @@ def test_turn_tap_uses_small_short_non_repeating_nudge(monkeypatch):
     now = 100.17
     tui._maintain_motion()
 
-    assert client.published == [(0.0, 0.16), (0.0, 0.0)]
+    assert client.published == [(0.0, 0.20), (0.0, 0.0)]
 
 
 def test_repeated_turn_keypresses_promote_to_sustained_full_turn(monkeypatch):
@@ -217,7 +217,7 @@ def test_repeated_turn_keypresses_promote_to_sustained_full_turn(monkeypatch):
     now = 100.56
     tui._maintain_motion()
 
-    assert client.published[0] == (0.0, 0.16)
+    assert client.published[0] == (0.0, 0.20)
     assert client.published[1] == (0.0, 0.35)
     assert client.published[:-1].count((0.0, 0.35)) >= 3
     assert client.published[-1] == (0.0, 0.0)
@@ -231,12 +231,12 @@ def test_turn_keypress_after_hold_window_is_another_small_tap(monkeypatch):
     tui._run_command(TUICommand("arm"))
 
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 100.24
+    now = 100.80
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 100.41
+    now = 100.97
     tui._maintain_motion()
 
-    assert client.published == [(0.0, 0.16), (0.0, 0.16), (0.0, 0.0)]
+    assert client.published == [(0.0, 0.20), (0.0, 0.20), (0.0, 0.0)]
 
 def test_dry_run_client_simulates_status_without_ros_publisher():
     client = DryRunRVRClient()
