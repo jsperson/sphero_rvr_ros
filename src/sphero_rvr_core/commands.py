@@ -54,6 +54,8 @@ class RVRCommands:
     CID_RAW_MOTORS: ClassVar[int] = 0x01
     CID_RESET_YAW: ClassVar[int] = 0x06
     CID_DRIVE_WITH_HEADING: ClassVar[int] = 0x07
+    CID_DRIVE_TANK_SI_UNITS: ClassVar[int] = 0x32
+    CID_DRIVE_TANK_NORMALIZED: ClassVar[int] = 0x33
     CID_DRIVE_RC_SI_UNITS: ClassVar[int] = 0x34
     CID_DRIVE_RC_NORMALIZED: ClassVar[int] = 0x35
     CID_RESET_LOCATOR: ClassVar[int] = 0x13
@@ -153,6 +155,16 @@ class RVRCommands:
         payload = struct.pack(">BHB", speed & 0xFF, heading & 0xFFFF, flags & 0xFF)
         return self._packet(DID_DRIVE, self.CID_DRIVE_WITH_HEADING, sequence_id, TARGET_MCU, payload)
 
+
+    def drive_tank_si_units(self, sequence_id: int, left_velocity: float, right_velocity: float) -> Packet:
+        payload = struct.pack(">ff", float(left_velocity), float(right_velocity))
+        return self._packet(DID_DRIVE, self.CID_DRIVE_TANK_SI_UNITS, sequence_id, TARGET_MCU, payload)
+
+    def drive_tank_normalized(self, sequence_id: int, left_velocity: int, right_velocity: int) -> Packet:
+        left = max(-127, min(127, int(left_velocity)))
+        right = max(-127, min(127, int(right_velocity)))
+        payload = struct.pack(">bb", left, right)
+        return self._packet(DID_DRIVE, self.CID_DRIVE_TANK_NORMALIZED, sequence_id, TARGET_MCU, payload)
 
     def drive_rc_si_units(
         self,
