@@ -19,8 +19,7 @@ NUDGE_LINEAR_MPS = 0.05
 NUDGE_CALIBRATED_METERS_PER_SECOND = 0.2286
 NUDGE_ODOM_COUNTS_PER_METER = 4337.768
 KEY_STOP_SECONDS = 0.30
-TURN_KEY_STOP_SECONDS = 0.09
-TURN_HOLD_DETECT_SECONDS = 0.15
+TURN_STOP_SECONDS = 0.60
 KEY_REPEAT_SECONDS = 0.10
 
 
@@ -352,15 +351,12 @@ class RVRTUI:
             self._last_turn_key_at = None
             return
 
-        turn_signature = 1.0 if angular_rad_s > 0 else -1.0
-        is_held_turn = (
-            self._last_turn_signature == turn_signature
-            and self._last_turn_key_at is not None
-            and now - self._last_turn_key_at <= TURN_HOLD_DETECT_SECONDS
-        )
-        self._active_stop_seconds = KEY_STOP_SECONDS if is_held_turn else TURN_KEY_STOP_SECONDS
-        self._active_repeat_enabled = is_held_turn
-        self._last_turn_signature = turn_signature
+        # Turning on carpet/floor needs continuous command refresh from the first
+        # keypress. The old short-tap/hold-detection path let the RVR twitch and
+        # then bog down before terminal key repeat caught up.
+        self._active_stop_seconds = TURN_STOP_SECONDS
+        self._active_repeat_enabled = True
+        self._last_turn_signature = 1.0 if angular_rad_s > 0 else -1.0
         self._last_turn_key_at = now
 
     def _draw(self, screen, command_prompt: str = "> ") -> None:
