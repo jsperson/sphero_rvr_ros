@@ -434,15 +434,9 @@ class RVRDriver:
                 # Explicit skid-steer pivot for TUI/teleop turns: one tread reverse,
                 # the other forward. The top rack adds enough load that firmware RC
                 # steering can feel like a bogging arc instead of a real pivot.
+                tank = 127 if angular_fraction > 0 else -127
                 await self._send(
-                    lambda seq: self.commands.drive_rc(
-                        seq,
-                        0.0,
-                        angular_fraction,
-                        max_speed=self._max_raw_motor_duty,
-                        max_linear_speed=0,
-                        max_angular_speed=self._max_angular_raw_motor_duty,
-                    ),
+                    lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
                     CommandPriority.NORMAL,
                 )
                 continue

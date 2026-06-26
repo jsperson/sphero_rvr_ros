@@ -22,6 +22,10 @@ def _rc_drive_packets(transport: FakeTransport, driver: RVRDriver) -> list[Packe
     return [packet for packet in _packets(transport) if packet.command_id == driver.commands.CID_DRIVE_RC_SI_UNITS]
 
 
+def _tank_drive_packets(transport: FakeTransport, driver: RVRDriver) -> list[Packet]:
+    return [packet for packet in _packets(transport) if packet.command_id == driver.commands.CID_DRIVE_TANK_NORMALIZED]
+
+
 def _decode_rc_payload(packet: Packet) -> tuple[float, float, int]:
     yaw, linear, flags = struct.unpack(">ffB", packet.payload)
     return yaw, linear, flags
@@ -151,12 +155,11 @@ async def test_driver_uses_explicit_opposing_treads_for_near_pure_turning():
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    raw_motor_packets = [
-        packet for packet in _raw_motor_packets(transport, driver) if packet.payload != RAW_OFF
-    ]
-    assert raw_motor_packets
-    assert raw_motor_packets[0].payload == bytes([2, 64, 1, 64])
+    tank_packets = _tank_drive_packets(transport, driver)
+    assert tank_packets
+    assert tank_packets[0].payload == bytes([0x81, 0x7F])
     assert not _rc_drive_packets(transport, driver)
+    assert all(packet.payload == RAW_OFF for packet in _raw_motor_packets(transport, driver))
 
 
 @pytest.mark.asyncio

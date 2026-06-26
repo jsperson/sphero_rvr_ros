@@ -62,6 +62,14 @@ def test_drive_rc_can_use_separate_linear_and_angular_duty_caps():
     assert turn.payload == bytes([2, 255, 1, 255])
 
 
+def test_native_tank_normalized_encodes_full_opposing_pivot():
+    packet = RVRCommands().drive_tank_normalized(sequence_id=12, left_velocity=-127, right_velocity=127)
+
+    assert packet.device_id == 0x16
+    assert packet.command_id == 0x33
+    assert packet.payload == bytes([0x81, 0x7F])
+
+
 def test_native_rc_drive_si_units_uses_official_command_id_and_slew_flag():
     packet = RVRCommands().drive_rc_si_units(
         sequence_id=10,
