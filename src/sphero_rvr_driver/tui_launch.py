@@ -237,7 +237,10 @@ class LaunchManager:
         command = ("ros2", "lifecycle", "set", "/slam_toolbox", transition)
         last_result: subprocess.CompletedProcess[str] | None = None
         for _attempt in range(20):
-            last_result = self._runner.run(command, timeout_sec=5.0)
+            try:
+                last_result = self._runner.run(command, timeout_sec=5.0)
+            except subprocess.TimeoutExpired:
+                last_result = subprocess.CompletedProcess(command, 1, "", "timed out")
             if last_result.returncode == 0:
                 return last_result
             output = (last_result.stderr or last_result.stdout or "").lower()

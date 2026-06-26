@@ -1,3 +1,4 @@
+import subprocess
 from types import SimpleNamespace
 
 from sphero_rvr_driver.tui_launch import LaunchManager, LaunchProfile, MappingMode
@@ -137,4 +138,22 @@ def test_mapping_start_fails_and_stops_when_slam_lifecycle_activation_fails():
     assert result.mode is MappingMode.FAILED_LAUNCH
     assert result.profile is LaunchProfile.NONE
     assert "Failed to configure slam_toolbox" in result.message
+    assert runner.stopped == [(1001, 5.0)]
+
+
+def test_mapping_start_fails_and_stops_when_slam_lifecycle_transition_times_out():
+    class LifecycleTimeoutRunner(RecordingRunner):
+        def run(self, command, timeout_sec=5.0):
+            self.ran.append((list(command), timeout_sec))
+            raise subprocess.TimeoutExpired(cmd=command, timeout=timeout_sec)
+
+    runner = LifecycleTimeoutRunner()
+    manager = LaunchManager(runner=runner)
+
+    result = manager.start_mapping(start_rvr=True)
+
+    assert result.mode is MappingMode.FAILED_LAUNCH
+    assert result.profile is LaunchProfile.NONE
+    assert "Failed to configure slam_toolbox" in result.message
+    assert "timed out" in result.message
     assert runner.stopped == [(1001, 5.0)]
