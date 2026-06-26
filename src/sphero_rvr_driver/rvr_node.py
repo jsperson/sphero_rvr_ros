@@ -37,7 +37,7 @@ class RVRNodeConfig:
     max_angular_rad_s: float = 0.4
     max_raw_motor_duty: int = 160
     max_linear_raw_motor_duty: int = 64
-    max_angular_raw_motor_duty: int = 220
+    max_angular_raw_motor_duty: int = 255
     battery_publish_period: float = 5.0
     temperature_publish_period: float = 2.0
     diagnostics_publish_period: float = 1.0

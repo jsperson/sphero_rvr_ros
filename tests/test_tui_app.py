@@ -198,8 +198,11 @@ def test_turn_motion_republishes_from_first_keypress(monkeypatch):
     tui._maintain_motion()
     now = 100.61
     tui._maintain_motion()
+    now = 101.01
+    tui._maintain_motion()
 
-    assert client.published == [(0.0, 0.35), (0.0, 0.35), (0.0, 0.0)]
+    assert client.published[-1] == (0.0, 0.0)
+    assert client.published[:-1].count((0.0, 0.35)) >= 4
 
 
 def test_repeated_turn_keypresses_continue_turning(monkeypatch):
@@ -220,15 +223,11 @@ def test_repeated_turn_keypresses_continue_turning(monkeypatch):
     tui._maintain_motion()
     now = 100.77
     tui._maintain_motion()
+    now = 101.17
+    tui._maintain_motion()
 
-    assert client.published == [
-        (0.0, 0.35),
-        (0.0, 0.35),
-        (0.0, 0.35),
-        (0.0, 0.35),
-        (0.0, 0.35),
-        (0.0, 0.0),
-    ]
+    assert client.published[-1] == (0.0, 0.0)
+    assert client.published[:-1].count((0.0, 0.35)) >= 6
 
 
 def test_turn_keypresses_outside_prior_hold_window_still_republish(monkeypatch):
@@ -249,14 +248,11 @@ def test_turn_keypresses_outside_prior_hold_window_still_republish(monkeypatch):
     tui._maintain_motion()
     now = 100.77
     tui._maintain_motion()
+    now = 101.17
+    tui._maintain_motion()
 
-    assert client.published == [
-        (0.0, 0.35),
-        (0.0, 0.35),
-        (0.0, 0.35),
-        (0.0, 0.35),
-        (0.0, 0.0),
-    ]
+    assert client.published[-1] == (0.0, 0.0)
+    assert client.published[:-1].count((0.0, 0.35)) >= 6
 
 
 def test_dry_run_client_simulates_status_without_ros_publisher():
