@@ -12,7 +12,7 @@ def test_default_node_config_uses_pi_serial_alias_and_floor_turn_motor_duty():
     assert config.baud_rate == 115200
     assert config.max_raw_motor_duty == 160
     assert config.max_linear_raw_motor_duty == 64
-    assert config.max_angular_raw_motor_duty == 220
+    assert config.max_angular_raw_motor_duty == 255
     assert config.battery_publish_period == 5.0
     assert config.temperature_publish_period == 2.0
     assert config.diagnostics_publish_period == 1.0
@@ -46,4 +46,4 @@ def test_checked_in_rvr_yaml_preserves_floor_turn_motor_duty():
 
     assert "max_raw_motor_duty: 160" in config_text
     assert "max_linear_raw_motor_duty: 64" in config_text
-    assert "max_angular_raw_motor_duty: 220" in config_text
+    assert "max_angular_raw_motor_duty: 255" in config_text
