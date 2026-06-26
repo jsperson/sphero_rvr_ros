@@ -48,18 +48,18 @@ def test_drive_rc_can_use_separate_linear_and_angular_duty_caps():
         linear_mps=1.0,
         angular_rad_s=0.0,
         max_linear_speed=64,
-        max_angular_speed=160,
+        max_angular_speed=255,
     )
     turn = commands.drive_rc(
         sequence_id=7,
         linear_mps=0.0,
         angular_rad_s=1.0,
         max_linear_speed=64,
-        max_angular_speed=160,
+        max_angular_speed=255,
     )
 
     assert forward.payload == bytes([1, 64, 1, 64])
-    assert turn.payload == bytes([2, 160, 1, 160])
+    assert turn.payload == bytes([2, 255, 1, 255])
 
 
 def test_native_rc_drive_si_units_uses_official_command_id_and_slew_flag():

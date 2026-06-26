@@ -170,7 +170,7 @@ async def test_mixed_drive_uses_native_rc_drive_commands():
         max_angular_rad_s=0.4,
         max_raw_motor_duty=160,
         max_linear_raw_motor_duty=64,
-        max_angular_raw_motor_duty=160,
+        max_angular_raw_motor_duty=255,
     )
     await driver.connect()
 
