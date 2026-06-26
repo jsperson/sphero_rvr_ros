@@ -1,3 +1,7 @@
+import struct
+
+import pytest
+
 from sphero_rvr_core.commands import RVRCommands
 
 
@@ -44,18 +48,33 @@ def test_drive_rc_can_use_separate_linear_and_angular_duty_caps():
         linear_mps=1.0,
         angular_rad_s=0.0,
         max_linear_speed=64,
-        max_angular_speed=255,
+        max_angular_speed=160,
     )
     turn = commands.drive_rc(
         sequence_id=7,
         linear_mps=0.0,
         angular_rad_s=1.0,
         max_linear_speed=64,
-        max_angular_speed=255,
+        max_angular_speed=160,
     )
 
     assert forward.payload == bytes([1, 64, 1, 64])
-    assert turn.payload == bytes([2, 255, 1, 255])
+    assert turn.payload == bytes([2, 160, 1, 160])
+
+
+def test_native_rc_drive_si_units_uses_official_command_id_and_slew_flag():
+    packet = RVRCommands().drive_rc_si_units(
+        sequence_id=10,
+        yaw_angular_velocity=0.4,
+        linear_velocity=0.1,
+        flags=1,
+    )
+
+    assert packet.command_id == RVRCommands.CID_DRIVE_RC_SI_UNITS
+    yaw, linear, flags = struct.unpack(">ffB", packet.payload)
+    assert yaw == pytest.approx(0.4)
+    assert linear == pytest.approx(0.1)
+    assert flags == 1
 
 
 def test_stop_uses_validated_raw_motor_off_packet():

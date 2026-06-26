@@ -8,7 +8,7 @@ sphero_rvr_driver:
     max_angular_rad_s: 0.4
     max_raw_motor_duty: 160
     max_linear_raw_motor_duty: 64
-    max_angular_raw_motor_duty: 255
+    max_angular_raw_motor_duty: 160
     battery_publish_period: 5.0
     temperature_publish_period: 2.0
     diagnostics_publish_period: 1.0
