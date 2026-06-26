@@ -19,10 +19,10 @@ NUDGE_LINEAR_MPS = 0.05
 NUDGE_CALIBRATED_METERS_PER_SECOND = 0.2286
 NUDGE_ODOM_COUNTS_PER_METER = 4337.768
 KEY_STOP_SECONDS = 0.30
-TURN_TAP_STOP_SECONDS = 0.16
+TURN_TAP_STOP_SECONDS = 0.14
 TURN_HOLD_STOP_SECONDS = 0.45
 TURN_HOLD_WINDOW_SECONDS = 0.75
-TURN_TAP_RAD_S = 0.20
+TURN_TAP_RAD_S = DEFAULT_TURN
 KEY_REPEAT_SECONDS = 0.08
 
 
@@ -299,10 +299,10 @@ class RVRTUI:
             and self._last_turn_key_at is not None
             and now - self._last_turn_key_at <= TURN_HOLD_WINDOW_SECONDS
         )
-        if held:
-            return 0.0, angular_rad_s
-        tap_turn = min(abs(angular_rad_s), TURN_TAP_RAD_S)
-        return 0.0, signature * tap_turn
+        # Turning under the top rack needs full breakaway torque immediately.
+        # Tap distance is controlled by the short timeout, not by lowering power
+        # into the static-friction deadband.
+        return 0.0, signature * min(abs(angular_rad_s), TURN_TAP_RAD_S)
 
     def _maintain_motion(self) -> None:
         if not self._motion_active or self._last_motion_at is None:
@@ -379,7 +379,6 @@ class RVRTUI:
             self._last_turn_signature == signature
             and self._last_turn_key_at is not None
             and now - self._last_turn_key_at <= TURN_HOLD_WINDOW_SECONDS
-            and abs(angular_rad_s) > TURN_TAP_RAD_S + 1e-9
         )
         self._active_stop_seconds = TURN_HOLD_STOP_SECONDS if held else TURN_TAP_STOP_SECONDS
         self._active_repeat_enabled = held
