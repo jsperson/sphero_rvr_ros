@@ -36,15 +36,37 @@ def test_drive_rc_caps_normalized_angular_mix():
     assert packet.payload == bytes([2, 64, 1, 64])
 
 
+def test_drive_rc_can_use_separate_linear_and_angular_duty_caps():
+    commands = RVRCommands()
+
+    forward = commands.drive_rc(
+        sequence_id=6,
+        linear_mps=1.0,
+        angular_rad_s=0.0,
+        max_linear_speed=64,
+        max_angular_speed=160,
+    )
+    turn = commands.drive_rc(
+        sequence_id=7,
+        linear_mps=0.0,
+        angular_rad_s=1.0,
+        max_linear_speed=64,
+        max_angular_speed=160,
+    )
+
+    assert forward.payload == bytes([1, 64, 1, 64])
+    assert turn.payload == bytes([2, 160, 1, 160])
+
+
 def test_stop_uses_validated_raw_motor_off_packet():
-    packet = RVRCommands().stop(sequence_id=6)
+    packet = RVRCommands().stop(sequence_id=8)
 
     assert packet.command_id == RVRCommands.CID_RAW_MOTORS
     assert packet.payload == bytes([0, 0, 0, 0])
 
 
 def test_emergency_stop_uses_validated_raw_motor_off_packet():
-    packet = RVRCommands().emergency_stop(sequence_id=7)
+    packet = RVRCommands().emergency_stop(sequence_id=9)
 
     assert packet.command_id == RVRCommands.CID_RAW_MOTORS
     assert packet.payload == bytes([0, 0, 0, 0])

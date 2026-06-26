@@ -30,6 +30,8 @@ class RVRDriver:
         max_linear_mps: float = 1.0,
         max_angular_rad_s: float = 3.0,
         max_raw_motor_duty: int = 64,
+        max_linear_raw_motor_duty: Optional[int] = None,
+        max_angular_raw_motor_duty: Optional[int] = None,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -39,6 +41,20 @@ class RVRDriver:
         self._max_linear_mps = max_linear_mps
         self._max_angular_rad_s = max_angular_rad_s
         self._max_raw_motor_duty = max(0, min(255, int(max_raw_motor_duty)))
+        self._max_linear_raw_motor_duty = max(
+            0,
+            min(
+                255,
+                int(max_linear_raw_motor_duty if max_linear_raw_motor_duty is not None else self._max_raw_motor_duty),
+            ),
+        )
+        self._max_angular_raw_motor_duty = max(
+            0,
+            min(
+                255,
+                int(max_angular_raw_motor_duty if max_angular_raw_motor_duty is not None else self._max_raw_motor_duty),
+            ),
+        )
         self._desired_velocity: Optional[VelocityCommand] = None
         self._last_velocity_update: Optional[float] = None
         self._connected = False
@@ -420,6 +436,8 @@ class RVRDriver:
                     linear_fraction,
                     angular_fraction,
                     max_speed=self._max_raw_motor_duty,
+                    max_linear_speed=self._max_linear_raw_motor_duty,
+                    max_angular_speed=self._max_angular_raw_motor_duty,
                 ),
                 CommandPriority.NORMAL,
             )

@@ -36,6 +36,8 @@ class RVRNodeConfig:
     max_linear_mps: float = 0.25
     max_angular_rad_s: float = 0.4
     max_raw_motor_duty: int = 160
+    max_linear_raw_motor_duty: int = 64
+    max_angular_raw_motor_duty: int = 160
     battery_publish_period: float = 5.0
     temperature_publish_period: float = 2.0
     diagnostics_publish_period: float = 1.0
@@ -67,6 +69,8 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         max_linear_mps=config.max_linear_mps,
         max_angular_rad_s=config.max_angular_rad_s,
         max_raw_motor_duty=config.max_raw_motor_duty,
+        max_linear_raw_motor_duty=config.max_linear_raw_motor_duty,
+        max_angular_raw_motor_duty=config.max_angular_raw_motor_duty,
     )
 
 
@@ -166,6 +170,8 @@ def main(args=None):
             self.declare_parameter("max_linear_mps", defaults.max_linear_mps)
             self.declare_parameter("max_angular_rad_s", defaults.max_angular_rad_s)
             self.declare_parameter("max_raw_motor_duty", defaults.max_raw_motor_duty)
+            self.declare_parameter("max_linear_raw_motor_duty", defaults.max_linear_raw_motor_duty)
+            self.declare_parameter("max_angular_raw_motor_duty", defaults.max_angular_raw_motor_duty)
             self.declare_parameter("battery_publish_period", defaults.battery_publish_period)
             self.declare_parameter("temperature_publish_period", defaults.temperature_publish_period)
             self.declare_parameter("diagnostics_publish_period", defaults.diagnostics_publish_period)
@@ -191,6 +197,8 @@ def main(args=None):
                 max_linear_mps=float(self.get_parameter("max_linear_mps").value),
                 max_angular_rad_s=float(self.get_parameter("max_angular_rad_s").value),
                 max_raw_motor_duty=int(self.get_parameter("max_raw_motor_duty").value),
+                max_linear_raw_motor_duty=int(self.get_parameter("max_linear_raw_motor_duty").value),
+                max_angular_raw_motor_duty=int(self.get_parameter("max_angular_raw_motor_duty").value),
                 battery_publish_period=float(self.get_parameter("battery_publish_period").value),
                 temperature_publish_period=float(self.get_parameter("temperature_publish_period").value),
                 diagnostics_publish_period=float(self.get_parameter("diagnostics_publish_period").value),
