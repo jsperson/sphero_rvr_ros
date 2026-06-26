@@ -1,7 +1,7 @@
 import subprocess
 from types import SimpleNamespace
 
-from sphero_rvr_driver.tui_launch import LaunchManager, LaunchProfile, MappingMode
+from sphero_rvr_driver.tui_launch import LaunchManager, LaunchProfile, MappingMode, SubprocessLaunchRunner
 
 
 class RecordingRunner:
@@ -22,6 +22,59 @@ class RecordingRunner:
     def run(self, command, timeout_sec=5.0):
         self.ran.append((list(command), timeout_sec))
         return SimpleNamespace(returncode=0, stdout="Transition successful", stderr="")
+
+
+def test_subprocess_launch_runner_redirects_child_output_to_log_file(tmp_path, monkeypatch):
+    popen_calls = []
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append(
+            {
+                "command": command,
+                "stdout_name": getattr(kwargs.get("stdout"), "name", None),
+                "stderr": kwargs.get("stderr"),
+                "stdin": kwargs.get("stdin"),
+                "start_new_session": kwargs.get("start_new_session"),
+            }
+        )
+        return FakeProcess()
+
+    monkeypatch.setenv("RVR_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    runner = SubprocessLaunchRunner()
+
+    pid = runner.start(["ros2", "launch", "sphero_rvr_driver", "lidar.launch.py"])
+
+    assert pid == 4321
+    assert popen_calls == [
+        {
+            "command": ["ros2", "launch", "sphero_rvr_driver", "lidar.launch.py"],
+            "stdout_name": str(runner.output_log_path(pid)),
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "start_new_session": True,
+        }
+    ]
+    assert runner.output_log_path(pid).parent == tmp_path
+
+
+def test_launch_manager_started_message_includes_redirected_log_path(tmp_path):
+    class LogPathRunner(RecordingRunner):
+        def output_log_path(self, pid):
+            return tmp_path / f"managed-{pid}.log"
+
+    manager = LaunchManager(runner=LogPathRunner())
+
+    result = manager.start_lidar()
+
+    assert "Started lidar launch pid=1001." in result.message
+    assert f"log={tmp_path / 'managed-1001.log'}" in result.message
 
 
 def test_lidar_start_uses_lidar_launch_and_stop_cleans_owned_process():

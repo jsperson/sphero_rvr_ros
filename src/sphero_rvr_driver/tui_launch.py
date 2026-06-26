@@ -49,11 +49,32 @@ class SubprocessLaunchRunner:
 
     def __init__(self):
         self._processes: dict[int, subprocess.Popen] = {}
+        self._log_paths: dict[int, Path] = {}
 
     def start(self, command: Sequence[str]) -> int:
-        process = subprocess.Popen(list(command), start_new_session=True)
+        log_path = self._next_log_path(command)
+        with log_path.open("ab") as log_file:
+            process = subprocess.Popen(
+                list(command),
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         self._processes[process.pid] = process
+        self._log_paths[process.pid] = log_path
         return process.pid
+
+    def output_log_path(self, pid: int) -> Path:
+        return self._log_paths[pid]
+
+    def _next_log_path(self, command: Sequence[str]) -> Path:
+        log_dir = Path(os.environ.get("RVR_LOG_DIR", "~/.local/state/sphero_rvr")).expanduser()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        command_slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", "-".join(command)).strip("-._")
+        command_slug = command_slug[:80] or "managed-launch"
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        return log_dir / f"{timestamp}-{command_slug}.log"
 
     def run(self, command: Sequence[str], timeout_sec: float = 10.0) -> subprocess.CompletedProcess[str]:
         return subprocess.run(list(command), capture_output=True, text=True, check=False, timeout=timeout_sec)
@@ -279,6 +300,18 @@ class LaunchManager:
             mode=mode,
             profile=profile,
             pid=pid,
-            message=f"Started {profile.value} launch pid={pid}.",
+            message=self._started_message(profile, pid),
         )
         return self.state
+
+    def _started_message(self, profile: LaunchProfile, pid: int) -> str:
+        log_path = self._runner_output_log_path(pid)
+        log_suffix = f" log={log_path}" if log_path is not None else ""
+        return f"Started {profile.value} launch pid={pid}.{log_suffix}"
+
+    def _runner_output_log_path(self, pid: int) -> Path | None:
+        output_log_path = getattr(self._runner, "output_log_path", None)
+        if not callable(output_log_path):
+            return None
+        value = output_log_path(pid)
+        return value if isinstance(value, Path) else Path(str(value))
