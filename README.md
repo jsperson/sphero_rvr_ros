@@ -618,9 +618,45 @@ TUI behavior:
   - `/mapping stop` publishes zero velocity, disarms the TUI, and stops the TUI-owned launch process.
   - `/mapping full` only displays `WARNING: this can start the RVR motors` and the required confirmation form.
   - `/mapping full confirm` launches `mapping.launch.py start_rvr:=true`; this is motor-capable and leaves the TUI disarmed until `/arm confirm`.
+- Supports calibrated fixed-distance nudges for early mapping validation:
+  - `/nudge forward <distance>` and `/nudge back <distance>` warn only and do not publish motion.
+  - `/nudge forward <distance> confirm` and `/nudge back <distance> confirm` require the TUI to already be armed, cap distance at 6 inches, publish a bounded fixed-duration velocity, then always publish zero velocity and disarm.
+  - Distance accepts meters by default plus `m`, `in`, `inch`, or `inches` suffixes, for example `/nudge forward 0.02 confirm` or `/nudge back 3in confirm`.
+  - The initial calibration uses the 2026-06-24 measured `linear=0.05` for `duration=1.00` movement of about 9 inches, with `odom_counts_per_meter: 4337.768` for expected encoder-count logging.
+- Saves the current SLAM map with `/map save <name>`:
+  - map names are sanitized into safe filename stems;
+  - files are written under `~/maps/` as `<safe-name>.yaml` and `<safe-name>.pgm`;
+  - live mode runs `ros2 run nav2_map_server map_saver_cli -f ~/maps/<safe-name>`;
+  - dry-run mode logs the intended save path without running `ros2`.
 - `rvr-console --dry-run` starts the fake TUI path without sourcing ROS, launching ROS processes, opening `/dev/ttyAMA0`, or touching `/dev/rplidar`; it can exercise `/lidar ...` and `/mapping ...` state transitions safely.
 - Stops on key timeout, quit, crash, or Ctrl+C.
 - Logs startup, driver launch, topic/service verification, and cleanup details to `~/.local/state/sphero_rvr/rvr-console.log`; driver output goes to `~/.local/state/sphero_rvr/rvr-driver.log`.
+
+### TUI calibrated nudge hardware validation
+
+Do not run this validation without explicit approval after showing:
+
+```text
+WARNING: this can start the RVR motors
+```
+
+After approval, keep the RVR restrained/suspended for the first run or place it in a clear controlled area. Start with dry-run, then validate the live graph, then try the smallest nudge:
+
+```bash
+# Safe fake path first: no ROS, UART, lidar, or live /cmd_vel.
+~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console --dry-run
+# In the TUI: /mapping full confirm, /arm confirm, /nudge forward 0.02 confirm
+
+# Live motor-capable path only after approval and physical safety setup.
+~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console
+# In the TUI:
+#   /mapping full confirm
+#   /arm confirm
+#   /nudge forward 0.02 confirm
+#   /status
+```
+
+Expected result for the live tiny nudge: the TUI publishes one bounded forward command, publishes zero velocity at completion, disarms, and logs the requested distance, estimated duration, expected encoder counts, and stopped/disarmed result. If anything looks wrong, use `/stop`, then `/estop`, then power off the RVR if needed. Do not test larger nudges until the 0.02 m run has stopped cleanly and odometry is plausible.
 
 Suggested one-command install convenience:
 

@@ -262,7 +262,7 @@ class RVRROSClient:
             self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self._node)
         except Exception:
             self._tf_listener = None
-        self._cmd_pub = self._node.create_publisher(Twist, "cmd_vel", 10)
+        self._cmd_pub = None
         self._battery_sub = self._node.create_subscription(BatteryState, "battery_state", self._on_battery, 10)
         self._diagnostics_sub = self._node.create_subscription(DiagnosticArray, "diagnostics", self._on_diagnostics, 10)
         self._odom_sub = self._node.create_subscription(Odometry, "odom", self._on_odom, 10)
@@ -279,10 +279,44 @@ class RVRROSClient:
 
     def close(self) -> None:
         self._running = False
+        self.disable_velocity_publisher()
         self._rclpy.shutdown()
         self._spin_thread.join(timeout=2)
 
+    @property
+    def velocity_publisher_enabled(self) -> bool:
+        return self._cmd_pub is not None
+
+    def enable_velocity_publisher(self):
+        if self._cmd_pub is None:
+            self._cmd_pub = self._node.create_publisher(self._Twist, "cmd_vel", 10)
+        self.status.cmd_vel_available = True
+        self.status.cmd_vel_publisher_count = int(self._node.count_publishers("/cmd_vel"))
+        return self._cmd_pub
+
+    def enable_cmd_vel_publisher(self):
+        return self.enable_velocity_publisher()
+
+    def disable_velocity_publisher(self) -> None:
+        if self._cmd_pub is None:
+            self.status.cmd_vel_available = False
+            self.status.cmd_vel_publisher_count = 0
+            return
+        destroy = getattr(self._node, "destroy_publisher", None)
+        if destroy is not None:
+            destroy(self._cmd_pub)
+        self._cmd_pub = None
+        self.status.cmd_vel_available = False
+        self.status.cmd_vel_publisher_count = 0
+
     def publish_velocity(self, linear_mps: float, angular_rad_s: float) -> None:
+        if self._cmd_pub is None:
+            if abs(linear_mps) < 1e-9 and abs(angular_rad_s) < 1e-9:
+                self.status.diagnostic_message = "cmd_vel publisher not enabled; zero velocity skipped"
+                return
+            raise RuntimeError(
+                "cmd_vel publisher is not enabled (velocity publisher is not enabled; use motor-capable mapping first)"
+            )
         msg = self._Twist()
         msg.linear.x = float(linear_mps)
         msg.angular.z = float(angular_rad_s)
@@ -340,8 +374,10 @@ class RVRROSClient:
     def _refresh_graph_status(self) -> None:
         try:
             topics = {name for name, _types in self._node.get_topic_names_and_types()}
-            self.status.cmd_vel_available = "/cmd_vel" in topics
-            self.status.cmd_vel_publisher_count = int(self._node.count_publishers("/cmd_vel"))
+            self.status.cmd_vel_available = self.velocity_publisher_enabled and "/cmd_vel" in topics
+            self.status.cmd_vel_publisher_count = (
+                int(self._node.count_publishers("/cmd_vel")) if self.velocity_publisher_enabled else 0
+            )
             self.status.service_available = {
                 "/stop": self._stop_client.service_is_ready(),
                 "/estop": self._estop_client.service_is_ready(),

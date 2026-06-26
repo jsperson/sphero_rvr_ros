@@ -5,7 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Union
 
-CommandValue = Union[float, str]
+NUDGE_MIN_DISTANCE_M = 0.02
+NUDGE_MAX_DISTANCE_M = 0.1524
+NUDGE_INCHES_TO_METERS = 0.0254
+
+
+@dataclass(frozen=True)
+class NudgeCommand:
+    direction: str
+    distance_m: float
+    confirmed: bool = False
+
+
+CommandValue = Union[float, str, NudgeCommand]
 
 
 class CommandParseError(ValueError):
@@ -82,6 +94,14 @@ def parse_command(raw: str) -> TUICommand:
             return TUICommand(name="mapping", value="full-confirm")
         raise CommandParseError("use /mapping start, /mapping stop, /mapping status, /mapping full, or /mapping full confirm")
 
+    if name == "map":
+        if len(args) >= 2 and args[0] == "save":
+            return TUICommand(name="map", value=" ".join(args[1:]))
+        raise CommandParseError("use /map save <name>")
+
+    if name == "nudge":
+        return TUICommand(name="nudge", value=_parse_nudge_args(args))
+
     if name in {"speed", "turn"}:
         if len(args) != 1:
             raise CommandParseError(f"/{name} requires one numeric argument")
@@ -94,3 +114,56 @@ def parse_command(raw: str) -> TUICommand:
         return TUICommand(name=name, value=value)
 
     raise CommandParseError(f"unknown command: /{name}")
+
+
+def _parse_nudge_args(args: list[str]) -> NudgeCommand:
+    if len(args) not in {2, 3, 4}:
+        raise CommandParseError("use /nudge forward <distance> confirm or /nudge back <distance> confirm")
+    direction = args[0].lower()
+    if direction not in {"forward", "back"}:
+        raise CommandParseError("/nudge direction must be forward or back")
+
+    confirmed = False
+    distance_parts = args[1:]
+    if distance_parts[-1].lower() == "confirm":
+        confirmed = True
+        distance_parts = distance_parts[:-1]
+    if not distance_parts:
+        raise CommandParseError("/nudge requires a distance")
+
+    distance_m = _parse_distance_m(distance_parts)
+    if distance_m < NUDGE_MIN_DISTANCE_M:
+        raise CommandParseError("/nudge distance must be at least 0.02 m")
+    if distance_m > NUDGE_MAX_DISTANCE_M:
+        raise CommandParseError("/nudge distance is capped at 6 inches")
+    return NudgeCommand(direction=direction, distance_m=distance_m, confirmed=confirmed)
+
+
+def _parse_distance_m(parts: list[str]) -> float:
+    if len(parts) == 1:
+        token = parts[0].lower()
+        for suffix in ("inches", "inch", "in"):
+            if token.endswith(suffix):
+                value_text = token[: -len(suffix)]
+                return _parse_float(value_text, "distance") * NUDGE_INCHES_TO_METERS
+        for suffix in ("meters", "meter", "m"):
+            if token.endswith(suffix):
+                value_text = token[: -len(suffix)]
+                return _parse_float(value_text, "distance")
+        return _parse_float(token, "distance")
+
+    if len(parts) == 2:
+        value = _parse_float(parts[0], "distance")
+        unit = parts[1].lower()
+        if unit in {"in", "inch", "inches"}:
+            return value * NUDGE_INCHES_TO_METERS
+        if unit in {"m", "meter", "meters"}:
+            return value
+    raise CommandParseError("/nudge distance must be meters or inches")
+
+
+def _parse_float(value_text: str, label: str) -> float:
+    try:
+        return float(value_text)
+    except ValueError as exc:
+        raise CommandParseError(f"/nudge requires a numeric {label}") from exc

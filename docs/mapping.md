@@ -93,6 +93,7 @@ The preferred operator path is through `rvr-console` / `rvr_tui`, which owns and
 /mapping stop            # zero velocity, disarm, stop the TUI-owned launch
 /mapping full            # warning only; does not launch the motor-capable graph
 /mapping full confirm    # mapping.launch.py start_rvr:=true, MOTOR-CAPABLE
+/map save <name>         # save current map to ~/maps/<safe-name>.yaml/.pgm
 ```
 
 `/mapping full confirm` displays/logs `WARNING: this can start the RVR motors`, starts the full graph, and leaves the TUI disarmed until a separate `/arm confirm`. For parser/state-machine checks on a development host, run `rvr-console --dry-run`; the dry-run path does not source ROS, launch ROS processes, or open robot/lidar devices.
@@ -110,7 +111,20 @@ The preferred operator path is through `rvr-console` / `rvr_tui`, which owns and
 
 3. Use tiny, supervised calibration-style motion first; do not jump straight to teleop.
 4. Once TF and odom look sane, drive slowly by an approved ROS client.
-5. Save map after a successful small-room pass:
+5. Save map after a successful small-room pass from the TUI:
+
+   ```text
+   /map save rvr_first_map
+   ```
+
+   Map names are sanitized into safe filename stems and written under `~/maps/`.
+   The example above produces `~/maps/rvr_first_map.yaml` and
+   `~/maps/rvr_first_map.pgm` through `nav2_map_server`.
+
+   In `rvr-console --dry-run`, `/map save <name>` only logs the intended output
+   path and does not run `ros2`.
+
+   Equivalent manual ROS command:
 
    ```bash
    ros2 run nav2_map_server map_saver_cli -f ~/maps/rvr_first_map
