@@ -90,6 +90,38 @@ class FailingRunner(RecordingRunner):
         raise RuntimeError("boom")
 
 
+class FakeScreen:
+    def __init__(self, *, height=24, width=50):
+        self.height = height
+        self.width = width
+        self.calls = []
+        self.cleared_rows = []
+
+    def erase(self):
+        self.calls.append(("erase",))
+
+    def getmaxyx(self):
+        return self.height, self.width
+
+    def move(self, y, x):
+        self.calls.append(("move", y, x))
+        self._cursor_y = y
+
+    def clrtoeol(self):
+        self.cleared_rows.append(getattr(self, "_cursor_y", None))
+        self.calls.append(("clrtoeol", getattr(self, "_cursor_y", None)))
+
+    def addnstr(self, y, x, text, n):
+        self.calls.append(("addnstr", y, x, text, n))
+
+    def refresh(self):
+        self.calls.append(("refresh",))
+
+
+def drawn_text(screen):
+    return [call[3] for call in screen.calls if call[0] == "addnstr"]
+
+
 def test_slash_arm_enables_keyboard_motion():
     client = FakeClient()
     tui = RVRTUI(client)
@@ -99,6 +131,31 @@ def test_slash_arm_enables_keyboard_motion():
 
     assert tui.state.armed is True
     assert client.published == [(0.1, 0.0)]
+
+
+def test_draw_wraps_long_history_lines_instead_of_truncating_them():
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui.state.log("launch output log path: /very/long/path/with/EXTRA_DETAILS/managed-lidar.log")
+    screen = FakeScreen(height=20, width=45)
+
+    tui._draw(screen)
+
+    lines = drawn_text(screen)
+    assert any("managed-lidar.log" in line for line in lines)
+    assert all(len(line) <= 44 for line in lines)
+
+
+def test_draw_clears_command_prompt_row_before_rewriting_shorter_commands():
+    tui = RVRTUI(FakeClient())
+    screen = FakeScreen(height=18, width=40)
+
+    tui._draw(screen, command_prompt="/mapping start")
+    tui._draw(screen, command_prompt="/map")
+
+    prompt_rows = [call[1] for call in screen.calls if call[0] == "addnstr" and call[3] in {"/mapping start", "/map"}]
+    assert prompt_rows
+    assert prompt_rows[-1] in screen.cleared_rows
 
 
 def test_arm_confirm_remains_supported_alias():

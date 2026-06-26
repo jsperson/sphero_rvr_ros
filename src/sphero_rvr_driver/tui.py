@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import curses
+import textwrap
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -387,20 +388,56 @@ class RVRTUI:
 
     def _draw(self, screen, command_prompt: str = "> ") -> None:
         screen.erase()
+        height, width = screen.getmaxyx()
+        line_width = max(1, width - 1)
+        content_limit = max(0, height - 2)
         status = self.client.status
-        rows = format_status_lines(status, armed=self.state.armed, speed=self.state.speed, turn=self.state.turn)
-        rows.extend([
+        static_rows = format_status_lines(status, armed=self.state.armed, speed=self.state.speed, turn=self.state.turn)
+        static_rows.extend([
             "",
             "↑/w forward  ↓/s reverse  ←/a arc left  →/d arc right  space stop  e estop  q quit",
             "Type /help for slash commands.",
             "",
         ])
-        rows.extend(self.state.history[-6:])
-        rows.extend(["", command_prompt])
-        height, width = screen.getmaxyx()
-        for idx, row in enumerate(rows[: height - 1]):
-            screen.addnstr(idx, 0, row, max(0, width - 1))
+        static_wrapped = self._wrap_display_rows(static_rows, line_width)
+        history_wrapped = self._wrap_display_rows(self.state.history[-6:], line_width)
+        if history_wrapped and content_limit > 0:
+            history_limit = min(len(history_wrapped), max(1, content_limit // 3))
+            static_limit = max(0, content_limit - history_limit)
+            rows = static_wrapped[:static_limit] + history_wrapped[-history_limit:]
+        else:
+            rows = static_wrapped[:content_limit]
+        prompt_row = min(len(rows), max(0, height - 1))
+        for idx in range(max(0, height - 1)):
+            if hasattr(screen, "move") and hasattr(screen, "clrtoeol"):
+                screen.move(idx, 0)
+                screen.clrtoeol()
+            if idx < len(rows):
+                screen.addnstr(idx, 0, rows[idx], line_width)
+        if hasattr(screen, "move") and hasattr(screen, "clrtoeol"):
+            screen.move(prompt_row, 0)
+            screen.clrtoeol()
+        screen.addnstr(prompt_row, 0, command_prompt[:line_width], line_width)
         screen.refresh()
+
+    @staticmethod
+    def _wrap_display_rows(rows: list[str], width: int) -> list[str]:
+        wrapped: list[str] = []
+        for row in rows:
+            if not row:
+                wrapped.append("")
+                continue
+            wrapped.extend(
+                textwrap.wrap(
+                    row,
+                    width=width,
+                    break_long_words=True,
+                    break_on_hyphens=False,
+                    replace_whitespace=False,
+                )
+                or [""]
+            )
+        return wrapped
 
     def _battery_text(self) -> str:
         status = self.client.status
