@@ -114,7 +114,7 @@ async def test_driver_uses_native_rc_drive_for_velocity_control():
 
 
 @pytest.mark.asyncio
-async def test_driver_clamps_velocity_before_native_rc_drive():
+async def test_driver_clamps_mixed_turn_velocity_before_tank_differential_arc():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
@@ -130,12 +130,10 @@ async def test_driver_clamps_velocity_before_native_rc_drive():
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    rc_packets = _rc_drive_packets(transport, driver)
-    assert rc_packets
-    yaw, linear, flags = _decode_rc_payload(rc_packets[0])
-    assert yaw == pytest.approx(0.4)
-    assert linear == pytest.approx(0.25)
-    assert flags == 1
+    tank_packets = _tank_drive_packets(transport, driver)
+    assert tank_packets
+    assert tank_packets[0].payload == bytes([0, 127])
+    assert not _rc_drive_packets(transport, driver)
 
 
 @pytest.mark.asyncio
@@ -163,7 +161,7 @@ async def test_driver_uses_explicit_opposing_treads_for_near_pure_turning():
 
 
 @pytest.mark.asyncio
-async def test_mixed_drive_uses_native_rc_drive_commands():
+async def test_mixed_turn_drive_uses_tank_differential_arc_instead_of_rc_straight():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
@@ -177,13 +175,11 @@ async def test_mixed_drive_uses_native_rc_drive_commands():
     )
     await driver.connect()
 
-    await driver.set_velocity(linear_mps=0.10, angular_rad_s=0.4)
+    await driver.set_velocity(linear_mps=0.05, angular_rad_s=0.4)
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    rc_packets = _rc_drive_packets(transport, driver)
-    assert rc_packets
-    yaw, linear, flags = _decode_rc_payload(rc_packets[0])
-    assert yaw == pytest.approx(0.4)
-    assert linear == pytest.approx(0.10)
-    assert flags == 1
+    tank_packets = _tank_drive_packets(transport, driver)
+    assert tank_packets
+    assert tank_packets[0].payload == bytes([0, 127])
+    assert not _rc_drive_packets(transport, driver)
