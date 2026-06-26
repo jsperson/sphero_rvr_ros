@@ -6,8 +6,26 @@ ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
 LOG_DIR=${RVR_LOG_DIR:-$HOME/.local/state/sphero_rvr}
 LOG_FILE=${RVR_CONSOLE_LOG:-$LOG_DIR/rvr-console.log}
 DRIVER_LOG=${RVR_DRIVER_LOG:-$LOG_DIR/rvr-driver.log}
+DRY_RUN=0
 DRIVER_LAUNCHED=0
 DRIVER_PID=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --help|-h)
+      printf 'Usage: rvr-console [--dry-run]\n'
+      exit 0
+      ;;
+    *)
+      printf 'Unknown argument: %s\nUsage: rvr-console [--dry-run]\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 mkdir -p "$LOG_DIR"
 
@@ -36,6 +54,14 @@ trap cleanup EXIT INT TERM
 
 log "rvr-console starting"
 log "workspace=$WORKSPACE ros_setup=$ROS_SETUP"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  log "dry-run requested; not sourcing ROS, launching driver, or checking ROS graph"
+  SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+  export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+  exec python3 -m sphero_rvr_driver.tui --dry-run
+fi
 
 if [[ ! -f "${ROS_SETUP}" ]]; then
   log "ERROR: ROS setup not found: ${ROS_SETUP}"
