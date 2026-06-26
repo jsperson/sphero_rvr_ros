@@ -69,6 +69,26 @@ def test_status_lines_render_waiting_and_stale_values():
     assert "Armed: True    Estop: False" in lines
 
 
+def test_status_lines_do_not_treat_old_fresh_flags_as_fresh():
+    status = RVRStatus(
+        odom_fresh=True,
+        scan_fresh=True,
+        odom_received_at=1.0,
+        odom_x=0.0,
+        odom_y=0.0,
+        odom_yaw=0.0,
+        odom_distance_m=0.0,
+        scan_received_at=1.0,
+        scan_range_count=3,
+        scan_valid_count=3,
+    )
+
+    lines = format_status_lines(status, armed=False, speed=0.1, turn=0.4, now=5.0)
+
+    assert "Odom: stale 4.0s pose=(0.00, 0.00, yaw=0.00) distance=0.00 m" in lines
+    assert "Scan: stale 4.0s ranges=3 valid=3" in lines
+
+
 def test_battery_odom_and_scan_updates_record_freshness_and_summaries():
     status = RVRStatus()
     battery = SimpleNamespace(percentage=0.25, voltage=7.4)

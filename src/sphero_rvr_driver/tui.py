@@ -11,7 +11,7 @@ from typing import List, Optional
 from .tui_commands import CommandParseError, TUICommand, parse_command
 from .tui_keymap import KeyAction, map_key
 from .tui_launch import LaunchManager
-from .tui_ros import DryRunRVRClient, RVRROSClient, format_status_lines
+from .tui_ros import DryRunRVRClient, RVRROSClient, _freshness_text, format_status_lines
 
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
@@ -306,8 +306,9 @@ class RVRTUI:
 
     def _status_text(self) -> str:
         status = self.client.status
-        odom_state = "fresh" if getattr(status, "odom_fresh", False) else str(getattr(status, "odom_received_at", None) is not None)
-        scan_state = "fresh" if getattr(status, "scan_fresh", False) else str(getattr(status, "scan_received_at", None) is not None)
+        now = time.monotonic()
+        odom_state = _freshness_text(getattr(status, "odom_received_at", None), now)
+        scan_state = _freshness_text(getattr(status, "scan_received_at", None), now)
         return (
             f"mode={getattr(status, 'mode', 'live')} connected={status.connected} estop={status.emergency_stopped} "
             f"cmd_vel={getattr(status, 'cmd_vel_available', False)} "

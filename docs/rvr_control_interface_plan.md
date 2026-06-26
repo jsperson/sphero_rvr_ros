@@ -36,7 +36,7 @@ The warning must be shown in the status/history pane and included in the log. Th
 Hard safety invariants:
 
 - Safe inspection modes (`idle`, `lidar-only`, and `dry-run`) must not construct or publish through a live ROS `/cmd_vel` publisher. Showing that `/cmd_vel` exists elsewhere in the ROS graph is diagnostic context only; it is not permission for the TUI to publish.
-- `rvr-console` must not accept a startup flag or environment variable that skips the in-UI motor warning/confirmation flow. The only live motor-capable launch path is the exact `/mapping motor confirm` command below.
+- `rvr-console` must not accept a startup flag or environment variable that skips the in-UI motor warning/confirmation flow. The only live motor-capable launch path is the exact `/mapping full confirm` command below.
 - Dry-run may simulate motor-capable state transitions for tests, but the simulated client must be visibly fake and must not launch ROS, open hardware devices, or publish to any live ROS topic.
 - If an implementation adds any new path that can start the live driver, create a live `/cmd_vel` publisher, or publish nonzero velocity, this document must be updated first and the path must be listed in the motor-capable command table.
 
@@ -64,25 +64,21 @@ Required fields:
 ```text
 RVR Control Console
 Hardware mode: live|dry-run
-Mapping mode: idle|lidar-only|motor-capable|stopping|failed-launch
-Launch profile: none|lidar|mapping-lidar|mapping-motor|dry-run
-Motor armed: false|true
-ESTOP inhibited: false|true
-RVR UART: /dev/ttyAMA0 present|missing|unknown baud=115200
-Lidar: /dev/rplidar present|missing|unknown baud=460800
-Odom calibration: odom_counts_per_meter=4337.768
-ROS graph: /scan ok|missing  /odom ok|missing  /cmd_vel exposed|not-exposed
-Battery: <percent|waiting> / <voltage|waiting>
+RVR driver: present|missing    /cmd_vel: available|not-exposed (publishers=<count>)
+Battery: <percent|waiting> / <voltage|waiting> (<fresh|stale|waiting> age)
+Odom: <fresh|stale|waiting> pose=(x, y, yaw=<rad>) distance=<meters>
+Scan: <fresh|stale|waiting> ranges=<count> valid=<count> min=<meters> max=<meters>
+Services: /stop ok|missing  /estop ok|missing  /clear_estop ok|missing
+TF: odom->base_link ok|missing|waiting  base_link->laser ok|missing|waiting  map->odom ok|missing|waiting
+Armed: false|true    Estop: false|true
+Speed: <m/s>    Turn: <rad/s>
 Diagnostics: <latest diagnostic message>
-Last STOP/ESTOP: <none|timestamp kind source result>
 ```
 
 Notes:
 
-- The lidar line must specifically check `/dev/rplidar` and display `baud=460800`, matching `launch/lidar.launch.py` and `config/lidar.yaml`.
-- The RVR UART line must specifically check `/dev/ttyAMA0` and display `baud=115200`, matching `config/rvr.yaml`.
-- `Odom calibration` must display `odom_counts_per_meter=4337.768` from `config/rvr.yaml`; if the config value changes, the pane must show the live config value and the implementation must update this document in the same PR.
-- `Launch profile` describes what the TUI launched or attached to:
+- Future status-pane work should add explicit `/dev/rplidar` and `/dev/ttyAMA0` device checks plus the live `odom_counts_per_meter` config value. The current shipped pane reports ROS graph/sensor readiness without opening those hardware devices directly.
+- `Launch profile`, shown in `/status` and `/mapping status`, describes what the TUI launched or attached to:
   - `none`: no managed launch.
   - `lidar`: `ros2 launch sphero_rvr_driver lidar.launch.py`.
   - `mapping-lidar`: `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=false`.
@@ -137,11 +133,11 @@ These commands must never publish nonzero velocity and must never launch the liv
 | `/estop` | Immediate ESTOP behavior below. No confirmation required because ESTOP only reduces motion and inhibits future motion. |
 | `/clear-estop confirm` | Clear the software ESTOP inhibit through `/clear_estop`, leave `motor_armed=false`, and require a later `/arm confirm` before motion. Bare `/clear-estop` must only print the exact recovery command. |
 | `/mapping status` | Show managed launch state, process id if owned by the console, and expected ROS topics. |
-| `/mapping lidar` | Start lidar-only launch: `ros2 launch sphero_rvr_driver lidar.launch.py`. No RVR driver, no `/cmd_vel`. |
-| `/mapping slam` | Start safe mapping launch: `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=false`. This is lidar + SLAM only. |
+| `/lidar start` | Start lidar-only launch: `ros2 launch sphero_rvr_driver lidar.launch.py`. No RVR driver, no `/cmd_vel`. |
+| `/lidar stop` | Stop a managed lidar launch. |
+| `/mapping start` | Start safe mapping launch: `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=false`. This is lidar + SLAM only. |
 | `/mapping stop` | Transition to `stopping`, publish zero velocity if `/cmd_vel` is available, stop the managed launch process, then transition to `idle` or `failed-launch` with a visible result. |
-| `/dry-run start` | Start fake-client/fake-driver mode. Must not require ROS or hardware. Sets `hardware_mode=dry-run`, `launch_profile=dry-run`, and uses fake battery/diagnostic/device values clearly labeled fake. |
-| `/dry-run stop` | Leave dry-run mode and return to `hardware_mode=live`, `mapping_mode=idle`, `motor_armed=false`. |
+| `rvr-console --dry-run` | Start fake-client/fake-driver mode. Must not require ROS or hardware. Uses fake battery/diagnostic/device values clearly labeled fake. |
 | `/quit` | Publish zero velocity if `/cmd_vel` is available, disarm, stop managed launch if owned by the console, close ROS client, and exit. Alias `/exit` may remain for compatibility but must display as `/quit` in help. |
 
 ### Motor-capable commands
@@ -150,7 +146,7 @@ These are the only motor-capable TUI commands. The UI must list them under a `MO
 
 | Command | Confirmation required | Semantics |
 |---|---:|---|
-| `/mapping motor confirm` | yes | In live mode, start full mapping graph: `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true`. Exposes `/cmd_vel` through the RVR driver but must leave `motor_armed=false`. In dry-run mode, simulate the same state transition with the fake client only; do not launch ROS or publish to live topics. |
+| `/mapping full confirm` | yes | In live mode, start full mapping graph: `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true`. Exposes `/cmd_vel` through the RVR driver but must leave `motor_armed=false`. Bare `/mapping full` must warn only. In dry-run mode, simulate the same state transition with the fake client only; do not launch ROS or publish to live topics. |
 | `/arm confirm` | yes | Set `motor_armed=true` only if `mapping_mode=motor-capable`, `/cmd_vel` is available from the managed motor-capable graph or fake dry-run client, and `estop_inhibited=false`. Does not itself publish motion. Bare `/arm` must only print the warning and the exact confirmation command. No external-driver attach path exists in this phase. |
 | `/nudge-forward <meters> confirm` | yes | Run one calibrated forward nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. |
 | `/nudge-back <meters> confirm` | yes | Run one calibrated reverse nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. |
@@ -218,10 +214,10 @@ Recovery:
 
 | Profile | Command | ROS launch | Motor capable |
 |---|---|---|---:|
-| `lidar` | `/mapping lidar` | `ros2 launch sphero_rvr_driver lidar.launch.py` | no |
-| `mapping-lidar` | `/mapping slam` | `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=false` | no |
-| `mapping-motor` | `/mapping motor confirm` | `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true` | yes |
-| `dry-run` | `/dry-run start` | fake in-process client/driver | no live hardware |
+| `lidar` | `/lidar start` | `ros2 launch sphero_rvr_driver lidar.launch.py` | no |
+| `mapping-lidar` | `/mapping start` | `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=false` | no |
+| `mapping-motor` | `/mapping full confirm` | `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true` | yes |
+| `dry-run` | `rvr-console --dry-run` | fake in-process client/driver | no live hardware |
 
 `mapping.launch.py` must keep `start_rvr:=false` as the default. Any implementation that changes that default fails this plan.
 
@@ -229,15 +225,15 @@ Recovery:
 
 ```text
 idle
-  /mapping lidar              -> lidar-only
-  /mapping slam               -> lidar-only
-  /mapping motor              -> idle + warning only
-  /mapping motor confirm      -> motor-capable if launch succeeds, failed-launch if not
-  /dry-run start              -> lidar-only with hardware_mode=dry-run and launch_profile=dry-run
+  /lidar start                -> lidar-only
+  /mapping start              -> lidar-only
+  /mapping full               -> idle + warning only
+  /mapping full confirm       -> motor-capable if launch succeeds, failed-launch if not
+  rvr-console --dry-run       -> idle with hardware_mode=dry-run and launch_profile=dry-run
 
 lidar-only
-  /mapping motor              -> lidar-only + warning only
-  /mapping motor confirm      -> motor-capable after stopping/replacing incompatible managed launch, failed-launch if not
+  /mapping full               -> lidar-only + warning only
+  /mapping full confirm       -> motor-capable after stopping/replacing incompatible managed launch, failed-launch if not
   /mapping stop               -> stopping -> idle
   launch process exits clean  -> idle
   launch process exits error  -> failed-launch
@@ -258,13 +254,13 @@ stopping
 failed-launch
   /mapping status             -> remain failed-launch and show error
   /mapping stop               -> stopping -> idle if cleanup succeeds
-  /mapping lidar or /mapping slam -> retry safe profile
-  /mapping motor confirm      -> retry motor profile after warning/confirmation
+  /lidar start or /mapping start -> retry safe profile
+  /mapping full confirm       -> retry motor profile after warning/confirmation
 ```
 
 A transition into `failed-launch` must include a visible reason: missing executable/package, missing `/dev/rplidar`, missing `/dev/ttyAMA0`, ROS launch exit code, missing required topics, or timeout.
 
-Dry-run uses the same visible states for UI coverage, but every transition must be backed by the fake client. In dry-run, `/mapping motor confirm` means `mapping_mode=motor-capable`, `launch_profile=dry-run`, fake `/cmd_vel` available, and no live ROS process or hardware device opened.
+Dry-run uses the same visible states for UI coverage, but every transition must be backed by the fake client. In dry-run, `/mapping full confirm` means `mapping_mode=motor-capable`, `launch_profile=mapping-motor`, fake `/cmd_vel` available, and no live ROS process or hardware device opened.
 
 ## Calibrated nudge controls
 
@@ -307,12 +303,7 @@ Required entrypoint:
 rvr-console --dry-run
 ```
 
-Required slash commands in the TUI:
-
-```text
-/dry-run start
-/dry-run stop
-```
+Dry-run slash commands (`/dry-run start`, `/dry-run stop`) are future work. The shipped non-hardware path is the `rvr-console --dry-run` entrypoint plus the same TUI slash commands used in live mode.
 
 Dry-run requirements:
 
@@ -320,7 +311,7 @@ Dry-run requirements:
 - Must not source ROS, open `/dev/ttyAMA0`, open `/dev/rplidar`, launch `rvr.launch.py`, or publish to a live `/cmd_vel`.
 - Must use a fake client with the same UI-facing methods as `RVRROSClient`: `publish_velocity`, `stop`, `estop`, `clear_estop`, and status fields.
 - Must visibly label all fake values as fake.
-- Must support scripted tests of `/mapping motor confirm`, `/arm confirm`, nudges, STOP, ESTOP, `/clear-estop confirm`, and failed-launch paths without touching hardware.
+- Must support scripted tests of `/mapping full confirm`, `/arm confirm`, nudges, STOP, ESTOP, `/clear-estop confirm`, and failed-launch paths without touching hardware.
 - Must be selectable from tests without curses by constructing the TUI around a fake client.
 
 ## Test plan
@@ -344,10 +335,10 @@ git diff --check
 Required new/updated unit coverage for implementation cards:
 
 - Command parser accepts every exact slash command in this document and rejects misspellings/aliases for motor confirmation commands.
-- Safe modes do not create a live ROS `/cmd_vel` publisher; only the managed motor-capable graph or fake dry-run client may provide the TUI's velocity sink.
-- Bare `/arm` and `/mapping motor` warn but do not arm, launch the live driver, or publish `/cmd_vel`.
-- `/mapping motor confirm` leaves `motor_armed=false` after launch.
-- `/mapping motor confirm` in dry-run simulates state only and does not source ROS, launch ROS, open devices, or publish to live topics.
+- Safe modes should not create a live ROS `/cmd_vel` publisher; the current live-mode publisher is a known follow-up, and only the managed motor-capable graph or fake dry-run client may be treated as a safe velocity sink.
+- Bare `/arm` and `/mapping full` warn but do not arm, launch the live driver, or publish `/cmd_vel`.
+- `/mapping full confirm` leaves `motor_armed=false` after launch.
+- `/mapping full confirm` in dry-run simulates state only and does not source ROS, launch ROS, open devices, or publish to live topics.
 - `/arm confirm` only arms when `/cmd_vel` is available and `estop_inhibited=false`.
 - STOP publishes zero velocity before any `/stop` service wait.
 - ESTOP publishes zero velocity, calls `/estop`, sets persistent inhibit, and blocks later motor-capable commands.
@@ -389,13 +380,13 @@ WARNING: this can start the RVR motors
 Gate order:
 
 1. **Bench/no-motion lidar gate**
-   - `/mapping lidar` or `/mapping slam` only.
+   - `/lidar start` or `/mapping start` only.
    - Confirm `/dev/rplidar` at `460800`, `/scan`, and `base_link -> laser`.
    - Confirm `/cmd_vel` is not exposed.
 
 2. **Motor graph restrained gate**
    - Robot physically restrained/suspended or in a clear controlled area.
-   - Run `/mapping motor confirm`.
+   - Run `/mapping full confirm`.
    - Confirm `/cmd_vel`, `/odom`, diagnostics, battery, and `odom -> base_link` appear.
    - Confirm `motor_armed=false` immediately after launch.
 
@@ -425,8 +416,8 @@ An implementation satisfies this plan only if all of these are true:
 - The interface is discoverable and easy to operate: plentiful `/help`, menu/prompt guidance, autocomplete or suggestions where possible, and corrective invalid-command help.
 - Startup is a single documented operator entrypoint, preferably `rvr-console`, with setup guidance inside the console rather than multiple manual scripts.
 - Every motor-capable command is exactly listed in the `Motor-capable commands` table and implemented with confirmation before live launch or nonzero `/cmd_vel` publication.
-- Safe startup and safe mapping modes do not construct a live `/cmd_vel` publisher or otherwise expose a new motion path from the TUI.
-- Bare `/arm` and bare `/mapping motor` cannot move the robot or launch the motor-capable graph.
+- Safe startup and safe mapping modes should not construct a live `/cmd_vel` publisher or otherwise expose a new motion path from the TUI; current live-mode publisher creation is tracked as follow-up work.
+- Bare `/arm` and bare `/mapping full` cannot move the robot or launch the motor-capable graph.
 - STOP and ESTOP publish zero velocity immediately before service waits.
 - ESTOP creates a persistent inhibited state that survives failed service calls and blocks all later motion until `/clear-estop confirm` succeeds.
 - `/clear-estop confirm` does not arm the robot.

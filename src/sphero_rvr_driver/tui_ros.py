@@ -208,7 +208,7 @@ def _battery_line(status: RVRStatus, now: float) -> str:
 def _odom_line(status: RVRStatus, now: float) -> str:
     if getattr(status, "odom_received_at", None) is None:
         return "Odom: waiting"
-    freshness = "fresh" if getattr(status, "odom_fresh", False) else _freshness_text(status.odom_received_at, now)
+    freshness = _freshness_text(status.odom_received_at, now)
     return (
         f"Odom: {freshness} "
         f"pose=({status.odom_x:.2f}, {status.odom_y:.2f}, yaw={status.odom_yaw:.2f}) "
@@ -219,7 +219,7 @@ def _odom_line(status: RVRStatus, now: float) -> str:
 def _scan_line(status: RVRStatus, now: float) -> str:
     if getattr(status, "scan_received_at", None) is None:
         return "Scan: waiting"
-    freshness = "fresh" if getattr(status, "scan_fresh", False) else _freshness_text(status.scan_received_at, now)
+    freshness = _freshness_text(status.scan_received_at, now)
     line = (
         f"Scan: {freshness} "
         f"ranges={status.scan_range_count} valid={status.scan_valid_count}"
@@ -345,6 +345,15 @@ class RVRROSClient:
 
     def _refresh_graph_status(self) -> None:
         try:
+            now = time.monotonic()
+            self.status.odom_fresh = (
+                self.status.odom_received_at is not None
+                and now - self.status.odom_received_at <= FRESH_SECONDS
+            )
+            self.status.scan_fresh = (
+                self.status.scan_received_at is not None
+                and now - self.status.scan_received_at <= FRESH_SECONDS
+            )
             topics = {name for name, _types in self._node.get_topic_names_and_types()}
             self.status.cmd_vel_available = "/cmd_vel" in topics
             self.status.cmd_vel_publisher_count = int(self._node.count_publishers("/cmd_vel"))

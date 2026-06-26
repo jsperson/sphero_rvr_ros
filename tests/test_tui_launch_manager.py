@@ -55,7 +55,7 @@ def test_mapping_full_confirm_replaces_safe_launch_with_motor_capable_launch():
 
     result = manager.start_mapping(start_rvr=True)
 
-    assert result.profile is LaunchProfile.MAPPING_FULL
+    assert result.profile is LaunchProfile.MAPPING_MOTOR
     assert result.mode is MappingMode.MOTOR_CAPABLE
     assert runner.stopped == [(safe.pid, 5.0)]
     assert runner.started[-1] == [
@@ -73,10 +73,28 @@ def test_dry_run_records_state_without_starting_ros_processes():
 
     result = manager.start_mapping(start_rvr=True)
 
-    assert result.profile is LaunchProfile.MAPPING_FULL
+    assert result.profile is LaunchProfile.MAPPING_MOTOR
     assert result.mode is MappingMode.MOTOR_CAPABLE
     assert result.pid is None
     assert runner.started == []
+
+
+def test_failed_pre_stop_blocks_replacement_launch():
+    class StopFailingRunner(RecordingRunner):
+        def stop(self, pid, timeout_sec=5.0):
+            super().stop(pid, timeout_sec=timeout_sec)
+            raise TimeoutError("still running")
+
+    runner = StopFailingRunner()
+    manager = LaunchManager(runner=runner)
+    manager.start_lidar()
+
+    result = manager.start_mapping(start_rvr=True)
+
+    assert result.mode is MappingMode.FAILED_LAUNCH
+    assert result.profile is LaunchProfile.NONE
+    assert runner.stopped == [(1001, 5.0)]
+    assert runner.started == [["ros2", "launch", "sphero_rvr_driver", "lidar.launch.py"]]
 
 
 def test_failed_launch_records_failed_state_and_reason():

@@ -20,7 +20,7 @@ class LaunchProfile(Enum):
     NONE = "none"
     LIDAR = "lidar"
     MAPPING_LIDAR = "mapping-lidar"
-    MAPPING_FULL = "mapping-full"
+    MAPPING_MOTOR = "mapping-motor"
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class LaunchManager:
             "mapping.launch.py",
             f"start_rvr:={'true' if start_rvr else 'false'}",
         ]
-        profile = LaunchProfile.MAPPING_FULL if start_rvr else LaunchProfile.MAPPING_LIDAR
+        profile = LaunchProfile.MAPPING_MOTOR if start_rvr else LaunchProfile.MAPPING_LIDAR
         mode = MappingMode.MOTOR_CAPABLE if start_rvr else MappingMode.LIDAR_ONLY
         return self._start(command, profile, mode)
 
@@ -108,6 +108,8 @@ class LaunchManager:
     def _start(self, command: Sequence[str], profile: LaunchProfile, mode: MappingMode) -> LaunchState:
         if self.state.pid is not None or self.state.profile is not LaunchProfile.NONE:
             self.stop()
+            if self.state.mode is MappingMode.FAILED_LAUNCH:
+                return self.state
         if self._dry_run:
             self.state = LaunchState(
                 mode=mode,

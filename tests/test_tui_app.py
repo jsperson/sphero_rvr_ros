@@ -282,6 +282,7 @@ def test_mapping_full_requires_confirm_and_leaves_tui_disarmed():
     assert runner.started == [
         ["ros2", "launch", "sphero_rvr_driver", "mapping.launch.py", "start_rvr:=true"]
     ]
+    assert launcher.state.profile is LaunchProfile.MAPPING_MOTOR
     assert launcher.state.mode is MappingMode.MOTOR_CAPABLE
     assert tui.state.armed is False
 
