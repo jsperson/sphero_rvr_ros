@@ -54,13 +54,15 @@ class RVRCommands:
     CID_RAW_MOTORS: ClassVar[int] = 0x01
     CID_RESET_YAW: ClassVar[int] = 0x06
     CID_DRIVE_WITH_HEADING: ClassVar[int] = 0x07
+    CID_DRIVE_RC_SI_UNITS: ClassVar[int] = 0x34
+    CID_DRIVE_RC_NORMALIZED: ClassVar[int] = 0x35
     CID_RESET_LOCATOR: ClassVar[int] = 0x13
     CID_DRIVE_TO_POSITION_SI: ClassVar[int] = 0x38
 
     # Legacy test aliases. `drive_rc` remains a high-level/core convenience for
     # now; full ROS velocity mapping can be revisited after command cataloging.
     STOP: ClassVar[int] = CID_RAW_MOTORS
-    DRIVE_RC: ClassVar[int] = 0xF0
+    DRIVE_RC: ClassVar[int] = CID_DRIVE_RC_SI_UNITS
 
     # IO command IDs.
     CID_SET_ALL_LEDS: ClassVar[int] = 0x1A
@@ -150,6 +152,34 @@ class RVRCommands:
     ) -> Packet:
         payload = struct.pack(">BHB", speed & 0xFF, heading & 0xFFFF, flags & 0xFF)
         return self._packet(DID_DRIVE, self.CID_DRIVE_WITH_HEADING, sequence_id, TARGET_MCU, payload)
+
+
+    def drive_rc_si_units(
+        self,
+        sequence_id: int,
+        yaw_angular_velocity: float,
+        linear_velocity: float,
+        flags: int = 1,
+    ) -> Packet:
+        """Native RVR RC drive command using SI-ish velocity inputs.
+
+        The official SDK exposes this as drive_rc_si_units(yaw_angular_velocity,
+        linear_velocity, flags). Use it for teleop/cmd_vel instead of raw tank
+        motor duty so the firmware control loop can slew and stabilize motion.
+        Default flag=1 enables RC linear-velocity slew.
+        """
+        payload = struct.pack(">ffB", float(yaw_angular_velocity), float(linear_velocity), flags & 0xFF)
+        return self._packet(DID_DRIVE, self.CID_DRIVE_RC_SI_UNITS, sequence_id, TARGET_MCU, payload)
+
+    def drive_rc_normalized(
+        self,
+        sequence_id: int,
+        yaw_angular_velocity: int,
+        linear_velocity: int,
+        flags: int = 1,
+    ) -> Packet:
+        payload = struct.pack(">bbB", int(yaw_angular_velocity), int(linear_velocity), flags & 0xFF)
+        return self._packet(DID_DRIVE, self.CID_DRIVE_RC_NORMALIZED, sequence_id, TARGET_MCU, payload)
 
     def raw_motors(
         self,

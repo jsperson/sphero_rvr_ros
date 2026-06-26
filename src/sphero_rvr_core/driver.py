@@ -430,14 +430,28 @@ class RVRDriver:
             velocity = self._desired_velocity
             linear_fraction = velocity.linear_mps / self._max_linear_mps if self._max_linear_mps else 0.0
             angular_fraction = velocity.angular_rad_s / self._max_angular_rad_s if self._max_angular_rad_s else 0.0
+            if abs(angular_fraction) > 0.0 and abs(linear_fraction) <= 0.05:
+                # Explicit skid-steer pivot for TUI/teleop turns: one tread reverse,
+                # the other forward. The top rack adds enough load that firmware RC
+                # steering can feel like a bogging arc instead of a real pivot.
+                await self._send(
+                    lambda seq: self.commands.drive_rc(
+                        seq,
+                        0.0,
+                        angular_fraction,
+                        max_speed=self._max_raw_motor_duty,
+                        max_linear_speed=0,
+                        max_angular_speed=self._max_angular_raw_motor_duty,
+                    ),
+                    CommandPriority.NORMAL,
+                )
+                continue
             await self._send(
-                lambda seq: self.commands.drive_rc(
+                lambda seq: self.commands.drive_rc_si_units(
                     seq,
-                    linear_fraction,
-                    angular_fraction,
-                    max_speed=self._max_raw_motor_duty,
-                    max_linear_speed=self._max_linear_raw_motor_duty,
-                    max_angular_speed=self._max_angular_raw_motor_duty,
+                    yaw_angular_velocity=velocity.angular_rad_s,
+                    linear_velocity=velocity.linear_mps,
+                    flags=1,  # RC slew linear velocity for smoother teleop under load.
                 ),
                 CommandPriority.NORMAL,
             )
