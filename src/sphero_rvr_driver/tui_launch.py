@@ -244,7 +244,11 @@ class LaunchManager:
             if last_result.returncode == 0:
                 return last_result
             output = (last_result.stderr or last_result.stdout or "").lower()
-            if "waiting for service" not in output and "not available" not in output:
+            if (
+                "waiting for service" not in output
+                and "not available" not in output
+                and "node not found" not in output
+            ):
                 return last_result
             time.sleep(0.5)
         return last_result if last_result is not None else subprocess.CompletedProcess(command, 1, "", "not attempted")
