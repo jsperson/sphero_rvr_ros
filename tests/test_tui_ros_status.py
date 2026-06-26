@@ -73,6 +73,18 @@ class FakeRclpy(ModuleType):
         return None
 
 
+class DelayedTriggerFuture:
+    def __init__(self):
+        self.done_calls = 0
+
+    def done(self):
+        self.done_calls += 1
+        return self.done_calls >= 2
+
+    def result(self):
+        return SimpleNamespace(success=True, message="service ok")
+
+
 def install_fake_ros_modules(monkeypatch):
     node = FakeNode()
     fake_rclpy = FakeRclpy(node)
@@ -285,3 +297,22 @@ def test_live_ros_client_status_does_not_expose_cmd_vel_before_enablement(monkey
 
     assert client.status.cmd_vel_available is True
     assert client.status.cmd_vel_publisher_count == 1
+
+
+def test_trigger_service_wait_does_not_spin_node_already_spun_by_background_thread(monkeypatch):
+    install_fake_ros_modules(monkeypatch)
+    client = RVRROSClient()
+    future = DelayedTriggerFuture()
+    trigger_client = SimpleNamespace(
+        srv_name="stop",
+        wait_for_service=lambda timeout_sec: True,
+        call_async=lambda request: future,
+    )
+
+    def fail_if_nested_spin(node, timeout_sec=0.1):
+        raise RuntimeError("Executor is already spinning")
+
+    client._rclpy.spin_once = fail_if_nested_spin
+    monkeypatch.setattr("sphero_rvr_driver.tui_ros.time.sleep", lambda _seconds: None)
+
+    assert client._call_trigger(trigger_client, timeout_sec=0.2) == "service ok"
