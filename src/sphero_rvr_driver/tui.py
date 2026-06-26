@@ -8,13 +8,16 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .tui_commands import CommandParseError, TUICommand, parse_command
+from .tui_commands import CommandParseError, NudgeCommand, TUICommand, parse_command
 from .tui_keymap import KeyAction, map_key
-from .tui_launch import LaunchManager
+from .tui_launch import LaunchManager, MappingMode, MapSaver
 from .tui_ros import DryRunRVRClient, RVRROSClient, format_status_lines, freshness_text
 
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
+NUDGE_LINEAR_MPS = 0.05
+NUDGE_CALIBRATED_METERS_PER_SECOND = 0.2286
+NUDGE_ODOM_COUNTS_PER_METER = 4337.768
 KEY_STOP_SECONDS = 0.30
 TURN_KEY_STOP_SECONDS = 0.09
 TURN_HOLD_DETECT_SECONDS = 0.15
@@ -39,17 +42,21 @@ HELP_TEXT = [
     "Controls: arrows/WASD drive when armed, space=/stop, e=/estop, q=/quit",
     "Commands: /arm, /disarm, /battery, /status, /speed <mps>, /turn <rad_s>",
     "          /lidar start|stop, /mapping start|stop|status, /mapping full confirm",
+    "          /map save <name> saves to ~/maps/<safe-name>.yaml/.pgm",
+    "          /nudge forward|back <distance> confirm (distance max 6in; accepts m/in)",
     "          /stop, /estop, /clear-estop, /help, /quit",
-    "MOTOR-CAPABLE: /mapping full confirm. WARNING: this can start the RVR motors",
+    "MOTOR-CAPABLE: /mapping full confirm; /nudge ... confirm. WARNING: this can start the RVR motors",
 ]
 
 
 class RVRTUI:
-    def __init__(self, client, launch_manager: LaunchManager | None = None):
+    def __init__(self, client, launch_manager: LaunchManager | None = None, map_saver: MapSaver | None = None):
         self.client = client
+        dry_run = getattr(getattr(client, "status", None), "mode", "live") == "dry-run"
         self.launch_manager = launch_manager if launch_manager is not None else LaunchManager(
-            dry_run=getattr(getattr(client, "status", None), "mode", "live") == "dry-run"
+            dry_run=dry_run
         )
+        self.map_saver = map_saver if map_saver is not None else MapSaver(dry_run=dry_run)
         self.state = TUIState()
         self._last_motion_at: Optional[float] = None
         self._last_motion_publish_at: Optional[float] = None
@@ -144,6 +151,10 @@ class RVRTUI:
                 self._run_lidar_command(command)
             elif name == "mapping":
                 self._run_mapping_command(command)
+            elif name == "map":
+                self._run_map_command(command)
+            elif name == "nudge":
+                self._run_nudge_command(command)
             elif name == "stop":
                 self.state.log(self.client.stop())
                 self._motion_active = False
@@ -178,6 +189,7 @@ class RVRTUI:
             self.state.armed = False
             self._publish_zero_velocity()
             state = self.launch_manager.stop()
+            self._disable_motion_publisher_if_supported()
             self.state.log(state.message)
             return
         if command.value == "status":
@@ -190,9 +202,51 @@ class RVRTUI:
         if command.value == "full-confirm":
             self.state.armed = False
             state = self.launch_manager.start_mapping(start_rvr=True)
+            if not self.launch_manager.dry_run and state.mode is MappingMode.MOTOR_CAPABLE:
+                self._enable_motion_publisher_if_supported()
             self.state.log(f"WARNING: this can start the RVR motors. {state.message}")
             return
         raise ValueError("use /mapping start, /mapping stop, /mapping status, or /mapping full confirm")
+
+    def _run_map_command(self, command: TUICommand) -> None:
+        if not isinstance(command.value, str):
+            raise ValueError("use /map save <name>")
+        self.state.log(self.map_saver.save(command.value).message)
+
+    def _run_nudge_command(self, command: TUICommand) -> None:
+        if not isinstance(command.value, NudgeCommand):
+            raise ValueError("use /nudge forward <distance> confirm or /nudge back <distance> confirm")
+        nudge = command.value
+        if not nudge.confirmed:
+            self.state.log(
+                "WARNING: this can start the RVR motors. "
+                f"Run /nudge {nudge.direction} {nudge.distance_m:.2f} confirm to continue."
+            )
+            return
+        if not self.state.armed:
+            self.state.log("Nudge rejected while disarmed. Use /arm confirm first.")
+            return
+        if not self._velocity_sink_available():
+            self.state.log("Nudge rejected: velocity publisher not enabled.")
+            return
+
+        velocity = NUDGE_LINEAR_MPS if nudge.direction == "forward" else -NUDGE_LINEAR_MPS
+        duration = nudge.distance_m / NUDGE_CALIBRATED_METERS_PER_SECOND
+        expected_counts = nudge.distance_m * NUDGE_ODOM_COUNTS_PER_METER
+        mode_prefix = "DRY-RUN nudge" if getattr(self.client.status, "mode", "live") == "dry-run" else "nudge"
+
+        try:
+            self.client.publish_velocity(velocity, 0.0)
+            time.sleep(duration)
+        finally:
+            self._publish_zero_velocity()
+            self.state.armed = False
+
+        self.state.log(
+            f"{mode_prefix} {nudge.direction} distance={nudge.distance_m:.2f} m "
+            f"velocity={abs(velocity):.2f} m/s duration={duration:.2f}s "
+            f"expected_encoder_counts={expected_counts:.1f}; stopped and disarmed"
+        )
 
     def _read_and_run_command(self, screen) -> None:
         curses.curs_set(1)
@@ -225,7 +279,7 @@ class RVRTUI:
             return
         now = time.monotonic()
         if now - self._last_motion_at > self._active_stop_seconds:
-            self.client.publish_velocity(0.0, 0.0)
+            self._publish_zero_velocity()
             self._motion_active = False
             self._last_motion_publish_at = None
             self.state.log("Stopped after key timeout.")
@@ -243,7 +297,8 @@ class RVRTUI:
 
     def _publish_zero_velocity(self) -> None:
         try:
-            self.client.publish_velocity(0.0, 0.0)
+            if self._velocity_sink_available():
+                self.client.publish_velocity(0.0, 0.0)
         finally:
             self._motion_active = False
             self._last_motion_publish_at = None
@@ -253,6 +308,22 @@ class RVRTUI:
         self._active_angular_rad_s = angular_rad_s
         self.client.publish_velocity(linear_mps, angular_rad_s)
         self._last_motion_publish_at = time.monotonic()
+
+    def _velocity_sink_available(self) -> bool:
+        enabled = getattr(self.client, "velocity_publisher_enabled", None)
+        if enabled is None:
+            return True
+        return bool(enabled)
+
+    def _enable_motion_publisher_if_supported(self) -> None:
+        enable = getattr(self.client, "enable_velocity_publisher", None)
+        if callable(enable):
+            enable()
+
+    def _disable_motion_publisher_if_supported(self) -> None:
+        disable = getattr(self.client, "disable_velocity_publisher", None)
+        if callable(disable):
+            disable()
 
     def _motion_log_text(self, linear_mps: float, angular_rad_s: float) -> str:
         prefix = "DRY-RUN cmd_vel" if getattr(self.client.status, "mode", "live") == "dry-run" else "cmd_vel"

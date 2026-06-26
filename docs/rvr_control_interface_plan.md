@@ -148,11 +148,13 @@ These are the only motor-capable TUI commands. The UI must list them under a `MO
 |---|---:|---|
 | `/mapping full confirm` | yes | In live mode, start full mapping graph: `ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true`. Exposes `/cmd_vel` through the RVR driver but must leave `motor_armed=false`. Bare `/mapping full` must warn only. In dry-run mode, simulate the same state transition with the fake client only; do not launch ROS or publish to live topics. |
 | `/arm confirm` | yes | Set `motor_armed=true` only if `mapping_mode=motor-capable`, `/cmd_vel` is available from the managed motor-capable graph or fake dry-run client, and `estop_inhibited=false`. Does not itself publish motion. Bare `/arm` must only print the warning and the exact confirmation command. No external-driver attach path exists in this phase. |
-| `/nudge-forward <meters> confirm` | yes | Run one calibrated forward nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. |
-| `/nudge-back <meters> confirm` | yes | Run one calibrated reverse nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. |
+| `/nudge forward <distance> confirm` | yes | Run one calibrated forward nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. Distance accepts meters by default or an explicit `m`/`in` suffix. |
+| `/nudge back <distance> confirm` | yes | Run one calibrated reverse nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. Distance accepts meters by default or an explicit `m`/`in` suffix. |
 | `/nudge-left <degrees> confirm` | yes | Run one calibrated in-place left turn nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. |
 | `/nudge-right <degrees> confirm` | yes | Run one calibrated in-place right turn nudge using `/cmd_vel`, then publish zero velocity and disarm unless `--keep-armed` is implemented later. |
 | Keyboard `↑/w`, `↓/s`, `←/a`, `→/d` | gated by prior `/arm confirm` | Publish bounded nonzero `/cmd_vel` only while armed and not ESTOP-inhibited. Prefer nudge commands for mapping; keyboard drive is secondary. |
+
+Current nudge implementation note: the fixed-distance nudge sleeps for the calibrated duration before publishing zero velocity. That keeps the initial supervised/restrained calibration path simple, but the curses loop cannot process keyboard STOP/ESTOP during that short sleep window. Before free-field use, replace this with a ticked or asynchronous nudge loop that can observe STOP/ESTOP mid-nudge.
 
 No other slash command may publish nonzero `/cmd_vel`. If a future command can move the robot, it must be added to this table before implementation.
 
@@ -269,15 +271,15 @@ Nudges are the preferred movement interface for early mapping because they are b
 Commands:
 
 ```text
-/nudge-forward <meters> confirm
-/nudge-back <meters> confirm
+/nudge forward <distance> confirm
+/nudge back <distance> confirm
 /nudge-left <degrees> confirm
 /nudge-right <degrees> confirm
 ```
 
 Initial limits:
 
-- Forward/back distance: `0.02 <= meters <= 0.25`.
+- Forward/back distance: `0.02 <= meters <= 0.1524` (6 inches) for the initial calibrated TUI implementation.
 - Turn angle: `5 <= degrees <= 30`.
 - Linear velocity: use configured `max_linear_mps`, capped at `0.05 m/s` for nudges until hardware validation raises it.
 - Angular velocity: use configured `max_angular_rad_s`, capped at `0.35 rad/s` for nudges until hardware validation raises it.
@@ -398,7 +400,7 @@ Gate order:
    - Run `/clear-estop confirm`; verify `motor_armed=false`.
 
 4. **Tiny nudge gate**
-   - Use `/nudge-forward 0.02 confirm` first.
+   - Use `/nudge forward 0.02 confirm` first.
    - Verify final zero velocity, odometry delta, and no continued motion.
    - Only then try larger bounded nudges within this document's limits.
 

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Sequence
 
 
@@ -31,6 +33,14 @@ class LaunchState:
     message: str = "No managed launch."
 
 
+@dataclass(frozen=True)
+class MapSaveResult:
+    path: Path
+    command: tuple[str, ...]
+    success: bool
+    message: str
+
+
 class SubprocessLaunchRunner:
     """Starts and stops ROS launch processes owned by the TUI."""
 
@@ -54,6 +64,74 @@ class SubprocessLaunchRunner:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=timeout_sec)
+
+
+class SubprocessMapSaveRunner:
+    """Runs nav2_map_server's map saver command."""
+
+    def save(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(list(command), capture_output=True, text=True, check=False)
+
+
+def sanitize_map_name(raw_name: str) -> str:
+    """Return a safe filename stem for a saved map."""
+    candidate = Path(raw_name.strip()).name
+    candidate = re.sub(r"[^A-Za-z0-9_.-]+", "_", candidate)
+    candidate = re.sub(r"_+", "_", candidate).strip("._-")
+    if not candidate:
+        raise ValueError("map name must contain at least one letter or number")
+    return candidate
+
+
+class MapSaver:
+    """Saves SLAM maps to a known directory through nav2_map_server."""
+
+    def __init__(self, runner=None, dry_run: bool = False, output_dir: Path | str | None = None):
+        self._runner = runner if runner is not None else SubprocessMapSaveRunner()
+        self._dry_run = dry_run
+        self._output_dir = Path(output_dir).expanduser() if output_dir is not None else Path.home() / "maps"
+
+    @property
+    def output_dir(self) -> Path:
+        return self._output_dir
+
+    @property
+    def dry_run(self) -> bool:
+        return self._dry_run
+
+    def save(self, raw_name: str) -> MapSaveResult:
+        name = sanitize_map_name(raw_name)
+        path = self._output_dir / name
+        command = ("ros2", "run", "nav2_map_server", "map_saver_cli", "-f", str(path))
+        if self._dry_run:
+            return MapSaveResult(
+                path=path,
+                command=command,
+                success=True,
+                message=f"DRY-RUN map save: {path} (.yaml/.pgm) via {' '.join(command)}",
+            )
+
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            completed = self._runner.save(command)
+        except Exception as exc:
+            return MapSaveResult(path=path, command=command, success=False, message=f"Map save failed: {exc}")
+
+        output = (getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or "").strip()
+        if completed.returncode != 0:
+            detail = f": {output}" if output else ""
+            return MapSaveResult(
+                path=path,
+                command=command,
+                success=False,
+                message=f"Map save failed rc={completed.returncode}{detail}",
+            )
+        return MapSaveResult(
+            path=path,
+            command=command,
+            success=True,
+            message=f"Saved map to {path}.yaml and {path}.pgm",
+        )
 
 
 class LaunchManager:

@@ -1,6 +1,6 @@
 import pytest
 
-from sphero_rvr_driver.tui_commands import CommandParseError, parse_command
+from sphero_rvr_driver.tui_commands import CommandParseError, NudgeCommand, parse_command
 
 
 @pytest.mark.parametrize(
@@ -35,6 +35,22 @@ def test_parse_known_commands(raw, name, value):
 
 
 @pytest.mark.parametrize(
+    "raw,direction,distance_m,confirmed",
+    [
+        ("/nudge forward 0.02", "forward", 0.02, False),
+        ("/nudge forward 0.02 confirm", "forward", 0.02, True),
+        ("/nudge back 6in confirm", "back", 0.1524, True),
+        ("/nudge back 3 inches confirm", "back", 0.0762, True),
+    ],
+)
+def test_parse_nudge_commands(raw, direction, distance_m, confirmed):
+    command = parse_command(raw)
+
+    assert command.name == "nudge"
+    assert command.value == NudgeCommand(direction=direction, distance_m=pytest.approx(distance_m), confirmed=confirmed)
+
+
+@pytest.mark.parametrize(
     "raw",
     [
         "",
@@ -52,6 +68,12 @@ def test_parse_known_commands(raw, name, value):
         "/mapping begin",
         "/mapping full yes",
         "/mapping start confirm",
+        "/nudge forward nope confirm",
+        "/nudge forward 0 confirm",
+        "/nudge forward 0.01 confirm",
+        "/nudge forward -0.01 confirm",
+        "/nudge forward 7in confirm",
+        "/nudge back 0.20 confirm",
     ],
 )
 def test_parse_rejects_invalid_commands(raw):

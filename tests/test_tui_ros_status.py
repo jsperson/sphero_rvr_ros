@@ -1,14 +1,144 @@
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from sphero_rvr_driver.tui_ros import (
     RVRStatus,
+    RVRROSClient,
     format_status_lines,
     update_battery_status,
     update_odom_status,
     update_scan_status,
 )
+
+
+class FakePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, msg):
+        self.messages.append(msg)
+
+
+class FakeNode:
+    def __init__(self):
+        self.created_publishers = []
+        self.destroyed_publishers = []
+        self.topics = {"/cmd_vel"}
+
+    def create_publisher(self, msg_type, topic, qos):
+        publisher = FakePublisher()
+        self.created_publishers.append((msg_type, topic, qos, publisher))
+        return publisher
+
+    def destroy_publisher(self, publisher):
+        self.destroyed_publishers.append(publisher)
+
+    def create_subscription(self, *args):
+        return SimpleNamespace(args=args)
+
+    def create_client(self, _srv_type, name):
+        return SimpleNamespace(srv_name=name, service_is_ready=lambda: False)
+
+    def get_topic_names_and_types(self):
+        return [(topic, []) for topic in self.topics]
+
+    def count_publishers(self, topic):
+        if topic != "/cmd_vel":
+            return 0
+        return len(self.created_publishers) - len(self.destroyed_publishers)
+
+
+class FakeRclpy(ModuleType):
+    def __init__(self, node):
+        super().__init__("rclpy")
+        self._node = node
+        self.initialized = False
+        self.time = SimpleNamespace(Time=lambda: None)
+
+    def ok(self):
+        return self.initialized
+
+    def init(self, args=None):
+        self.initialized = True
+
+    def create_node(self, name):
+        return self._node
+
+    def shutdown(self):
+        self.initialized = False
+
+    def spin_once(self, node, timeout_sec=0.1):
+        return None
+
+
+def install_fake_ros_modules(monkeypatch):
+    node = FakeNode()
+    fake_rclpy = FakeRclpy(node)
+    monkeypatch.setitem(sys.modules, "rclpy", fake_rclpy)
+    monkeypatch.setitem(sys.modules, "rclpy.node", SimpleNamespace(Node=FakeNode))
+    message_modules = {
+        "diagnostic_msgs.msg": {"DiagnosticArray": type("DiagnosticArray", (), {})},
+        "geometry_msgs.msg": {"Twist": _fake_twist_type()},
+        "nav_msgs.msg": {"Odometry": type("Odometry", (), {})},
+        "sensor_msgs.msg": {
+            "BatteryState": type("BatteryState", (), {}),
+            "LaserScan": type("LaserScan", (), {}),
+        },
+        "std_srvs.srv": {"Trigger": type("Trigger", (), {"Request": type("Request", (), {})})},
+    }
+    for module_name, attrs in message_modules.items():
+        module = ModuleType(module_name)
+        for attr, value in attrs.items():
+            setattr(module, attr, value)
+        monkeypatch.setitem(sys.modules, module_name, module)
+        package_name = module_name.rsplit(".", 1)[0]
+        monkeypatch.setitem(sys.modules, package_name, ModuleType(package_name))
+    return node
+
+
+def _fake_twist_type():
+    class Twist:
+        def __init__(self):
+            self.linear = SimpleNamespace(x=0.0)
+            self.angular = SimpleNamespace(z=0.0)
+
+    return Twist
+
+
+def test_ros_client_does_not_create_cmd_vel_publisher_during_init(monkeypatch):
+    node = install_fake_ros_modules(monkeypatch)
+
+    client = RVRROSClient()
+
+    assert node.created_publishers == []
+    assert client._cmd_pub is None
+    assert client.status.cmd_vel_available is False
+    assert client.status.cmd_vel_publisher_count == 0
+
+
+def test_ros_client_enables_velocity_publisher_once_before_publishing(monkeypatch):
+    node = install_fake_ros_modules(monkeypatch)
+    client = RVRROSClient()
+
+    client.publish_velocity(0.0, 0.0)
+    assert client.status.diagnostic_message == "cmd_vel publisher not enabled; zero velocity skipped"
+    assert node.created_publishers == []
+
+    with pytest.raises(RuntimeError, match="cmd_vel publisher is not enabled"):
+        client.publish_velocity(0.1, 0.0)
+
+    publisher = client.enable_velocity_publisher()
+    assert client.enable_velocity_publisher() is publisher
+    assert len(node.created_publishers) == 1
+    assert node.created_publishers[0][1:3] == ("cmd_vel", 10)
+
+    client.publish_velocity(0.1, -0.2)
+
+    assert len(publisher.messages) == 1
+    assert publisher.messages[0].linear.x == pytest.approx(0.1)
+    assert publisher.messages[0].angular.z == pytest.approx(-0.2)
 
 
 def test_status_lines_render_graph_readiness_and_sensor_summaries():
@@ -117,3 +247,41 @@ def test_battery_odom_and_scan_updates_record_freshness_and_summaries():
     assert status.scan_valid_count == 2
     assert status.scan_min_range == pytest.approx(0.2)
     assert status.scan_max_range == pytest.approx(2.5)
+
+
+def test_live_ros_client_defers_cmd_vel_publisher_until_enabled(monkeypatch):
+    node = install_fake_ros_modules(monkeypatch)
+
+    client = RVRROSClient()
+
+    assert node.created_publishers == []
+    assert client.velocity_publisher_enabled is False
+    with pytest.raises(RuntimeError, match="velocity publisher is not enabled"):
+        client.publish_velocity(0.1, 0.0)
+
+    client.enable_velocity_publisher()
+    client.enable_velocity_publisher()
+    client.publish_velocity(0.2, -0.3)
+
+    assert len(node.created_publishers) == 1
+    _msg_type, topic, qos, publisher = node.created_publishers[0]
+    assert (topic, qos) == ("cmd_vel", 10)
+    assert publisher.messages[-1].linear.x == pytest.approx(0.2)
+    assert publisher.messages[-1].angular.z == pytest.approx(-0.3)
+
+
+def test_live_ros_client_status_does_not_expose_cmd_vel_before_enablement(monkeypatch):
+    node = install_fake_ros_modules(monkeypatch)
+    client = RVRROSClient()
+
+    client._refresh_graph_status()
+
+    assert "/cmd_vel" in node.topics
+    assert client.status.cmd_vel_available is False
+    assert client.status.cmd_vel_publisher_count == 0
+
+    client.enable_velocity_publisher()
+    client._refresh_graph_status()
+
+    assert client.status.cmd_vel_available is True
+    assert client.status.cmd_vel_publisher_count == 1
