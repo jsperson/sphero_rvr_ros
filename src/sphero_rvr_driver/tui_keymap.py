@@ -29,6 +29,7 @@ _RIGHT = {"KEY_RIGHT", "d", "D"}
 _STOP = {" ", "KEY_BACKSPACE"}
 _ESTOP = {"e", "E"}
 _QUIT = {"q", "Q"}
+TURN_ARC_LINEAR_FRACTION = 0.5
 
 
 def map_key(key: str, *, speed: float, turn: float) -> Optional[KeyAction]:
@@ -37,9 +38,9 @@ def map_key(key: str, *, speed: float, turn: float) -> Optional[KeyAction]:
     if key in _REVERSE:
         return KeyAction.motion(-speed, 0.0)
     if key in _LEFT:
-        return KeyAction.motion(0.0, turn)
+        return KeyAction.motion(speed * TURN_ARC_LINEAR_FRACTION, turn)
     if key in _RIGHT:
-        return KeyAction.motion(0.0, -turn)
+        return KeyAction.motion(speed * TURN_ARC_LINEAR_FRACTION, -turn)
     if key in _STOP:
         return KeyAction.command("stop")
     if key in _ESTOP:

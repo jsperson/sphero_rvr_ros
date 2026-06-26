@@ -6,10 +6,10 @@ def test_direction_keys_map_to_motion_intents():
     assert map_key("w", speed=0.1, turn=0.4) == KeyAction.motion(0.1, 0.0)
     assert map_key("KEY_DOWN", speed=0.1, turn=0.4) == KeyAction.motion(-0.1, 0.0)
     assert map_key("s", speed=0.1, turn=0.4) == KeyAction.motion(-0.1, 0.0)
-    assert map_key("KEY_LEFT", speed=0.1, turn=0.4) == KeyAction.motion(0.0, 0.4)
-    assert map_key("a", speed=0.1, turn=0.4) == KeyAction.motion(0.0, 0.4)
-    assert map_key("KEY_RIGHT", speed=0.1, turn=0.4) == KeyAction.motion(0.0, -0.4)
-    assert map_key("d", speed=0.1, turn=0.4) == KeyAction.motion(0.0, -0.4)
+    assert map_key("KEY_LEFT", speed=0.1, turn=0.4) == KeyAction.motion(0.05, 0.4)
+    assert map_key("a", speed=0.1, turn=0.4) == KeyAction.motion(0.05, 0.4)
+    assert map_key("KEY_RIGHT", speed=0.1, turn=0.4) == KeyAction.motion(0.05, -0.4)
+    assert map_key("d", speed=0.1, turn=0.4) == KeyAction.motion(0.05, -0.4)
 
 
 def test_stop_estop_quit_keys():

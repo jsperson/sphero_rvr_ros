@@ -391,7 +391,7 @@ class RVRTUI:
         rows = format_status_lines(status, armed=self.state.armed, speed=self.state.speed, turn=self.state.turn)
         rows.extend([
             "",
-            "↑/w forward  ↓/s reverse  ←/a left  →/d right  space stop  e estop  q quit",
+            "↑/w forward  ↓/s reverse  ←/a arc left  →/d arc right  space stop  e estop  q quit",
             "Type /help for slash commands.",
             "",
         ])
