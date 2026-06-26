@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import curses
 import time
 from dataclasses import dataclass, field
@@ -9,7 +10,8 @@ from typing import List, Optional
 
 from .tui_commands import CommandParseError, TUICommand, parse_command
 from .tui_keymap import KeyAction, map_key
-from .tui_ros import RVRROSClient
+from .tui_launch import LaunchManager
+from .tui_ros import DryRunRVRClient, RVRROSClient, format_status_lines
 
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
@@ -36,13 +38,18 @@ class TUIState:
 HELP_TEXT = [
     "Controls: arrows/WASD drive when armed, space=/stop, e=/estop, q=/quit",
     "Commands: /arm, /disarm, /battery, /status, /speed <mps>, /turn <rad_s>",
+    "          /lidar start|stop, /mapping start|stop|status, /mapping full confirm",
     "          /stop, /estop, /clear-estop, /help, /quit",
+    "MOTOR-CAPABLE: /mapping full confirm. WARNING: this can start the RVR motors",
 ]
 
 
 class RVRTUI:
-    def __init__(self, client: RVRROSClient):
+    def __init__(self, client, launch_manager: LaunchManager | None = None):
         self.client = client
+        self.launch_manager = launch_manager if launch_manager is not None else LaunchManager(
+            dry_run=getattr(getattr(client, "status", None), "mode", "live") == "dry-run"
+        )
         self.state = TUIState()
         self._last_motion_at: Optional[float] = None
         self._last_motion_publish_at: Optional[float] = None
@@ -73,6 +80,7 @@ class RVRTUI:
                 self._maintain_motion()
         finally:
             self._safe_stop()
+            self.launch_manager.stop()
             self.client.close()
 
     def _handle_key(self, screen, key_code: int) -> None:
@@ -96,7 +104,7 @@ class RVRTUI:
             self._motion_active = True
             self._last_motion_at = now
             self._configure_motion_mode(action.linear_mps, action.angular_rad_s, now)
-            self.state.log(f"cmd_vel linear={action.linear_mps:.2f} angular={action.angular_rad_s:.2f}")
+            self.state.log(self._motion_log_text(action.linear_mps, action.angular_rad_s))
             return
 
         if action.kind == "command":
@@ -132,6 +140,10 @@ class RVRTUI:
                 self.state.log(self._battery_text())
             elif name == "status":
                 self.state.log(self._status_text())
+            elif name == "lidar":
+                self._run_lidar_command(command)
+            elif name == "mapping":
+                self._run_mapping_command(command)
             elif name == "stop":
                 self.state.log(self.client.stop())
                 self._motion_active = False
@@ -147,6 +159,40 @@ class RVRTUI:
                 self.state.log(f"Unknown command: /{name}")
         except Exception as exc:
             self.state.log(f"ERROR: {exc}")
+
+    def _run_lidar_command(self, command: TUICommand) -> None:
+        if command.value == "start":
+            state = self.launch_manager.start_lidar()
+        elif command.value == "stop":
+            state = self.launch_manager.stop()
+        else:
+            raise ValueError("use /lidar start or /lidar stop")
+        self.state.log(state.message)
+
+    def _run_mapping_command(self, command: TUICommand) -> None:
+        if command.value == "start":
+            state = self.launch_manager.start_mapping(start_rvr=False)
+            self.state.log(state.message)
+            return
+        if command.value == "stop":
+            self.state.armed = False
+            self._publish_zero_velocity()
+            state = self.launch_manager.stop()
+            self.state.log(state.message)
+            return
+        if command.value == "status":
+            self.state.log(self._launch_status_text())
+            return
+        if command.value == "full":
+            self.state.armed = False
+            self.state.log("WARNING: this can start the RVR motors. Run /mapping full confirm to continue.")
+            return
+        if command.value == "full-confirm":
+            self.state.armed = False
+            state = self.launch_manager.start_mapping(start_rvr=True)
+            self.state.log(f"WARNING: this can start the RVR motors. {state.message}")
+            return
+        raise ValueError("use /mapping start, /mapping stop, /mapping status, or /mapping full confirm")
 
     def _read_and_run_command(self, screen) -> None:
         curses.curs_set(1)
@@ -208,6 +254,10 @@ class RVRTUI:
         self.client.publish_velocity(linear_mps, angular_rad_s)
         self._last_motion_publish_at = time.monotonic()
 
+    def _motion_log_text(self, linear_mps: float, angular_rad_s: float) -> str:
+        prefix = "DRY-RUN cmd_vel" if getattr(self.client.status, "mode", "live") == "dry-run" else "cmd_vel"
+        return f"{prefix} linear={linear_mps:.2f} angular={angular_rad_s:.2f}"
+
     def _configure_motion_mode(self, linear_mps: float, angular_rad_s: float, now: float) -> None:
         is_turn_only = abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9
         if not is_turn_only:
@@ -231,19 +281,13 @@ class RVRTUI:
     def _draw(self, screen, command_prompt: str = "> ") -> None:
         screen.erase()
         status = self.client.status
-        battery = self._battery_text()
-        rows = [
-            "Sphero RVR Console",
-            "────────────────────────────────────────",
-            f"Driver: {status.diagnostic_message}    Connected: {status.connected}",
-            f"Battery: {battery}",
-            f"Armed: {self.state.armed}    Estop: {status.emergency_stopped}",
-            f"Speed: {self.state.speed:.2f} m/s    Turn: {self.state.turn:.2f} rad/s",
+        rows = format_status_lines(status, armed=self.state.armed, speed=self.state.speed, turn=self.state.turn)
+        rows.extend([
             "",
             "↑/w forward  ↓/s reverse  ←/a left  →/d right  space stop  e estop  q quit",
             "Type /help for slash commands.",
             "",
-        ]
+        ])
         rows.extend(self.state.history[-6:])
         rows.extend(["", command_prompt])
         height, width = screen.getmaxyx()
@@ -262,10 +306,19 @@ class RVRTUI:
 
     def _status_text(self) -> str:
         status = self.client.status
+        odom_state = "fresh" if getattr(status, "odom_fresh", False) else str(getattr(status, "odom_received_at", None) is not None)
+        scan_state = "fresh" if getattr(status, "scan_fresh", False) else str(getattr(status, "scan_received_at", None) is not None)
         return (
-            f"connected={status.connected} estop={status.emergency_stopped} "
-            f"battery={self._battery_text()} diag='{status.diagnostic_message}'"
+            f"mode={getattr(status, 'mode', 'live')} connected={status.connected} estop={status.emergency_stopped} "
+            f"cmd_vel={getattr(status, 'cmd_vel_available', False)} "
+            f"battery={self._battery_text()} odom={odom_state} "
+            f"scan={scan_state} {self._launch_status_text()} diag='{status.diagnostic_message}'"
         )
+
+    def _launch_status_text(self) -> str:
+        launch_state = self.launch_manager.state
+        pid = launch_state.pid if launch_state.pid is not None else "none"
+        return f"launch={launch_state.profile.value} mapping={launch_state.mode.value} pid={pid}"
 
     @staticmethod
     def _key_name(screen, key_code: int) -> str:
@@ -279,8 +332,11 @@ class RVRTUI:
         return ""
 
 
-def main() -> None:
-    client = RVRROSClient()
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Sphero RVR curses console")
+    parser.add_argument("--dry-run", action="store_true", help="run with fake ROS surfaces and no hardware access")
+    args = parser.parse_args(argv)
+    client = DryRunRVRClient() if args.dry_run else RVRROSClient()
     RVRTUI(client).run()
 
 

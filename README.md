@@ -11,6 +11,7 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_api_gap_report.md](docs/rvr_api_gap_report.md) is the parity handoff: what is implemented, what remains intentionally core-only/omitted, and which commands validate the state.
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
 - [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
+- [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
@@ -591,16 +592,33 @@ Or use the startup wrapper from the repo checkout:
 
 The wrapper sources ROS, sources the workspace, starts the driver launch if needed, verifies required topics/services, starts the TUI, and logs cleanup on exit. It does not call the ROS `/stop` service during shell cleanup; the TUI publishes zero `/cmd_vel` on exit, and the driver shutdown path sends the validated raw-motor-off packet.
 
+To exercise the console without ROS, lidar, UART, or RVR hardware, use dry-run mode:
+
+```bash
+~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console --dry-run
+```
+
+Dry-run mode starts the same TUI against an in-process fake client. The status pane is labeled `DRY-RUN`, simulated battery/odom/scan/service data are shown as fake/fresh, STOP/ESTOP responses are simulated, and drive keys append intended `DRY-RUN cmd_vel` commands to the TUI history instead of publishing to a live ROS `/cmd_vel` topic.
+
 TUI behavior:
 
 - Talks to the robot only through ROS 2 topics/services:
   - publishes `/cmd_vel`
   - calls `/stop`, `/estop`, `/clear_estop`
-  - subscribes `/battery_state`, `/diagnostics`
+  - subscribes `/battery_state`, `/diagnostics`, `/odom`, and `/scan`
+- Supports `--dry-run` from `rvr-console` for ROS-free UI testing with fake battery, odom, scan, STOP/ESTOP, and command-publish logs.
 - Does not import `RVRDriver` or open `/dev/ttyAMA0`; the ROS driver node remains the only UART owner.
 - Starts disarmed. Non-zero drive keys do nothing until the user explicitly arms the TUI.
 - Supports keyboard driving with arrow keys and/or WASD, plus space for stop.
 - Supports slash commands: `/battery`, `/status`, `/speed <mps>`, `/turn <rad_s>`, `/stop`, `/estop`, `/clear-estop`, `/arm`, `/disarm`, `/help`, and `/quit`.
+- Manages lidar/mapping launch processes from inside the TUI:
+  - `/lidar start` launches `lidar.launch.py` only; no RVR driver and no motor path.
+  - `/lidar stop` stops the TUI-owned lidar launch process.
+  - `/mapping start` launches `mapping.launch.py start_rvr:=false` for lidar + SLAM checks without the RVR driver.
+  - `/mapping stop` publishes zero velocity, disarms the TUI, and stops the TUI-owned launch process.
+  - `/mapping full` only displays `WARNING: this can start the RVR motors` and the required confirmation form.
+  - `/mapping full confirm` launches `mapping.launch.py start_rvr:=true`; this is motor-capable and leaves the TUI disarmed until `/arm confirm`.
+- `rvr-console --dry-run` starts the fake TUI path without sourcing ROS, launching ROS processes, opening `/dev/ttyAMA0`, or touching `/dev/rplidar`; it can exercise `/lidar ...` and `/mapping ...` state transitions safely.
 - Stops on key timeout, quit, crash, or Ctrl+C.
 - Logs startup, driver launch, topic/service verification, and cleanup details to `~/.local/state/sphero_rvr/rvr-console.log`; driver output goes to `~/.local/state/sphero_rvr/rvr-driver.log`.
 

@@ -1,7 +1,8 @@
 import sphero_rvr_driver.tui as tui_module
-from sphero_rvr_driver.tui import RVRTUI
+from sphero_rvr_driver.tui import DryRunRVRClient, RVRTUI
 from sphero_rvr_driver.tui_commands import TUICommand
 from sphero_rvr_driver.tui_keymap import KeyAction
+from sphero_rvr_driver.tui_launch import LaunchManager, LaunchProfile, MappingMode
 
 
 class FakeClient:
@@ -32,6 +33,21 @@ class FakeClient:
 
     def clear_estop(self, timeout_sec=2.0):
         return "cleared"
+
+
+class RecordingRunner:
+    def __init__(self):
+        self.started = []
+        self.stopped = []
+        self.next_pid = 42
+
+    def start(self, command):
+        self.started.append(list(command))
+        self.next_pid += 1
+        return self.next_pid
+
+    def stop(self, pid, timeout_sec=5.0):
+        self.stopped.append((pid, timeout_sec))
 
 
 def test_slash_arm_enables_keyboard_motion():
@@ -166,3 +182,131 @@ def test_turn_taps_outside_hold_window_remain_discrete(monkeypatch):
         (0.0, 0.35),
         (0.0, 0.0),
     ]
+
+
+def test_dry_run_client_simulates_status_without_ros_publisher():
+    client = DryRunRVRClient()
+
+    client.start()
+    client.publish_velocity(0.1, -0.2)
+
+    assert client.status.connected is True
+    assert client.status.diagnostic_message == "DRY RUN: fake ROS surfaces active"
+    assert client.status.battery_percentage == 0.87
+    assert client.status.battery_voltage == 7.8
+    assert client.status.odom_fresh is True
+    assert client.status.scan_fresh is True
+    assert client.published_commands == [(0.1, -0.2)]
+    assert not hasattr(client, "_cmd_pub")
+
+
+def test_dry_run_tui_logs_intended_motion_instead_of_real_publish():
+    client = DryRunRVRClient()
+    tui = RVRTUI(client)
+
+    tui._run_command(TUICommand("arm"))
+    tui._apply_key_action(KeyAction.motion(0.1, 0.0))
+
+    assert client.published_commands == [(0.1, 0.0)]
+    assert tui.state.history[-1] == "DRY-RUN cmd_vel linear=0.10 angular=0.00"
+
+
+def test_dry_run_status_is_visually_obvious():
+    tui = RVRTUI(DryRunRVRClient())
+
+    assert "mode=dry-run" in tui._status_text()
+    assert "odom=fresh" in tui._status_text()
+    assert "scan=fresh" in tui._status_text()
+
+
+def test_main_uses_dry_run_client_when_requested(monkeypatch):
+    used_clients = []
+
+    class CapturingTUI:
+        def __init__(self, client):
+            used_clients.append(client)
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(tui_module, "RVRTUI", CapturingTUI)
+
+    tui_module.main(["--dry-run"])
+
+    assert isinstance(used_clients[0], DryRunRVRClient)
+
+def test_lidar_start_and_stop_commands_manage_launch_process():
+    runner = RecordingRunner()
+    launcher = LaunchManager(runner=runner)
+    tui = RVRTUI(FakeClient(), launch_manager=launcher)
+
+    tui._run_command(TUICommand("lidar", "start"))
+
+    assert runner.started == [["ros2", "launch", "sphero_rvr_driver", "lidar.launch.py"]]
+    assert launcher.state.profile is LaunchProfile.LIDAR
+    assert launcher.state.mode is MappingMode.LIDAR_ONLY
+
+    tui._run_command(TUICommand("lidar", "stop"))
+
+    assert runner.stopped == [(43, 5.0)]
+    assert launcher.state.mode is MappingMode.IDLE
+
+
+def test_mapping_start_uses_safe_launch_without_rvr_driver():
+    runner = RecordingRunner()
+    launcher = LaunchManager(runner=runner)
+    tui = RVRTUI(FakeClient(), launch_manager=launcher)
+
+    tui._run_command(TUICommand("mapping", "start"))
+
+    assert runner.started == [
+        ["ros2", "launch", "sphero_rvr_driver", "mapping.launch.py", "start_rvr:=false"]
+    ]
+    assert launcher.state.profile is LaunchProfile.MAPPING_LIDAR
+    assert launcher.state.mode is MappingMode.LIDAR_ONLY
+
+
+def test_mapping_full_requires_confirm_and_leaves_tui_disarmed():
+    runner = RecordingRunner()
+    launcher = LaunchManager(runner=runner)
+    tui = RVRTUI(FakeClient(), launch_manager=launcher)
+
+    tui._run_command(TUICommand("mapping", "full"))
+
+    assert runner.started == []
+    assert tui.state.armed is False
+    assert "WARNING: this can start the RVR motors" in tui.state.last_message
+
+    tui._run_command(TUICommand("mapping", "full-confirm"))
+
+    assert runner.started == [
+        ["ros2", "launch", "sphero_rvr_driver", "mapping.launch.py", "start_rvr:=true"]
+    ]
+    assert launcher.state.mode is MappingMode.MOTOR_CAPABLE
+    assert tui.state.armed is False
+
+
+def test_mapping_stop_publishes_zero_velocity_and_stops_launch():
+    runner = RecordingRunner()
+    launcher = LaunchManager(runner=runner)
+    tui = RVRTUI(FakeClient(), launch_manager=launcher)
+    tui._run_command(TUICommand("mapping", "full-confirm"))
+    tui._run_command(TUICommand("arm", "confirm"))
+
+    tui._run_command(TUICommand("mapping", "stop"))
+
+    assert tui.state.armed is False
+    assert tui.client.published == [(0.0, 0.0)]
+    assert runner.stopped == [(43, 5.0)]
+
+
+def test_dry_run_mapping_full_exercises_state_without_ros_process():
+    runner = RecordingRunner()
+    launcher = LaunchManager(runner=runner, dry_run=True)
+    tui = RVRTUI(FakeClient(), launch_manager=launcher)
+
+    tui._run_command(TUICommand("mapping", "full-confirm"))
+    tui._run_command(TUICommand("mapping", "stop"))
+    assert runner.started == []
+    assert runner.stopped == []
+    assert launcher.state.mode is MappingMode.IDLE

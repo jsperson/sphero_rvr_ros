@@ -84,7 +84,20 @@ stop/estop and odometry behavior are verified in the current room.
 
 ## Manual mapping workflow
 
-1. Start full live mapping graph with `start_rvr:=true` after explicit motor warning.
+The preferred operator path is through `rvr-console` / `rvr_tui`, which owns and cleans up the launch process it starts:
+
+```text
+/lidar start             # lidar.launch.py only, no RVR driver
+/lidar stop              # stop the TUI-owned lidar launch
+/mapping start           # mapping.launch.py start_rvr:=false, lidar + SLAM only
+/mapping stop            # zero velocity, disarm, stop the TUI-owned launch
+/mapping full            # warning only; does not launch the motor-capable graph
+/mapping full confirm    # mapping.launch.py start_rvr:=true, MOTOR-CAPABLE
+```
+
+`/mapping full confirm` displays/logs `WARNING: this can start the RVR motors`, starts the full graph, and leaves the TUI disarmed until a separate `/arm confirm`. For parser/state-machine checks on a development host, run `rvr-console --dry-run`; the dry-run path does not source ROS, launch ROS processes, or open robot/lidar devices.
+
+1. Start full live mapping graph with `/mapping full confirm` after explicit motor warning.
 2. Verify topics/TF:
 
    ```bash

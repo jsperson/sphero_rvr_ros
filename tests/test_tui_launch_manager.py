@@ -1,0 +1,93 @@
+from sphero_rvr_driver.tui_launch import LaunchManager, LaunchProfile, MappingMode
+
+
+class RecordingRunner:
+    def __init__(self):
+        self.started = []
+        self.stopped = []
+        self.next_pid = 1000
+
+    def start(self, command):
+        self.started.append(list(command))
+        self.next_pid += 1
+        return self.next_pid
+
+    def stop(self, pid, timeout_sec=5.0):
+        self.stopped.append((pid, timeout_sec))
+
+
+def test_lidar_start_uses_lidar_launch_and_stop_cleans_owned_process():
+    runner = RecordingRunner()
+    manager = LaunchManager(runner=runner)
+
+    result = manager.start_lidar()
+
+    assert result.profile is LaunchProfile.LIDAR
+    assert result.mode is MappingMode.LIDAR_ONLY
+    assert result.pid == 1001
+    assert runner.started == [["ros2", "launch", "sphero_rvr_driver", "lidar.launch.py"]]
+
+    stop_result = manager.stop()
+
+    assert stop_result.profile is LaunchProfile.NONE
+    assert stop_result.mode is MappingMode.IDLE
+    assert runner.stopped == [(1001, 5.0)]
+
+
+def test_mapping_start_uses_safe_slam_without_rvr_driver():
+    runner = RecordingRunner()
+    manager = LaunchManager(runner=runner)
+
+    result = manager.start_mapping(start_rvr=False)
+
+    assert result.profile is LaunchProfile.MAPPING_LIDAR
+    assert result.mode is MappingMode.LIDAR_ONLY
+    assert runner.started == [
+        ["ros2", "launch", "sphero_rvr_driver", "mapping.launch.py", "start_rvr:=false"]
+    ]
+
+
+def test_mapping_full_confirm_replaces_safe_launch_with_motor_capable_launch():
+    runner = RecordingRunner()
+    manager = LaunchManager(runner=runner)
+
+    safe = manager.start_mapping(start_rvr=False)
+
+    result = manager.start_mapping(start_rvr=True)
+
+    assert result.profile is LaunchProfile.MAPPING_FULL
+    assert result.mode is MappingMode.MOTOR_CAPABLE
+    assert runner.stopped == [(safe.pid, 5.0)]
+    assert runner.started[-1] == [
+        "ros2",
+        "launch",
+        "sphero_rvr_driver",
+        "mapping.launch.py",
+        "start_rvr:=true",
+    ]
+
+
+def test_dry_run_records_state_without_starting_ros_processes():
+    runner = RecordingRunner()
+    manager = LaunchManager(runner=runner, dry_run=True)
+
+    result = manager.start_mapping(start_rvr=True)
+
+    assert result.profile is LaunchProfile.MAPPING_FULL
+    assert result.mode is MappingMode.MOTOR_CAPABLE
+    assert result.pid is None
+    assert runner.started == []
+
+
+def test_failed_launch_records_failed_state_and_reason():
+    class FailingRunner(RecordingRunner):
+        def start(self, command):
+            raise FileNotFoundError("ros2")
+
+    manager = LaunchManager(runner=FailingRunner())
+
+    result = manager.start_lidar()
+
+    assert result.mode is MappingMode.FAILED_LAUNCH
+    assert result.profile is LaunchProfile.NONE
+    assert "ros2" in result.message

@@ -62,6 +62,26 @@ def parse_command(raw: str) -> TUICommand:
             return TUICommand(name="arm", value="confirm")
         raise CommandParseError("use /arm or /arm confirm")
 
+    if name == "lidar":
+        if args == ["start"]:
+            return TUICommand(name="lidar", value="start")
+        if args == ["stop"]:
+            return TUICommand(name="lidar", value="stop")
+        raise CommandParseError("use /lidar start or /lidar stop")
+
+    if name == "mapping":
+        if args == ["start"]:
+            return TUICommand(name="mapping", value="start")
+        if args == ["stop"]:
+            return TUICommand(name="mapping", value="stop")
+        if args == ["status"]:
+            return TUICommand(name="mapping", value="status")
+        if args == ["full"]:
+            return TUICommand(name="mapping", value="full")
+        if args == ["full", "confirm"]:
+            return TUICommand(name="mapping", value="full-confirm")
+        raise CommandParseError("use /mapping start, /mapping stop, /mapping status, /mapping full, or /mapping full confirm")
+
     if name in {"speed", "turn"}:
         if len(args) != 1:
             raise CommandParseError(f"/{name} requires one numeric argument")
