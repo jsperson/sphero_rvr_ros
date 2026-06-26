@@ -157,3 +157,26 @@ def test_mapping_start_fails_and_stops_when_slam_lifecycle_transition_times_out(
     assert "Failed to configure slam_toolbox" in result.message
     assert "timed out" in result.message
     assert runner.stopped == [(1001, 5.0)]
+
+
+def test_mapping_start_retries_when_slam_lifecycle_node_is_not_registered_yet():
+    class LifecycleNodeLateRunner(RecordingRunner):
+        def run(self, command, timeout_sec=5.0):
+            self.ran.append((list(command), timeout_sec))
+            if len(self.ran) == 1:
+                return SimpleNamespace(returncode=1, stdout="Node not found", stderr="")
+            return SimpleNamespace(returncode=0, stdout="Transition successful", stderr="")
+
+    runner = LifecycleNodeLateRunner()
+    manager = LaunchManager(runner=runner)
+
+    result = manager.start_mapping(start_rvr=True)
+
+    assert result.mode is MappingMode.MOTOR_CAPABLE
+    assert result.profile is LaunchProfile.MAPPING_MOTOR
+    assert runner.ran == [
+        (["ros2", "lifecycle", "set", "/slam_toolbox", "configure"], 5.0),
+        (["ros2", "lifecycle", "set", "/slam_toolbox", "configure"], 5.0),
+        (["ros2", "lifecycle", "set", "/slam_toolbox", "activate"], 5.0),
+    ]
+    assert "slam_toolbox lifecycle active" in result.message
