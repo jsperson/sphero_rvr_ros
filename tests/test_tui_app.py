@@ -194,8 +194,8 @@ def test_dry_run_client_simulates_status_without_ros_publisher():
     assert client.status.diagnostic_message == "DRY RUN: fake ROS surfaces active"
     assert client.status.battery_percentage == 0.87
     assert client.status.battery_voltage == 7.8
-    assert client.status.odom_fresh is True
-    assert client.status.scan_fresh is True
+    assert client.status.odom_received_at is not None
+    assert client.status.scan_received_at is not None
     assert client.published_commands == [(0.1, -0.2)]
     assert not hasattr(client, "_cmd_pub")
 

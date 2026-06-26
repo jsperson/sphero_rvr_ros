@@ -69,10 +69,8 @@ def test_status_lines_render_waiting_and_stale_values():
     assert "Armed: True    Estop: False" in lines
 
 
-def test_status_lines_do_not_treat_old_fresh_flags_as_fresh():
+def test_status_lines_render_stale_sensor_timestamps():
     status = RVRStatus(
-        odom_fresh=True,
-        scan_fresh=True,
         odom_received_at=1.0,
         odom_x=0.0,
         odom_y=0.0,
