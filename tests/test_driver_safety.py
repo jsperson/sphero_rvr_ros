@@ -156,7 +156,7 @@ async def test_driver_uses_separate_raw_duty_caps_for_forward_and_turning():
         max_angular_rad_s=0.4,
         max_raw_motor_duty=160,
         max_linear_raw_motor_duty=64,
-        max_angular_raw_motor_duty=160,
+        max_angular_raw_motor_duty=220,
     )
     await driver.connect()
 
@@ -174,4 +174,4 @@ async def test_driver_uses_separate_raw_duty_caps_for_forward_and_turning():
     assert len(raw_motor_packets) >= 2
     payloads = [packet.payload for packet in raw_motor_packets]
     assert bytes([1, 64, 1, 64]) in payloads
-    assert bytes([2, 160, 1, 160]) in payloads
+    assert bytes([2, 220, 1, 220]) in payloads

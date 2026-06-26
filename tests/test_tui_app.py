@@ -182,7 +182,7 @@ def test_active_motion_is_republished_until_key_timeout(monkeypatch):
     assert client.published == [(0.1, 0.0), (0.1, 0.0), (0.1, 0.0), (0.0, 0.0)]
 
 
-def test_turn_tap_stops_quickly_without_internal_republish(monkeypatch):
+def test_turn_motion_republishes_from_first_keypress(monkeypatch):
     now = 100.0
     monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
     client = FakeClient()
@@ -194,8 +194,12 @@ def test_turn_tap_stops_quickly_without_internal_republish(monkeypatch):
     tui._maintain_motion()
     now = 100.10
     tui._maintain_motion()
+    now = 100.31
+    tui._maintain_motion()
+    now = 100.61
+    tui._maintain_motion()
 
-    assert client.published == [(0.0, 0.35), (0.0, 0.0)]
+    assert client.published == [(0.0, 0.35), (0.0, 0.35), (0.0, 0.0)]
 
 
 def test_repeated_turn_keypresses_continue_turning(monkeypatch):
@@ -214,8 +218,11 @@ def test_repeated_turn_keypresses_continue_turning(monkeypatch):
     tui._maintain_motion()
     now = 100.47
     tui._maintain_motion()
+    now = 100.77
+    tui._maintain_motion()
 
     assert client.published == [
+        (0.0, 0.35),
         (0.0, 0.35),
         (0.0, 0.35),
         (0.0, 0.35),
@@ -224,7 +231,7 @@ def test_repeated_turn_keypresses_continue_turning(monkeypatch):
     ]
 
 
-def test_turn_taps_outside_hold_window_remain_discrete(monkeypatch):
+def test_turn_keypresses_outside_prior_hold_window_still_republish(monkeypatch):
     now = 100.0
     monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
     client = FakeClient()
@@ -238,10 +245,15 @@ def test_turn_taps_outside_hold_window_remain_discrete(monkeypatch):
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
     now = 100.26
     tui._maintain_motion()
+    now = 100.47
+    tui._maintain_motion()
+    now = 100.77
+    tui._maintain_motion()
 
     assert client.published == [
         (0.0, 0.35),
-        (0.0, 0.0),
+        (0.0, 0.35),
+        (0.0, 0.35),
         (0.0, 0.35),
         (0.0, 0.0),
     ]
