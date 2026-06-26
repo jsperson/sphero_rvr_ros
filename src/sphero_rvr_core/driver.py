@@ -430,13 +430,33 @@ class RVRDriver:
             velocity = self._desired_velocity
             linear_fraction = velocity.linear_mps / self._max_linear_mps if self._max_linear_mps else 0.0
             angular_fraction = velocity.angular_rad_s / self._max_angular_rad_s if self._max_angular_rad_s else 0.0
-            if abs(angular_fraction) > 0.0 and abs(linear_fraction) <= 0.05:
-                # Explicit skid-steer pivot for TUI/teleop turns: one tread reverse,
-                # the other forward. The top rack adds enough load that firmware RC
-                # steering can feel like a bogging arc instead of a real pivot.
-                tank = 127 if angular_fraction > 0 else -127
+            if abs(angular_fraction) > 0.0:
+                if abs(linear_fraction) <= 0.05:
+                    # Explicit skid-steer pivot: one tread reverse, the other forward.
+                    tank = 127 if angular_fraction > 0 else -127
+                    await self._send(
+                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
+                        CommandPriority.NORMAL,
+                    )
+                    continue
+
+                # Rolling arc turn: use native tank drive so angular commands cannot
+                # collapse into straight forward motion. For forward arcs, slow/stop
+                # the inside tread and drive the outside tread forward; for reverse
+                # arcs, mirror that into reverse. This avoids in-place scrub while
+                # still forcing differential tread speeds.
+                left = linear_fraction - angular_fraction
+                right = linear_fraction + angular_fraction
+                if linear_fraction > 0:
+                    left = max(0.0, min(1.0, left))
+                    right = max(0.0, min(1.0, right))
+                else:
+                    left = min(0.0, max(-1.0, left))
+                    right = min(0.0, max(-1.0, right))
+                left_i = int(round(left * 127))
+                right_i = int(round(right * 127))
                 await self._send(
-                    lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
+                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i),
                     CommandPriority.NORMAL,
                 )
                 continue
@@ -445,7 +465,7 @@ class RVRDriver:
                     seq,
                     yaw_angular_velocity=velocity.angular_rad_s,
                     linear_velocity=velocity.linear_mps,
-                    flags=1,  # RC slew linear velocity for smoother teleop under load.
+                    flags=1,  # RC slew linear velocity for smoother straight teleop.
                 ),
                 CommandPriority.NORMAL,
             )
