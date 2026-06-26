@@ -182,30 +182,7 @@ def test_active_motion_is_republished_until_key_timeout(monkeypatch):
     assert client.published == [(0.1, 0.0), (0.1, 0.0), (0.1, 0.0), (0.0, 0.0)]
 
 
-def test_turn_motion_republishes_from_first_keypress(monkeypatch):
-    now = 100.0
-    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
-    client = FakeClient()
-    tui = RVRTUI(client)
-    tui._run_command(TUICommand("arm"))
-
-    tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 100.05
-    tui._maintain_motion()
-    now = 100.10
-    tui._maintain_motion()
-    now = 100.31
-    tui._maintain_motion()
-    now = 100.61
-    tui._maintain_motion()
-    now = 101.01
-    tui._maintain_motion()
-
-    assert client.published[-1] == (0.0, 0.0)
-    assert client.published[:-1].count((0.0, 0.35)) >= 4
-
-
-def test_repeated_turn_keypresses_continue_turning(monkeypatch):
+def test_turn_tap_uses_small_short_non_repeating_nudge(monkeypatch):
     now = 100.0
     monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
     client = FakeClient()
@@ -214,23 +191,14 @@ def test_repeated_turn_keypresses_continue_turning(monkeypatch):
 
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
     now = 100.08
-    tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 100.16
-    tui._apply_key_action(KeyAction.motion(0.0, 0.35))
-    now = 100.26
     tui._maintain_motion()
-    now = 100.47
-    tui._maintain_motion()
-    now = 100.77
-    tui._maintain_motion()
-    now = 101.17
+    now = 100.17
     tui._maintain_motion()
 
-    assert client.published[-1] == (0.0, 0.0)
-    assert client.published[:-1].count((0.0, 0.35)) >= 6
+    assert client.published == [(0.0, 0.16), (0.0, 0.0)]
 
 
-def test_turn_keypresses_outside_prior_hold_window_still_republish(monkeypatch):
+def test_repeated_turn_keypresses_promote_to_sustained_full_turn(monkeypatch):
     now = 100.0
     monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
     client = FakeClient()
@@ -239,21 +207,36 @@ def test_turn_keypresses_outside_prior_hold_window_still_republish(monkeypatch):
 
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
     now = 100.10
-    tui._maintain_motion()
-    now = 100.16
     tui._apply_key_action(KeyAction.motion(0.0, 0.35))
+    now = 100.18
+    tui._maintain_motion()
     now = 100.26
     tui._maintain_motion()
-    now = 100.47
+    now = 100.54
     tui._maintain_motion()
-    now = 100.77
-    tui._maintain_motion()
-    now = 101.17
+    now = 100.56
     tui._maintain_motion()
 
+    assert client.published[0] == (0.0, 0.16)
+    assert client.published[1] == (0.0, 0.35)
+    assert client.published[:-1].count((0.0, 0.35)) >= 3
     assert client.published[-1] == (0.0, 0.0)
-    assert client.published[:-1].count((0.0, 0.35)) >= 6
 
+
+def test_turn_keypress_after_hold_window_is_another_small_tap(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm"))
+
+    tui._apply_key_action(KeyAction.motion(0.0, 0.35))
+    now = 100.24
+    tui._apply_key_action(KeyAction.motion(0.0, 0.35))
+    now = 100.41
+    tui._maintain_motion()
+
+    assert client.published == [(0.0, 0.16), (0.0, 0.16), (0.0, 0.0)]
 
 def test_dry_run_client_simulates_status_without_ros_publisher():
     client = DryRunRVRClient()
