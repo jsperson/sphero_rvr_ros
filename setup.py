@@ -15,6 +15,7 @@ setup(
         (
             "share/sphero_rvr_driver/scripts",
             [
+                "scripts/install-rvr-pi",
                 "scripts/rvr-console",
                 "scripts/rvr_motion_calibration.py",
             ],

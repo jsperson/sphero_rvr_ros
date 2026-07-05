@@ -1,19 +1,57 @@
 # Sphero RVR ROS Project Status
 
-Updated: 2026-06-25T00:00:00Z
+Updated: 2026-07-04T21:45:00Z
 
 ## Current repo state
 
 - Branch: `main`
-- Latest deployed code baseline before the API-parity documentation handoff: `a344718 Revert "tune: tolerate slower RVR turn key repeat"`
-- Local `HEAD` is `main`; the workspace includes uncommitted API-parity, safe-ROS-surface, test, and documentation changes awaiting review/deploy.
-- `sphero-pi-2` was verified on the deployed code baseline `a344718` before this docs-only update; a follow-up SSH pull for this status file timed out.
-- Local test suite at API parity validation handoff: `227 passed`.
+- Local `HEAD` and `origin/main`: `b4a083b Isolate rvr-console managed launch logs (#11)`
+- Latest confirmed Pi deployment on `sphero-pi-2`: `9b81421a9d0a78073ded49294d16c1ef54c63db9` in `/home/jsperson/ros2_ws/src/sphero_rvr_ros`, clean worktree after deploy/rebuild.
+- PR #6/#7/#8/#11 are merged on `main`:
+  - PR #6: fixed TUI service executor/spin behavior used by STOP/ESTOP/clear flows.
+  - PR #7: fixed TUI mapping map-save smoke path.
+  - PR #8: retries SLAM lifecycle activation while the lifecycle node registers.
+  - PR #11: isolates rvr-console managed launch logs from TUI rendering.
+- Follow-up install cleanup is staged for review: package the `install-rvr-pi` helper, document it as the preferred Pi install path, and keep the manual RPLIDAR/SLAM build commands as fallback.
+- Hardware-smoked on a Raspberry Pi 5: no-motion deploy/import gate, lidar-only safe mapping scaffold, restrained live STOP/ESTOP/TUI nudge, and full TUI mapping/map-save smoke all passed with the safety gates below.
+- Local API parity validation handoff remains `227 passed`; the latest milestone evidence is the Pi hardware-validation matrix below, not the older pending Pi/ROS validation wording.
 - Driver capability coverage has sentinel tests for every public async `RVRDriver` method, every public `RVRCommands` builder, explicit capability-matrix test-state tokens, parser/omission classification for response/event payloads, ROS-exposure test coverage for `ros-exposed` matrix rows, and the README validation checklist.
 - Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros`
 - Target Pi install: pulled/rebuilt with `colcon build --symlink-install --packages-select sphero_rvr_driver`
 - Background driver running through `ros2 launch sphero_rvr_driver rvr.launch.py`.
 - Convenience wrapper installed: `/home/jsperson/.local/bin/rvr-console`
+
+## Hardware-validation milestone closeout
+
+Current milestone status: **closed with caveats** on latest confirmed Pi deployment `9b81421a9d0a78073ded49294d16c1ef54c63db9`.
+
+Validation gates completed:
+
+1. **Pi deploy/no-motion gate** — passed at `c6a57ab635dc0a619e4afbe08a57b4db7a4d7c74`.
+   - `colcon build --symlink-install --packages-select sphero_rvr_driver` completed on the Pi.
+   - `rvr_node`, `rvr_tui`, package import, config import/print, and wrapper path were verified.
+   - No live motor-capable commands were run.
+2. **Lidar-only + safe mapping scaffold** — passed.
+   - `/dev/rplidar -> ttyUSB0` was present.
+   - Lidar-only launch produced `/scan` and `base_link -> laser` TF.
+   - `mapping.launch.py` defaults to `start_rvr=false`; `/cmd_vel` and the live RVR node were absent.
+3. **Restrained live STOP/ESTOP/TUI nudge** — passed at `68d86e56ce8831e436b89244bb9dac863b68319d` after the exact motor warning and explicit suspended-RVR approval.
+   - External STOP/ESTOP/clear and TUI STOP/ESTOP/clear paths passed.
+   - One bounded `0.02 m` nudge yielded about `0.0059 m` odometry delta.
+   - Final twist was zero and cleanup left no live RVR graph.
+4. **Full TUI mapping/map-save smoke** — passed with caveats at `9b81421a9d0a78073ded49294d16c1ef54c63db9`.
+   - `/mapping full confirm` started the mapping-motor graph and activated `slam_toolbox`.
+   - Topics/TF included `/scan`, `/odom`, `/tf`, `/tf_static`, `/map`, `/cmd_vel`, `base_link -> laser`, `odom -> base_link`, and `map -> odom`.
+   - STOP/ESTOP/clear remained available.
+   - Clean retry map artifacts were saved under `/home/jsperson/maps/kanban_full_mapping_smoke_clean_retry_20260626_140702_tui2.{yaml,pgm}`.
+   - Final cleanup left only `/parameter_events` and `/rosout`; no live RVR/lidar/slam/static-transform processes remained.
+
+Diagnostic caveats to keep in mind:
+
+- There was no camera/physical feedback channel available to the agents; no operator concern was reported during the runs.
+- First saved maps are diagnostic only and should not be treated as navigation-ready.
+- `nav2_map_server`/map saver had one transient `Failed to spin map subscription` before retry success.
+- `rvr_node` shutdown may print `KeyboardInterrupt` tracebacks during SIGINT launch shutdown while cleanup still succeeds.
 
 ## Target hardware/runtime
 
@@ -75,18 +113,18 @@ PY
 
 This gate intentionally stops before `ros2 launch sphero_rvr_driver rvr.launch.py`; launching the node is live UART access and must use the hardware-smoke policy below.
 
-Live hardware smoke remains gated by the exact warning above (`WARNING: this can start the RVR motors`) and explicit approval. After approval, keep the robot restrained/suspended and scope the first smoke to topic/service listing, battery/diagnostics/ambient/odom reads, TF echo, `/stop`, one conservative `ros2 topic pub --once /cmd_vel ...`, and a final `/stop`; sustained driving, TUI, mapping, or autonomy require a separate approval scope.
+Live hardware smoke remains gated by the exact warning above (`WARNING: this can start the RVR motors`) and explicit approval. After approval, keep the robot restrained/suspended unless the approval explicitly allows floor motion, keep the scope bounded, and finish with verified zero motion/cleanup. A conservative live command such as `ros2 topic pub --once /cmd_vel ...` is still motor-capable and requires the same warning/approval. TUI, mapping, Nav2, autonomy, or broader driving require a separate approval scope.
 
-## Safe ROS surfaces pending deploy/review
+## Safe ROS surfaces deployed/validated
 
-Safe ROS surfaces added locally for the next deploy:
+Safe ROS surfaces are deployed on the current Pi baseline and covered by the no-motion/lidar/live smoke gates above:
 
 - `/odom` and `odom -> base_link` TF from typed encoder-count deltas, with configurable `odom_counts_per_meter`, `odom_wheel_track_m`, `odom_frame_id`, `base_frame_id`, `odom_publish_tf`, and nonzero covariance defaults. Design/limitations are documented in `docs/rvr_odometry_tf_design.md`.
 - `ambient_light`, left/right motor temperature, battery, and richer diagnostics key-values for battery voltage state, motor fault, firmware version, board revision, processor, and uptime.
 - `reset_yaw`, `reset_locator`, and `release_led_requests` Trigger services, plus bounded `set_all_leds` `ColorRGBA` subscription.
 - Explicitly still not exposed: raw motors, firmware/admin/update/factory flows, calibration, arbitrary packet sends, opaque streaming bytes, MAC/stats IDs.
 
-ROS validation still needs to run in the ROS 2 Jazzy environment on `sphero-pi-2` after build; local host validation is ROS-free unit/compile coverage only. Do not treat macOS fake/unit green as live robot validation.
+Local host validation is still ROS-free unit/compile coverage only. Do not treat macOS fake/unit green as live robot validation; the live ROS/hardware evidence is the Pi gate matrix above.
 
 ## Current deployed control behavior
 
@@ -111,7 +149,7 @@ Pure turn behavior:
 
 ## Live floor-test findings
 
-Best current version is commit `a344718`.
+Best current deployed version is commit `9b81421a9d0a78073ded49294d16c1ef54c63db9`. The floor-test tuning below was established before the mapping milestone and remains the deployed baseline behavior.
 
 Observed behavior on the physical RVR:
 
@@ -213,70 +251,36 @@ Later Nav2
 
 Mapping needs more than raw distances: each scan must be tied to an estimated robot pose. Lidar-only visualization is easy; usable mapping depends on at least rough odometry/tf and careful low-speed driving.
 
-### Hardware received: SLAMTEC RPLIDAR C1
+### Hardware validated: SLAMTEC RPLIDAR C1 + manual SLAM smoke
 
-The SLAMTEC C1 lidar hardware has arrived. Next milestone is a **no-motion lidar bring-up** on `sphero-pi-2`: prove the C1 publishes `/scan` before mounting it, launching the RVR driver, or involving any motor-capable workflow.
+The SLAMTEC C1 lidar is present on `sphero-pi-2` behind the stable `/dev/rplidar` alias and has passed both no-motion lidar validation and full manual mapping smoke with the RVR graph.
 
-Bench-test sequence:
-
-1. Keep the RVR driver/TUI stopped; this test should not touch motors.
-2. Plug the C1 USB adapter into `sphero-pi-2` and identify the device:
-   ```bash
-   ls -l /dev/serial/by-id/
-   dmesg | tail -50
-   ```
-3. Build the SLAMTEC ROS 2 driver if it is not already present:
-   ```bash
-   mkdir -p ~/ros2_ws/src
-   cd ~/ros2_ws/src
-   git clone -b ros2 https://github.com/Slamtec/rplidar_ros.git
-   cd ~/ros2_ws
-   rosdep update
-   rosdep install --from-paths src --ignore-src -r -y
-   colcon build --symlink-install --packages-select rplidar_ros
-   source install/setup.bash
-   ```
-4. Launch the C1 temporarily using the detected serial device, commonly `/dev/ttyUSB0`:
-   ```bash
-   ros2 launch rplidar_ros rplidar_c1_launch.py serial_port:=/dev/ttyUSB0
-   ```
-5. Verify scan output from another shell:
-   ```bash
-   source /opt/ros/jazzy/setup.bash
-   source ~/ros2_ws/install/setup.bash
-   ros2 topic list | grep scan
-   ros2 topic echo /scan --once
-   ros2 topic hz /scan
-   ```
-6. Once the USB adapter identity is known, add a udev rule for stable `/dev/rplidar` and switch launches to:
-   ```bash
-   ros2 launch rplidar_ros rplidar_c1_launch.py serial_port:=/dev/rplidar
-   ```
-
-Expected C1 bring-up characteristics:
+Validated C1 characteristics:
 
 - ROS topic: `/scan`
 - Message type: `sensor_msgs/msg/LaserScan`
 - Typical scan rate: about `10 Hz`
 - Serial baud: `460800`
-- Frame: `laser` until the project adds measured `base_link -> laser` mounting geometry
+- Frame: `laser`
+- Static TF: `base_link -> laser`
 
-After `/scan` is proven, add the repo integration slice: `rplidar` launch file, static `base_link -> laser` transform, RViz scan config, and then `slam_toolbox` mapping launch. Motor warning/approval is not needed for the bench `/scan` test, but it is required before launching the RVR driver, TUI, teleop, `/cmd_vel`, or any workflow that exposes drive controls.
+Manual mapping smoke has produced diagnostic map artifacts at `/home/jsperson/maps/kanban_full_mapping_smoke_clean_retry_20260626_140702_tui2.{yaml,pgm}`. Treat these first maps as diagnostic only; they prove the stack can save maps, not that the maps are navigation-ready.
+
+Motor warning/approval is not needed for lidar-only `/scan` checks that keep the RVR driver/TUI stopped. It is required before launching the RVR driver, TUI, teleop, `/cmd_vel`, mapping workflows that expose drive controls, or any autonomy-capable graph.
 
 ### Phased plan
 
-1. **Lidar bring-up**
-   - Choose a ROS 2-supported USB lidar module.
-   - Prefer a USB serial adapter kit over bare TTL UART so the RVR control UART remains isolated.
-   - Add a stable udev alias such as `/dev/rplidar` instead of relying on `/dev/ttyUSB0` ordering.
-   - Publish `/scan` and verify scan geometry in RViz with the robot stationary.
-   - Add `base_link -> laser` static transform with measured mounting offsets.
+1. **Lidar bring-up — complete**
+   - C1 publishes `/scan` through ROS 2 on `sphero-pi-2`.
+   - `/dev/rplidar` stable alias is in use.
+   - `base_link -> laser` static transform is present.
+   - Stationary/lidar-only checks keep motor-capable workflows stopped.
 
-2. **Manual mapping**
-   - Run `slam_toolbox` online async mode.
-   - Drive slowly with `rvr-console` or another teleop client.
-   - Save the map with `nav2_map_server` once the room-level map is coherent.
-   - Treat this phase as “make RViz draw the room as we drive,” not autonomy.
+2. **Manual mapping — first diagnostic smoke complete**
+   - `slam_toolbox` online async mode starts from the TUI mapping flow.
+   - The full graph produced `/map` and `map -> odom`.
+   - `nav2_map_server` saved `.yaml` + `.pgm` artifacts after a retry.
+   - Next mapping work should improve robustness and map quality; do not treat the first saved map as navigation-ready.
 
 3. **Odometry and localization sanity**
    - Publish `/odom` from RVR encoder estimates if good enough.

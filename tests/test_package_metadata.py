@@ -21,6 +21,7 @@ EXPECTED_DATA_FILES = {
         "config/slam_toolbox.yaml",
     },
     "share/sphero_rvr_driver/scripts": {
+        "scripts/install-rvr-pi",
         "scripts/rvr-console",
         "scripts/rvr_motion_calibration.py",
     },
@@ -69,6 +70,7 @@ def test_package_xml_declares_runtime_dependencies_for_launches() -> None:
         "launch",
         "launch_ros",
         "rplidar_ros",
+        "nav2_map_server",
         "slam_toolbox",
         "tf2_ros",
     } <= exec_depends
@@ -93,6 +95,6 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
         "launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`",
         "config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`",
-        "helper scripts: `rvr-console`, `rvr_motion_calibration.py`",
+        "helper scripts: `install-rvr-pi`, `rvr-console`, `rvr_motion_calibration.py`",
     ]:
         assert token in readme

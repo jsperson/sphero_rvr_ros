@@ -393,6 +393,8 @@ Install ROS and build tools:
 ```bash
 sudo apt install -y \
   ros-jazzy-ros-base \
+  ros-jazzy-slam-toolbox \
+  ros-jazzy-nav2-map-server \
   python3-colcon-common-extensions \
   python3-rosdep \
   python3-vcstool \
@@ -457,12 +459,23 @@ cd ~/ros2_ws/src
 
 git clone https://github.com/jsperson/sphero_rvr_ros.git
 # Or, if already cloned:
-# cd sphero_rvr_ros && git pull --ff-only && cd ..
+# cd sphero_rvr_ros && git pull --ff-only
+
+~/ros2_ws/src/sphero_rvr_ros/scripts/install-rvr-pi
+```
+
+The install helper installs the ROS apt repository if needed, installs all apt/runtime dependencies including `slam_toolbox` and `nav2_map_server`, imports `workspace.repos` dependencies such as upstream `rplidar_ros`, runs `rosdep`, builds the workspace, installs udev rules, and verifies the lidar/mapping launch files plus map saver.
+
+Equivalent manual build commands, if you are deliberately not using the helper:
+
+```bash
+cd ~/ros2_ws/src
+vcs import . < sphero_rvr_ros/workspace.repos
 
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install --packages-select sphero_rvr_driver
+colcon build --symlink-install --packages-select rplidar_ros sphero_rvr_driver
 source install/setup.bash
 ```
 
@@ -493,7 +506,7 @@ Installed package data includes:
 - launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`
 - config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`
 - docs: `mapping.md`, `motion_calibration.md`, `udev/99-rplidar.rules`
-- helper scripts: `rvr-console`, `rvr_motion_calibration.py`
+- helper scripts: `install-rvr-pi`, `rvr-console`, `rvr_motion_calibration.py`
 
 ## No-motion smoke test
 
