@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -114,6 +115,8 @@ def parse_command(raw: str) -> TUICommand:
             value = float(args[0])
         except ValueError as exc:
             raise CommandParseError(f"/{name} requires a numeric argument") from exc
+        if not math.isfinite(value):
+            raise CommandParseError(f"/{name} must be finite")
         if value < 0:
             raise CommandParseError(f"/{name} must be non-negative")
         return TUICommand(name=name, value=value)
@@ -137,6 +140,8 @@ def _parse_nudge_args(args: list[str]) -> NudgeCommand:
         raise CommandParseError("/nudge requires a distance")
 
     distance_m = _parse_distance_m(distance_parts)
+    if not math.isfinite(distance_m):
+        raise CommandParseError("/nudge distance must be finite")
     if distance_m < NUDGE_MIN_DISTANCE_M:
         raise CommandParseError("/nudge distance must be at least 0.02 m")
     if distance_m > NUDGE_MAX_DISTANCE_M:

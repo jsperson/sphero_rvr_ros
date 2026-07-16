@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import curses
+import math
 import textwrap
 import time
 from dataclasses import dataclass, field
@@ -16,8 +17,10 @@ from .tui_ros import DryRunRVRClient, RVRROSClient, format_status_lines, freshne
 
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
-NUDGE_LINEAR_MPS = 0.05
-NUDGE_CALIBRATED_METERS_PER_SECOND = 0.2286
+NUDGE_LINEAR_MPS = 0.10
+# Measured with the final lightweight rack on 2026-07-16: five accepted
+# forward runs traveled 0.3048 m in 10.0 s at the reliable duty threshold.
+NUDGE_CALIBRATED_METERS_PER_SECOND = 0.03048
 NUDGE_ODOM_COUNTS_PER_METER = 4337.768
 KEY_STOP_SECONDS = 0.30
 TURN_TAP_STOP_SECONDS = 0.14
@@ -67,6 +70,7 @@ class RVRTUI:
         self._active_angular_rad_s = 0.0
         self._active_stop_seconds = KEY_STOP_SECONDS
         self._active_repeat_enabled = True
+        self._disarm_after_motion = False
         self._last_turn_signature: Optional[float] = None
         self._last_turn_key_at: Optional[float] = None
         self._motion_active = False
@@ -106,6 +110,9 @@ class RVRTUI:
 
     def _apply_key_action(self, action: KeyAction) -> None:
         if action.kind == "motion":
+            if self._motion_active and self._disarm_after_motion:
+                self.state.log("Ignored drive key during active nudge. Use STOP, ESTOP, or /disarm.")
+                return
             if not self.state.armed:
                 self.state.log("Ignored drive key while disarmed. Use /arm.")
                 return
@@ -170,10 +177,12 @@ class RVRTUI:
             elif name == "stop":
                 self.state.log(self.client.stop())
                 self._motion_active = False
+                self._disarm_after_motion = False
             elif name == "estop":
                 self.state.armed = False
                 self.state.log(self.client.estop())
                 self._motion_active = False
+                self._disarm_after_motion = False
             elif name == "clear-estop":
                 self.state.log(self.client.clear_estop())
             elif name == "quit":
@@ -229,6 +238,8 @@ class RVRTUI:
         if not isinstance(command.value, NudgeCommand):
             raise ValueError("use /nudge forward <distance> confirm or /nudge back <distance> confirm")
         nudge = command.value
+        if not math.isfinite(nudge.distance_m):
+            raise ValueError("/nudge distance must be finite")
         if not nudge.confirmed:
             self.state.log(
                 "WARNING: this can start the RVR motors. "
@@ -248,16 +259,25 @@ class RVRTUI:
         mode_prefix = "DRY-RUN nudge" if getattr(self.client.status, "mode", "live") == "dry-run" else "nudge"
 
         try:
-            self.client.publish_velocity(velocity, 0.0)
-            time.sleep(duration)
-        finally:
-            self._publish_zero_velocity()
+            self._publish_motion(velocity, 0.0)
+        except Exception:
+            self._safe_stop()
+            self._motion_active = False
+            self._last_motion_publish_at = None
+            self._disarm_after_motion = False
             self.state.armed = False
+            raise
+
+        self._motion_active = True
+        self._last_motion_at = time.monotonic()
+        self._active_stop_seconds = duration
+        self._active_repeat_enabled = True
+        self._disarm_after_motion = True
 
         self.state.log(
             f"{mode_prefix} {nudge.direction} distance={nudge.distance_m:.2f} m "
             f"velocity={abs(velocity):.2f} m/s duration={duration:.2f}s "
-            f"expected_encoder_counts={expected_counts:.1f}; stopped and disarmed"
+            f"expected_encoder_counts={expected_counts:.1f}; STOP/ESTOP remain available"
         )
 
     def _read_and_run_command(self, screen) -> None:
@@ -267,6 +287,7 @@ class RVRTUI:
             while True:
                 self._draw(screen, command_prompt=command)
                 code = screen.getch()
+                self._maintain_motion()
                 if code in {10, 13}:
                     break
                 if code in {27}:  # Escape
@@ -310,10 +331,15 @@ class RVRTUI:
             return
         now = time.monotonic()
         if now - self._last_motion_at > self._active_stop_seconds:
+            disarm_after_motion = self._disarm_after_motion
             self._publish_zero_velocity()
             self._motion_active = False
             self._last_motion_publish_at = None
-            self.state.log("Stopped after key timeout.")
+            if disarm_after_motion:
+                self.state.armed = False
+                self.state.log("Nudge complete; stopped and disarmed.")
+            else:
+                self.state.log("Stopped after key timeout.")
             return
         if not self._active_repeat_enabled:
             return
@@ -321,8 +347,7 @@ class RVRTUI:
             try:
                 self._publish_motion(self._active_linear_mps, self._active_angular_rad_s)
             except Exception as exc:
-                self._motion_active = False
-                self._last_motion_publish_at = None
+                self._safe_stop()
                 self.state.armed = False
                 self.state.log(f"Motion repeat failed and disarmed: {exc}")
 
@@ -339,6 +364,7 @@ class RVRTUI:
         finally:
             self._motion_active = False
             self._last_motion_publish_at = None
+            self._disarm_after_motion = False
 
     def _publish_motion(self, linear_mps: float, angular_rad_s: float) -> None:
         self._active_linear_mps = linear_mps
@@ -367,6 +393,7 @@ class RVRTUI:
         return f"{prefix} linear={linear_mps:.2f} angular={angular_rad_s:.2f}"
 
     def _configure_motion_mode(self, linear_mps: float, angular_rad_s: float, now: float) -> None:
+        self._disarm_after_motion = False
         is_turn_only = abs(linear_mps) < 1e-9 and abs(angular_rad_s) > 1e-9
         if not is_turn_only:
             self._active_stop_seconds = KEY_STOP_SECONDS

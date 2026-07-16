@@ -356,48 +356,175 @@ def test_confirmed_nudge_requires_enabled_velocity_sink():
     assert tui.state.last_message == "Nudge rejected: velocity publisher not enabled."
 
 
+def test_nudge_publish_failure_clears_prior_motion_and_disarms(monkeypatch):
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: 100.0)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._apply_key_action(KeyAction.motion(0.10, 0.0))
+    assert tui._motion_active is True
+
+    attempts = []
+
+    def fail_nonzero_publish(linear_mps, angular_rad_s):
+        attempts.append((linear_mps, angular_rad_s))
+        if abs(linear_mps) > 1e-9 or abs(angular_rad_s) > 1e-9:
+            raise RuntimeError("publish failed")
+
+    client.publish_velocity = fail_nonzero_publish
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    assert tui._motion_active is False
+    assert tui._last_motion_publish_at is None
+    assert tui.state.armed is False
+    assert tui.state.last_message == "ERROR: publish failed"
+    assert attempts == [(0.10, 0.0), (0.0, 0.0)]
+
+
+def test_nudge_refresh_failure_attempts_zero_and_disarms(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    attempts = []
+
+    def fail_nonzero_refresh(linear_mps, angular_rad_s):
+        attempts.append((linear_mps, angular_rad_s))
+        if abs(linear_mps) > 1e-9 or abs(angular_rad_s) > 1e-9:
+            raise RuntimeError("refresh failed")
+
+    client.publish_velocity = fail_nonzero_refresh
+    now = 100.09
+    tui._maintain_motion()
+
+    assert attempts == [(0.10, 0.0), (0.0, 0.0)]
+    assert tui._motion_active is False
+    assert tui.state.armed is False
+    assert tui.state.last_message == "Motion repeat failed and disarmed: refresh failed"
+
+
 def test_confirmed_forward_nudge_publishes_motion_then_zero_and_disarms(monkeypatch):
-    sleeps = []
-    monkeypatch.setattr(tui_module.time, "sleep", sleeps.append)
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
     client = FakeClient()
     tui = RVRTUI(client)
     tui._run_command(TUICommand("arm", "confirm"))
 
     tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
 
-    assert client.published == [(0.05, 0.0), (0.0, 0.0)]
-    assert sleeps == [pytest.approx(0.08748906386701663)]
-    assert tui.state.armed is False
+    assert client.published == [(0.10, 0.0)]
+    assert tui._motion_active is True
+    assert tui.state.armed is True
     assert "nudge forward distance=0.02 m" in tui.state.last_message
 
+    now = 100.09
+    tui._maintain_motion()
+    assert client.published == [(0.10, 0.0), (0.10, 0.0)]
 
-def test_confirmed_back_nudge_uses_reverse_velocity_and_zero_on_sleep_failure(monkeypatch):
-    def fail_sleep(duration):
-        raise RuntimeError("interrupted")
+    now = 100.657
+    tui._maintain_motion()
+    assert client.published[-1] == (0.0, 0.0)
+    assert tui._motion_active is False
+    assert tui.state.armed is False
+    assert tui.state.last_message == "Nudge complete; stopped and disarmed."
 
-    monkeypatch.setattr(tui_module.time, "sleep", fail_sleep)
+
+def test_drive_key_is_ignored_during_active_nudge(monkeypatch):
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: 100.0)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    tui._apply_key_action(KeyAction.motion(0.10, 0.0))
+
+    assert client.published == [(0.10, 0.0)]
+    assert tui._motion_active is True
+    assert tui._disarm_after_motion is True
+    assert tui.state.last_message == "Ignored drive key during active nudge. Use STOP, ESTOP, or /disarm."
+
+
+def test_command_entry_maintains_active_nudge(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
+    monkeypatch.setattr(tui_module.curses, "curs_set", lambda _value: None)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    class TimedCommandScreen(FakeScreen):
+        def __init__(self):
+            super().__init__()
+            self.codes = [-1, 27]
+
+        def getch(self):
+            nonlocal now
+            code = self.codes.pop(0)
+            if code == -1:
+                now = 100.657
+            return code
+
+    tui._read_and_run_command(TimedCommandScreen())
+
+    assert client.published[-1] == (0.0, 0.0)
+    assert tui._motion_active is False
+    assert tui.state.armed is False
+
+
+def test_estop_interrupts_active_reverse_nudge_and_disarms(monkeypatch):
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: 100.0)
     client = FakeClient()
     tui = RVRTUI(client)
     tui._run_command(TUICommand("arm", "confirm"))
 
     tui._run_command(TUICommand("nudge", NudgeCommand(direction="back", distance_m=0.02, confirmed=True)))
 
-    assert client.published == [(-0.05, 0.0), (0.0, 0.0)]
+    assert client.published == [(-0.10, 0.0)]
+    assert tui._motion_active is True
+
+    tui._run_command(TUICommand("estop"))
+
+    assert tui._motion_active is False
     assert tui.state.armed is False
-    assert tui.state.last_message == "ERROR: interrupted"
+    assert tui.state.last_message == "estopped"
+
+
+def test_disarm_interrupts_active_nudge_and_publishes_zero(monkeypatch):
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: 100.0)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    tui._run_command(TUICommand("disarm"))
+
+    assert client.published == [(0.10, 0.0), (0.0, 0.0)]
+    assert tui._motion_active is False
+    assert tui.state.armed is False
+    assert tui.state.last_message == "Disarmed and published zero velocity."
 
 
 def test_dry_run_nudge_logs_fake_motion_and_expected_encoder_counts(monkeypatch):
-    monkeypatch.setattr(tui_module.time, "sleep", lambda _duration: None)
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
     client = DryRunRVRClient()
     tui = RVRTUI(client)
     tui._run_command(TUICommand("arm", "confirm"))
 
     tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
 
-    assert client.published_commands == [(0.05, 0.0), (0.0, 0.0)]
+    assert client.published_commands == [(0.10, 0.0)]
     assert "DRY-RUN nudge forward distance=0.02 m" in tui.state.last_message
     assert "expected_encoder_counts=86.8" in tui.state.last_message
+
+    now = 100.657
+    tui._maintain_motion()
+    assert client.published_commands[-1] == (0.0, 0.0)
+    assert tui.state.armed is False
 
 
 def test_dry_run_status_is_visually_obvious():
