@@ -1,12 +1,12 @@
 # Sphero RVR ROS Project Status
 
-Updated: 2026-07-04T21:45:00Z
+Updated: 2026-07-16T16:49:16Z
 
 ## Current repo state
 
 - Branch: `main`
-- Local `HEAD` and `origin/main`: `b4a083b Isolate rvr-console managed launch logs (#11)`
-- Latest confirmed Pi deployment on `sphero-pi-2`: `9b81421a9d0a78073ded49294d16c1ef54c63db9` in `/home/jsperson/ros2_ws/src/sphero_rvr_ros`, clean worktree after deploy/rebuild.
+- Local and `origin/main` baseline before the camera/install follow-up: `4b094bb chore: add Pi install helper`.
+- Latest confirmed Pi source baseline on `sphero-pi-2`: `b4a083b Isolate rvr-console managed launch logs` in `/home/jsperson/ros2_ws/src/sphero_rvr_ros`. The Pi checkout also contains the previously validated camera/install follow-up files pending reconciliation with the reviewed local change set.
 - PR #6/#7/#8/#11 are merged on `main`:
   - PR #6: fixed TUI service executor/spin behavior used by STOP/ESTOP/clear flows.
   - PR #7: fixed TUI mapping map-save smoke path.
@@ -14,12 +14,15 @@ Updated: 2026-07-04T21:45:00Z
   - PR #11: isolates rvr-console managed launch logs from TUI rendering.
 - Follow-up install cleanup is staged for review: package the `install-rvr-pi` helper, document it as the preferred Pi install path, and keep the manual RPLIDAR/SLAM build commands as fallback.
 - Hardware-smoked on a Raspberry Pi 5: no-motion deploy/import gate, lidar-only safe mapping scaffold, restrained live STOP/ESTOP/TUI nudge, and full TUI mapping/map-save smoke all passed with the safety gates below.
+- Floor-motion odometry calibration was rechecked on 2026-07-16 with the lightweight rack. A 2.0-second duty-128 forward pulse traveled 2 inches straight with encoder deltas left=228/right=232 (mean=230), yielding 4527.559 counts/m. This is within 4.38% of the existing 4337.768 counts/m derived from longer runs, so the deployed/configured value remains unchanged.
 - Local API parity validation handoff remains `227 passed`; the latest milestone evidence is the Pi hardware-validation matrix below, not the older pending Pi/ROS validation wording.
 - Driver capability coverage has sentinel tests for every public async `RVRDriver` method, every public `RVRCommands` builder, explicit capability-matrix test-state tokens, parser/omission classification for response/event payloads, ROS-exposure test coverage for `ros-exposed` matrix rows, and the README validation checklist.
 - Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros`
 - Target Pi install: pulled/rebuilt with `colcon build --symlink-install --packages-select sphero_rvr_driver`
 - Background driver running through `ros2 launch sphero_rvr_driver rvr.launch.py`.
 - Convenience wrapper installed: `/home/jsperson/.local/bin/rvr-console`
+- Startup/install procedure should install camera capture tools with the robot stack: Ubuntu `libcamera-tools`/`libcamera-ipa`/`v4l-utils`, ROS `camera_ros`, and Raspberry Pi's PiSP-capable `libcamera` built under `~/.local/rpi-libcamera`. On `sphero-pi-2`, Ubuntu's generic libcamera did not enumerate the Pi Camera 3, but the Raspberry Pi build did: `cam --list` reported `imx708_wide_noir`, and `rvr-camera-node` published `/camera/image_raw` at 640x480 `bgra8` with the custom `LD_LIBRARY_PATH`.
+- Mechanical rack issue resolved: the previous three-level rack put too much weight/high center of gravity on the RVR and caused weak floor behavior. The working hardware layout is now a one-level rack with a narrow lidar tower: Pi 5, Pi battery, lidar, and Pi Camera 3 only on the robot. With that redesigned rack installed, `rvr-console` ran normally, confirming the weight/CG issue is resolved.
 
 ## Hardware-validation milestone closeout
 
@@ -45,6 +48,11 @@ Validation gates completed:
    - STOP/ESTOP/clear remained available.
    - Clean retry map artifacts were saved under `/home/jsperson/maps/kanban_full_mapping_smoke_clean_retry_20260626_140702_tui2.{yaml,pgm}`.
    - Final cleanup left only `/parameter_events` and `/rosout`; no live RVR/lidar/slam/static-transform processes remained.
+5. **Lightweight-rack floor-motion calibration recheck** — passed on 2026-07-16.
+   - Battery remained healthy at 87–88%.
+   - The reliable 2-inch straight run produced left/right encoder deltas 228/232.
+   - Measured scale was 4527.559 counts/m, within 4.38% of the existing 4337.768 counts/m from longer calibration runs.
+   - Retained `odom_counts_per_meter: 4337.768` in both source and installed Pi configuration; final UART/process checks were clean.
 
 Diagnostic caveats to keep in mind:
 
@@ -150,6 +158,13 @@ Pure turn behavior:
 ## Live floor-test findings
 
 Best current deployed version is commit `9b81421a9d0a78073ded49294d16c1ef54c63db9`. The floor-test tuning below was established before the mapping milestone and remains the deployed baseline behavior.
+
+Rack/load finding from 2026-07-09:
+
+- The earlier floor-drive/turning weakness was a mechanical payload problem, not a ROS control-path problem.
+- The three-level rack was too heavy and/or raised the center of gravity too much.
+- The accepted design is a one-level rack with a tower only for lidar clearance.
+- With the lighter one-level rack installed, `rvr-console` ran fine in live testing, so do not tune around the old overweight-rack behavior unless the payload changes again.
 
 Observed behavior on the physical RVR:
 

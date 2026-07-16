@@ -15,6 +15,7 @@ Scope approval narrowly. Approval for the non-motion smoke below does **not** ap
 Preconditions after approval:
 
 - RVR is on a clear bench, powered, and reachable from `sphero-pi-2`.
+- Use the accepted lightweight hardware layout for floor tests: one-level rack with a narrow lidar tower, carrying only the Pi 5, Pi battery, lidar, and Pi Camera 3. Do not baseline floor behavior with the old three-level rack; it was too heavy/high-CG and caused weak turning/drive behavior.
 - Treads are clear; for any future movement stage, the RVR is suspended or physically restrained.
 - One shell is reserved for logs and one for commands.
 - Operator can physically power off the robot if software stop fails.

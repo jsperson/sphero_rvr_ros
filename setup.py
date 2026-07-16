@@ -16,6 +16,7 @@ setup(
             "share/sphero_rvr_driver/scripts",
             [
                 "scripts/install-rvr-pi",
+                "scripts/rvr-camera-node",
                 "scripts/rvr-console",
                 "scripts/rvr_motion_calibration.py",
             ],
@@ -30,7 +31,13 @@ setup(
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
     ],
     install_requires=["setuptools", "pyserial"],
-    extras_require={"dev": ["pytest>=8.0", "pytest-asyncio>=0.23"]},
+    extras_require={
+        "dev": [
+            "pytest>=8.0",
+            "pytest-asyncio>=0.23",
+            "tomli>=2; python_version < '3.11'",
+        ]
+    },
     zip_safe=True,
     maintainer="Jason Scott Person",
     maintainer_email="jsperson@users.noreply.github.com",

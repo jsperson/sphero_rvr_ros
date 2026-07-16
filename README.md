@@ -395,6 +395,11 @@ sudo apt install -y \
   ros-jazzy-ros-base \
   ros-jazzy-slam-toolbox \
   ros-jazzy-nav2-map-server \
+  ros-jazzy-camera-ros \
+  ros-jazzy-libcamera \
+  libcamera-ipa \
+  libcamera-tools \
+  v4l-utils \
   python3-colcon-common-extensions \
   python3-rosdep \
   python3-vcstool \
@@ -464,7 +469,7 @@ git clone https://github.com/jsperson/sphero_rvr_ros.git
 ~/ros2_ws/src/sphero_rvr_ros/scripts/install-rvr-pi
 ```
 
-The install helper installs the ROS apt repository if needed, installs all apt/runtime dependencies including `slam_toolbox` and `nav2_map_server`, imports `workspace.repos` dependencies such as upstream `rplidar_ros`, runs `rosdep`, builds the workspace, installs udev rules, and verifies the lidar/mapping launch files plus map saver.
+The install helper installs the ROS apt repository if needed, installs all apt/runtime dependencies including `slam_toolbox`, `nav2_map_server`, `camera_ros`, `libcamera-tools`, `libcamera-ipa`, and `v4l-utils`, builds Raspberry Pi's PiSP-capable `libcamera` under `~/.local/rpi-libcamera`, imports `workspace.repos` dependencies such as upstream `rplidar_ros`, runs `rosdep`, builds the workspace, installs udev rules, and verifies the lidar/mapping launch files, map saver, and camera discovery tools. The known-good libcamera revision is pinned for reproducibility; set `RPI_LIBCAMERA_REF` only when deliberately validating a newer revision. Set `RVR_ROS_WS` if the ROS workspace is not `~/ros2_ws`; both the installer and `rvr-camera-node` honor it.
 
 Equivalent manual build commands, if you are deliberately not using the helper:
 
@@ -486,6 +491,10 @@ ros2 pkg prefix sphero_rvr_driver
 ros2 pkg executables sphero_rvr_driver
 ros2 launch sphero_rvr_driver lidar.launch.py --show-args
 ros2 launch sphero_rvr_driver mapping.launch.py --show-args
+PATH="$HOME/.local/rpi-libcamera/bin:$PATH" \
+LD_LIBRARY_PATH="$HOME/.local/rpi-libcamera/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  cam --list
+v4l2-ctl --list-devices
 python3 - <<'PY'
 from sphero_rvr_driver.rvr_node import RVRNodeConfig
 print(RVRNodeConfig())
@@ -501,12 +510,31 @@ sphero_rvr_driver rvr_tui
 RVRNodeConfig(serial_port='/dev/ttyAMA0', ...)
 ```
 
+Pi Camera 3 no-motion sanity check:
+
+```bash
+PATH="$HOME/.local/rpi-libcamera/bin:$PATH" \
+LD_LIBRARY_PATH="$HOME/.local/rpi-libcamera/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+  cam --list
+v4l2-ctl --list-devices
+scripts/rvr-camera-node --ros-args -p width:=640 -p height:=480
+```
+
+Expected: the PiSP-capable libcamera build lists the Pi Camera 3 `imx708` sensor, V4L2 lists the `rp1-cfe`/`pispbe` video devices, and `rvr-camera-node` publishes `/camera/image_raw` through ROS. Camera checks are safe/no-motor; they do not launch the RVR driver or publish `/cmd_vel`.
+
+Current accepted rack layout:
+
+- Use the lightweight one-level rack with a narrow lidar tower.
+- Keep the robot payload to the Pi 5, Pi battery, lidar, and Pi Camera 3.
+- Do not use the old three-level rack for floor driving; it put too much weight/high center of gravity on the RVR and caused weak turning/drive behavior.
+- Live `rvr-console` testing with the one-level rack ran normally, confirming the rack redesign fixed the weight/CG issue.
+
 Installed package data includes:
 
 - launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`
 - config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`
 - docs: `mapping.md`, `motion_calibration.md`, `udev/99-rplidar.rules`
-- helper scripts: `install-rvr-pi`, `rvr-console`, `rvr_motion_calibration.py`
+- helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`
 
 ## No-motion smoke test
 
