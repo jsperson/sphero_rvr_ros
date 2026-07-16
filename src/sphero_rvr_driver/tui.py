@@ -137,6 +137,20 @@ class RVRTUI:
 
     def _run_command(self, command: TUICommand) -> None:
         name = command.name
+        if self._motion_active and self._disarm_after_motion and name not in {
+            "stop",
+            "estop",
+            "disarm",
+            "quit",
+            "help",
+            "status",
+            "battery",
+        }:
+            self.state.log(
+                f"Command /{name} rejected during active nudge. "
+                "Use STOP, ESTOP, /disarm, or /quit."
+            )
+            return
         try:
             if name == "help":
                 for line in HELP_TEXT:
@@ -175,17 +189,28 @@ class RVRTUI:
             elif name == "nudge":
                 self._run_nudge_command(command)
             elif name == "stop":
-                self.state.log(self.client.stop())
+                self.state.armed = False
                 self._motion_active = False
                 self._disarm_after_motion = False
+                try:
+                    message = self.client.stop()
+                finally:
+                    self._safe_stop()
+                self.state.log(message)
             elif name == "estop":
                 self.state.armed = False
-                self.state.log(self.client.estop())
                 self._motion_active = False
                 self._disarm_after_motion = False
+                try:
+                    message = self.client.estop()
+                finally:
+                    self._safe_stop()
+                self.state.log(message)
             elif name == "clear-estop":
                 self.state.log(self.client.clear_estop())
             elif name == "quit":
+                self.state.armed = False
+                self._safe_stop()
                 self._quit = True
             else:
                 self.state.log(f"Unknown command: /{name}")

@@ -2,7 +2,7 @@ import pytest
 
 import sphero_rvr_driver.tui as tui_module
 from sphero_rvr_driver.tui import DryRunRVRClient, RVRTUI
-from sphero_rvr_driver.tui_commands import NudgeCommand, TUICommand
+from sphero_rvr_driver.tui_commands import NudgeCommand, TUICommand, parse_command
 from sphero_rvr_driver.tui_keymap import KeyAction
 from sphero_rvr_driver.tui_launch import LaunchManager, LaunchProfile, MappingMode
 
@@ -445,6 +445,77 @@ def test_drive_key_is_ignored_during_active_nudge(monkeypatch):
     assert tui._motion_active is True
     assert tui._disarm_after_motion is True
     assert tui.state.last_message == "Ignored drive key during active nudge. Use STOP, ESTOP, or /disarm."
+
+
+@pytest.mark.parametrize("command_name", ["stop", "estop"])
+def test_failed_stop_service_still_zeros_disarms_and_cancels_nudge(monkeypatch, command_name):
+    now = 100.0
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: now)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    def fail_service(timeout_sec=2.0):
+        del timeout_sec
+        raise RuntimeError(f"{command_name} service failed")
+
+    setattr(client, command_name, fail_service)
+    tui._run_command(TUICommand(command_name))
+
+    assert client.published[-1] == (0.0, 0.0)
+    assert tui._motion_active is False
+    assert tui.state.armed is False
+    assert tui.state.last_message == f"ERROR: {command_name} service failed"
+
+    published_after_failure = list(client.published)
+    now = 100.09
+    tui._maintain_motion()
+    assert client.published == published_after_failure
+
+
+def test_mapping_is_rejected_during_active_nudge(monkeypatch):
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: 100.0)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    tui._run_command(parse_command("/mapping full confirm"))
+
+    assert client.published == [(0.10, 0.0)]
+    assert tui._motion_active is True
+    assert tui.state.armed is True
+    assert tui.state.last_message == (
+        "Command /mapping rejected during active nudge. Use STOP, ESTOP, /disarm, or /quit."
+    )
+
+
+def test_runtime_nan_nudge_is_rejected_without_motion():
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=float("nan"), confirmed=True)))
+
+    assert client.published == []
+    assert tui._motion_active is False
+    assert tui.state.last_message == "ERROR: /nudge distance must be finite"
+
+
+def test_quit_during_active_nudge_zeros_and_disarms(monkeypatch):
+    monkeypatch.setattr(tui_module.time, "monotonic", lambda: 100.0)
+    client = FakeClient()
+    tui = RVRTUI(client)
+    tui._run_command(TUICommand("arm", "confirm"))
+    tui._run_command(TUICommand("nudge", NudgeCommand(direction="forward", distance_m=0.02, confirmed=True)))
+
+    tui._run_command(TUICommand("quit"))
+
+    assert client.published[-1] == (0.0, 0.0)
+    assert tui._motion_active is False
+    assert tui.state.armed is False
+    assert tui._quit is True
 
 
 def test_command_entry_maintains_active_nudge(monkeypatch):
