@@ -5,6 +5,9 @@ ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 PACKAGE_NAME="sphero_rvr_driver"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+RPI_LIBCAMERA_ROOT="${RPI_LIBCAMERA_ROOT:-$HOME/.local/rpi-libcamera}"
+RPI_LIBCAMERA_SRC="${RPI_LIBCAMERA_SRC:-$HOME/src/libcamera-rpi}"
+RPI_LIBCAMERA_REF="${RPI_LIBCAMERA_REF:-06c385619acb10bbfb33f52f3abeb8f8c095f42b}"
 
 if [[ -n "${RVR_ROS_WS:-}" ]]; then
   WS_ROOT="$RVR_ROS_WS"
@@ -82,17 +85,69 @@ if [[ ! -f /etc/apt/sources.list.d/ros2.list ]]; then
     | sudo tee /etc/apt/sources.list.d/ros2.list >/dev/null
 fi
 
-log "Installing ROS, build tools, and mapping dependencies"
+log "Installing ROS, build tools, mapping dependencies, and camera capture tools"
 sudo apt-get update
 sudo apt-get install -y \
   "ros-${ROS_DISTRO}-ros-base" \
   "ros-${ROS_DISTRO}-slam-toolbox" \
   "ros-${ROS_DISTRO}-nav2-map-server" \
+  "ros-${ROS_DISTRO}-camera-ros" \
+  "ros-${ROS_DISTRO}-libcamera" \
+  libcamera-ipa \
+  libcamera-tools \
+  v4l-utils \
+  meson \
+  ninja-build \
+  pkg-config \
+  python3-jinja2 \
+  python3-ply \
+  python3-yaml \
+  libevent-dev \
+  libgnutls28-dev \
+  libssl-dev \
+  libtiff-dev \
+  pybind11-dev \
   python3-colcon-common-extensions \
   python3-rosdep \
   python3-vcstool \
   python3-argcomplete \
   python3-serial
+
+log "Installing Raspberry Pi libcamera PiSP stack"
+mkdir -p "$(dirname "$RPI_LIBCAMERA_SRC")"
+if [[ ! -d "$RPI_LIBCAMERA_SRC/.git" ]]; then
+  git clone --depth 1 https://github.com/raspberrypi/libcamera.git "$RPI_LIBCAMERA_SRC"
+fi
+cd "$RPI_LIBCAMERA_SRC"
+libcamera_checkout="$RPI_LIBCAMERA_REF"
+if ! git cat-file -e "${RPI_LIBCAMERA_REF}^{commit}" 2>/dev/null; then
+  git fetch --depth 1 origin "$RPI_LIBCAMERA_REF"
+  libcamera_checkout="FETCH_HEAD"
+fi
+git checkout --detach --quiet "$libcamera_checkout"
+if [[ ! -d build-rvr ]]; then
+  meson setup build-rvr \
+    --prefix="$RPI_LIBCAMERA_ROOT" \
+    -Dpipelines=rpi/pisp \
+    -Dipas=rpi/pisp \
+    -Dcam=enabled \
+    -Dqcam=disabled \
+    -Ddocumentation=disabled \
+    -Dtest=false \
+    -Dv4l2=disabled
+else
+  meson setup --reconfigure build-rvr \
+    --prefix="$RPI_LIBCAMERA_ROOT" \
+    -Dpipelines=rpi/pisp \
+    -Dipas=rpi/pisp \
+    -Dcam=enabled \
+    -Dqcam=disabled \
+    -Ddocumentation=disabled \
+    -Dtest=false \
+    -Dv4l2=disabled
+fi
+meson compile -C build-rvr
+meson install -C build-rvr
 
 if ! rosdep db 2>/dev/null | grep -q '^OS NAME:'; then
   log "Initializing rosdep"
@@ -142,9 +197,20 @@ source_ros_setup "$WS_ROOT/install/setup.bash"
 ros2 pkg prefix "$PACKAGE_NAME"
 ros2 pkg prefix slam_toolbox
 ros2 pkg prefix nav2_map_server
+ros2 pkg prefix camera_ros
 ros2 run nav2_map_server map_saver_cli --help >/dev/null
 ros2 launch "$PACKAGE_NAME" lidar.launch.py --show-args >/dev/null
 ros2 launch "$PACKAGE_NAME" mapping.launch.py --show-args >/dev/null
+camera_list="$({
+  PATH="$RPI_LIBCAMERA_ROOT/bin:$PATH" \
+  LD_LIBRARY_PATH="$RPI_LIBCAMERA_ROOT/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    cam --list
+} 2>&1)"
+printf '%s\n' "$camera_list"
+printf '%s\n' "$camera_list" | grep -E '^[0-9]+:.*imx708' >/dev/null
+if command -v v4l2-ctl >/dev/null 2>&1; then
+  v4l2-ctl --list-devices >/dev/null
+fi
 
 cat <<EOF
 

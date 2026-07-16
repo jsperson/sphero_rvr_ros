@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ast
-import tomllib
+import importlib
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+tomllib = importlib.import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +25,7 @@ EXPECTED_DATA_FILES = {
     },
     "share/sphero_rvr_driver/scripts": {
         "scripts/install-rvr-pi",
+        "scripts/rvr-camera-node",
         "scripts/rvr-console",
         "scripts/rvr_motion_calibration.py",
     },
@@ -61,12 +65,19 @@ def test_installed_package_data_lists_required_launch_config_docs_and_scripts() 
             assert (REPO_ROOT / relative_path).is_file(), relative_path
 
 
+def test_installed_helper_scripts_are_world_readable_and_executable() -> None:
+    for relative_path in EXPECTED_DATA_FILES["share/sphero_rvr_driver/scripts"]:
+        mode = (REPO_ROOT / relative_path).stat().st_mode & 0o777
+        assert mode == 0o755, f"{relative_path}: expected 0755, got {mode:04o}"
+
+
 def test_package_xml_declares_runtime_dependencies_for_launches() -> None:
     root = ET.parse(REPO_ROOT / "package.xml").getroot()
     exec_depends = {element.text for element in root.findall("exec_depend")}
 
     assert {
         "ament_index_python",
+        "camera_ros",
         "launch",
         "launch_ros",
         "rplidar_ros",
@@ -74,6 +85,25 @@ def test_package_xml_declares_runtime_dependencies_for_launches() -> None:
         "slam_toolbox",
         "tf2_ros",
     } <= exec_depends
+
+
+def test_dev_dependencies_support_python_39_metadata_tests() -> None:
+    extras_require = ast.literal_eval(_setup_keyword("extras_require"))
+
+    assert "tomli>=2; python_version < '3.11'" in extras_require["dev"]
+
+
+def test_camera_helpers_pin_working_libcamera_and_require_real_sensor() -> None:
+    installer = (REPO_ROOT / "scripts/install-rvr-pi").read_text()
+    camera_wrapper = (REPO_ROOT / "scripts/rvr-camera-node").read_text()
+
+    assert "RPI_LIBCAMERA_REF" in installer
+    assert "06c385619acb10bbfb33f52f3abeb8f8c095f42b" in installer
+    assert "git checkout --detach" in installer
+    assert "git cat-file -e" in installer
+    assert "grep -E '^[0-9]+:.*imx708'" in installer
+    assert "Available cameras" not in installer
+    assert 'RVR_ROS_WS="${RVR_ROS_WS:-$HOME/ros2_ws}"' in camera_wrapper
 
 
 def test_pyproject_stays_ament_python_safe() -> None:
@@ -95,6 +125,6 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
         "launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`",
         "config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`",
-        "helper scripts: `install-rvr-pi`, `rvr-console`, `rvr_motion_calibration.py`",
+        "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`",
     ]:
         assert token in readme
