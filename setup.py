@@ -26,6 +26,7 @@ setup(
             [
                 "docs/mapping.md",
                 "docs/motion_calibration.md",
+                "docs/rosbag_capture_replay.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -47,6 +48,9 @@ setup(
         "console_scripts": [
             "rvr_node = sphero_rvr_driver.rvr_node:main",
             "rvr_tui = sphero_rvr_driver.tui:main",
+            "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
+            "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
+            "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
         ],
     },
 )
