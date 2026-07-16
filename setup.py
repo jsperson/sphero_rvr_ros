@@ -34,6 +34,7 @@ setup(
                 "docs/motion_calibration.md",
                 "docs/rosbag_capture_replay.md",
                 "docs/camera_lidar_calibration.md",
+                "docs/lidar_collision_stop_supervisor.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),

@@ -2,6 +2,8 @@
 
 Source-of-truth spec for extending `rvr-console` / `rvr_tui` into a safer ROS control interface for RVR lidar mapping.
 
+The independent lidar collision-stop supervisor and final motor-bound command arbitration contract lives in [lidar_collision_stop_supervisor.md](lidar_collision_stop_supervisor.md). The TUI remains an ordinary requested-command source; it must not bypass that supervisor in supervised motor-capable launches.
+
 This interface is intentionally conservative: the default path is lidar/SLAM inspection with no RVR driver and no `/cmd_vel` exposure. Anything that can start the motors must be visually obvious, explicitly confirmed, logged, and recoverable by STOP/ESTOP.
 
 ## Goals and non-goals
