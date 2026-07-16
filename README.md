@@ -395,11 +395,11 @@ sudo apt install -y \
   ros-jazzy-ros-base \
   ros-jazzy-slam-toolbox \
   ros-jazzy-nav2-map-server \
-  ros-jazzy-camera-ros \
-  ros-jazzy-libcamera \
   libcamera-ipa \
   libcamera-tools \
   v4l-utils \
+  build-essential \
+  libyaml-dev \
   python3-colcon-common-extensions \
   python3-rosdep \
   python3-vcstool \
@@ -469,9 +469,9 @@ git clone https://github.com/jsperson/sphero_rvr_ros.git
 ~/ros2_ws/src/sphero_rvr_ros/scripts/install-rvr-pi
 ```
 
-The install helper installs the ROS apt repository if needed, installs all apt/runtime dependencies including `slam_toolbox`, `nav2_map_server`, `camera_ros`, `libcamera-tools`, `libcamera-ipa`, and `v4l-utils`, builds Raspberry Pi's PiSP-capable `libcamera` under `~/.local/rpi-libcamera`, imports `workspace.repos` dependencies such as upstream `rplidar_ros`, runs `rosdep`, builds the workspace, installs udev rules, and verifies the lidar/mapping launch files, map saver, and camera discovery tools. The known-good libcamera revision is pinned for reproducibility; set `RPI_LIBCAMERA_REF` only when deliberately validating a newer revision. Set `RVR_ROS_WS` if the ROS workspace is not `~/ros2_ws`; both the installer and `rvr-camera-node` honor it.
+The install helper installs the ROS apt repository if needed, installs all apt/runtime and source-build dependencies, builds Raspberry Pi's PiSP-capable `libcamera` in release mode under `~/.local/rpi-libcamera`, imports pinned `camera_ros` plus upstream `rplidar_ros` from `workspace.repos`, and builds `camera_ros` against that exact libcamera installation. It then runs `rosdep`, builds the RVR workspace, installs udev rules, and verifies the lidar/mapping launch files, map saver, and camera discovery tools. The known-good libcamera and `camera_ros` revisions are pinned for reproducibility; set `RPI_LIBCAMERA_REF` only when deliberately validating a newer compatible pair. Set `RVR_ROS_WS` if the ROS workspace is not `~/ros2_ws`; both the installer and `rvr-camera-node` honor it.
 
-Equivalent manual build commands, if you are deliberately not using the helper:
+Base ROS/lidar-only fallback commands, if you are deliberately not using the helper. These do not reproduce the pinned PiSP camera build; use the helper for Camera Module 3 support:
 
 ```bash
 cd ~/ros2_ws/src
@@ -517,7 +517,8 @@ PATH="$HOME/.local/rpi-libcamera/bin:$PATH" \
 LD_LIBRARY_PATH="$HOME/.local/rpi-libcamera/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   cam --list
 v4l2-ctl --list-devices
-scripts/rvr-camera-node --ros-args -p width:=640 -p height:=480
+"$(ros2 pkg prefix sphero_rvr_driver)/share/sphero_rvr_driver/scripts/rvr-camera-node" \
+  --ros-args -p width:=640 -p height:=480
 ```
 
 Expected: the PiSP-capable libcamera build lists the Pi Camera 3 `imx708` sensor, V4L2 lists the `rp1-cfe`/`pispbe` video devices, and `rvr-camera-node` publishes `/camera/image_raw` through ROS. Camera checks are safe/no-motor; they do not launch the RVR driver or publish `/cmd_vel`.
