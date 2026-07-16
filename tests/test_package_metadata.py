@@ -36,6 +36,7 @@ EXPECTED_DATA_FILES = {
         "docs/motion_calibration.md",
         "docs/rosbag_capture_replay.md",
         "docs/camera_lidar_calibration.md",
+        "docs/lidar_collision_stop_supervisor.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -144,6 +145,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/motion_calibration.md",
         "docs/rosbag_capture_replay.md",
         "docs/camera_lidar_calibration.md",
+        "docs/lidar_collision_stop_supervisor.md",
         "docs/udev/99-rplidar.rules",
         "ros2 launch sphero_rvr_driver lidar.launch.py --show-args",
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
@@ -164,3 +166,32 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
         "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
     } <= console_scripts
+
+
+def test_lidar_collision_stop_design_links_current_ros_contract() -> None:
+    design = (REPO_ROOT / "docs" / "lidar_collision_stop_supervisor.md").read_text()
+    readme = (REPO_ROOT / "README.md").read_text()
+    tui_plan = (REPO_ROOT / "docs" / "rvr_control_interface_plan.md").read_text()
+
+    for token in [
+        "ordinary command sources -> /cmd_vel -> lidar_collision_stop_supervisor -> /cmd_vel_motor -> sphero_rvr_driver",
+        "cmd_vel:=cmd_vel_motor",
+        "/stop",
+        "/estop",
+        "/clear_estop",
+        "LaserScan",
+        "base_link -> laser",
+        "max_scan_age_s",
+        "SENSOR_STALE",
+        "ESTOPPED",
+        "rosbag replay",
+        "src/sphero_rvr_driver/rvr_node.py",
+        "src/sphero_rvr_core/driver.py",
+        "launch/lidar.launch.py",
+        "launch/mapping.launch.py",
+        "config/rvr.yaml",
+    ]:
+        assert token in design
+
+    assert "docs/lidar_collision_stop_supervisor.md" in readme
+    assert "lidar_collision_stop_supervisor.md" in tui_plan

@@ -14,6 +14,7 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rosbag_capture_replay.md](docs/rosbag_capture_replay.md) covers the dry-run-first rosbag2 capture/replay workflow, run manifest format, storage layout, cleanup, and motor-topic safety boundaries.
 - [docs/camera_lidar_calibration.md](docs/camera_lidar_calibration.md) is the no-hardware Pi Camera 3 / RPLIDAR calibration runbook, including camera intrinsics, placeholder TF values, and physical measurement steps.
 - [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
+- [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) is the source-of-truth design for the independent lidar collision-stop supervisor and final `/cmd_vel` arbitration contract.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
