@@ -13,12 +13,21 @@ def generate_launch_description():
     pkg_share = Path(get_package_share_directory("sphero_rvr_driver"))
     rvr_launch = pkg_share / "launch" / "rvr.launch.py"
     lidar_launch = pkg_share / "launch" / "lidar.launch.py"
+    camera_launch = pkg_share / "launch" / "camera.launch.py"
     slam_config = pkg_share / "config" / "slam_toolbox.yaml"
 
     start_rvr = LaunchConfiguration("start_rvr")
     start_lidar = LaunchConfiguration("start_lidar")
+    start_camera = LaunchConfiguration("start_camera")
     start_slam = LaunchConfiguration("start_slam")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    camera_info_url = LaunchConfiguration("camera_info_url")
+    camera_x = LaunchConfiguration("camera_x")
+    camera_y = LaunchConfiguration("camera_y")
+    camera_z = LaunchConfiguration("camera_z")
+    camera_roll = LaunchConfiguration("camera_roll")
+    camera_pitch = LaunchConfiguration("camera_pitch")
+    camera_yaw = LaunchConfiguration("camera_yaw")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -34,11 +43,30 @@ def generate_launch_description():
             description="Start the lidar-only launch that publishes /scan and base_link -> laser.",
         ),
         DeclareLaunchArgument(
+            "start_camera",
+            default_value="false",
+            description=(
+                "Start the Pi Camera 3 camera_ros launch and camera TF. Safe/no-motor, "
+                "but it requires the camera stack and a measured camera_info_url for semantic localization."
+            ),
+        ),
+        DeclareLaunchArgument(
             "start_slam",
             default_value="true",
             description="Start slam_toolbox online async mapping node.",
         ),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument(
+            "camera_info_url",
+            default_value="file:///tmp/UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml",
+            description="Forwarded to camera.launch.py; intentionally invalid until measured.",
+        ),
+        DeclareLaunchArgument("camera_x", default_value="0.0"),
+        DeclareLaunchArgument("camera_y", default_value="0.0"),
+        DeclareLaunchArgument("camera_z", default_value="0.0"),
+        DeclareLaunchArgument("camera_roll", default_value="0.0"),
+        DeclareLaunchArgument("camera_pitch", default_value="0.0"),
+        DeclareLaunchArgument("camera_yaw", default_value="0.0"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(rvr_launch)),
             condition=IfCondition(start_rvr),
@@ -46,6 +74,19 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(lidar_launch)),
             condition=IfCondition(start_lidar),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(str(camera_launch)),
+            launch_arguments={
+                "camera_info_url": camera_info_url,
+                "camera_x": camera_x,
+                "camera_y": camera_y,
+                "camera_z": camera_z,
+                "camera_roll": camera_roll,
+                "camera_pitch": camera_pitch,
+                "camera_yaw": camera_yaw,
+            }.items(),
+            condition=IfCondition(start_camera),
         ),
         Node(
             package="slam_toolbox",

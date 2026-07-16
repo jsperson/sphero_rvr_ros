@@ -10,8 +10,14 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/sphero_rvr_driver"]),
         ("share/sphero_rvr_driver", ["package.xml"]),
-        ("share/sphero_rvr_driver/launch", ["launch/rvr.launch.py", "launch/lidar.launch.py", "launch/mapping.launch.py"]),
-        ("share/sphero_rvr_driver/config", ["config/rvr.yaml", "config/lidar.yaml", "config/slam_toolbox.yaml"]),
+        (
+            "share/sphero_rvr_driver/launch",
+            ["launch/rvr.launch.py", "launch/lidar.launch.py", "launch/mapping.launch.py", "launch/camera.launch.py"],
+        ),
+        (
+            "share/sphero_rvr_driver/config",
+            ["config/rvr.yaml", "config/lidar.yaml", "config/slam_toolbox.yaml", "config/camera.yaml"],
+        ),
         (
             "share/sphero_rvr_driver/scripts",
             [
@@ -27,6 +33,7 @@ setup(
                 "docs/mapping.md",
                 "docs/motion_calibration.md",
                 "docs/rosbag_capture_replay.md",
+                "docs/camera_lidar_calibration.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
