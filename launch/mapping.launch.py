@@ -11,12 +11,14 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_share = Path(get_package_share_directory("sphero_rvr_driver"))
-    rvr_launch = pkg_share / "launch" / "rvr.launch.py"
+    rvr_launch = pkg_share / "launch" / "supervised_rvr.launch.py"
     lidar_launch = pkg_share / "launch" / "lidar.launch.py"
     camera_launch = pkg_share / "launch" / "camera.launch.py"
     slam_config = pkg_share / "config" / "slam_toolbox.yaml"
 
     start_rvr = LaunchConfiguration("start_rvr")
+    start_collision_stop = LaunchConfiguration("start_collision_stop")
+    allow_unsupervised_rvr = LaunchConfiguration("allow_unsupervised_rvr")
     start_lidar = LaunchConfiguration("start_lidar")
     start_camera = LaunchConfiguration("start_camera")
     start_slam = LaunchConfiguration("start_slam")
@@ -34,8 +36,18 @@ def generate_launch_description():
             "start_rvr",
             default_value="false",
             description=(
-                "Start the live RVR driver. MOTOR-CAPABLE: exposes /cmd_vel and can move the robot."
+                "Start the live RVR driver. MOTOR-CAPABLE supervised by lidar collision stop."
             ),
+        ),
+        DeclareLaunchArgument(
+            "start_collision_stop",
+            default_value="true",
+            description="Keep true whenever start_rvr is true; false is a development-only override.",
+        ),
+        DeclareLaunchArgument(
+            "allow_unsupervised_rvr",
+            default_value="false",
+            description="Development-only acknowledgement for bypassing supervised_rvr.launch.py; operator default forbids it.",
         ),
         DeclareLaunchArgument(
             "start_lidar",
@@ -69,6 +81,7 @@ def generate_launch_description():
         DeclareLaunchArgument("camera_yaw", default_value="0.0"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(rvr_launch)),
+            launch_arguments={"start_collision_stop": start_collision_stop}.items(),
             condition=IfCondition(start_rvr),
         ),
         IncludeLaunchDescription(

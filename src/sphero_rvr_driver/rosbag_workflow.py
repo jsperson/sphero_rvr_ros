@@ -41,6 +41,7 @@ DEFAULT_SHUTDOWN_GRACE_SECONDS = 10.0
 DEFAULT_TERMINATE_GRACE_SECONDS = 5.0
 DEFAULT_KILL_GRACE_SECONDS = 2.0
 UNSAFE_TOPIC_KEYWORDS = (
+    "cmd_vel_motor",
     "cmd_vel",
     "motor",
     "motors",

@@ -18,6 +18,8 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
+Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`.
+
 ## Current base-driver status
 
 Hardware-smoked on a Raspberry Pi 5 running Ubuntu Server 24.04 + ROS 2 Jazzy:
@@ -112,13 +114,19 @@ By default this starts lidar + SLAM only and **does not** start the live RVR dri
 start_rvr:=false
 ```
 
-Full live mapping is motor-capable because it exposes `/cmd_vel` through the RVR driver:
+Full live mapping is motor-capable and now uses the lidar collision-stop supervisor by default:
+
+```text
+/cmd_vel -> lidar_collision_stop_supervisor -> /cmd_vel_motor -> sphero_rvr_driver
+```
+
+Ordinary publishers keep targeting `/cmd_vel`; the live driver is remapped away from public `/cmd_vel` to `/cmd_vel_motor` in `supervised_rvr.launch.py`, and the supervisor owns public `/stop`, `/estop`, and `/clear_estop`.
 
 ```bash
 ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true
 ```
 
-See `docs/mapping.md` before running live mapping.
+See `docs/mapping.md` and `docs/lidar_collision_stop_supervisor.md` before running live mapping.
 
 ## Roadmap: lidar, SLAM, cameras, autonomy, and AI commands
 
@@ -155,7 +163,7 @@ Detailed planning lives in [STATUS.md](STATUS.md#lidar-slam-and-autonomy-roadmap
 
 The ROS adapter deliberately exposes only the safe subset selected in `docs/rvr_ros_exposure_policy.md`:
 
-- routine motion stays on `/cmd_vel`, bounded by the existing velocity, stale-timeout, stop, and software-estop safety path;
+- routine motion stays on ordinary `/cmd_vel`, then passes through `lidar_collision_stop_supervisor` before the final `/cmd_vel_motor` driver sink in supervised motor-capable launches;
 - read-only telemetry is published as typed topics (`battery_state`, motor temperatures, `ambient_light`, `odom`) and diagnostics key-values;
 - `reset_yaw` and `reset_locator` are explicit reference-frame reset services, not hidden side effects;
 - LEDs are limited to bounded `ColorRGBA` all-LED feedback plus `release_led_requests`; raw LED masks/palettes remain core-only;
