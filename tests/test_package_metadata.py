@@ -93,17 +93,34 @@ def test_dev_dependencies_support_python_39_metadata_tests() -> None:
     assert "tomli>=2; python_version < '3.11'" in extras_require["dev"]
 
 
-def test_camera_helpers_pin_working_libcamera_and_require_real_sensor() -> None:
+def test_camera_helpers_pin_compatible_source_builds_and_require_real_sensor() -> None:
     installer = (REPO_ROOT / "scripts/install-rvr-pi").read_text()
     camera_wrapper = (REPO_ROOT / "scripts/rvr-camera-node").read_text()
+    workspace_repos = (REPO_ROOT / "workspace.repos").read_text()
 
     assert "RPI_LIBCAMERA_REF" in installer
     assert "06c385619acb10bbfb33f52f3abeb8f8c095f42b" in installer
     assert "git checkout --detach" in installer
     assert "git cat-file -e" in installer
+    assert "build-essential" in installer
+    assert "libyaml-dev" in installer
+    assert "--buildtype=release" in installer
+    assert 'PKG_CONFIG_PATH="$RPI_LIBCAMERA_ROOT/lib/aarch64-linux-gnu/pkgconfig' in installer
+    assert "packages+=(camera_ros)" in installer
+    assert '"ros-${ROS_DISTRO}-camera-ros"' not in installer
+    assert '"ros-${ROS_DISTRO}-libcamera"' not in installer
     assert "grep -E '^[0-9]+:.*imx708'" in installer
     assert "Available cameras" not in installer
+    assert "camera_ros:" in workspace_repos
+    assert "d267b0295d3e7d49d1b884b187a395cf655f2fad" in workspace_repos
     assert 'RVR_ROS_WS="${RVR_ROS_WS:-$HOME/ros2_ws}"' in camera_wrapper
+
+
+def test_readme_camera_commands_are_location_independent() -> None:
+    readme = (REPO_ROOT / "README.md").read_text()
+
+    assert '"$(ros2 pkg prefix sphero_rvr_driver)/share/sphero_rvr_driver/scripts/rvr-camera-node"' in readme
+    assert "Equivalent manual build commands" not in readme
 
 
 def test_pyproject_stays_ament_python_safe() -> None:
