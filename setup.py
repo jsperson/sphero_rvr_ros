@@ -12,11 +12,23 @@ setup(
         ("share/sphero_rvr_driver", ["package.xml"]),
         (
             "share/sphero_rvr_driver/launch",
-            ["launch/rvr.launch.py", "launch/lidar.launch.py", "launch/mapping.launch.py", "launch/camera.launch.py"],
+            [
+                "launch/rvr.launch.py",
+                "launch/supervised_rvr.launch.py",
+                "launch/lidar.launch.py",
+                "launch/mapping.launch.py",
+                "launch/camera.launch.py",
+            ],
         ),
         (
             "share/sphero_rvr_driver/config",
-            ["config/rvr.yaml", "config/lidar.yaml", "config/slam_toolbox.yaml", "config/camera.yaml"],
+            [
+                "config/rvr.yaml",
+                "config/collision_stop.yaml",
+                "config/lidar.yaml",
+                "config/slam_toolbox.yaml",
+                "config/camera.yaml",
+            ],
         ),
         (
             "share/sphero_rvr_driver/scripts",
@@ -56,6 +68,7 @@ setup(
         "console_scripts": [
             "rvr_node = sphero_rvr_driver.rvr_node:main",
             "rvr_tui = sphero_rvr_driver.tui:main",
+            "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
             "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
             "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
             "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",

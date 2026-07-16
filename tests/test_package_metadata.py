@@ -15,12 +15,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_DATA_FILES = {
     "share/sphero_rvr_driver/launch": {
         "launch/rvr.launch.py",
+        "launch/supervised_rvr.launch.py",
         "launch/lidar.launch.py",
         "launch/mapping.launch.py",
         "launch/camera.launch.py",
     },
     "share/sphero_rvr_driver/config": {
         "config/rvr.yaml",
+        "config/collision_stop.yaml",
         "config/lidar.yaml",
         "config/slam_toolbox.yaml",
         "config/camera.yaml",
@@ -150,8 +152,8 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "ros2 launch sphero_rvr_driver lidar.launch.py --show-args",
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
         "ros2 launch sphero_rvr_driver camera.launch.py --show-args",
-        "launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
-        "config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
+        "launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
+        "config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
         "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`",
     ]:
         assert token in readme

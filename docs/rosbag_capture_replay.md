@@ -10,7 +10,7 @@ This workflow records reusable lidar/camera/odom/TF/diagnostics data without lau
 - Finite capture starts `ros2 bag record` in a separate process group, sends SIGINT at the deadline, waits for metadata/MCAP closure, and escalates to SIGTERM then SIGKILL only if the child does not exit within bounded grace periods.
 - Do not wrap this helper in shell, SSH, or GNU `timeout` as the primary stop mechanism. External timeouts can signal only the helper and leave the `ros2 bag record` child running.
 - Sensor and driver processes must be started separately under their own approval gate. This capture helper only subscribes to existing topics.
-- Capture and replay reject `/cmd_vel`, raw motor, motor-control, teleop, and velocity-command-like topics by default.
+- Capture and replay reject `/cmd_vel`, `/cmd_vel_motor`, raw motor, motor-control, teleop, and velocity-command-like topics by default.
 - `--allow-unsafe-topics` exists only for developer analysis of already-recorded bags. Do not use it for live robot operation.
 
 ## Storage layout
@@ -113,7 +113,7 @@ To replay a subset:
 rvr_rosbag_replay ~/rvr_runs/room_scan_001/rosbag --topic /scan --topic /tf,/tf_static
 ```
 
-Attempting to add `/cmd_vel` or motor-like topics fails unless `--allow-unsafe-topics` is passed. That override is for offline developer investigation only, and the manifest records the unsafe topics.
+Attempting to add `/cmd_vel`, `/cmd_vel_motor`, or motor-like topics fails unless `--allow-unsafe-topics` is passed. That override is for offline developer investigation only, and the manifest records the unsafe topics. Never replay `/cmd_vel_motor` while a live driver is running; in the supervised graph that topic is the final motor-bound sink.
 
 ## Run manifest
 
