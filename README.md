@@ -11,6 +11,7 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_api_gap_report.md](docs/rvr_api_gap_report.md) is the parity handoff: what is implemented, what remains intentionally core-only/omitted, and which commands validate the state.
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
 - [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
+- [docs/rosbag_capture_replay.md](docs/rosbag_capture_replay.md) covers the dry-run-first rosbag2 capture/replay workflow, run manifest format, storage layout, cleanup, and motor-topic safety boundaries.
 - [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.

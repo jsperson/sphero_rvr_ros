@@ -32,6 +32,7 @@ EXPECTED_DATA_FILES = {
     "share/sphero_rvr_driver/docs": {
         "docs/mapping.md",
         "docs/motion_calibration.md",
+        "docs/rosbag_capture_replay.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -138,6 +139,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
     for token in [
         "docs/mapping.md",
         "docs/motion_calibration.md",
+        "docs/rosbag_capture_replay.md",
         "docs/udev/99-rplidar.rules",
         "ros2 launch sphero_rvr_driver lidar.launch.py --show-args",
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
@@ -146,3 +148,14 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`",
     ]:
         assert token in readme
+
+
+def test_rosbag_console_scripts_are_installed() -> None:
+    entry_points = ast.literal_eval(_setup_keyword("entry_points"))
+    console_scripts = set(entry_points["console_scripts"])
+
+    assert {
+        "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
+        "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
+        "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
+    } <= console_scripts
