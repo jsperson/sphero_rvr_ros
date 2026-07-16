@@ -14,9 +14,11 @@ import json
 import os
 import platform
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +37,9 @@ DEFAULT_CAPTURE_TOPICS = (
     "/diagnostics",
 )
 DEFAULT_REPLAY_TOPICS = DEFAULT_CAPTURE_TOPICS
+DEFAULT_SHUTDOWN_GRACE_SECONDS = 10.0
+DEFAULT_TERMINATE_GRACE_SECONDS = 5.0
+DEFAULT_KILL_GRACE_SECONDS = 2.0
 UNSAFE_TOPIC_KEYWORDS = (
     "cmd_vel",
     "motor",
@@ -56,6 +61,11 @@ class UnsafeTopicError(ValueError):
     """Raised when a requested capture/replay topic can affect motion."""
 
 
+class _ArgumentParserExit(Exception):
+    def __init__(self, code: int) -> None:
+        self.code = code
+
+
 @dataclass(frozen=True)
 class RosbagPlan:
     mode: str
@@ -64,6 +74,20 @@ class RosbagPlan:
     topics: tuple[str, ...]
     command: list[str]
     unsafe_topics: tuple[str, ...] = ()
+    requested_duration_seconds: Optional[float] = None
+    until_interrupted: bool = False
+
+
+@dataclass(frozen=True)
+class CaptureStopResult:
+    returncode: Optional[int]
+    stop_path: str
+    actual_duration_seconds: float
+    timed_out: bool
+    escalated: bool
+    signals_sent: tuple[str, ...]
+    finalization_outcome: str
+    error: str = ""
 
 
 @dataclass
@@ -155,6 +179,8 @@ def build_capture_plan(
     topics: Optional[Sequence[str]] = None,
     extra_topics: Optional[Sequence[str]] = None,
     allow_unsafe_topics: bool = False,
+    requested_duration_seconds: Optional[float] = None,
+    until_interrupted: bool = False,
 ) -> RosbagPlan:
     capture_run_id = run_id or default_run_id()
     selected_topics = _topic_list(topics, extra_topics)
@@ -162,7 +188,16 @@ def build_capture_plan(
     unsafe = unsafe_topics(selected_topics)
     bag_path = Path(output_root).expanduser() / capture_run_id / "rosbag"
     command = ["ros2", "bag", "record", "-o", str(bag_path), *selected_topics]
-    return RosbagPlan("capture", capture_run_id, bag_path, selected_topics, command, unsafe)
+    return RosbagPlan(
+        "capture",
+        capture_run_id,
+        bag_path,
+        selected_topics,
+        command,
+        unsafe,
+        requested_duration_seconds=requested_duration_seconds,
+        until_interrupted=until_interrupted,
+    )
 
 
 def build_replay_plan(
@@ -266,13 +301,26 @@ def manifest_from_plan(
     ros_distro: Optional[str] = None,
     git_info: Optional[Mapping[str, Any]] = None,
 ) -> RunManifest:
+    bag = {
+        "path": str(plan.bag_path),
+        "metadata_summary": read_bag_metadata_summary(plan.bag_path),
+        "requested_duration_seconds": plan.requested_duration_seconds,
+        "until_interrupted": plan.until_interrupted,
+        "actual_duration_seconds": None,
+        "stop_path": "not_started",
+        "child_returncode": None,
+        "timed_out": False,
+        "escalated": False,
+        "signals_sent": [],
+        "finalization_outcome": "not_started",
+    }
     return RunManifest(
         run_id=plan.run_id,
         timestamp_utc=utc_timestamp(),
         mode=mode or plan.mode,
         command=plan.command,
         topics=list(plan.topics),
-        bag={"path": str(plan.bag_path), "metadata_summary": read_bag_metadata_summary(plan.bag_path)},
+        bag=bag,
         git=dict(git_info) if git_info is not None else gather_git_info(),
         host=socket.gethostname(),
         os=f"{platform.system()} {platform.release()} ({platform.platform()})",
@@ -309,6 +357,10 @@ def _print_plan(plan: RosbagPlan, *, execute: bool, manifest_path: Optional[Path
     print(SAFETY_WARNING)
     print(f"mode: {plan.mode}")
     print(f"destination: {plan.bag_path}")
+    if plan.requested_duration_seconds is not None:
+        print(f"duration: {plan.requested_duration_seconds:.1f} seconds")
+    elif plan.until_interrupted:
+        print("duration: until interrupted by operator")
     if plan.topics:
         print("topics:")
         for topic in plan.topics:
@@ -333,9 +385,208 @@ def _run_command(command: list[str], runner: Optional[Any]) -> int:
     return int(completed.returncode)
 
 
+def _timeout_exception(runner: Optional[Any]) -> type[BaseException]:
+    return getattr(runner, "TimeoutExpired", subprocess.TimeoutExpired) if runner is not None else subprocess.TimeoutExpired
+
+
+def _monotonic(runner: Optional[Any]) -> float:
+    if runner is not None and hasattr(runner, "monotonic"):
+        return float(runner.monotonic())
+    return time.monotonic()
+
+
+def _popen_process(command: list[str], runner: Optional[Any]) -> Any:
+    kwargs: dict[str, Any] = {"start_new_session": True}
+    if runner is not None and hasattr(runner, "popen"):
+        return runner.popen(command, **kwargs)
+    return subprocess.Popen(command, **kwargs)
+
+
+def _kill_process_group(process: Any, sig: signal.Signals, runner: Optional[Any]) -> None:
+    if runner is not None and hasattr(runner, "killpg"):
+        runner.killpg(process.pid, sig)
+        return
+    os.killpg(process.pid, sig)
+
+
+def _wait_for_process(process: Any, timeout_seconds: Optional[float], runner: Optional[Any]) -> Optional[int]:
+    try:
+        if timeout_seconds is None:
+            return int(process.wait())
+        return int(process.wait(timeout=timeout_seconds))
+    except _timeout_exception(runner):
+        return None
+
+
+def _record_stop(manifest: RunManifest, result: CaptureStopResult) -> None:
+    manifest.bag.update(
+        {
+            "metadata_summary": read_bag_metadata_summary(Path(manifest.bag["path"])),
+            "actual_duration_seconds": result.actual_duration_seconds,
+            "stop_path": result.stop_path,
+            "child_returncode": result.returncode,
+            "timed_out": result.timed_out,
+            "escalated": result.escalated,
+            "signals_sent": list(result.signals_sent),
+            "finalization_outcome": result.finalization_outcome,
+            "error": result.error,
+        }
+    )
+
+
+def _shutdown_process_group(
+    process: Any,
+    *,
+    reason: str,
+    start_time: float,
+    requested_duration_seconds: Optional[float],
+    runner: Optional[Any],
+    shutdown_grace_seconds: float,
+    terminate_grace_seconds: float,
+    kill_grace_seconds: float,
+) -> CaptureStopResult:
+    signals_sent: list[str] = []
+    escalated = False
+
+    def elapsed() -> float:
+        actual = _monotonic(runner) - start_time
+        if reason == "duration_elapsed" and requested_duration_seconds is not None:
+            return max(actual, requested_duration_seconds)
+        return max(actual, 0.0)
+
+    _kill_process_group(process, signal.SIGINT, runner)
+    signals_sent.append("SIGINT")
+    rc = _wait_for_process(process, shutdown_grace_seconds, runner)
+    if rc is not None:
+        suffix = "sigint_clean"
+        outcome = "interrupted" if reason == "interrupted" else ("clean" if rc == 0 else "abnormal_exit")
+        return CaptureStopResult(rc, f"{reason}_{suffix}", elapsed(), reason == "duration_elapsed", False, tuple(signals_sent), outcome)
+
+    escalated = True
+    _kill_process_group(process, signal.SIGTERM, runner)
+    signals_sent.append("SIGTERM")
+    rc = _wait_for_process(process, terminate_grace_seconds, runner)
+    if rc is not None:
+        return CaptureStopResult(
+            rc,
+            f"{reason}_sigint_sigterm",
+            elapsed(),
+            reason == "duration_elapsed",
+            escalated,
+            tuple(signals_sent),
+            "terminated",
+        )
+
+    _kill_process_group(process, signal.SIGKILL, runner)
+    signals_sent.append("SIGKILL")
+    rc = _wait_for_process(process, kill_grace_seconds, runner)
+    if rc is not None:
+        return CaptureStopResult(
+            rc,
+            f"{reason}_sigint_sigterm_sigkill",
+            elapsed(),
+            reason == "duration_elapsed",
+            escalated,
+            tuple(signals_sent),
+            "killed",
+        )
+
+    return CaptureStopResult(
+        getattr(process, "returncode", None),
+        f"{reason}_sigint_sigterm_sigkill_unreaped",
+        elapsed(),
+        reason == "duration_elapsed",
+        escalated,
+        tuple(signals_sent),
+        "unreaped",
+    )
+
+
+def _run_capture_command(
+    plan: RosbagPlan,
+    *,
+    runner: Optional[Any],
+    manifest: RunManifest,
+    manifest_path: Path,
+    shutdown_grace_seconds: float,
+    terminate_grace_seconds: float,
+    kill_grace_seconds: float,
+) -> int:
+    start_time = _monotonic(runner)
+    try:
+        process = _popen_process(plan.command, runner)
+    except OSError as exc:
+        _record_stop(
+            manifest,
+            CaptureStopResult(
+                None,
+                "spawn_failed",
+                0.0,
+                False,
+                False,
+                (),
+                "spawn_failed",
+                error=f"{type(exc).__name__}: {exc}",
+            ),
+        )
+        write_manifest(manifest, manifest_path)
+        return 127
+
+    try:
+        rc = _wait_for_process(process, plan.requested_duration_seconds, runner)
+    except KeyboardInterrupt:
+        result = _shutdown_process_group(
+            process,
+            reason="interrupted",
+            start_time=start_time,
+            requested_duration_seconds=plan.requested_duration_seconds,
+            runner=runner,
+            shutdown_grace_seconds=shutdown_grace_seconds,
+            terminate_grace_seconds=terminate_grace_seconds,
+            kill_grace_seconds=kill_grace_seconds,
+        )
+        _record_stop(manifest, result)
+        write_manifest(manifest, manifest_path)
+        return int(result.returncode if result.returncode is not None else 130)
+
+    if rc is not None:
+        actual = _monotonic(runner) - start_time
+        outcome = "clean" if rc == 0 else "abnormal_exit"
+        result = CaptureStopResult(rc, "completed_before_deadline", actual, False, False, (), outcome)
+        _record_stop(manifest, result)
+        write_manifest(manifest, manifest_path)
+        return rc
+
+    result = _shutdown_process_group(
+        process,
+        reason="duration_elapsed",
+        start_time=start_time,
+        requested_duration_seconds=plan.requested_duration_seconds,
+        runner=runner,
+        shutdown_grace_seconds=shutdown_grace_seconds,
+        terminate_grace_seconds=terminate_grace_seconds,
+        kill_grace_seconds=kill_grace_seconds,
+    )
+    _record_stop(manifest, result)
+    write_manifest(manifest, manifest_path)
+    return int(result.returncode if result.returncode is not None else 1)
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
 def _capture_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safe dry-run-first rosbag2 capture for RVR lidar/camera/odom/TF diagnostics data.")
     parser.add_argument("--execute", action="store_true", help="actually run ros2 bag record after printing the safety plan")
+    parser.add_argument("--duration-seconds", type=_positive_float, help="finite capture duration; sends SIGINT to ros2 bag at the deadline")
+    parser.add_argument("--until-interrupted", action="store_true", help="explicitly allow an operator-stopped capture instead of a finite duration")
+    parser.add_argument("--shutdown-grace-seconds", type=_positive_float, default=DEFAULT_SHUTDOWN_GRACE_SECONDS, help="seconds to wait after SIGINT for rosbag metadata closure")
+    parser.add_argument("--terminate-grace-seconds", type=_positive_float, default=DEFAULT_TERMINATE_GRACE_SECONDS, help="seconds to wait after SIGTERM before SIGKILL escalation")
+    parser.add_argument("--kill-grace-seconds", type=_positive_float, default=DEFAULT_KILL_GRACE_SECONDS, help="seconds to wait after SIGKILL while reaping the child")
     parser.add_argument("--output-root", default="~/rvr_runs", help="root directory for per-run capture folders")
     parser.add_argument("--run-id", default=None, help="stable run identifier; defaults to UTC rvr-YYYYmmddTHHMMSSZ")
     parser.add_argument("--topic", action="append", help="replace default topic set; repeat or comma-separate")
@@ -347,8 +598,24 @@ def _capture_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_capture_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
+    try:
+        return _capture_parser().parse_args(argv)
+    except SystemExit as exc:
+        raise _ArgumentParserExit(int(exc.code or 0)) from exc
+
+
 def capture_main(argv: Optional[Sequence[str]] = None, *, runner: Optional[Any] = None) -> int:
-    args = _capture_parser().parse_args(argv)
+    try:
+        args = _parse_capture_args(argv)
+    except _ArgumentParserExit as exc:
+        return exc.code
+    if args.duration_seconds is not None and args.until_interrupted:
+        print("ERROR: choose either --duration-seconds or --until-interrupted, not both", file=sys.stderr)
+        return 2
+    if args.execute and args.duration_seconds is None and not args.until_interrupted:
+        print("ERROR: --execute requires --duration-seconds or --until-interrupted", file=sys.stderr)
+        return 2
     output_root = Path(args.output_root).expanduser()
     topics = _split_csv(args.topic) if args.topic else None
     extra_topics = _split_csv(args.extra_topic)
@@ -359,6 +626,8 @@ def capture_main(argv: Optional[Sequence[str]] = None, *, runner: Optional[Any] 
             topics=topics,
             extra_topics=extra_topics,
             allow_unsafe_topics=args.allow_unsafe_topics,
+            requested_duration_seconds=args.duration_seconds,
+            until_interrupted=args.until_interrupted,
         )
     except UnsafeTopicError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -376,10 +645,20 @@ def capture_main(argv: Optional[Sequence[str]] = None, *, runner: Optional[Any] 
         return 0
     plan.bag_path.parent.mkdir(parents=True, exist_ok=True)
     write_manifest(manifest, manifest_path)
-    rc = _run_command(plan.command, runner)
-    if rc != 0 and plan.bag_path.parent.exists():
-        shutil.rmtree(plan.bag_path.parent)
-    return rc
+    if runner is not None and hasattr(runner, "run") and not hasattr(runner, "popen"):
+        rc = _run_command(plan.command, runner)
+        if rc != 0 and plan.bag_path.parent.exists():
+            shutil.rmtree(plan.bag_path.parent)
+        return rc
+    return _run_capture_command(
+        plan,
+        runner=runner,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        shutdown_grace_seconds=args.shutdown_grace_seconds,
+        terminate_grace_seconds=args.terminate_grace_seconds,
+        kill_grace_seconds=args.kill_grace_seconds,
+    )
 
 
 def _replay_parser() -> argparse.ArgumentParser:
