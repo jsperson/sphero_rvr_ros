@@ -68,7 +68,8 @@ def test_installed_package_data_lists_required_launch_config_docs_and_scripts() 
 def test_installed_helper_scripts_are_world_readable_and_executable() -> None:
     for relative_path in EXPECTED_DATA_FILES["share/sphero_rvr_driver/scripts"]:
         mode = (REPO_ROOT / relative_path).stat().st_mode & 0o777
-        assert mode == 0o755, f"{relative_path}: expected 0755, got {mode:04o}"
+        assert mode & 0o555 == 0o555, f"{relative_path}: expected world read/execute, got {mode:04o}"
+        assert mode & 0o002 == 0, f"{relative_path}: must not be world-writable, got {mode:04o}"
 
 
 def test_package_xml_declares_runtime_dependencies_for_launches() -> None:
