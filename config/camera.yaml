@@ -1,0 +1,14 @@
+camera_node:
+  ros__parameters:
+    # Pi Camera 3 stream shape observed during no-motion validation. These are
+    # capture settings, not calibration proof.
+    width: 800
+    height: 600
+    format: BGRA8888
+    camera: 0
+    role: viewfinder
+    camera_frame_id: camera_link
+    camera_optical_frame_id: camera_optical_frame
+    # Intentionally invalid until a human captures checkerboard images and saves
+    # the measured calibration YAML. Do not replace this with fabricated K/D.
+    camera_info_url: file:///tmp/UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml

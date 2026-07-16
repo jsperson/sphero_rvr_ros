@@ -12,6 +12,7 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
 - [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
 - [docs/rosbag_capture_replay.md](docs/rosbag_capture_replay.md) covers the dry-run-first rosbag2 capture/replay workflow, run manifest format, storage layout, cleanup, and motor-topic safety boundaries.
+- [docs/camera_lidar_calibration.md](docs/camera_lidar_calibration.md) is the no-hardware Pi Camera 3 / RPLIDAR calibration runbook, including camera intrinsics, placeholder TF values, and physical measurement steps.
 - [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
@@ -492,6 +493,7 @@ ros2 pkg prefix sphero_rvr_driver
 ros2 pkg executables sphero_rvr_driver
 ros2 launch sphero_rvr_driver lidar.launch.py --show-args
 ros2 launch sphero_rvr_driver mapping.launch.py --show-args
+ros2 launch sphero_rvr_driver camera.launch.py --show-args
 PATH="$HOME/.local/rpi-libcamera/bin:$PATH" \
 LD_LIBRARY_PATH="$HOME/.local/rpi-libcamera/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   cam --list
@@ -524,6 +526,8 @@ v4l2-ctl --list-devices
 
 Expected: the PiSP-capable libcamera build lists the Pi Camera 3 `imx708` sensor, V4L2 lists the `rp1-cfe`/`pispbe` video devices, and `rvr-camera-node` publishes `/camera/image_raw` through ROS. Camera checks are safe/no-motor; they do not launch the RVR driver or publish `/cmd_vel`.
 
+Pi Camera 3 calibration is not complete by default. `camera.launch.py` exposes `camera_info_url` and `base_link -> camera_link -> camera_optical_frame` TF inputs, but the default `camera_info_url` points at `file:///tmp/UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml` so empty intrinsics are obvious instead of fabricated. Before semantic localization, follow `docs/camera_lidar_calibration.md` and verify `/camera/camera_info` has nonzero width/height, nonzero K, distortion coefficients/model, correct frame IDs, and persistence after restart.
+
 Current accepted rack layout:
 
 - Use the lightweight one-level rack with a narrow lidar tower.
@@ -533,9 +537,9 @@ Current accepted rack layout:
 
 Installed package data includes:
 
-- launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`
-- config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`
-- docs: `mapping.md`, `motion_calibration.md`, `udev/99-rplidar.rules`
+- launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`
+- config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`
+- docs: `mapping.md`, `motion_calibration.md`, `rosbag_capture_replay.md`, `camera_lidar_calibration.md`, `udev/99-rplidar.rules`
 - helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`
 
 ## No-motion smoke test

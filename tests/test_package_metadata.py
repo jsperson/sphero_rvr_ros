@@ -17,11 +17,13 @@ EXPECTED_DATA_FILES = {
         "launch/rvr.launch.py",
         "launch/lidar.launch.py",
         "launch/mapping.launch.py",
+        "launch/camera.launch.py",
     },
     "share/sphero_rvr_driver/config": {
         "config/rvr.yaml",
         "config/lidar.yaml",
         "config/slam_toolbox.yaml",
+        "config/camera.yaml",
     },
     "share/sphero_rvr_driver/scripts": {
         "scripts/install-rvr-pi",
@@ -33,6 +35,7 @@ EXPECTED_DATA_FILES = {
         "docs/mapping.md",
         "docs/motion_calibration.md",
         "docs/rosbag_capture_replay.md",
+        "docs/camera_lidar_calibration.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -140,11 +143,13 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/mapping.md",
         "docs/motion_calibration.md",
         "docs/rosbag_capture_replay.md",
+        "docs/camera_lidar_calibration.md",
         "docs/udev/99-rplidar.rules",
         "ros2 launch sphero_rvr_driver lidar.launch.py --show-args",
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
-        "launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`",
-        "config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`",
+        "ros2 launch sphero_rvr_driver camera.launch.py --show-args",
+        "launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
+        "config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
         "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`",
     ]:
         assert token in readme
