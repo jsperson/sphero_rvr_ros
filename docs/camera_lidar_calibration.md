@@ -1,9 +1,9 @@
 # Pi Camera 3 and RPLIDAR calibration runbook
 
-This runbook adds configuration surfaces only. It does not claim the Pi Camera 3
-or RPLIDAR mount are calibrated. The checked-in defaults are placeholders until a
-human captures images, measures the hardware, and writes the resulting values
-back into launch/config inputs.
+This runbook records the validated Pi Camera 3 and RPLIDAR static transform
+defaults for Scott's RVR. The values are measured for the current physical mount
+and should be remeasured if the payload deck, camera, lidar, or base reference
+changes.
 
 ## Safety boundary
 
@@ -24,15 +24,19 @@ ros2 launch sphero_rvr_driver camera.launch.py --show-args
 Important inputs:
 
 ```text
-camera_info_url:=file:///tmp/UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml
-camera_x:=0.0 camera_y:=0.0 camera_z:=0.0
+camera_info_url:=file:///home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml
+camera_x:=0.0587375 camera_y:=-0.0301625 camera_z:=0.114300
 camera_roll:=0.0 camera_pitch:=0.0 camera_yaw:=0.0
 camera_frame_id:=camera_link
 camera_optical_frame_id:=camera_optical_frame
 ```
 
-`camera_info_url` is intentionally invalid by default. Replace it with a measured
-calibration file URL such as:
+The calibrated `camera_info_url` is a robot-local runtime artifact, not a sample
+intrinsics file. It was validated with 800x600 `rgb8` images published from the
+`BGR888` camera mode with `step=2432`; row-wise pixel inspection must crop each
+row to 2400 bytes before reshaping.
+
+Camera-only validation example:
 
 ```bash
 ros2 launch sphero_rvr_driver camera.launch.py \
@@ -48,15 +52,17 @@ ros2 launch sphero_rvr_driver lidar.launch.py --show-args
 Important inputs:
 
 ```text
-laser_x:=0.0 laser_y:=0.0 laser_z:=0.15
-laser_roll:=0.0 laser_pitch:=0.0 laser_yaw:=0.0
+laser_x:=-0.0074295 laser_y:=-0.009525 laser_z:=0.190500
+laser_roll:=0.0 laser_pitch:=0.0 laser_yaw:=3.1239668018215028
 frame_id:=laser
 base_frame:=base_link
 ```
 
-The `laser_*` defaults are placeholders until measured. The existing `z=0.15`
-only preserves the historical scaffold value; do not treat it as validated mount
-geometry.
+The lidar yaw was established electronically from a known flat target centered on
+the rover +x centerline. The raw target center appeared at `-3.123966801821503`
+radians in the LaserScan frame, so the static transform uses
+`laser_yaw = +3.1239668018215028` radians to map that known target to
+`base_link` +x.
 
 Mapping launch can include the camera without starting it by default:
 
@@ -73,8 +79,8 @@ Before running calibration, choose and record:
   corners, not printed squares;
 - square size in meters, measured with calipers or a ruler, for example
   `0.0245` for 24.5 mm squares;
-- camera mode used for semantic mapping, currently expected to be 800x600 BGRA
-  through Pi Camera 3 / `camera_ros`;
+- camera mode used for semantic mapping, currently 800x600 `BGR888` through Pi
+  Camera 3 / `camera_ros`, which publishes `rgb8` with `step=2432`;
 - target frame IDs: image header should use `camera_optical_frame`; TF should
   contain `base_link -> camera_link -> camera_optical_frame`.
 
@@ -99,8 +105,8 @@ focus, resolution, and mounting can all change K/D.
 5. Confirm the stream and frame ID:
 
    ```bash
-   ros2 topic echo /camera/image_raw --once
-   ros2 topic hz /camera/image_raw
+   ros2 topic echo /camera_node/image_raw --once
+   ros2 topic hz /camera_node/image_raw
    ```
 
 ## Calibration command and output format
@@ -140,7 +146,7 @@ file with a `file://` URL.
 After restarting the camera with the measured file:
 
 ```bash
-ros2 topic echo /camera/camera_info --once
+ros2 topic echo /camera_node/camera_info --once
 ros2 topic echo /tf_static --once
 ros2 run tf2_ros tf2_echo base_link camera_link
 ros2 run tf2_ros tf2_echo camera_link camera_optical_frame
@@ -148,7 +154,7 @@ ros2 run tf2_ros tf2_echo camera_link camera_optical_frame
 
 Accept only if:
 
-- `/camera/camera_info.width == 800` and `height == 600` for the configured mode;
+- `/camera_node/camera_info.width == 800` and `height == 600` for the configured mode;
 - K must not be all zeros; `K[0]`, `K[4]`, and `K[8]` are nonzero;
 - `D` is present, even if some coefficients are exactly zero;
 - `distortion_model` is populated, commonly `plumb_bob` unless the calibrator
@@ -167,12 +173,16 @@ missing focal terms, or missing `distortion_model` as unconfigured.
 
 ## Physical measurement procedure
 
-Use the same `base_link` convention as the RVR odometry/TF design. Record signs
-and units in meters/radians.
+Use the same `base_link` convention as the RVR odometry/TF design. The origin is
+the center of the RVR tread/contact footprint at floor level: halfway between
+left/right tread contact centerlines and halfway between front/rear tread contact
+extents. Axes are `+x` forward, `+y` left, and `+z` up. Record signs and units in
+meters/radians.
 
 ### Lidar: `base_link -> laser`
 
-1. Mark the RVR `base_link` origin on the payload deck reference drawing.
+1. Mark the RVR `base_link` origin at the tread-footprint center on the floor
+   projection; do not use an undefined payload-deck drawing datum.
 2. Mark the RPLIDAR scan origin, not merely the case center if the datasheet
    gives an offset.
 3. Measure translation:

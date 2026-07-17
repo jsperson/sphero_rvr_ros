@@ -31,7 +31,10 @@ def test_camera_launch_exposes_calibration_url_and_static_tf_without_starting_rv
 
     for token in [
         '"camera_info_url"',
-        "UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml",
+        "rvr_pi_camera3_800x600.yaml",
+        "0.0587375",
+        "-0.0301625",
+        "0.114300",
         '"camera_x"',
         '"camera_y"',
         '"camera_z"',
@@ -55,7 +58,7 @@ def test_camera_launch_exposes_calibration_url_and_static_tf_without_starting_rv
     assert "cmd_vel" not in launch_text
 
 
-def test_lidar_launch_names_all_mount_transform_inputs_as_placeholders() -> None:
+def test_lidar_launch_names_all_measured_mount_transform_inputs() -> None:
     launch_text = (REPO_ROOT / "launch" / "lidar.launch.py").read_text()
 
     for token in [
@@ -65,7 +68,10 @@ def test_lidar_launch_names_all_mount_transform_inputs_as_placeholders() -> None
         '"laser_roll"',
         '"laser_pitch"',
         '"laser_yaw"',
-        "placeholder until measured",
+        "-0.0074295",
+        "-0.009525",
+        "0.190500",
+        "3.1239668018215028",
         '"--roll", laser_roll',
         '"--pitch", laser_pitch',
         '"--yaw", laser_yaw',
@@ -97,9 +103,10 @@ def test_camera_config_and_calibration_runbook_are_packaged() -> None:
 
     camera_config = (REPO_ROOT / "config" / "camera.yaml").read_text()
     assert "camera_info_url:" in camera_config
-    assert "UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml" in camera_config
+    assert "rvr_pi_camera3_800x600.yaml" in camera_config
     assert "width: 800" in camera_config
     assert "height: 600" in camera_config
+    assert "format: BGR888" in camera_config
     assert "camera_frame_id: camera_link" in camera_config
 
     runbook = (REPO_ROOT / "docs" / "camera_lidar_calibration.md").read_text()
@@ -107,14 +114,14 @@ def test_camera_config_and_calibration_runbook_are_packaged() -> None:
         "checkerboard",
         "square size",
         "camera_calibration cameracalibrator",
-        "/camera/camera_info",
+        "/camera_node/camera_info",
         "K must not be all zeros",
         "distortion_model",
         "reprojection error",
         "base_link -> laser",
         "base_link -> camera_link",
         "camera_link -> camera_optical_frame",
-        "placeholder",
+        "tread/contact footprint",
         "persistence after restart",
     ]:
         assert token in runbook
