@@ -36,6 +36,20 @@ intrinsics file. It was validated with 800x600 `rgb8` images published from the
 `BGR888` camera mode with `step=2432`; row-wise pixel inspection must crop each
 row to 2400 bytes before reshaping.
 
+Operational dependency: the camera stack expects this file to exist on the robot
+at `/home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml`. Keep it owned
+by the robot user, readable by the ROS launch environment, backed up with the
+robot deployment notes, and reinstalled after Pi/workspace rebuilds before using
+semantic localization. Record a checksum after calibration and after restore, for
+example:
+
+```bash
+sha256sum /home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml
+```
+
+Do not commit generated CameraInfo YAML artifacts to this repo unless a separate
+review explicitly decides to version a sanitized fixture/sample.
+
 Camera-only validation example:
 
 ```bash
@@ -91,7 +105,7 @@ focus, resolution, and mounting can all change K/D.
 
 1. Print or display a flat checkerboard with known square size.
 2. Keep the RVR powered safely and stationary; this is a camera-only workflow.
-3. Start the camera with the unconfigured default or a previous candidate file:
+3. Start the camera with the measured runtime file or a previous candidate file:
 
    ```bash
    source /opt/ros/jazzy/setup.bash
@@ -125,12 +139,12 @@ ros2 run camera_calibration cameracalibrator \
   --size 8x6 \
   --square 0.0245 \
   --ros-args \
-  -r image:=/camera/image_raw \
-  -r camera:=/camera
+  -r image:=/camera_node/image_raw \
+  -r camera:=/camera_node
 ```
 
-When the calibrator reports a stable solution, save/commit the generated YAML as
-a robot-local runtime artifact, for example:
+When the calibrator reports a stable solution, install the generated YAML as a
+robot-local runtime artifact, for example:
 
 ```text
 /home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml
@@ -164,7 +178,7 @@ Accept only if:
 - image header frame ID matches the optical frame used by semantic projection;
 - TF contains `base_link -> camera_link -> camera_optical_frame`;
 - persistence after restart is proven: stop the camera node, restart it with the
-  same `camera_info_url`, and verify `/camera/camera_info` still carries the
+  same `camera_info_url`, and verify `/camera_node/camera_info` still carries the
   same dimensions, K/D, and distortion model.
 
 Semantic localization must reject or loudly report empty intrinsics. This repo's
@@ -228,7 +242,8 @@ meters/radians.
 
 ## Documentation rules
 
-- Placeholder values stay labeled as placeholders.
+- Placeholder values stay labeled as placeholders; do not reintroduce them as
+  mapping defaults over measured camera/lidar values.
 - Measured values should include date, measurement method, and robot hardware
   layout.
 - Calibration is not complete until CameraInfo, K/D, TF, reprojection quality,

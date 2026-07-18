@@ -12,7 +12,7 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
 - [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
 - [docs/rosbag_capture_replay.md](docs/rosbag_capture_replay.md) covers the dry-run-first rosbag2 capture/replay workflow, run manifest format, storage layout, cleanup, and motor-topic safety boundaries.
-- [docs/camera_lidar_calibration.md](docs/camera_lidar_calibration.md) is the no-hardware Pi Camera 3 / RPLIDAR calibration runbook, including camera intrinsics, placeholder TF values, and physical measurement steps.
+- [docs/camera_lidar_calibration.md](docs/camera_lidar_calibration.md) is the no-hardware Pi Camera 3 / RPLIDAR calibration runbook, including measured camera intrinsics, measured TF defaults, and physical measurement steps.
 - [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
 - [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) is the source-of-truth design for the independent lidar collision-stop supervisor and final `/cmd_vel` arbitration contract.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
@@ -533,9 +533,9 @@ v4l2-ctl --list-devices
   --ros-args -p width:=640 -p height:=480
 ```
 
-Expected: the PiSP-capable libcamera build lists the Pi Camera 3 `imx708` sensor, V4L2 lists the `rp1-cfe`/`pispbe` video devices, and `rvr-camera-node` publishes `/camera/image_raw` through ROS. Camera checks are safe/no-motor; they do not launch the RVR driver or publish `/cmd_vel`.
+Expected: the PiSP-capable libcamera build lists the Pi Camera 3 `imx708` sensor, V4L2 lists the `rp1-cfe`/`pispbe` video devices, and `rvr-camera-node` publishes `/camera_node/image_raw` through ROS. Camera checks are safe/no-motor; they do not launch the RVR driver or publish `/cmd_vel`.
 
-Pi Camera 3 calibration is not complete by default. `camera.launch.py` exposes `camera_info_url` and `base_link -> camera_link -> camera_optical_frame` TF inputs, but the default `camera_info_url` points at `file:///tmp/UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml` so empty intrinsics are obvious instead of fabricated. Before semantic localization, follow `docs/camera_lidar_calibration.md` and verify `/camera/camera_info` has nonzero width/height, nonzero K, distortion coefficients/model, correct frame IDs, and persistence after restart.
+Pi Camera 3 calibration defaults are measured for the current payload. `camera.launch.py` exposes `camera_info_url` and `base_link -> camera_link -> camera_optical_frame` TF inputs; the default `camera_info_url` points at the robot-local file `file:///home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml`. That generated CameraInfo file is an operational dependency, not committed source: install/restore it on the Pi, keep a backup, and verify its checksum and `/camera_node/camera_info` contents before semantic localization.
 
 Current accepted rack layout:
 

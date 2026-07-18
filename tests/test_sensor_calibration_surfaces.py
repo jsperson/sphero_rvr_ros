@@ -87,11 +87,24 @@ def test_mapping_launch_can_include_camera_without_starting_it_by_default() -> N
         '"start_camera"',
         'default_value="false"',
         "condition=IfCondition(start_camera)",
-        "camera_info_url",
-        "camera_x",
-        "camera_yaw",
     ]:
         assert token in launch_text
+
+
+def test_mapping_launch_lets_camera_launch_own_measured_camera_defaults() -> None:
+    launch_text = (REPO_ROOT / "launch" / "mapping.launch.py").read_text()
+
+    assert "UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION" not in launch_text
+    for stale_default in [
+        'DeclareLaunchArgument("camera_info_url"',
+        'DeclareLaunchArgument("camera_x"',
+        'DeclareLaunchArgument("camera_y"',
+        'DeclareLaunchArgument("camera_z"',
+        'DeclareLaunchArgument("camera_roll"',
+        'DeclareLaunchArgument("camera_pitch"',
+        'DeclareLaunchArgument("camera_yaw"',
+    ]:
+        assert stale_default not in launch_text
 
 
 def test_camera_config_and_calibration_runbook_are_packaged() -> None:
@@ -114,7 +127,10 @@ def test_camera_config_and_calibration_runbook_are_packaged() -> None:
         "checkerboard",
         "square size",
         "camera_calibration cameracalibrator",
+        "/camera_node/image_raw",
         "/camera_node/camera_info",
+        "sha256sum /home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml",
+        "Do not commit generated CameraInfo YAML artifacts",
         "K must not be all zeros",
         "distortion_model",
         "reprojection error",
@@ -125,6 +141,28 @@ def test_camera_config_and_calibration_runbook_are_packaged() -> None:
         "persistence after restart",
     ]:
         assert token in runbook
+
+
+def test_camera_docs_use_camera_node_topics_and_runtime_artifact_language() -> None:
+    docs_text = "\n".join(
+        [
+            (REPO_ROOT / "README.md").read_text(),
+            (REPO_ROOT / "STATUS.md").read_text(),
+            (REPO_ROOT / "docs" / "mapping.md").read_text(),
+            (REPO_ROOT / "docs" / "camera_lidar_calibration.md").read_text(),
+            (REPO_ROOT / "docs" / "rosbag_capture_replay.md").read_text(),
+        ]
+    )
+
+    assert "/camera_node/image_raw" in docs_text
+    assert "/camera_node/camera_info" in docs_text
+    assert "/home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml" in docs_text
+    assert "checksum" in docs_text
+    assert "operational dependency" in docs_text
+    assert "/camera/image_raw" not in docs_text
+    assert "/camera/camera_info" not in docs_text
+    assert "UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION" not in docs_text
+    assert "intentionally invalid calibration URL" not in docs_text
 
 
 def test_camera_info_validation_rejects_empty_intrinsics_for_semantic_localization() -> None:
