@@ -41,8 +41,8 @@ Default capture topics:
 
 ```text
 /scan
-/camera/image_raw
-/camera/camera_info
+/camera_node/image_raw
+/camera_node/camera_info
 /odom
 /tf
 /tf_static
@@ -104,7 +104,7 @@ rvr_rosbag_replay --execute ~/rvr_runs/room_scan_001/rosbag
 The default replay command is shaped like:
 
 ```bash
-ros2 bag play ~/rvr_runs/room_scan_001/rosbag --topics /scan /camera/image_raw /camera/camera_info /odom /tf /tf_static /diagnostics
+ros2 bag play ~/rvr_runs/room_scan_001/rosbag --topics /scan /camera_node/image_raw /camera_node/camera_info /odom /tf /tf_static /diagnostics
 ```
 
 To replay a subset:

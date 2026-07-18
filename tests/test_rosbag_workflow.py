@@ -26,6 +26,10 @@ def test_capture_plan_defaults_to_safe_rosbag_record_topics(tmp_path):
     assert plan.bag_path == tmp_path / "run-001" / "rosbag"
     assert plan.topics == DEFAULT_CAPTURE_TOPICS
     assert plan.command == ["ros2", "bag", "record", "-o", str(plan.bag_path), *DEFAULT_CAPTURE_TOPICS]
+    assert "/camera_node/image_raw" in plan.topics
+    assert "/camera_node/camera_info" in plan.topics
+    assert "/camera/image_raw" not in plan.topics
+    assert "/camera/camera_info" not in plan.topics
     assert "/cmd_vel" not in plan.command
 
 
@@ -68,6 +72,10 @@ def test_replay_plan_defaults_to_allowlisted_non_motor_topics(tmp_path):
     assert plan.bag_path == bag
     assert plan.topics == DEFAULT_REPLAY_TOPICS
     assert plan.command == ["ros2", "bag", "play", str(bag), "--topics", *DEFAULT_REPLAY_TOPICS]
+    assert "/camera_node/image_raw" in plan.topics
+    assert "/camera_node/camera_info" in plan.topics
+    assert "/camera/image_raw" not in plan.topics
+    assert "/camera/camera_info" not in plan.topics
     assert "/cmd_vel" not in plan.command
 
 

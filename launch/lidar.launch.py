@@ -29,33 +29,33 @@ def generate_launch_description():
         DeclareLaunchArgument("base_frame", default_value="base_link"),
         DeclareLaunchArgument(
             "laser_x",
-            default_value="0.0",
-            description="base_link -> laser x translation in meters; placeholder until measured.",
+            default_value="-0.0074295",
+            description="Measured base_link -> laser x translation in meters.",
         ),
         DeclareLaunchArgument(
             "laser_y",
-            default_value="0.0",
-            description="base_link -> laser y translation in meters; placeholder until measured.",
+            default_value="-0.009525",
+            description="Measured base_link -> laser y translation in meters.",
         ),
         DeclareLaunchArgument(
             "laser_z",
-            default_value="0.15",
-            description="base_link -> laser z translation in meters; placeholder until measured.",
+            default_value="0.190500",
+            description="Measured base_link -> laser z translation in meters.",
         ),
         DeclareLaunchArgument(
             "laser_roll",
             default_value="0.0",
-            description="base_link -> laser roll in radians; placeholder until measured.",
+            description="Measured base_link -> laser roll in radians.",
         ),
         DeclareLaunchArgument(
             "laser_pitch",
             default_value="0.0",
-            description="base_link -> laser pitch in radians; placeholder until measured.",
+            description="Measured base_link -> laser pitch in radians.",
         ),
         DeclareLaunchArgument(
             "laser_yaw",
-            default_value="0.0",
-            description="base_link -> laser yaw in radians; placeholder until measured.",
+            default_value="3.1239668018215028",
+            description="Measured base_link -> laser yaw in radians.",
         ),
         Node(
             package="tf2_ros",

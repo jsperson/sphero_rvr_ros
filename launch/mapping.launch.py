@@ -23,13 +23,6 @@ def generate_launch_description():
     start_camera = LaunchConfiguration("start_camera")
     start_slam = LaunchConfiguration("start_slam")
     use_sim_time = LaunchConfiguration("use_sim_time")
-    camera_info_url = LaunchConfiguration("camera_info_url")
-    camera_x = LaunchConfiguration("camera_x")
-    camera_y = LaunchConfiguration("camera_y")
-    camera_z = LaunchConfiguration("camera_z")
-    camera_roll = LaunchConfiguration("camera_roll")
-    camera_pitch = LaunchConfiguration("camera_pitch")
-    camera_yaw = LaunchConfiguration("camera_yaw")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -68,17 +61,6 @@ def generate_launch_description():
             description="Start slam_toolbox online async mapping node.",
         ),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
-        DeclareLaunchArgument(
-            "camera_info_url",
-            default_value="file:///tmp/UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml",
-            description="Forwarded to camera.launch.py; intentionally invalid until measured.",
-        ),
-        DeclareLaunchArgument("camera_x", default_value="0.0"),
-        DeclareLaunchArgument("camera_y", default_value="0.0"),
-        DeclareLaunchArgument("camera_z", default_value="0.0"),
-        DeclareLaunchArgument("camera_roll", default_value="0.0"),
-        DeclareLaunchArgument("camera_pitch", default_value="0.0"),
-        DeclareLaunchArgument("camera_yaw", default_value="0.0"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(rvr_launch)),
             launch_arguments={"start_collision_stop": start_collision_stop}.items(),
@@ -90,15 +72,6 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(camera_launch)),
-            launch_arguments={
-                "camera_info_url": camera_info_url,
-                "camera_x": camera_x,
-                "camera_y": camera_y,
-                "camera_z": camera_z,
-                "camera_roll": camera_roll,
-                "camera_pitch": camera_pitch,
-                "camera_yaw": camera_yaw,
-            }.items(),
             condition=IfCondition(start_camera),
         ),
         Node(

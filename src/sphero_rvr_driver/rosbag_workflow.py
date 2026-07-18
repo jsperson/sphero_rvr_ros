@@ -29,8 +29,8 @@ PathLike = Union[Path, str]
 
 DEFAULT_CAPTURE_TOPICS = (
     "/scan",
-    "/camera/image_raw",
-    "/camera/camera_info",
+    "/camera_node/image_raw",
+    "/camera_node/camera_info",
     "/odom",
     "/tf",
     "/tf_static",

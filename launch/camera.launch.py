@@ -34,16 +34,16 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("width", default_value="800"),
         DeclareLaunchArgument("height", default_value="600"),
-        DeclareLaunchArgument("format", default_value="BGRA8888"),
+        DeclareLaunchArgument("format", default_value="BGR888"),
         DeclareLaunchArgument("camera", default_value="0"),
         DeclareLaunchArgument("role", default_value="viewfinder"),
         DeclareLaunchArgument(
             "camera_info_url",
-            default_value="file:///tmp/UNCONFIGURED_RVR_PI_CAMERA3_CALIBRATION.yaml",
+            default_value="file:///home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml",
             description=(
-                "Measured camera_calibration YAML URL for camera_ros. The default is "
-                "intentionally invalid/unconfigured; do not use semantic localization "
-                "until /camera/camera_info has nonzero width/height, K, D, and distortion_model."
+                "Measured camera_calibration YAML URL for camera_ros; do not use "
+                "semantic localization until /camera_node/camera_info has nonzero "
+                "width/height, K, D, and distortion_model."
             ),
         ),
         DeclareLaunchArgument("base_frame", default_value="base_link"),
@@ -51,33 +51,33 @@ def generate_launch_description():
         DeclareLaunchArgument("camera_optical_frame_id", default_value="camera_optical_frame"),
         DeclareLaunchArgument(
             "camera_x",
-            default_value="0.0",
-            description="base_link -> camera_link x translation in meters; placeholder until measured.",
+            default_value="0.0587375",
+            description="Measured base_link -> camera_link x translation in meters.",
         ),
         DeclareLaunchArgument(
             "camera_y",
-            default_value="0.0",
-            description="base_link -> camera_link y translation in meters; placeholder until measured.",
+            default_value="-0.0301625",
+            description="Measured base_link -> camera_link y translation in meters.",
         ),
         DeclareLaunchArgument(
             "camera_z",
-            default_value="0.0",
-            description="base_link -> camera_link z translation in meters; placeholder until measured.",
+            default_value="0.114300",
+            description="Measured base_link -> camera_link z translation in meters.",
         ),
         DeclareLaunchArgument(
             "camera_roll",
             default_value="0.0",
-            description="base_link -> camera_link roll in radians; placeholder until measured.",
+            description="Measured base_link -> camera_link roll in radians.",
         ),
         DeclareLaunchArgument(
             "camera_pitch",
             default_value="0.0",
-            description="base_link -> camera_link pitch in radians; placeholder until measured.",
+            description="Measured base_link -> camera_link pitch in radians.",
         ),
         DeclareLaunchArgument(
             "camera_yaw",
             default_value="0.0",
-            description="base_link -> camera_link yaw in radians; placeholder until measured.",
+            description="Measured base_link -> camera_link yaw in radians.",
         ),
         Node(
             package="tf2_ros",
