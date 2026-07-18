@@ -84,7 +84,13 @@ class _Subscriber:
 
 
 class Dispatcher:
-    def __init__(self, transport: Transport):
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        read_error_retry_limit: int = 3,
+        read_error_backoff: float = 0.05,
+    ):
         self._transport = transport
         self._pending: Dict[Tuple[int, int, int], asyncio.Future[Packet]] = {}
         self._subscribers: Dict[NotificationKey, Set[_Subscriber]] = {}
@@ -92,12 +98,16 @@ class Dispatcher:
         self._reader_task: Optional[asyncio.Task] = None
         self._write_lock = asyncio.Lock()
         self._started = False
+        self._read_error_retry_limit = max(1, int(read_error_retry_limit))
+        self._read_error_backoff = max(0.0, float(read_error_backoff))
+        self._reader_fault: Optional[BaseException] = None
 
     async def start(self) -> None:
         if self._started:
             return
         await self._transport.open()
         self._started = True
+        self._reader_fault = None
         self._reader_task = asyncio.create_task(self._read_loop())
 
     async def stop(self) -> None:
@@ -163,6 +173,8 @@ class Dispatcher:
     async def request(self, packet: Packet, timeout: float = 1.0) -> Packet:
         if not self._started:
             raise RuntimeError("dispatcher is not started")
+        if self._reader_fault is not None:
+            raise RuntimeError("dispatcher reader failed") from self._reader_fault
         loop = asyncio.get_running_loop()
         key = self._key(packet)
         future: asyncio.Future[Packet] = loop.create_future()
@@ -190,8 +202,31 @@ class Dispatcher:
             await self._transport.write(packet.encode())
 
     async def _read_loop(self) -> None:
+        consecutive_read_errors = 0
         while True:
-            raw = await self._transport.read_packet()
+            try:
+                raw = await self._transport.read_packet()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                consecutive_read_errors += 1
+                if consecutive_read_errors >= self._read_error_retry_limit:
+                    self._reader_fault = RuntimeError("RVR transport reader stopped after persistent read failures")
+                    LOGGER.exception(
+                        "RVR transport read failed persistently; stopping reader and failing pending requests"
+                    )
+                    self._fail_pending(self._reader_fault)
+                    return
+                LOGGER.exception(
+                    "RVR transport read failed; retrying after %.3fs (%s/%s)",
+                    self._read_error_backoff,
+                    consecutive_read_errors,
+                    self._read_error_retry_limit,
+                )
+                if self._read_error_backoff:
+                    await asyncio.sleep(self._read_error_backoff)
+                continue
+            consecutive_read_errors = 0
             try:
                 packet = Packet.decode(raw)
             except Exception:
@@ -223,6 +258,11 @@ class Dispatcher:
                 packet.source,
                 packet.flags,
             )
+
+    def _fail_pending(self, exc: BaseException) -> None:
+        for future in list(self._pending.values()):
+            if not future.done():
+                future.set_exception(RuntimeError(f"RVR transport reader stopped: {exc}"))
 
     def _route_notification(self, packet: Packet) -> bool:
         source_key = (packet.device_id, packet.command_id, packet.source)

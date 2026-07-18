@@ -1,6 +1,7 @@
 """High-level concurrency-safe RVR driver."""
 
 import asyncio
+import logging
 from typing import Any, Callable, Optional
 
 from .command_queue import CommandPriority, PriorityCommandQueue
@@ -19,6 +20,8 @@ from .packet import (
 from .safety import clamp_velocity, is_stale, now_seconds
 from .state import RVRState, VelocityCommand
 from .transport import Transport
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RVRDriver:
@@ -59,6 +62,8 @@ class RVRDriver:
         self._last_velocity_update: Optional[float] = None
         self._connected = False
         self._emergency_stopped = False
+        self._fail_safe_active = False
+        self._fail_safe_reason: Optional[str] = None
         self._control_task: Optional[asyncio.Task] = None
         self._sequence_id = 0
 
@@ -77,7 +82,7 @@ class RVRDriver:
             except asyncio.CancelledError:
                 pass
             self._control_task = None
-        if self._connected and not self._emergency_stopped:
+        if self._connected and not self._emergency_stopped and not self._fail_safe_active:
             try:
                 await self.stop()
             except Exception:
@@ -87,6 +92,8 @@ class RVRDriver:
         self._connected = False
 
     async def set_velocity(self, linear_mps: float, angular_rad_s: float) -> None:
+        if self._fail_safe_active:
+            raise RuntimeError("fail-safe fault active; clear safe stop before driving")
         self._desired_velocity = clamp_velocity(
             VelocityCommand(linear_mps, angular_rad_s),
             max_linear_mps=self._max_linear_mps,
@@ -107,6 +114,12 @@ class RVRDriver:
 
     async def clear_emergency_stop(self) -> None:
         self._emergency_stopped = False
+
+    async def clear_fail_safe_fault(self) -> None:
+        """Clear a transport fail-safe only after a stop command is accepted."""
+        await self._send(self.commands.stop, CommandPriority.HIGH)
+        self._fail_safe_active = False
+        self._fail_safe_reason = None
 
     async def reset_yaw(self) -> None:
         await self._send(self.commands.reset_yaw, CommandPriority.HIGH)
@@ -402,6 +415,8 @@ class RVRDriver:
             connected=self._connected,
             emergency_stopped=self._emergency_stopped,
             latest_velocity=self._desired_velocity,
+            fail_safe_active=self._fail_safe_active,
+            fail_safe_reason=self._fail_safe_reason,
         )
 
     def _subscribe(
@@ -419,12 +434,14 @@ class RVRDriver:
             await asyncio.sleep(self._control_period)
             if self._emergency_stopped:
                 continue
+            if self._fail_safe_active:
+                continue
             if self._desired_velocity is None:
                 continue
             if is_stale(self._last_velocity_update, self._command_timeout):
                 if not stop_sent_for_stale:
-                    await self.stop()
-                    stop_sent_for_stale = True
+                    await self._attempt_control_safe_stop("stale velocity command")
+                    stop_sent_for_stale = not self._fail_safe_active
                 continue
             stop_sent_for_stale = False
             velocity = self._desired_velocity
@@ -434,9 +451,8 @@ class RVRDriver:
                 if abs(linear_fraction) <= 0.05:
                     # Explicit skid-steer pivot: one tread reverse, the other forward.
                     tank = 127 if angular_fraction > 0 else -127
-                    await self._send(
-                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
-                        CommandPriority.NORMAL,
+                    await self._send_from_control_loop(
+                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank)
                     )
                     continue
 
@@ -455,20 +471,39 @@ class RVRDriver:
                     right = min(0.0, max(-1.0, right))
                 left_i = int(round(left * 127))
                 right_i = int(round(right * 127))
-                await self._send(
-                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i),
-                    CommandPriority.NORMAL,
+                await self._send_from_control_loop(
+                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i)
                 )
                 continue
-            await self._send(
+            await self._send_from_control_loop(
                 lambda seq: self.commands.drive_rc_si_units(
                     seq,
                     yaw_angular_velocity=velocity.angular_rad_s,
                     linear_velocity=velocity.linear_mps,
                     flags=1,  # RC slew linear velocity for smoother straight teleop.
-                ),
-                CommandPriority.NORMAL,
+                )
             )
+
+    async def _send_from_control_loop(self, packet_factory) -> None:
+        try:
+            await self._send(packet_factory, CommandPriority.NORMAL)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("RVR control loop send failed; attempting safe stop")
+            await self._attempt_control_safe_stop("control loop send failure")
+
+    async def _attempt_control_safe_stop(self, reason: str) -> None:
+        self._desired_velocity = None
+        self._last_velocity_update = None
+        try:
+            await self._send(self.commands.stop, CommandPriority.HIGH)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._fail_safe_active = True
+            self._fail_safe_reason = f"{reason}: {exc}"
+            LOGGER.exception("RVR fail-safe fault active; safe stop delivery failed")
 
     async def _send(self, packet_factory, priority: CommandPriority):
         sequence_id = self._next_sequence_id()

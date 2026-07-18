@@ -520,11 +520,14 @@ class RVRTUI:
     @staticmethod
     def _key_name(screen, key_code: int) -> str:
         if key_code >= 0:
-            name = curses.keyname(key_code).decode(errors="ignore")
+            if key_code < 256:
+                return chr(key_code)
+            try:
+                name = curses.keyname(key_code).decode(errors="ignore")
+            except curses.error:
+                return screen.getkey()
             if name.startswith("^J"):
                 return "\n"
-            if len(name) == 1:
-                return name
             return name
         return ""
 

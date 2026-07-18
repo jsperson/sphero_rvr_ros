@@ -15,3 +15,5 @@ class RVRState:
     connected: bool = False
     emergency_stopped: bool = False
     latest_velocity: Optional[VelocityCommand] = None
+    fail_safe_active: bool = False
+    fail_safe_reason: Optional[str] = None

@@ -38,6 +38,15 @@ def test_parse_temperature_thermal_encoder_and_magnetometer_payloads():
     assert mag.y == pytest.approx(-2.5)
 
 
+def test_temperature_request_and_parser_share_motor_sensor_ids_only():
+    from sphero_rvr_core.commands import RVRCommands
+
+    packet = RVRCommands().get_temperature(sequence_id=1)
+    assert packet.payload == bytes([4, 5])
+    with pytest.raises(ValueError, match="temperature payload contains no known sensor readings"):
+        responses.parse_temperature(bytes([8]) + struct.pack(">f", 36.5))
+
+
 def test_parse_system_info_payloads():
     version = responses.parse_firmware_version(struct.pack(">HHH", 1, 2, 345))
     assert version.major == 1

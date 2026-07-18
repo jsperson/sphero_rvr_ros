@@ -8,3 +8,4 @@ dist/
 install/
 log/
 .DS_Store
+.worktrees/

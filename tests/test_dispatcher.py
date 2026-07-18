@@ -24,6 +24,17 @@ from sphero_rvr_core.fake_transport import FakeTransport, unsolicited_packet
 from sphero_rvr_core.packet import DID_DRIVE, FLAG_HAS_SOURCE, FLAG_IS_RESPONSE, Packet, TARGET_MCU
 
 
+class FlakyReadTransport(FakeTransport):
+    def __init__(self, failures: list[Exception], *, auto_ack: bool = False):
+        super().__init__(auto_ack=auto_ack)
+        self.failures = list(failures)
+
+    async def read_packet(self) -> bytes:
+        if self.failures:
+            raise self.failures.pop(0)
+        return await super().read_packet()
+
+
 @pytest.mark.asyncio
 async def test_dispatcher_matches_response_by_sequence_id():
     transport = FakeTransport()
@@ -242,6 +253,67 @@ async def test_parser_error_is_logged_and_reader_keeps_running(caplog):
     await dispatcher.stop()
 
     assert "dropping RVR notification with invalid payload" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_read_timeout_is_logged_and_reader_recovers_for_next_packet(caplog):
+    transport = FlakyReadTransport([TimeoutError("mid-frame timeout")])
+    dispatcher = Dispatcher(transport, read_error_retry_limit=3, read_error_backoff=0)
+    received = asyncio.Queue()
+    dispatcher.subscribe(*EVENT_MOTOR_FAULT, received.put_nowait)
+    await dispatcher.start()
+
+    await transport.inject_read(unsolicited_packet(*EVENT_MOTOR_FAULT, payload=b"\x01"))
+
+    assert await asyncio.wait_for(received.get(), timeout=0.2) == responses.MotorFaultEvent(True)
+    await dispatcher.stop()
+    assert "RVR transport read failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_read_exception_does_not_prevent_later_request_response(caplog):
+    transport = FlakyReadTransport([RuntimeError("serial disconnect blip")])
+    dispatcher = Dispatcher(transport, read_error_retry_limit=3, read_error_backoff=0)
+    await dispatcher.start()
+
+    request = Packet(device_id=1, command_id=2, sequence_id=9, payload=b"go")
+    pending = asyncio.create_task(dispatcher.request(request, timeout=0.3))
+    await transport.wait_for_write()
+    await transport.inject_read(Packet(
+        device_id=1,
+        command_id=2,
+        sequence_id=9,
+        payload=b"ok",
+        flags=FLAG_IS_RESPONSE | FLAG_HAS_SOURCE,
+        source=1,
+        error=0,
+    ).encode())
+
+    assert (await pending).payload == b"ok"
+    await dispatcher.stop()
+    assert "RVR transport read failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_persistent_read_failures_fault_pending_requests_without_hot_spin(caplog):
+    transport = FlakyReadTransport([
+        RuntimeError("disconnect 1"),
+        RuntimeError("disconnect 2"),
+    ])
+    dispatcher = Dispatcher(transport, read_error_retry_limit=2, read_error_backoff=0.05)
+    await dispatcher.start()
+
+    request = Packet(device_id=1, command_id=2, sequence_id=10, payload=b"go")
+    pending = asyncio.create_task(dispatcher.request(request, timeout=1.0))
+    await transport.wait_for_write()
+
+    with pytest.raises(RuntimeError, match="RVR transport reader stopped"):
+        await pending
+    with pytest.raises(RuntimeError, match="dispatcher reader failed"):
+        await dispatcher.request(Packet(device_id=1, command_id=2, sequence_id=11), timeout=0.1)
+
+    await dispatcher.stop()
+    assert "RVR transport read failed persistently" in caplog.text
 
 
 @pytest.mark.parametrize(

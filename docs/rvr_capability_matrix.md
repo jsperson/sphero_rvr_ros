@@ -135,7 +135,7 @@ The repo already contains a few core capabilities that are not public `SpheroRvr
 |---|---|---|---|
 | `/cmd_vel` velocity mapping / `set_velocity()` / `drive_rc_si_units()` | maps to native drive `drive_rc_si_units` | ROS-exposed as `cmd_vel`; tests present | Uses RVR firmware RC/slew control for smoother teleop; raw-motor mapper retained only as legacy/core helper. |
 | `drive_rc()` legacy raw tank mapper | maps normalized velocity fractions to `raw_motors` | core-only compatibility helper; tests present | Not used by `/cmd_vel` after native RC migration; retained for low-level fake-transport coverage and rollback/debug only. |
-| `stop()`, `emergency_stop()`, `clear_emergency_stop()` | stop maps to `raw_motors(0,0,0,0)` | ROS services `stop`, `estop`, `clear_estop`; tests present | Driver safety feature, not official command name. |
+| `stop()`, `emergency_stop()`, `clear_emergency_stop()`, `clear_fail_safe_fault()` | stop maps to `raw_motors(0,0,0,0)` | ROS services `stop`, `estop`, `clear_estop`; tests present | Driver safety feature, not official command name. `clear_fail_safe_fault()` is core-only and only clears transport fail-safe state after a stop command is accepted. |
 | `drive_to_position_si()` | drive DID `0x16`, CID `0x38`, error-only shape | Core implemented and tested | Not in official RVR async API snapshot; keep as repo extension until protocol source is confirmed. |
 | `get_encoder_counts()` | sensor DID `0x18`, CID `0x53` | Core implemented and tested | Useful odometry input, but not in official SDK snapshot. |
 | `get_magnetometer()` / `calibrate_magnetometer()` | sensor DID `0x18`, CIDs `0x52` / `0x25` | Core implemented and tested | Not in official SDK snapshot; calibration is ROS-omitted by default. |

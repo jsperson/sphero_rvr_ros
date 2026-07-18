@@ -20,3 +20,15 @@ def test_stop_estop_quit_keys():
 
 def test_unknown_key_returns_none():
     assert map_key("x", speed=0.1, turn=0.4) is None
+
+
+def test_key_name_has_single_printable_and_special_key_path():
+    from sphero_rvr_driver.tui import RVRTUI
+
+    class Screen:
+        @staticmethod
+        def getkey():
+            return "KEY_UP"
+
+    assert RVRTUI._key_name(Screen(), ord("w")) == "w"
+    assert RVRTUI._key_name(Screen(), 259) == "KEY_UP"

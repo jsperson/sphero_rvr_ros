@@ -200,7 +200,10 @@ def parse_current_detected_color(payload: bytes) -> DetectedColor:
 
 
 def parse_temperature(payload: bytes) -> TemperatureReadings:
-    sensor_names = {4: "left_motor", 5: "right_motor", 8: "nordic_die"}
+    # The driver currently requests motor temperature sensors 4 and 5 only.
+    # Sensor id 8 has appeared in review notes as a possible Nordic die reading,
+    # but accepting it here would imply support for a reading we never request.
+    sensor_names = {4: "left_motor", 5: "right_motor"}
     values = {}
     index = 0
     while index + 5 <= len(payload):

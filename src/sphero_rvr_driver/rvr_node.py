@@ -26,6 +26,8 @@ from .led import normalize_rgb255
 from .odometry import DifferentialOdomConfig, DifferentialOdomTracker, OdomSample
 from .twist_mapper import TwistLike, map_twist_to_velocity
 
+DEFAULT_ODOM_COUNTS_PER_METER = 4337.768
+
 
 @dataclass(frozen=True)
 class RVRNodeConfig:
@@ -44,7 +46,7 @@ class RVRNodeConfig:
     diagnostics_metadata_period: float = 30.0
     ambient_light_publish_period: float = 2.0
     odom_publish_period: float = 0.1
-    odom_counts_per_meter: float = 1000.0
+    odom_counts_per_meter: float = DEFAULT_ODOM_COUNTS_PER_METER
     odom_wheel_track_m: float = 0.18
     odom_frame_id: str = "odom"
     base_frame_id: str = "base_link"
