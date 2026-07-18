@@ -126,6 +126,7 @@ Parameters:
 | `scan_topic` | string | `/scan` | Input LaserScan topic. |
 | `base_frame` | string | `base_link` | Footprint frame. Must match current RVR node default. |
 | `laser_frame` | string | `laser` | Expected scan frame; normally from `config/lidar.yaml`. |
+| `tf_timeout_s` | double | `0.05` | Bounded TF lookup timeout for transforming scan samples into `base_link`. |
 | `max_scan_age_s` | double | `0.30` | Maximum age from message stamp or receipt time. Must be less than driver `cmd_vel_timeout` (`0.5s`). |
 | `startup_grace_s` | double | `2.0` | Startup wait for first scan. Output zero until healthy. |
 | `min_valid_ranges` | int | `12` | Minimum valid ranges in relevant sectors. |
@@ -139,7 +140,7 @@ A scan is unhealthy if any of these are true:
 - `ranges` is empty or too short to cover the configured sectors;
 - `angle_increment <= 0`, `angle_min/angle_max` are non-finite, or metadata cannot map ranges to angles;
 - valid range count/fraction is below threshold;
-- `base_link -> laser` transform is unavailable when transformed sector checks are enabled;
+- `laser` (or scan frame) -> `base_link` transform is unavailable, stale, or malformed when `fail_on_missing_tf:=true`;
 - `range_min`, `range_max`, or range values are non-finite in a way that prevents filtering.
 
 Unhealthy scan means `SENSOR_STALE` or `STOPPED` with zero output. Treat sensor ambiguity as occupied space. Tiny robot, tiny margin for optimism.
@@ -188,7 +189,7 @@ Default sector checks in `base_link` frame:
 | left_spin | `[45°, 135°]` | positive angular.z / left arcs | Optional block/slow turn into side obstacle. |
 | right_spin | `[-135°, -45°]` | negative angular.z / right arcs | Optional block/slow turn into side obstacle. |
 
-The first implementation may use scan-frame angles only if it asserts and tests `laser_yaw == 0` or transforms points into `base_link`. The robust implementation should transform polar scan samples into `base_link` using TF2 and apply sector tests there.
+The implementation transforms polar scan samples into `base_link` with TF2 and applies sector tests there. With `fail_on_missing_tf:=true`, missing, stale, or malformed transforms are reported as unsafe scan health (`missing_tf`, `stale_tf`, or `malformed_tf`) and force zero output.
 
 ### Stopping and slowdown distances
 
@@ -328,6 +329,7 @@ lidar_collision_stop_supervisor:
     events_topic: /collision_stop/events
     base_frame: base_link
     laser_frame: laser
+    tf_timeout_s: 0.05
     max_scan_age_s: 0.30
     startup_grace_s: 2.0
     min_valid_ranges: 12
@@ -365,7 +367,7 @@ Diagnostics must include at least:
 - current state;
 - previous state and transition reason;
 - last scan age, frame ID, valid counts, min valid range per sector;
-- whether `base_link -> laser` TF is available;
+- whether scan-frame -> `base_link` TF is available, plus the TF failure reason and timeout;
 - nearest front/rear/side obstacle distances;
 - requested command age and values;
 - output command values;

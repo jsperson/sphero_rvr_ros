@@ -11,6 +11,7 @@ lidar_collision_stop_supervisor:
     driver_clear_estop_service: /rvr_driver/clear_estop
     base_frame: base_link
     laser_frame: laser
+    tf_timeout_s: 0.05
     max_scan_age_s: 0.30
     startup_grace_s: 2.0
     min_valid_ranges: 12

@@ -8,6 +8,7 @@ from sphero_rvr_driver.collision_stop import (
     CollisionState,
     ResetPolicy,
     ScanInput,
+    Transform2D,
     TwistCommand,
     evaluate_scan,
 )
@@ -36,7 +37,53 @@ def scan_with(front=None, rear=None, left=None, right=None, *, stamp=0.0, count=
         stamp=stamp,
         received_at=stamp,
         frame_id="laser",
+        transform_to_base=Transform2D(),
     )
+
+
+def test_evaluate_scan_uses_base_link_sectors_after_calibrated_pi_lidar_yaw():
+    cfg = CollisionStopConfig(min_valid_ranges=1, min_valid_fraction=0.0)
+    scan = scan_with(rear=0.30, stamp=1.0)
+    scan = ScanInput(**{**scan.__dict__, "transform_to_base": Transform2D(yaw=3.1239668018215028)})
+
+    result = evaluate_scan(scan, cfg, now=1.0)
+
+    assert result.healthy is True
+    assert result.nearest["front"] == pytest.approx(0.30)
+    assert result.nearest["rear"] == pytest.approx(2.0)
+    assert result.health.tf_available is True
+    assert result.health.tf_reason == "ok"
+
+
+def test_nonzero_lidar_yaw_moves_scan_frame_front_out_of_base_link_front_sector():
+    cfg = CollisionStopConfig(min_valid_ranges=1, min_valid_fraction=0.0)
+    scan = scan_with(front=0.30, stamp=1.0)
+    scan = ScanInput(**{**scan.__dict__, "transform_to_base": Transform2D(yaw=math.pi / 2.0)})
+
+    result = evaluate_scan(scan, cfg, now=1.0)
+
+    assert result.healthy is True
+    assert result.nearest["front"] == pytest.approx(2.0)
+    assert result.nearest["left"] == pytest.approx(0.30)
+
+
+def test_missing_and_malformed_required_tf_fail_closed_truthfully():
+    cfg = CollisionStopConfig(min_valid_ranges=1, min_valid_fraction=0.0, fail_on_missing_tf=True)
+    missing = scan_with(stamp=1.0)
+    missing = ScanInput(**{**missing.__dict__, "frame_id": "laser", "transform_to_base": None})
+    malformed = ScanInput(**{**missing.__dict__, "transform_to_base": Transform2D(yaw=math.nan)})
+
+    missing_result = evaluate_scan(missing, cfg, now=1.0)
+    malformed_result = evaluate_scan(malformed, cfg, now=1.0)
+
+    assert missing_result.healthy is False
+    assert missing_result.reason == "missing_tf"
+    assert missing_result.health.tf_available is False
+    assert missing_result.health.tf_reason == "missing_tf"
+    assert malformed_result.healthy is False
+    assert malformed_result.reason == "malformed_tf"
+    assert malformed_result.health.tf_available is False
+    assert malformed_result.health.tf_reason == "malformed_tf"
 
 
 def test_clear_scan_passes_bounded_command_and_reports_sector_distances():

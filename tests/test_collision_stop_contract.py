@@ -1,5 +1,11 @@
 import ast
+import math
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from sphero_rvr_driver.collision_stop_node import _transform2d_from_transform_stamped
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -70,3 +76,33 @@ def test_tui_status_model_includes_collision_stop_gate_for_arming():
     assert "collision_stop_fresh" in source
     assert "collision_stop_allows_motion" in tui_source
     assert "collision stop" in tui_source.lower()
+
+
+def test_collision_stop_node_uses_real_tf_lookup_and_truthful_diagnostics():
+    source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py").read_text()
+
+    assert "Buffer()" in source
+    assert "TransformListener" in source
+    assert "lookup_transform" in source
+    assert "transform_to_base" in source
+    assert "not_checked_ros_free_sector_mode" not in source
+    assert "tf_available" in source
+    assert "tf_reason" in source
+    assert "base_frame" in source
+    assert "tf_timeout_s" in source
+
+
+def test_ros_transform_helper_extracts_planar_yaw_for_core_evaluation():
+    half_yaw = math.pi / 4.0
+    stamped = SimpleNamespace(
+        transform=SimpleNamespace(
+            translation=SimpleNamespace(x=0.10, y=-0.20),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=math.sin(half_yaw), w=math.cos(half_yaw)),
+        )
+    )
+
+    result = _transform2d_from_transform_stamped(stamped)
+
+    assert result.x == pytest.approx(0.10)
+    assert result.y == pytest.approx(-0.20)
+    assert result.yaw == pytest.approx(math.pi / 2.0)

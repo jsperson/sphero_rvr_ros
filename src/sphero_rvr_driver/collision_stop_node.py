@@ -8,9 +8,10 @@ launches.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
-from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanInput, TwistCommand
+from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanInput, Transform2D, TwistCommand
 
 
 def _stamp_seconds(stamp: Any) -> Optional[float]:
@@ -23,14 +24,44 @@ def _stamp_seconds(stamp: Any) -> Optional[float]:
     return float(sec) + float(nanosec) / 1_000_000_000.0
 
 
+def _transform2d_from_transform_stamped(transform_stamped: Any) -> Transform2D:
+    transform = transform_stamped.transform
+    translation = transform.translation
+    rotation = transform.rotation
+    x = float(getattr(translation, "x", 0.0))
+    y = float(getattr(translation, "y", 0.0))
+    qx = float(getattr(rotation, "x", 0.0))
+    qy = float(getattr(rotation, "y", 0.0))
+    qz = float(getattr(rotation, "z", 0.0))
+    qw = float(getattr(rotation, "w", 1.0))
+    yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    result = Transform2D(x=x, y=y, yaw=yaw)
+    if not result.is_finite():
+        raise ValueError("malformed_tf")
+    return result
+
+
+def _tf_error_reason(exc: Exception) -> str:
+    name = exc.__class__.__name__.lower()
+    message = str(exc).lower()
+    if "extrapolation" in name or "extrapolation" in message or "stale" in message:
+        return "stale_tf"
+    if "value" in name or "malformed" in message:
+        return "malformed_tf"
+    return "missing_tf"
+
+
 def main(args=None):
     import rclpy
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from geometry_msgs.msg import Twist
+    from rclpy.duration import Duration
     from rclpy.node import Node
+    from rclpy.time import Time
     from sensor_msgs.msg import LaserScan
     from std_msgs.msg import String
     from std_srvs.srv import Trigger
+    from tf2_ros import Buffer, TransformListener
 
     class LidarCollisionStopSupervisorNode(Node):
         def __init__(self):
@@ -39,6 +70,8 @@ def main(args=None):
             self._config = self._read_config()
             now = self._now_seconds()
             self._supervisor = CollisionStopSupervisor(self._config, now=now)
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
             self._last_event = "STARTUP_WAITING_FOR_SCAN"
 
             requested_cmd_topic = str(self.get_parameter("requested_cmd_topic").value)
@@ -107,6 +140,7 @@ def main(args=None):
                 "zero_publish_period_s": defaults.zero_publish_period_s,
                 "allow_disable": defaults.allow_disable,
                 "fail_on_missing_tf": defaults.fail_on_missing_tf,
+                "tf_timeout_s": defaults.tf_timeout_s,
                 "requested_cmd_timeout_s": defaults.requested_cmd_timeout_s,
             }.items():
                 self.declare_parameter(name, value)
@@ -143,10 +177,17 @@ def main(args=None):
                 zero_publish_period_s=float(self.get_parameter("zero_publish_period_s").value),
                 allow_disable=bool(self.get_parameter("allow_disable").value),
                 fail_on_missing_tf=bool(self.get_parameter("fail_on_missing_tf").value),
+                base_frame=str(self.get_parameter("base_frame").value),
+                laser_frame=str(self.get_parameter("laser_frame").value),
+                tf_timeout_s=float(self.get_parameter("tf_timeout_s").value),
             )
 
         def _on_scan(self, msg):
-            stamp = _stamp_seconds(getattr(getattr(msg, "header", None), "stamp", None))
+            header = getattr(msg, "header", None)
+            stamp_msg = getattr(header, "stamp", None)
+            stamp = _stamp_seconds(stamp_msg)
+            frame_id = str(getattr(header, "frame_id", "")) or self._config.laser_frame
+            transform_to_base, transform_error = self._lookup_scan_transform(frame_id, stamp_msg)
             decision = self._supervisor.update_scan(
                 ScanInput(
                     ranges=tuple(getattr(msg, "ranges", []) or []),
@@ -156,11 +197,30 @@ def main(args=None):
                     range_max=float(msg.range_max),
                     stamp=stamp,
                     received_at=self._now_seconds(),
-                    frame_id=str(getattr(getattr(msg, "header", None), "frame_id", "")),
+                    frame_id=frame_id,
+                    transform_to_base=transform_to_base,
+                    transform_error=transform_error,
                 ),
                 now=self._now_seconds(),
             )
             self._publish_decision(decision)
+
+        def _lookup_scan_transform(self, frame_id: str, stamp_msg) -> tuple[Optional[Transform2D], Optional[str]]:
+            if frame_id == self._config.base_frame:
+                return Transform2D(), None
+            try:
+                time = Time.from_msg(stamp_msg) if stamp_msg is not None else Time()
+                stamped = self._tf_buffer.lookup_transform(
+                    self._config.base_frame,
+                    frame_id or self._config.laser_frame,
+                    time,
+                    timeout=Duration(seconds=self._config.tf_timeout_s),
+                )
+                return _transform2d_from_transform_stamped(stamped), None
+            except Exception as exc:
+                reason = _tf_error_reason(exc)
+                self.get_logger().warn(f"collision stop TF lookup failed: {reason}: {exc}")
+                return None, reason
 
         def _on_cmd_vel(self, msg):
             decision = self._supervisor.apply_command(
@@ -250,6 +310,7 @@ def main(args=None):
                 "scan_reason": decision.scan_health.reason,
                 "scan_age_s": "" if decision.scan_health.age_s is None else f"{decision.scan_health.age_s:.3f}",
                 "scan_frame": decision.scan_health.frame_id,
+                "base_frame": decision.scan_health.base_frame,
                 "valid_ranges": str(decision.scan_health.valid_count),
                 "considered_ranges": str(decision.scan_health.considered_count),
                 "nearest_front_m": _fmt_optional(decision.nearest.get("front")),
@@ -262,8 +323,9 @@ def main(args=None):
                 "output_angular_z": f"{decision.output.angular_z:.3f}",
                 "scale": f"{decision.scale:.3f}",
                 "reset_required": str(decision.reset_required).lower(),
-                "tf_available": "not_checked_ros_free_sector_mode",
-                "placeholder_lidar_transform": "unknown",
+                "tf_available": str(decision.scan_health.tf_available).lower(),
+                "tf_reason": decision.scan_health.tf_reason,
+                "tf_timeout_s": f"{self._config.tf_timeout_s:.3f}",
             }
             status.values = [KeyValue(key=k, value=v) for k, v in fields.items()]
             array.status = [status]

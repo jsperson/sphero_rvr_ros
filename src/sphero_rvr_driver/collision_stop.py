@@ -29,6 +29,26 @@ class ResetPolicy(str, Enum):
 
 
 @dataclass(frozen=True)
+class Transform2D:
+    """Planar transform from a scan frame into the configured base frame."""
+
+    x: float = 0.0
+    y: float = 0.0
+    yaw: float = 0.0
+
+    def is_finite(self) -> bool:
+        return math.isfinite(self.x) and math.isfinite(self.y) and math.isfinite(self.yaw)
+
+    def transform_point(self, x: float, y: float) -> tuple[float, float]:
+        cos_yaw = math.cos(self.yaw)
+        sin_yaw = math.sin(self.yaw)
+        return (
+            self.x + cos_yaw * x - sin_yaw * y,
+            self.y + sin_yaw * x + cos_yaw * y,
+        )
+
+
+@dataclass(frozen=True)
 class TwistCommand:
     linear_x: float = 0.0
     angular_z: float = 0.0
@@ -44,6 +64,8 @@ class ScanInput:
     stamp: Optional[float] = None
     received_at: Optional[float] = None
     frame_id: str = "laser"
+    transform_to_base: Optional[Transform2D] = None
+    transform_error: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +104,9 @@ class CollisionStopConfig:
     zero_publish_period_s: float = 0.10
     allow_disable: bool = False
     fail_on_missing_tf: bool = True
+    base_frame: str = "base_link"
+    laser_frame: str = "laser"
+    tf_timeout_s: float = 0.05
 
     def __post_init__(self) -> None:
         if isinstance(self.reset_policy, str):
@@ -90,6 +115,8 @@ class CollisionStopConfig:
             raise ValueError("max_scan_age_s must be positive")
         if self.requested_cmd_timeout_s <= 0:
             raise ValueError("requested_cmd_timeout_s must be positive")
+        if self.tf_timeout_s < 0:
+            raise ValueError("tf_timeout_s must be non-negative")
         if self.slow_distance_m <= self.stop_distance_m:
             raise ValueError("slow_distance_m must be greater than stop_distance_m")
         if self.release_distance_m <= self.stop_distance_m:
@@ -106,6 +133,9 @@ class ScanHealth:
     valid_count: int
     considered_count: int
     frame_id: str
+    base_frame: str = "base_link"
+    tf_available: bool = False
+    tf_reason: str = "not_checked"
 
 
 @dataclass(frozen=True)
@@ -160,22 +190,37 @@ def evaluate_scan(scan: ScanInput, config: CollisionStopConfig, *, now: float) -
     if not math.isfinite(scan.range_min) or not math.isfinite(scan.range_max) or scan.range_max <= scan.range_min:
         return _scan_eval(False, "range_limits", age, 0, len(ranges), scan.frame_id, {})
 
-    sectors = _sector_samples(scan, config)
+    transform, tf_available, tf_reason = _resolve_scan_transform(scan, config)
+    if not tf_available and config.fail_on_missing_tf:
+        return _scan_eval(
+            False,
+            tf_reason,
+            age,
+            0,
+            len(ranges),
+            scan.frame_id,
+            {},
+            base_frame=config.base_frame,
+            tf_available=False,
+            tf_reason=tf_reason,
+        )
+
+    sectors = _sector_samples(scan, config, transform)
     considered = sum(len(values) for values in sectors.values())
     valid_count = sum(1 for values in sectors.values() for value in values if value is not None)
     min_required = max(config.min_valid_ranges, math.ceil(considered * config.min_valid_fraction))
     nearest = {name: _nearest(values) for name, values in sectors.items()}
     if considered == 0:
-        return _scan_eval(False, "sector_not_covered", age, valid_count, considered, scan.frame_id, nearest)
+        return _scan_eval(False, "sector_not_covered", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
     if valid_count < min_required:
-        return _scan_eval(False, "insufficient_valid_ranges", age, valid_count, considered, scan.frame_id, nearest)
+        return _scan_eval(False, "insufficient_valid_ranges", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
     if config.sector_unknown_policy == "blocked":
         for name, values in sectors.items():
             sector_valid = sum(1 for value in values if value is not None)
             sector_required = max(1, math.ceil(len(values) * config.min_valid_fraction))
             if sector_valid < sector_required:
-                return _scan_eval(False, f"{name}_unknown", age, valid_count, considered, scan.frame_id, nearest)
-    return _scan_eval(True, "fresh", age, valid_count, considered, scan.frame_id, nearest)
+                return _scan_eval(False, f"{name}_unknown", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
+    return _scan_eval(True, "fresh", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
 
 
 def _scan_eval(
@@ -186,9 +231,13 @@ def _scan_eval(
     considered_count: int,
     frame_id: str,
     nearest: Mapping[str, Optional[float]],
+    *,
+    base_frame: str = "base_link",
+    tf_available: bool = False,
+    tf_reason: str = "not_checked",
 ) -> ScanEvaluation:
     return ScanEvaluation(
-        health=ScanHealth(healthy, reason, age, valid_count, considered_count, frame_id),
+        health=ScanHealth(healthy, reason, age, valid_count, considered_count, frame_id, base_frame, tf_available, tf_reason),
         nearest=nearest,
     )
 
@@ -200,7 +249,28 @@ def _scan_age(scan: ScanInput, now: float) -> Optional[float]:
     return max(0.0, float(now) - float(stamp))
 
 
-def _sector_samples(scan: ScanInput, config: CollisionStopConfig) -> dict[str, list[Optional[float]]]:
+def _resolve_scan_transform(scan: ScanInput, config: CollisionStopConfig) -> tuple[Transform2D, bool, str]:
+    frame_id = scan.frame_id or config.laser_frame
+    if frame_id == config.base_frame:
+        return Transform2D(), True, "identity_same_frame"
+    if scan.transform_error:
+        return Transform2D(), False, scan.transform_error
+    transform = scan.transform_to_base
+    if transform is None:
+        return Transform2D(), False, "missing_tf"
+    if not transform.is_finite():
+        return Transform2D(), False, "malformed_tf"
+    return transform, True, "ok"
+
+
+def _range_is_number(value: float) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _sector_samples(scan: ScanInput, config: CollisionStopConfig, transform_to_base: Transform2D) -> dict[str, list[Optional[float]]]:
     sectors: dict[str, list[Optional[float]]] = {
         "front": [],
         "front_slow": [],
@@ -212,7 +282,15 @@ def _sector_samples(scan: ScanInput, config: CollisionStopConfig) -> dict[str, l
     max_range = min(float(scan.range_max), config.max_range_m)
     rear_width = abs(config.rear_stop_angle_width_deg)
     for index, raw_value in enumerate(scan.ranges):
-        angle_deg = _normalize_degrees(math.degrees(scan.angle_min + index * scan.angle_increment))
+        scan_angle = scan.angle_min + index * scan.angle_increment
+        if _range_is_number(raw_value):
+            point_x = float(raw_value) * math.cos(scan_angle)
+            point_y = float(raw_value) * math.sin(scan_angle)
+        else:
+            point_x = 0.0
+            point_y = 0.0
+        base_x, base_y = transform_to_base.transform_point(point_x, point_y)
+        angle_deg = _normalize_degrees(math.degrees(math.atan2(base_y, base_x)))
         value = _valid_range(raw_value, min_range=min_range, max_range=max_range)
         if config.front_stop_min_angle_deg <= angle_deg <= config.front_stop_max_angle_deg:
             sectors["front"].append(value)
