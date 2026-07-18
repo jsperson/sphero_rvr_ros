@@ -21,8 +21,12 @@ class FakeClient:
                 "diagnostic_message": "fake",
                 "battery_percentage": 0.5,
                 "battery_voltage": 7.4,
+                "collision_stop_state": "CLEAR",
+                "collision_stop_reason": "fake_clear",
+                "collision_stop_received_at": 0.0,
             },
         )()
+        setattr(self.status, "collision_stop_received_at", tui_module.time.monotonic())
 
     def publish_velocity(self, linear_mps, angular_rad_s):
         self.published.append((linear_mps, angular_rad_s))

@@ -18,6 +18,8 @@ def generate_launch_description():
     laser_x = LaunchConfiguration("laser_x")
     laser_y = LaunchConfiguration("laser_y")
     laser_z = LaunchConfiguration("laser_z")
+    laser_roll = LaunchConfiguration("laser_roll")
+    laser_pitch = LaunchConfiguration("laser_pitch")
     laser_yaw = LaunchConfiguration("laser_yaw")
 
     return LaunchDescription([
@@ -25,10 +27,36 @@ def generate_launch_description():
         DeclareLaunchArgument("serial_baudrate", default_value="460800"),
         DeclareLaunchArgument("frame_id", default_value="laser"),
         DeclareLaunchArgument("base_frame", default_value="base_link"),
-        DeclareLaunchArgument("laser_x", default_value="0.0"),
-        DeclareLaunchArgument("laser_y", default_value="0.0"),
-        DeclareLaunchArgument("laser_z", default_value="0.15"),
-        DeclareLaunchArgument("laser_yaw", default_value="0.0"),
+        DeclareLaunchArgument(
+            "laser_x",
+            default_value="-0.0074295",
+            description="Measured base_link -> laser x translation in meters.",
+        ),
+        DeclareLaunchArgument(
+            "laser_y",
+            default_value="-0.009525",
+            description="Measured base_link -> laser y translation in meters.",
+        ),
+        DeclareLaunchArgument(
+            "laser_z",
+            default_value="0.190500",
+            description="Measured base_link -> laser z translation in meters.",
+        ),
+        DeclareLaunchArgument(
+            "laser_roll",
+            default_value="0.0",
+            description="Measured base_link -> laser roll in radians.",
+        ),
+        DeclareLaunchArgument(
+            "laser_pitch",
+            default_value="0.0",
+            description="Measured base_link -> laser pitch in radians.",
+        ),
+        DeclareLaunchArgument(
+            "laser_yaw",
+            default_value="3.1239668018215028",
+            description="Measured base_link -> laser yaw in radians.",
+        ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
@@ -38,8 +66,8 @@ def generate_launch_description():
                 "--x", laser_x,
                 "--y", laser_y,
                 "--z", laser_z,
-                "--roll", "0.0",
-                "--pitch", "0.0",
+                "--roll", laser_roll,
+                "--pitch", laser_pitch,
                 "--yaw", laser_yaw,
                 "--frame-id", base_frame,
                 "--child-frame-id", frame_id,

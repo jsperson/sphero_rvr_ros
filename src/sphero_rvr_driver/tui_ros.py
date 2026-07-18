@@ -31,6 +31,11 @@ class RVRStatus:
     scan_valid_count: int = 0
     scan_min_range: Optional[float] = None
     scan_max_range: Optional[float] = None
+    collision_stop_state: str = "waiting"
+    collision_stop_reason: str = "waiting"
+    collision_stop_received_at: Optional[float] = None
+    collision_stop_fresh: bool = False
+    collision_stop_reset_required: bool = False
     cmd_vel_available: bool = False
     cmd_vel_publisher_count: int = 0
     service_available: Dict[str, bool] = field(default_factory=dict)
@@ -67,6 +72,10 @@ class DryRunRVRClient:
             scan_valid_count=360,
             scan_min_range=0.42,
             scan_max_range=6.0,
+            collision_stop_state="CLEAR",
+            collision_stop_reason="dry_run_clear",
+            collision_stop_received_at=now,
+            collision_stop_fresh=True,
             cmd_vel_available=False,
             cmd_vel_publisher_count=0,
             service_available={name: True for name in STATUS_SERVICES},
@@ -125,6 +134,28 @@ def update_scan_status(status: RVRStatus, msg, now: Optional[float] = None) -> N
     status.scan_received_at = time.monotonic() if now is None else now
 
 
+def update_collision_stop_status(status: RVRStatus, msg, now: Optional[float] = None) -> None:
+    text = str(getattr(msg, "data", ""))
+    parts = text.split()
+    status.collision_stop_state = parts[0] if parts else "waiting"
+    reason = "waiting"
+    for part in parts[1:]:
+        if part.startswith("reason="):
+            reason = part.split("=", 1)[1]
+            break
+    status.collision_stop_reason = reason
+    status.collision_stop_received_at = time.monotonic() if now is None else now
+    status.collision_stop_fresh = status.collision_stop_state in {"CLEAR", "SLOW"}
+    status.collision_stop_reset_required = "reset_required" in text
+
+
+def collision_stop_allows_motion(status: RVRStatus, now: Optional[float] = None) -> bool:
+    current_time = time.monotonic() if now is None else now
+    received_at = getattr(status, "collision_stop_received_at", None)
+    fresh = received_at is not None and current_time - received_at <= FRESH_SECONDS
+    return fresh and getattr(status, "collision_stop_state", "") in {"CLEAR", "SLOW"}
+
+
 def format_status_lines(
     status: RVRStatus,
     *,
@@ -148,6 +179,7 @@ def format_status_lines(
         _battery_line(status, current_time),
         _odom_line(status, current_time),
         _scan_line(status, current_time),
+        _collision_stop_line(status, current_time),
         (
             "Services: "
             + "  ".join(f"{name} {_availability_text(service_available.get(name, False))}" for name in STATUS_SERVICES)
@@ -226,6 +258,14 @@ def _scan_line(status: RVRStatus, now: float) -> str:
     return line
 
 
+def _collision_stop_line(status: RVRStatus, now: float) -> str:
+    freshness = freshness_text(getattr(status, "collision_stop_received_at", None), now)
+    return (
+        f"Collision stop: {getattr(status, 'collision_stop_state', 'waiting')} "
+        f"reason={getattr(status, 'collision_stop_reason', 'waiting')} {freshness}"
+    )
+
+
 def _tf_text(tf_available: Dict[str, Optional[bool]], parent: str, child: str) -> str:
     key = f"{parent}->{child}"
     available = tf_available.get(key)
@@ -248,6 +288,7 @@ class RVRROSClient:
         from nav_msgs.msg import Odometry
         from rclpy.node import Node
         from sensor_msgs.msg import BatteryState, LaserScan
+        from std_msgs.msg import String
         from std_srvs.srv import Trigger
 
         self._rclpy = rclpy
@@ -270,6 +311,7 @@ class RVRROSClient:
         self._diagnostics_sub = self._node.create_subscription(DiagnosticArray, "diagnostics", self._on_diagnostics, 10)
         self._odom_sub = self._node.create_subscription(Odometry, "odom", self._on_odom, 10)
         self._scan_sub = self._node.create_subscription(LaserScan, "scan", self._on_scan, 10)
+        self._collision_stop_sub = self._node.create_subscription(String, "/collision_stop/state", self._on_collision_stop, 10)
         self._stop_client = self._node.create_client(Trigger, "stop")
         self._estop_client = self._node.create_client(Trigger, "estop")
         self._clear_estop_client = self._node.create_client(Trigger, "clear_estop")
@@ -366,6 +408,9 @@ class RVRROSClient:
 
     def _on_scan(self, msg) -> None:
         update_scan_status(self.status, msg)
+
+    def _on_collision_stop(self, msg) -> None:
+        update_collision_stop_status(self.status, msg)
 
     def _on_diagnostics(self, msg) -> None:
         if not msg.status:

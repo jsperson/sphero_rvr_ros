@@ -15,7 +15,6 @@ Verified so far:
 Still needs field validation:
 
 - repeated odometry calibration samples
-- measured lidar mount offsets: `laser_x`, `laser_y`, `laser_z`, `laser_yaw`
 - real manual mapping run with careful stop/estop supervision
 
 ## Launch files
@@ -43,6 +42,7 @@ Default behavior:
 
 ```text
 start_lidar:=true
+start_camera:=false
 start_slam:=true
 start_rvr:=false
 ```
@@ -50,6 +50,37 @@ start_rvr:=false
 This starts lidar + `slam_toolbox`, but without the RVR driver there is no live
 `odom -> base_link` transform. That default is intentional: it is safe to inspect
 configuration and lidar/SLAM startup without exposing `/cmd_vel`.
+
+### Camera only: no motors, measured defaults
+
+```bash
+ros2 launch sphero_rvr_driver camera.launch.py
+```
+
+Publishes the Pi Camera 3 stream through `camera_ros` and static TF for:
+
+```text
+base_link -> camera_link -> camera_optical_frame
+```
+
+The default `camera_info_url` points to the measured robot-local CameraInfo file:
+
+```text
+file:///home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml
+```
+
+This file is intentionally not committed; it must exist on the robot under
+`/home/jsperson/.ros/camera_info/`, survive restarts/rebuilds, and match the
+checksum recorded during camera calibration. Do not use camera detections for
+semantic localization unless `/camera_node/camera_info` reports nonzero
+width/height, K/D, and distortion model. The launch-level `camera_*` TF defaults
+are the measured physical mount values for the current payload.
+
+To inspect the full lidar + camera + SLAM graph without motors:
+
+```bash
+ros2 launch sphero_rvr_driver mapping.launch.py start_camera:=true start_rvr:=false
+```
 
 ### Full live mapping graph
 
@@ -66,6 +97,7 @@ Expected TF tree:
 
 ```text
 map -> odom -> base_link -> laser
+                         -> camera_link -> camera_optical_frame
 ```
 
 Expected topics:
@@ -77,6 +109,8 @@ Expected topics:
 /tf_static
 /map
 /cmd_vel
+/camera_node/image_raw
+/camera_node/camera_info
 ```
 
 The launch exposes `/cmd_vel` through the RVR driver. Do not run teleop/TUI until
@@ -133,8 +167,10 @@ The preferred operator path is through `rvr-console` / `rvr_tui`, which owns and
 ## Configuration files
 
 - `config/lidar.yaml` — RPLIDAR C1 serial/frame settings.
+- `config/camera.yaml` — Pi Camera 3 capture defaults plus the measured robot-local calibration URL.
 - `config/rvr.yaml` — RVR driver safety/odometry settings.
 - `config/slam_toolbox.yaml` — conservative online async SLAM Toolbox config.
+- `docs/camera_lidar_calibration.md` — camera/lidar calibration and physical measurement runbook.
 
 ## Notes
 

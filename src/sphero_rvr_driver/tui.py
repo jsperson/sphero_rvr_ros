@@ -13,7 +13,7 @@ from typing import List, Optional
 from .tui_commands import CommandParseError, NudgeCommand, TUICommand, parse_command
 from .tui_keymap import KeyAction, map_key
 from .tui_launch import LaunchManager, MappingMode, MapSaver
-from .tui_ros import DryRunRVRClient, RVRROSClient, format_status_lines, freshness_text
+from .tui_ros import DryRunRVRClient, RVRROSClient, collision_stop_allows_motion, format_status_lines, freshness_text
 
 DEFAULT_SPEED = 0.10
 DEFAULT_TURN = 0.40
@@ -156,6 +156,8 @@ class RVRTUI:
                 for line in HELP_TEXT:
                     self.state.log(line)
             elif name == "arm":
+                if not collision_stop_allows_motion(self.client.status):
+                    raise RuntimeError("collision stop is not CLEAR/SLOW and fresh; refusing to arm")
                 self._enable_motion_publisher_if_supported()
                 self.state.armed = True
                 if command.value == "confirm":

@@ -98,6 +98,7 @@ def install_fake_ros_modules(monkeypatch):
             "BatteryState": type("BatteryState", (), {}),
             "LaserScan": type("LaserScan", (), {}),
         },
+        "std_msgs.msg": {"String": type("String", (), {})},
         "std_srvs.srv": {"Trigger": type("Trigger", (), {"Request": type("Request", (), {})})},
     }
     for module_name, attrs in message_modules.items():

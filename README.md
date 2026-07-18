@@ -11,9 +11,14 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_api_gap_report.md](docs/rvr_api_gap_report.md) is the parity handoff: what is implemented, what remains intentionally core-only/omitted, and which commands validate the state.
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
 - [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
+- [docs/rosbag_capture_replay.md](docs/rosbag_capture_replay.md) covers the dry-run-first rosbag2 capture/replay workflow, run manifest format, storage layout, cleanup, and motor-topic safety boundaries.
+- [docs/camera_lidar_calibration.md](docs/camera_lidar_calibration.md) is the no-hardware Pi Camera 3 / RPLIDAR calibration runbook, including measured camera intrinsics, measured TF defaults, and physical measurement steps.
 - [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
+- [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) is the source-of-truth design for the independent lidar collision-stop supervisor and final `/cmd_vel` arbitration contract.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
+
+Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`.
 
 ## Current base-driver status
 
@@ -109,13 +114,19 @@ By default this starts lidar + SLAM only and **does not** start the live RVR dri
 start_rvr:=false
 ```
 
-Full live mapping is motor-capable because it exposes `/cmd_vel` through the RVR driver:
+Full live mapping is motor-capable and now uses the lidar collision-stop supervisor by default:
+
+```text
+/cmd_vel -> lidar_collision_stop_supervisor -> /cmd_vel_motor -> sphero_rvr_driver
+```
+
+Ordinary publishers keep targeting `/cmd_vel`; the live driver is remapped away from public `/cmd_vel` to `/cmd_vel_motor` in `supervised_rvr.launch.py`, and the supervisor owns public `/stop`, `/estop`, and `/clear_estop`.
 
 ```bash
 ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true
 ```
 
-See `docs/mapping.md` before running live mapping.
+See `docs/mapping.md` and `docs/lidar_collision_stop_supervisor.md` before running live mapping.
 
 ## Roadmap: lidar, SLAM, cameras, autonomy, and AI commands
 
@@ -152,7 +163,7 @@ Detailed planning lives in [STATUS.md](STATUS.md#lidar-slam-and-autonomy-roadmap
 
 The ROS adapter deliberately exposes only the safe subset selected in `docs/rvr_ros_exposure_policy.md`:
 
-- routine motion stays on `/cmd_vel`, bounded by the existing velocity, stale-timeout, stop, and software-estop safety path;
+- routine motion stays on ordinary `/cmd_vel`, then passes through `lidar_collision_stop_supervisor` before the final `/cmd_vel_motor` driver sink in supervised motor-capable launches;
 - read-only telemetry is published as typed topics (`battery_state`, motor temperatures, `ambient_light`, `odom`) and diagnostics key-values;
 - `reset_yaw` and `reset_locator` are explicit reference-frame reset services, not hidden side effects;
 - LEDs are limited to bounded `ColorRGBA` all-LED feedback plus `release_led_requests`; raw LED masks/palettes remain core-only;
@@ -491,6 +502,7 @@ ros2 pkg prefix sphero_rvr_driver
 ros2 pkg executables sphero_rvr_driver
 ros2 launch sphero_rvr_driver lidar.launch.py --show-args
 ros2 launch sphero_rvr_driver mapping.launch.py --show-args
+ros2 launch sphero_rvr_driver camera.launch.py --show-args
 PATH="$HOME/.local/rpi-libcamera/bin:$PATH" \
 LD_LIBRARY_PATH="$HOME/.local/rpi-libcamera/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   cam --list
@@ -521,7 +533,9 @@ v4l2-ctl --list-devices
   --ros-args -p width:=640 -p height:=480
 ```
 
-Expected: the PiSP-capable libcamera build lists the Pi Camera 3 `imx708` sensor, V4L2 lists the `rp1-cfe`/`pispbe` video devices, and `rvr-camera-node` publishes `/camera/image_raw` through ROS. Camera checks are safe/no-motor; they do not launch the RVR driver or publish `/cmd_vel`.
+Expected: the PiSP-capable libcamera build lists the Pi Camera 3 `imx708` sensor, V4L2 lists the `rp1-cfe`/`pispbe` video devices, and `rvr-camera-node` publishes `/camera_node/image_raw` through ROS. Camera checks are safe/no-motor; they do not launch the RVR driver or publish `/cmd_vel`.
+
+Pi Camera 3 calibration defaults are measured for the current payload. `camera.launch.py` exposes `camera_info_url` and `base_link -> camera_link -> camera_optical_frame` TF inputs; the default `camera_info_url` points at the robot-local file `file:///home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml`. That generated CameraInfo file is an operational dependency, not committed source: install/restore it on the Pi, keep a backup, and verify its checksum and `/camera_node/camera_info` contents before semantic localization.
 
 Current accepted rack layout:
 
@@ -532,9 +546,9 @@ Current accepted rack layout:
 
 Installed package data includes:
 
-- launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`
-- config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`
-- docs: `mapping.md`, `motion_calibration.md`, `udev/99-rplidar.rules`
+- launch: `rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`
+- config: `rvr.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`
+- docs: `mapping.md`, `motion_calibration.md`, `rosbag_capture_replay.md`, `camera_lidar_calibration.md`, `udev/99-rplidar.rules`
 - helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`
 
 ## No-motion smoke test
