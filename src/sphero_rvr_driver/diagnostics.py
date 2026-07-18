@@ -57,7 +57,10 @@ def diagnostic_key_values(
     values = {
         "connected": str(state.connected).lower(),
         "emergency_stopped": str(state.emergency_stopped).lower(),
+        "fail_safe_active": str(state.fail_safe_active).lower(),
     }
+    if state.fail_safe_reason:
+        values["fail_safe_reason"] = state.fail_safe_reason
     if state.latest_velocity is not None:
         values.update(
             {
@@ -92,6 +95,9 @@ def summarize_state(
 ) -> DiagnosticSummary:
     if state.emergency_stopped:
         return DiagnosticSummary(level="ERROR", message="RVR emergency stop is active")
+    if state.fail_safe_active:
+        reason = f": {state.fail_safe_reason}" if state.fail_safe_reason else ""
+        return DiagnosticSummary(level="ERROR", message=f"RVR fail-safe fault is active{reason}")
     if telemetry is not None and telemetry.motor_fault:
         return DiagnosticSummary(level="ERROR", message="RVR motor fault is active")
     if not state.connected:

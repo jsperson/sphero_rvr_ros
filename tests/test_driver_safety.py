@@ -219,8 +219,27 @@ async def test_transient_control_send_fault_attempts_safe_stop_and_loop_survives
 
 
 @pytest.mark.asyncio
-async def test_stale_stop_failure_enters_fail_safe_and_blocks_drive_until_recovered(caplog):
+async def test_stale_stop_transient_failure_retries_safe_stop_without_fail_safe(caplog):
     transport = FailingWriteTransport(failures=1, command_id=RVRCommands.CID_RAW_MOTORS, auto_ack=True)
+    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=0.02)
+    await driver.connect()
+
+    await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
+    await asyncio.sleep(0.08)
+    await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
+    await asyncio.sleep(0.03)
+    await driver.disconnect()
+
+    state = driver.get_state()
+    assert not state.fail_safe_active
+    assert _raw_motor_packets(transport, driver)
+    assert _rc_drive_packets(transport, driver)
+    assert "RVR safe stop delivery failed; retrying" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stale_stop_persistent_failure_enters_fail_safe_and_blocks_drive_until_recovered(caplog):
+    transport = FailingWriteTransport(failures=2, command_id=RVRCommands.CID_RAW_MOTORS, auto_ack=True)
     driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=0.02)
     await driver.connect()
 

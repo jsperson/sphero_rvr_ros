@@ -49,3 +49,10 @@ def test_checked_in_rvr_yaml_preserves_floor_turn_motor_duty():
     assert "max_linear_raw_motor_duty: 64" in config_text
     assert "max_angular_raw_motor_duty: 255" in config_text
     assert "odom_counts_per_meter: 4337.768" in config_text
+
+
+def test_ros_node_exposes_clear_fail_safe_service():
+    node_source = Path(__file__).resolve().parents[1].joinpath("src", "sphero_rvr_driver", "rvr_node.py").read_text()
+
+    assert 'create_service(Trigger, "clear_fail_safe", self._on_clear_fail_safe)' in node_source
+    assert "driver.clear_fail_safe_fault()" in node_source

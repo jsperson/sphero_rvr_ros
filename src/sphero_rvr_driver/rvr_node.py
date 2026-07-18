@@ -153,6 +153,7 @@ def main(args=None):
             self.create_service(Trigger, "stop", self._on_stop)
             self.create_service(Trigger, "estop", self._on_estop)
             self.create_service(Trigger, "clear_estop", self._on_clear_estop)
+            self.create_service(Trigger, "clear_fail_safe", self._on_clear_fail_safe)
             self.create_service(Trigger, "reset_yaw", self._on_reset_yaw)
             self.create_service(Trigger, "reset_locator", self._on_reset_locator)
             self.create_service(Trigger, "release_led_requests", self._on_release_led_requests)
@@ -249,6 +250,12 @@ def main(args=None):
             self._driver_thread.run(self._driver_thread.driver.clear_emergency_stop()).result(timeout=5)
             response.success = True
             response.message = "RVR emergency stop cleared"
+            return response
+
+        def _on_clear_fail_safe(self, request, response):
+            self._driver_thread.run(self._driver_thread.driver.clear_fail_safe_fault()).result(timeout=5)
+            response.success = True
+            response.message = "RVR fail-safe fault cleared"
             return response
 
         def _on_reset_yaw(self, request, response):

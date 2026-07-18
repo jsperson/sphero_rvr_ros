@@ -35,12 +35,16 @@ class RVRDriver:
         max_raw_motor_duty: int = 64,
         max_linear_raw_motor_duty: Optional[int] = None,
         max_angular_raw_motor_duty: Optional[int] = None,
+        safe_stop_attempts: int = 2,
+        safe_stop_retry_delay: float = 0.02,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
         self._queue = PriorityCommandQueue()
         self._control_period = control_period
         self._command_timeout = command_timeout
+        self._safe_stop_attempts = max(1, int(safe_stop_attempts))
+        self._safe_stop_retry_delay = max(0.0, float(safe_stop_retry_delay))
         self._max_linear_mps = max_linear_mps
         self._max_angular_rad_s = max_angular_rad_s
         self._max_raw_motor_duty = max(0, min(255, int(max_raw_motor_duty)))
@@ -496,14 +500,30 @@ class RVRDriver:
     async def _attempt_control_safe_stop(self, reason: str) -> None:
         self._desired_velocity = None
         self._last_velocity_update = None
-        try:
-            await self._send(self.commands.stop, CommandPriority.HIGH)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, self._safe_stop_attempts + 1):
+            try:
+                await self._send(self.commands.stop, CommandPriority.HIGH)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self._safe_stop_attempts:
+                    LOGGER.exception(
+                        "RVR safe stop delivery failed; retrying (%s/%s)",
+                        attempt,
+                        self._safe_stop_attempts,
+                    )
+                    if self._safe_stop_retry_delay:
+                        await asyncio.sleep(self._safe_stop_retry_delay)
+                    continue
+                self._fail_safe_active = True
+                self._fail_safe_reason = f"{reason}: {exc}"
+                LOGGER.exception("RVR fail-safe fault active; safe stop delivery failed")
+        if last_exc is not None and not self._fail_safe_active:
             self._fail_safe_active = True
-            self._fail_safe_reason = f"{reason}: {exc}"
-            LOGGER.exception("RVR fail-safe fault active; safe stop delivery failed")
+            self._fail_safe_reason = f"{reason}: {last_exc}"
 
     async def _send(self, packet_factory, priority: CommandPriority):
         sequence_id = self._next_sequence_id()

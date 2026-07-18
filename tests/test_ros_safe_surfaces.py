@@ -54,6 +54,8 @@ def test_diagnostic_key_values_include_safe_telemetry_without_identifiers():
             connected=True,
             emergency_stopped=False,
             latest_velocity=VelocityCommand(0.1, -0.2),
+            fail_safe_active=True,
+            fail_safe_reason="safe stop delivery failed",
         ),
         DiagnosticTelemetry(
             battery=BatterySnapshot(percentage=42, voltage=7.4),
@@ -68,6 +70,8 @@ def test_diagnostic_key_values_include_safe_telemetry_without_identifiers():
 
     assert fields["connected"] == "true"
     assert fields["emergency_stopped"] == "false"
+    assert fields["fail_safe_active"] == "true"
+    assert fields["fail_safe_reason"] == "safe stop delivery failed"
     assert fields["linear_mps"] == "0.100"
     assert fields["angular_rad_s"] == "-0.200"
     assert fields["battery_percent"] == "42"
@@ -89,6 +93,17 @@ def test_summarize_state_reports_motor_fault_as_error():
 
     assert summary.level == "ERROR"
     assert "motor fault" in summary.message
+
+
+def test_summarize_state_reports_fail_safe_as_error_before_motor_fault():
+    summary = summarize_state(
+        RVRState(connected=True, fail_safe_active=True, fail_safe_reason="stale velocity command: injected failure"),
+        DiagnosticTelemetry(motor_fault=True),
+    )
+
+    assert summary.level == "ERROR"
+    assert "fail-safe" in summary.message
+    assert "stale velocity command" in summary.message
 
 
 def test_rgb_helper_clamps_0_to_255_for_safe_led_surfaces():

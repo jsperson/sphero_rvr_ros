@@ -37,7 +37,7 @@ class RVRStatus:
     tf_available: Dict[str, Optional[bool]] = field(default_factory=dict)
 
 FRESH_SECONDS = 2.0
-STATUS_SERVICES = ("/stop", "/estop", "/clear_estop")
+STATUS_SERVICES = ("/stop", "/estop", "/clear_estop", "/clear_fail_safe")
 STATUS_TF_FRAMES = (
     ("odom", "base_link"),
     ("base_link", "laser"),
@@ -95,6 +95,9 @@ class DryRunRVRClient:
     def clear_estop(self, timeout_sec: float = 2.0) -> str:
         self.status.emergency_stopped = False
         return "DRY-RUN clear-estop: would call /clear_estop"
+
+    def clear_fail_safe(self, timeout_sec: float = 2.0) -> str:
+        return "DRY-RUN clear-fail-safe: would call /clear_fail_safe"
 
 
 def update_battery_status(status: RVRStatus, msg, now: Optional[float] = None) -> None:
@@ -270,6 +273,7 @@ class RVRROSClient:
         self._stop_client = self._node.create_client(Trigger, "stop")
         self._estop_client = self._node.create_client(Trigger, "estop")
         self._clear_estop_client = self._node.create_client(Trigger, "clear_estop")
+        self._clear_fail_safe_client = self._node.create_client(Trigger, "clear_fail_safe")
         self._spin_thread = threading.Thread(target=self._spin, daemon=True)
         self._running = False
 
@@ -328,6 +332,9 @@ class RVRROSClient:
     def clear_estop(self, timeout_sec: float = 2.0) -> str:
         return self._call_trigger(self._clear_estop_client, timeout_sec=timeout_sec)
 
+    def clear_fail_safe(self, timeout_sec: float = 2.0) -> str:
+        return self._call_trigger(self._clear_fail_safe_client, timeout_sec=timeout_sec)
+
     def _spin(self) -> None:
         while self._running:
             self._rclpy.spin_once(self._node, timeout_sec=0.1)
@@ -382,6 +389,7 @@ class RVRROSClient:
                 "/stop": self._stop_client.service_is_ready(),
                 "/estop": self._estop_client.service_is_ready(),
                 "/clear_estop": self._clear_estop_client.service_is_ready(),
+                "/clear_fail_safe": self._clear_fail_safe_client.service_is_ready(),
             }
             if self._tf_buffer is not None:
                 self.status.tf_available = {

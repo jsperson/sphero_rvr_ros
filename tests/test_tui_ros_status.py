@@ -172,7 +172,7 @@ def test_status_lines_render_graph_readiness_and_sensor_summaries():
         scan_max_range=6.50,
         cmd_vel_available=True,
         cmd_vel_publisher_count=1,
-        service_available={"/stop": True, "/estop": False, "/clear_estop": True},
+        service_available={"/stop": True, "/estop": False, "/clear_estop": True, "/clear_fail_safe": True},
         tf_available={"odom->base_link": True, "base_link->laser": False, "map->odom": None},
     )
 
@@ -183,7 +183,7 @@ def test_status_lines_render_graph_readiness_and_sensor_summaries():
     assert "Battery: 82% / 7.31 V (fresh 0.5s)" in lines
     assert "Odom: fresh 1.0s pose=(1.20, -0.40, yaw=0.75) distance=1.26 m" in lines
     assert "Scan: fresh 1.5s ranges=720 valid=700 min=0.18 m max=6.50 m" in lines
-    assert "Services: /stop ok  /estop missing  /clear_estop ok" in lines
+    assert "Services: /stop ok  /estop missing  /clear_estop ok  /clear_fail_safe ok" in lines
     assert "TF: odom->base_link ok  base_link->laser missing  map->odom waiting" in lines
     assert "Diagnostics: driver ready" in lines
 
@@ -207,7 +207,7 @@ def test_status_lines_render_waiting_and_stale_values():
     assert "Battery: 50% / 7.00 V (stale 6.5s)" in lines
     assert "Odom: waiting" in lines
     assert "Scan: stale 5.5s ranges=0 valid=0" in lines
-    assert "Services: /stop missing  /estop missing  /clear_estop missing" in lines
+    assert "Services: /stop missing  /estop missing  /clear_estop missing  /clear_fail_safe missing" in lines
     assert "Armed: True    Estop: False" in lines
 
 
