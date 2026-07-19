@@ -42,6 +42,7 @@ EXPECTED_DATA_FILES = {
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
         "docs/range_motion_controller.md",
+        "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
         "docs/shoe_detector_replay.md",
         "docs/slam_replay.md",
@@ -154,6 +155,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/rosbag_capture_replay.md",
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
+        "docs/supervised_coordinator.md",
         "docs/slam_replay.md",
         "docs/udev/99-rplidar.rules",
         "ros2 launch sphero_rvr_driver lidar.launch.py --show-args",
@@ -206,3 +208,23 @@ def test_lidar_collision_stop_design_links_current_ros_contract() -> None:
 
     assert "docs/lidar_collision_stop_supervisor.md" in readme
     assert "lidar_collision_stop_supervisor.md" in tui_plan
+
+
+def test_supervised_coordinator_design_documents_safe_mission_contract() -> None:
+    design = (REPO_ROOT / "docs" / "supervised_coordinator.md").read_text()
+
+    for token in [
+        "SupervisedCoordinator",
+        "DeterministicSegmentSelector",
+        "range_motion -> /cmd_vel -> collision_stop -> /cmd_vel_motor",
+        "never publishes directly to `/cmd_vel_motor`",
+        "STOP",
+        "ESTOP",
+        "collision_stop",
+        "shutdown",
+        "Mission API",
+        "read-only UI",
+        "FAILED_CLOSED",
+        "no random bump-and-turn",
+    ]:
+        assert token in design

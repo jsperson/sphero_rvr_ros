@@ -17,11 +17,12 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
 - [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) is the source-of-truth design for the independent lidar collision-stop supervisor and final `/cmd_vel` arbitration contract.
 - [docs/range_motion_controller.md](docs/range_motion_controller.md) documents the closed-loop lidar target-clearance motion primitive that publishes to `/cmd_vel` above the independent supervisor.
+- [docs/supervised_coordinator.md](docs/supervised_coordinator.md) documents the deterministic supervised mapping/navigation coordinator contract above `range_motion`, including Mission API/read-only UI telemetry and fail-closed cancellation semantics.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
-Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`; range-motion config: `range_motion.yaml`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr_motion_calibration.py`.
+Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/supervised_coordinator.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr_motion_calibration.py`.
 
 ## Current base-driver status
 
@@ -130,6 +131,8 @@ range_motion_controller -> /cmd_vel -> lidar_collision_stop_supervisor -> /cmd_v
 ```
 
 It stops on measured lidar/odom progress toward caller-provided target clearances such as 4 inches (`0.1016 m`); it does not convert commanded velocity times duration into distance and has no baked-in 12-inch movement cap.
+
+The deterministic supervised coordinator sits one level above `range_motion` for Mission API/read-only UI work. It sequences bounded segments, reports explicit fail-closed telemetry, and preserves the safety path `range_motion -> /cmd_vel -> collision_stop -> /cmd_vel_motor` without allowing direct motor publication.
 
 Ordinary publishers keep targeting `/cmd_vel`; the live driver is remapped away from public `/cmd_vel` to `/cmd_vel_motor` in `supervised_rvr.launch.py`, and the supervisor owns public `/stop`, `/estop`, and `/clear_estop`.
 
