@@ -25,6 +25,7 @@ setup(
             [
                 "config/rvr.yaml",
                 "config/collision_stop.yaml",
+                "config/range_motion.yaml",
                 "config/lidar.yaml",
                 "config/slam_toolbox.yaml",
                 "config/camera.yaml",
@@ -47,6 +48,7 @@ setup(
                 "docs/rosbag_capture_replay.md",
                 "docs/camera_lidar_calibration.md",
                 "docs/lidar_collision_stop_supervisor.md",
+                "docs/range_motion_controller.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -69,6 +71,7 @@ setup(
             "rvr_node = sphero_rvr_driver.rvr_node:main",
             "rvr_tui = sphero_rvr_driver.tui:main",
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
+            "range_motion_controller = sphero_rvr_driver.range_motion_node:main",
             "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
             "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
             "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",

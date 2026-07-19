@@ -6,7 +6,7 @@ from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandle
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -14,9 +14,11 @@ def generate_launch_description():
     pkg_share = Path(get_package_share_directory("sphero_rvr_driver"))
     rvr_config = pkg_share / "config" / "rvr.yaml"
     collision_stop_config = pkg_share / "config" / "collision_stop.yaml"
+    range_motion_config = pkg_share / "config" / "range_motion.yaml"
 
     serial_port = LaunchConfiguration("serial_port")
     start_supervisor = LaunchConfiguration("start_collision_stop")
+    start_range_motion = LaunchConfiguration("start_range_motion")
 
     rvr_node = Node(
         package="sphero_rvr_driver",
@@ -46,6 +48,21 @@ def generate_launch_description():
         ],
         condition=IfCondition(start_supervisor),
     )
+    range_motion_node = Node(
+        package="sphero_rvr_driver",
+        executable="range_motion_controller",
+        name="range_motion_controller",
+        output="screen",
+        parameters=[str(range_motion_config)],
+        remappings=[
+            ("cmd_vel", "/cmd_vel"),
+            ("scan", "/scan"),
+            ("odom", "/odom"),
+        ],
+        condition=IfCondition(
+            PythonExpression(["'", start_supervisor, "' == 'true' and '", start_range_motion, "' == 'true'"])
+        ),
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
@@ -54,7 +71,13 @@ def generate_launch_description():
             default_value="true",
             description="Must remain true for operator motor-capable launches; false is development-only.",
         ),
+        DeclareLaunchArgument(
+            "start_range_motion",
+            default_value="false",
+            description="Start the optional closed-loop lidar range-motion controller above /cmd_vel.",
+        ),
         rvr_node,
+        range_motion_node,
         collision_stop_node,
         RegisterEventHandler(
             OnProcessExit(

@@ -113,8 +113,10 @@ Expected topics:
 /camera_node/camera_info
 ```
 
-The launch exposes `/cmd_vel` through the RVR driver. Do not run teleop/TUI until
-stop/estop and odometry behavior are verified in the current room.
+The launch exposes `/cmd_vel` through `lidar_collision_stop_supervisor`, which
+forwards only supervised output to `/cmd_vel_motor` on the RVR driver. Do not run
+teleop/TUI or range-motion goals until stop/estop and odometry behavior are
+verified in the current room.
 
 ## Manual mapping workflow
 
