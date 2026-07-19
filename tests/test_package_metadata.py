@@ -46,6 +46,7 @@ EXPECTED_DATA_FILES = {
         "docs/mission_controls.md",
         "docs/mission_language.md",
         "docs/mission_observability.md",
+        "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
         "docs/shoe_detector_replay.md",
@@ -163,6 +164,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/mission_observability.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
+        "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/slam_replay.md",
         "docs/shoe_detector_replay.md",
@@ -174,7 +176,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
         "config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
         "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`",
-        "console commands include `rvr_shoe_detector_eval` and `rvr_shoe_map_project`",
+        "console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, and `rvr_semantic_map_artifacts`",
     ]:
         assert token in readme
 
@@ -190,6 +192,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_slam_replay_plan = sphero_rvr_driver.slam_replay_workflow:main",
         "rvr_shoe_detector_eval = sphero_rvr_driver.shoe_detector:main",
         "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
+        "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
     } <= console_scripts
 
 
