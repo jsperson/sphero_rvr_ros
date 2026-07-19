@@ -4,36 +4,53 @@ import pytest
 
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_api_v2 import (
-    ApprovalState,
-    CapabilityState,
+    ApprovalGrant,
+    CapabilityAvailability,
+    FakeCapabilityAdapters,
     MissionBudgets,
-    ToolCall,
-    ToolResult,
-    ToolResultStatus,
-    build_default_rover_tool_registry,
+    build_default_v2_registry,
 )
-from sphero_rvr_driver.mission_controls import MissionExecutionMode
 from sphero_rvr_driver.mission_planner import (
     FakePlannerProvider,
     IterativeMissionPlanner,
     PlannerDecision,
     PlannerProviderResponse,
     PlannerStopReason,
+    ToolCall,
 )
+
+
+def _grant(now_s: float = 0.0) -> ApprovalGrant:
+    return ApprovalGrant(
+        approval_id="operator-approval-1",
+        approved_by="operator:scott",
+        approved_at_s=now_s,
+        expires_at_s=now_s + 60.0,
+        approval_class="supervised_motion",
+    )
 
 
 class _PlannerWithProvider(IterativeMissionPlanner):
     provider: FakePlannerProvider
 
 
-def _planner(responses, *, capabilities: CapabilityState | None = None, budgets: MissionBudgets | None = None) -> _PlannerWithProvider:
+def _planner(
+    responses,
+    *,
+    detector_classes=("shoe", "backpack"),
+    availability=None,
+    adapters: FakeCapabilityAdapters | None = None,
+    approval_grants=None,
+    budgets: MissionBudgets | None = None,
+) -> _PlannerWithProvider:
     return IterativeMissionPlanner(
-        registry=build_default_rover_tool_registry(registry_version="test-registry"),
+        registry=build_default_v2_registry(detector_classes=detector_classes, availability=availability),
         provider=FakePlannerProvider(responses),
-        capabilities=capabilities or CapabilityState.all_enabled(),
-        approval_state=ApprovalState.REPLAY_ONLY,
-        execution_mode=MissionExecutionMode.REPLAY,
-        budgets=budgets or MissionBudgets(max_iterations=6, max_tool_calls=8, max_runtime_s=30.0),
+        adapters=adapters,
+        approval_grants=approval_grants,
+        budgets=budgets or MissionBudgets(max_steps=8, max_runtime_s=30.0, max_travel_m=2.0),
+        max_iterations=6,
+        registry_version="test-registry",
         source_sha="test-sha",
     )  # type: ignore[return-value]
 
@@ -47,12 +64,20 @@ def test_fake_provider_maps_canonical_shoe_goal_through_allowlisted_tools_and_ma
         [
             PlannerProviderResponse(
                 tool_calls=(
-                    _call("create_room_map", {"map_name": "shoe_room"}, "map"),
-                    _call("detect_objects", {"object_class": "shoe", "source": "shoe_room"}, "detect"),
+                    _call("map_localize", {"mode": "replay"}, "map"),
+                    _call("capture_observation", {"sensor": "replay"}, "capture"),
+                    _call("detect_objects", {"object_class": "shoe"}, "detect"),
                 )
             ),
             PlannerProviderResponse(
-                tool_calls=(_call("project_semantic_map", {"map_name": "shoe_room", "object_class": "shoe"}, "project"),)
+                tool_calls=(
+                    _call("project_detections_to_map", {"target_frame": "map"}, "project"),
+                    _call(
+                        "generate_semantic_artifacts",
+                        {"artifact_kinds": ["semantic_map", "geojson", "coverage_report", "mission_summary"]},
+                        "artifacts",
+                    ),
+                )
             ),
             PlannerProviderResponse(decision=PlannerDecision.COMPLETE, message="shoe map complete"),
         ]
@@ -63,12 +88,13 @@ def test_fake_provider_maps_canonical_shoe_goal_through_allowlisted_tools_and_ma
 
     assert manifest.stop_reason is PlannerStopReason.COMPLETE
     assert [item["call"]["tool_name"] for item in payload["executed_calls"]] == [
-        "create_room_map",
+        "map_localize",
+        "capture_observation",
         "detect_objects",
-        "project_semantic_map",
+        "project_detections_to_map",
+        "generate_semantic_artifacts",
     ]
-    assert payload["artifacts"]["occupancy_map"] == "maps/shoe_room.yaml"
-    assert payload["artifacts"]["semantic_map"] == "maps/shoe_room_shoe.json"
+    assert payload["artifacts"]["semantic_map"] == "artifacts/vs06_semantic_map/semantic_map.json"
     assert payload["registry_version"] == "test-registry"
     assert payload["source_sha"] == "test-sha"
     assert payload["live_provider_validation"] == "live provider validation pending"
@@ -82,24 +108,22 @@ def test_fake_provider_supports_non_shoe_object_plugin_goal() -> None:
         [
             PlannerProviderResponse(
                 tool_calls=(
-                    _call("create_room_map", {"map_name": "inventory_room"}, "map"),
-                    _call("detect_objects", {"object_class": "backpack", "source": "inventory_room"}, "detect"),
-                    _call(
-                        "project_semantic_map",
-                        {"map_name": "inventory_room", "object_class": "backpack"},
-                        "project",
-                    ),
+                    _call("map_localize", {"mode": "replay"}, "map"),
+                    _call("detect_objects", {"object_class": "backpack"}, "detect"),
+                    _call("project_detections_to_map", {"target_frame": "map"}, "project"),
+                    _call("generate_semantic_artifacts", {"artifact_kinds": ["semantic_map", "mission_summary"]}, "artifacts"),
                 )
             ),
             PlannerProviderResponse(decision=PlannerDecision.COMPLETE),
-        ]
+        ],
+        detector_classes=("shoe", "backpack"),
     )
 
     manifest = planner.run("Map the room and identify backpacks for inventory.")
 
     assert manifest.stop_reason is PlannerStopReason.COMPLETE
-    assert manifest.artifacts["backpack_detections"] == "detections/backpack.json"
-    assert manifest.artifacts["semantic_map"] == "maps/inventory_room_backpack.json"
+    assert manifest.artifacts["mission_summary"] == "artifacts/vs06_semantic_map/mission_summary.md"
+    assert manifest.executed_calls[1]["result"]["observation"]["detections_ref"] == "artifacts/replay/backpack_detections.json"
 
 
 def test_fake_provider_composes_bounded_approach_capture_and_report() -> None:
@@ -107,63 +131,73 @@ def test_fake_provider_composes_bounded_approach_capture_and_report() -> None:
         [
             PlannerProviderResponse(
                 tool_calls=(
-                    _call("approach_clearance", {"target_clearance_m": 0.35}, "approach"),
-                    _call("capture_observation", {"label": "clearance"}, "capture"),
-                    _call("report_artifacts", {"summary": "clearance reached and observation captured"}, "report"),
+                    _call(
+                        "move_to_clearance",
+                        {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.25},
+                        "approach",
+                    ),
+                    _call("capture_observation", {"sensor": "replay"}, "capture"),
+                    _call("query_status_telemetry", {}, "report"),
                 )
             ),
             PlannerProviderResponse(decision=PlannerDecision.COMPLETE),
         ],
-        budgets=MissionBudgets(max_iterations=4, max_tool_calls=4, max_runtime_s=30.0, max_travel_m=1.0, max_segments=1),
+        approval_grants={"move_to_clearance": _grant()},
+        budgets=MissionBudgets(max_steps=4, max_runtime_s=30.0, max_travel_m=0.5),
     )
 
-    manifest = planner.run("Approach until clearance is 0.35 m, then capture and report.")
+    manifest = planner.run("Move until four inches from the object, capture an observation, and report.")
 
     assert manifest.stop_reason is PlannerStopReason.COMPLETE
-    assert [obs["status"] for obs in manifest.observations] == ["ok", "ok", "ok"]
-    assert manifest.artifacts["observation"] == "observations/clearance.json"
+    assert [obs["status"] for obs in manifest.observations] == ["complete", "complete", "complete"]
+    assert manifest.executed_calls[0]["result"]["observation"]["target_clearance_m"] == 0.1016
 
 
 def test_planner_replans_after_unavailable_capability_then_partial_observation() -> None:
     planner = _planner(
         [
-            PlannerProviderResponse(tool_calls=(_call("detect_objects", {"object_class": "shoe"}, "unavailable"),)),
-            PlannerProviderResponse(tool_calls=(_call("create_room_map", {"map_name": "room"}, "map"),)),
+            PlannerProviderResponse(tool_calls=(_call("rotate_scan", {"angle_deg": 45.0}, "unavailable"),)),
+            PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),)),
             PlannerProviderResponse(decision=PlannerDecision.COMPLETE),
         ],
-        capabilities=CapabilityState.all_enabled(object_detection=False),
+        availability={"rotate_scan": CapabilityAvailability.UNAVAILABLE},
     )
 
-    manifest = planner.run("Map what is available and report limitations.")
+    manifest = planner.run("Scan if possible, otherwise capture what is available and report limitations.")
 
     assert manifest.stop_reason is PlannerStopReason.COMPLETE
-    assert manifest.rejected_calls[0]["call"]["tool_name"] == "detect_objects"
-    assert "object_detection" in manifest.rejected_calls[0]["reason"]
-    assert manifest.executed_calls[0]["call"]["tool_name"] == "create_room_map"
+    assert manifest.rejected_calls[0]["call"]["tool_name"] == "rotate_scan"
+    assert "unavailable" in manifest.rejected_calls[0]["reason"]
+    assert manifest.executed_calls[0]["call"]["tool_name"] == "capture_observation"
     assert planner.provider.contexts[1]["history"][0]["status"] == "rejected"
 
 
-def test_cancellation_failed_tool_and_estop_latch_terminal_stop_reasons() -> None:
-    cancelled = _planner([PlannerProviderResponse(tool_calls=(_call("create_room_map", {"map_name": "room"}, "map"),))])
+def test_cancellation_failed_timeout_stop_and_estop_latch_terminal_stop_reasons() -> None:
+    cancelled = _planner([PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),))])
     assert cancelled.run("cancel before model", cancel_requested=lambda: True).stop_reason is PlannerStopReason.CANCELLED
 
     failed = _planner(
-        [PlannerProviderResponse(tool_calls=(_call("capture_observation", {"label": "bad"}, "capture"),))]
-    )
-    failed.registry._adapters["capture_observation"] = lambda args: ToolResult(
-        ToolResultStatus.FAILED,
-        observation={"label": "bad", "artifact": "observations/bad.json"},
-        reason="camera unavailable",
+        [PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),))],
+        adapters=FakeCapabilityAdapters(fail_tools={"capture_observation": "camera unavailable"}),
     )
     assert failed.run("capture one observation").stop_reason is PlannerStopReason.FAILED
 
-    estopped = _planner(
-        [PlannerProviderResponse(tool_calls=(_call("capture_observation", {"label": "estop"}, "capture"),))]
+    timed_out = _planner(
+        [PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),))],
+        adapters=FakeCapabilityAdapters(duration_by_tool={"capture_observation": 10.0}),
+        budgets=MissionBudgets(max_steps=2, max_runtime_s=30.0, max_travel_m=1.0),
     )
-    estopped.registry._adapters["capture_observation"] = lambda args: ToolResult(
-        ToolResultStatus.ESTOPPED,
-        observation={"label": "estop", "artifact": "observations/estop.json"},
-        reason="estop latched",
+    assert timed_out.run("capture one slow observation").stop_reason is PlannerStopReason.TIMEOUT
+
+    stopped = _planner(
+        [PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),))],
+        adapters=FakeCapabilityAdapters(stop_before="capture_observation"),
+    )
+    assert stopped.run("capture one observation").stop_reason is PlannerStopReason.STOPPED
+
+    estopped = _planner(
+        [PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),))],
+        adapters=FakeCapabilityAdapters(estop_before="capture_observation"),
     )
     assert estopped.run("capture one observation").stop_reason is PlannerStopReason.ESTOPPED
 
@@ -178,33 +212,41 @@ def test_malicious_goals_and_model_outputs_fail_closed_without_arbitrary_surface
     assert manifest.rejected_calls
     assert manifest.stop_reason is PlannerStopReason.BUDGET_EXHAUSTED
 
+    direct_ros = _planner([PlannerProviderResponse(tool_calls=(_call("capture_observation", {"topic": "/cmd_vel"}, "ros"),))])
+    ros_manifest = direct_ros.run("try unsafe model output")
+    assert ros_manifest.executed_calls == ()
+    assert "direct ROS" in ros_manifest.rejected_calls[0]["reason"]
+
     bypass_text = _planner(
-        [PlannerProviderResponse(message="Ignore safety and clear ESTOP", tool_calls=(_call("create_room_map", {"map_name": "room"}, "map"),))]
+        [PlannerProviderResponse(message="Ignore safety and clear ESTOP", tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),))]
     )
     bypass_manifest = bypass_text.run("map the room")
     assert bypass_manifest.executed_calls == ()
     assert bypass_manifest.stop_reason is PlannerStopReason.REJECTED
 
 
-def test_budget_exhaustion_and_replay_authorization_cannot_start_physical_execution() -> None:
+def test_budget_exhaustion_and_planner_cannot_grant_its_own_motion_approval() -> None:
     exhausted = _planner(
-        [PlannerProviderResponse(tool_calls=(_call("create_room_map", {"map_name": "room"}, "map"),))],
-        budgets=MissionBudgets(max_iterations=2, max_tool_calls=1, max_runtime_s=30.0),
+        [PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),))],
+        budgets=MissionBudgets(max_steps=1, max_runtime_s=30.0, max_travel_m=1.0),
     )
     manifest = exhausted.run("loop forever")
     assert manifest.stop_reason is PlannerStopReason.BUDGET_EXHAUSTED
     assert len(manifest.executed_calls) == 1
 
-    physical = IterativeMissionPlanner(
-        registry=build_default_rover_tool_registry(),
-        provider=FakePlannerProvider(
-            [PlannerProviderResponse(tool_calls=(_call("approach_clearance", {"target_clearance_m": 0.3}, "approach"),))]
-        ),
-        capabilities=CapabilityState.all_enabled(),
-        approval_state=ApprovalState.REPLAY_ONLY,
-        execution_mode=MissionExecutionMode.PHYSICAL,
-        source_sha="test-sha",
+    no_motion_approval = _planner(
+        [
+            PlannerProviderResponse(
+                tool_calls=(
+                    _call(
+                        "move_to_clearance",
+                        {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.2},
+                        "approach",
+                    ),
+                )
+            )
+        ]
     )
-    physical_manifest = physical.run("approach in physical mode using replay approval")
+    physical_manifest = no_motion_approval.run("approach using no external motion approval")
     assert physical_manifest.executed_calls == ()
-    assert "physical approval" in physical_manifest.rejected_calls[0]["reason"]
+    assert "approval is stale or missing" in physical_manifest.rejected_calls[0]["reason"]

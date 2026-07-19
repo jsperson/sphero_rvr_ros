@@ -1,489 +1,889 @@
-"""Mission API v2 rover capability/tool registry.
+"""ROS-free mission_api.v2 typed rover capability registry and runtime.
 
-This module is intentionally ROS-free.  It defines typed, allowlisted rover tool
-contracts for low-rate supervisory planners.  The validation boundary is fail-
-closed: unknown tools, malformed arguments, missing capabilities/approvals,
-physical/replay confusion, direct ROS/motor surfaces, budget expansion, adapter
-schema drift, and timeout violations are rejected before they can become
-execution authority.
+The v2 layer treats planner output as untrusted JSON.  A planner may select only
+registered deterministic tools, with bounded schemas, explicit availability,
+approval classes, resource ownership, and auditable results.  This is not a ROS
+bridge; adapters invoke project capabilities by stable tool ids only.
 """
 
 from __future__ import annotations
 
 import math
-import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
-from .mission_api import MissionValidationError
-from .mission_controls import MissionExecutionMode
+from .mission_api import MissionApiVersion, MissionValidationError
 
 
-DIRECT_SURFACE_TOKENS = (
+UNSAFE_ROS_SURFACES = (
     "/cmd_vel",
     "/cmd_vel_motor",
     "cmd_vel",
     "cmd_vel_motor",
     "raw_motor",
     "raw motor",
-    "motor duty",
-    "generic ros bridge",
-    "ros bridge",
+    "motor command",
+    "teleop",
     "ros topic",
-    "publish",
-    "shell",
-    "filesystem",
-    "credential",
-    "env var",
-    "clear_estop",
-    "clear estop",
+    "generic ros bridge",
 )
 
-MAX_RUNTIME_CAP_S = 900.0
-MAX_TOOL_CALLS_CAP = 32
-MAX_TRAVEL_CAP_M = 5.0
-MAX_SEGMENTS_CAP = 16
+
+class CapabilityAvailability(str, Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    UNSUPPORTED = "unsupported"
 
 
 class ToolResultStatus(str, Enum):
-    OK = "ok"
-    PARTIAL = "partial"
+    COMPLETE = "complete"
     FAILED = "failed"
+    BLOCKED = "blocked"
     CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+    STOPPED = "stopped"
     ESTOPPED = "estopped"
 
 
-class ApprovalState(str, Enum):
-    NONE = "none"
-    REPLAY_ONLY = "replay_only"
-    PHYSICAL_APPROVED = "physical_approved"
+class MissionRuntimeStatus(str, Enum):
+    COMPLETE = "complete"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+    STOPPED = "stopped"
+    ESTOPPED = "estopped"
 
 
-@dataclass(frozen=True)
-class CapabilityState:
-    semantic_mapping: bool = False
-    object_detection: bool = False
-    supervised_motion: bool = False
-    collision_stop: bool = False
-    estop: bool = False
-    artifacts: bool = False
-    telemetry: bool = False
-
-    @classmethod
-    def all_enabled(cls, **overrides: bool) -> "CapabilityState":
-        values = {name: True for name in cls.__dataclass_fields__}
-        values.update(overrides)
-        return cls(**values)
-
-    def enabled(self, name: str) -> bool:
-        return bool(getattr(self, name, False))
-
-    def to_json_dict(self) -> dict[str, bool]:
-        return dict(asdict(self))
+def _positive_finite(value: float) -> bool:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(numeric) and numeric > 0.0
 
 
 @dataclass(frozen=True)
 class MissionBudgets:
-    max_iterations: int = 8
-    max_runtime_s: float = 120.0
-    max_tool_calls: int = 12
-    max_travel_m: float = 2.0
-    max_segments: int = 8
+    max_steps: int
+    max_runtime_s: float
+    max_travel_m: Optional[float] = None
 
     def __post_init__(self) -> None:
-        _require_positive_int("max_iterations", self.max_iterations, MAX_TOOL_CALLS_CAP)
-        _require_positive_float("max_runtime_s", self.max_runtime_s, MAX_RUNTIME_CAP_S)
-        _require_positive_int("max_tool_calls", self.max_tool_calls, MAX_TOOL_CALLS_CAP)
-        _require_nonnegative_float("max_travel_m", self.max_travel_m, MAX_TRAVEL_CAP_M)
-        _require_positive_int("max_segments", self.max_segments, MAX_SEGMENTS_CAP)
+        if isinstance(self.max_steps, bool) or not isinstance(self.max_steps, int) or self.max_steps <= 0:
+            raise MissionValidationError("mission budget max_steps must be positive")
+        if isinstance(self.max_runtime_s, bool) or not isinstance(self.max_runtime_s, (int, float)):
+            raise MissionValidationError("mission budget max_runtime_s must be positive and finite")
+        if not _positive_finite(self.max_runtime_s):
+            raise MissionValidationError("mission budget max_runtime_s must be positive and finite")
+        if self.max_travel_m is not None and (isinstance(self.max_travel_m, bool) or not isinstance(self.max_travel_m, (int, float))):
+            raise MissionValidationError("mission budget max_travel_m must be positive and finite when set")
+        if self.max_travel_m is not None and not _positive_finite(self.max_travel_m):
+            raise MissionValidationError("mission budget max_travel_m must be positive and finite when set")
 
     def to_json_dict(self) -> dict[str, Any]:
-        return dict(asdict(self))
+        return {
+            "max_steps": self.max_steps,
+            "max_runtime_s": self.max_runtime_s,
+            "max_travel_m": self.max_travel_m,
+        }
 
 
 @dataclass(frozen=True)
-class RemainingBudgets:
-    iterations: int
-    runtime_s: float
-    tool_calls: int
-    travel_m: float
-    segments: int
+class MissionGoal:
+    goal_id: str
+    objective: str
+    success_criteria: Sequence[str]
+    constraints: Mapping[str, Any] = field(default_factory=dict)
+    execution_mode: str = "replay"
+    budgets: MissionBudgets = field(default_factory=lambda: MissionBudgets(max_steps=8, max_runtime_s=120.0))
+    requested_artifacts: Sequence[str] = field(default_factory=tuple)
+    api_version: MissionApiVersion = MissionApiVersion.V2
+
+    def __post_init__(self) -> None:
+        if isinstance(self.api_version, str):
+            object.__setattr__(self, "api_version", MissionApiVersion(self.api_version))
+        if self.api_version is not MissionApiVersion.V2:
+            raise MissionValidationError("MissionGoal requires mission_api.v2")
+        if not str(self.goal_id).strip():
+            raise MissionValidationError("goal_id is required")
+        if not str(self.objective).strip():
+            raise MissionValidationError("objective is required")
+        if not tuple(self.success_criteria):
+            raise MissionValidationError("success_criteria are required")
+        object.__setattr__(self, "success_criteria", tuple(str(item) for item in self.success_criteria))
+        object.__setattr__(self, "requested_artifacts", tuple(str(item) for item in self.requested_artifacts))
 
     def to_json_dict(self) -> dict[str, Any]:
-        return dict(asdict(self))
+        return {
+            "api_version": self.api_version.value,
+            "goal_id": self.goal_id,
+            "objective": self.objective,
+            "constraints": dict(self.constraints),
+            "success_criteria": list(self.success_criteria),
+            "execution_mode": self.execution_mode,
+            "budgets": self.budgets.to_json_dict(),
+            "requested_artifacts": list(self.requested_artifacts),
+        }
+
+
+@dataclass(frozen=True)
+class ApprovalGrant:
+    approval_id: str
+    approved_by: str
+    approved_at_s: float
+    expires_at_s: float
+    approval_class: str
+
+    def __post_init__(self) -> None:
+        if not self.approval_id or not self.approved_by:
+            raise MissionValidationError("approval id and approver are required")
+        if not math.isfinite(float(self.approved_at_s)) or not math.isfinite(float(self.expires_at_s)):
+            raise MissionValidationError("approval timestamps must be finite")
+
+    def valid_for(self, approval_class: str, *, now_s: float) -> bool:
+        return self.approval_class == approval_class and self.approved_at_s <= now_s <= self.expires_at_s
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "approval_id": self.approval_id,
+            "approved_by": self.approved_by,
+            "approved_at_s": self.approved_at_s,
+            "expires_at_s": self.expires_at_s,
+            "approval_class": self.approval_class,
+        }
 
 
 @dataclass(frozen=True)
 class ToolDefinition:
-    name: str
-    description: str
-    input_schema: Mapping[str, Any]
+    tool_id: str
+    version: str
+    argument_schema: Mapping[str, Any]
     result_schema: Mapping[str, Any]
-    timeout_s: float
-    capabilities_required: Sequence[str] = field(default_factory=tuple)
-    approval_required: ApprovalState = ApprovalState.NONE
-    max_travel_m: float = 0.0
-    counts_as_segment: bool = False
+    preconditions: Sequence[str] = field(default_factory=tuple)
+    availability: CapabilityAvailability = CapabilityAvailability.AVAILABLE
+    timeout_s: float = 5.0
+    cancellation: str = "cooperative"
+    safety_class: str = "read_only"
+    approval_class: str = "none"
+    resource_ownership: Sequence[str] = field(default_factory=tuple)
+    effects: Sequence[str] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        if not self.name or not self.name.replace("_", "").isalnum():
-            raise MissionValidationError("tool name must be a non-empty safe identifier")
-        if _contains_direct_surface(self.name) or _contains_direct_surface(self.description):
-            raise MissionValidationError(f"tool {self.name} exposes a forbidden direct surface")
-        if isinstance(self.approval_required, str):
-            object.__setattr__(self, "approval_required", ApprovalState(self.approval_required))
-        _require_positive_float("timeout_s", self.timeout_s, MAX_RUNTIME_CAP_S)
-        _require_nonnegative_float("max_travel_m", self.max_travel_m, MAX_TRAVEL_CAP_M)
-        _validate_object_schema(self.input_schema, schema_name=f"{self.name}.input_schema")
-        _validate_object_schema(self.result_schema, schema_name=f"{self.name}.result_schema")
+        if isinstance(self.availability, str):
+            object.__setattr__(self, "availability", CapabilityAvailability(self.availability))
+        if not self.tool_id or not self.version:
+            raise MissionValidationError("tool id and version are required")
+        if not _positive_finite(self.timeout_s):
+            raise MissionValidationError(f"{self.tool_id} timeout_s must be positive and finite")
+        object.__setattr__(self, "preconditions", tuple(str(item) for item in self.preconditions))
+        object.__setattr__(self, "resource_ownership", tuple(str(item) for item in self.resource_ownership))
+        object.__setattr__(self, "effects", tuple(str(item) for item in self.effects))
+
+    def requires_approval(self) -> bool:
+        return self.approval_class != "none"
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": dict(self.input_schema),
+            "tool_id": self.tool_id,
+            "version": self.version,
+            "argument_schema": dict(self.argument_schema),
             "result_schema": dict(self.result_schema),
+            "preconditions": list(self.preconditions),
+            "availability": self.availability.value,
             "timeout_s": self.timeout_s,
-            "capabilities_required": list(self.capabilities_required),
-            "approval_required": self.approval_required.value,
-            "max_travel_m": self.max_travel_m,
-            "counts_as_segment": self.counts_as_segment,
+            "cancellation": self.cancellation,
+            "safety_class": self.safety_class,
+            "approval_class": self.approval_class,
+            "resource_ownership": list(self.resource_ownership),
+            "effects": list(self.effects),
         }
 
 
 @dataclass(frozen=True)
-class ToolCall:
-    tool_name: str
-    arguments: Mapping[str, Any] = field(default_factory=dict)
-    call_id: str = ""
+class ToolInvocation:
+    correlation_id: str
+    tool_id: str
+    tool_version: str
+    arguments: Mapping[str, Any]
+    approval: Optional[ApprovalGrant] = None
+    requested_at_s: float = 0.0
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not str(self.tool_name).strip():
-            raise MissionValidationError("tool_name is required")
+        if not str(self.correlation_id).strip():
+            raise MissionValidationError("correlation_id is required")
+        if not str(self.tool_id).strip() or not str(self.tool_version).strip():
+            raise MissionValidationError("tool id and version are required")
         if not isinstance(self.arguments, Mapping):
-            raise MissionValidationError("tool arguments must be an object")
-        _reject_direct_surface_payload(self.tool_name, self.arguments)
+            raise MissionValidationError("tool invocation arguments must be an object")
 
     def to_json_dict(self) -> dict[str, Any]:
-        return {"tool_name": self.tool_name, "arguments": dict(self.arguments), "call_id": self.call_id}
+        return {
+            "correlation_id": self.correlation_id,
+            "tool_id": self.tool_id,
+            "tool_version": self.tool_version,
+            "arguments": dict(self.arguments),
+            "approval": None if self.approval is None else self.approval.to_json_dict(),
+            "requested_at_s": self.requested_at_s,
+            "provenance": dict(self.provenance),
+        }
 
 
 @dataclass(frozen=True)
 class ToolResult:
+    invocation: ToolInvocation
     status: ToolResultStatus
+    started_at_s: float
+    completed_at_s: float
     observation: Mapping[str, Any] = field(default_factory=dict)
-    artifacts: Mapping[str, str] = field(default_factory=dict)
-    reason: str = ""
-    duration_s: float = 0.0
-    travel_m: float = 0.0
+    error: Mapping[str, Any] = field(default_factory=dict)
+    artifact_refs: Mapping[str, str] = field(default_factory=dict)
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
             object.__setattr__(self, "status", ToolResultStatus(self.status))
-        if not isinstance(self.observation, Mapping):
-            raise MissionValidationError("tool result observation must be an object")
-        if not isinstance(self.artifacts, Mapping):
-            raise MissionValidationError("tool result artifacts must be an object")
-        _reject_direct_surface_payload(self.reason, self.observation, self.artifacts)
-        _require_nonnegative_float("duration_s", self.duration_s, MAX_RUNTIME_CAP_S)
-        _require_nonnegative_float("travel_m", self.travel_m, MAX_TRAVEL_CAP_M)
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
+            "correlation_id": self.invocation.correlation_id,
+            "tool_id": self.invocation.tool_id,
+            "tool_version": self.invocation.tool_version,
             "status": self.status.value,
+            "started_at_s": self.started_at_s,
+            "completed_at_s": self.completed_at_s,
             "observation": dict(self.observation),
-            "artifacts": dict(self.artifacts),
-            "reason": self.reason,
-            "duration_s": self.duration_s,
-            "travel_m": self.travel_m,
+            "error": dict(self.error),
+            "artifact_refs": dict(self.artifact_refs),
+            "provenance": dict(self.provenance),
         }
 
 
-ToolAdapter = Callable[[Mapping[str, Any]], ToolResult]
+@dataclass(frozen=True)
+class MissionPlan:
+    goal: MissionGoal
+    invocations: Sequence[ToolInvocation]
+    plan_id: str = "mission-plan"
+    dependencies: Sequence[tuple[str, str]] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not tuple(self.invocations):
+            raise MissionValidationError("mission plan requires at least one invocation")
+        object.__setattr__(self, "invocations", tuple(self.invocations))
+        object.__setattr__(self, "dependencies", tuple(self.dependencies))
+        if self.dependencies:
+            raise MissionValidationError("mission plan dependencies are not supported yet")
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "goal": self.goal.to_json_dict(),
+            "invocations": [invocation.to_json_dict() for invocation in self.invocations],
+            "dependencies": [list(edge) for edge in self.dependencies],
+        }
 
 
-class RoverToolRegistry:
-    """Allowlisted tool definitions plus deterministic adapters."""
+@dataclass(frozen=True)
+class MissionRuntimeResult:
+    plan: MissionPlan
+    status: MissionRuntimeStatus
+    results: Sequence[ToolResult]
+    audit: Sequence[Mapping[str, Any]]
 
-    def __init__(self, *, registry_version: str = "mission_api.v2"):
-        self.registry_version = registry_version
-        self._definitions: dict[str, ToolDefinition] = {}
-        self._adapters: dict[str, ToolAdapter] = {}
+    def __post_init__(self) -> None:
+        if isinstance(self.status, str):
+            object.__setattr__(self, "status", MissionRuntimeStatus(self.status))
+        object.__setattr__(self, "results", tuple(self.results))
+        object.__setattr__(self, "audit", tuple(dict(item) for item in self.audit))
 
-    def register(self, definition: ToolDefinition, adapter: ToolAdapter) -> None:
-        if definition.name in self._definitions:
-            raise MissionValidationError(f"duplicate tool registered: {definition.name}")
-        self._definitions[definition.name] = definition
-        self._adapters[definition.name] = adapter
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "api_version": MissionApiVersion.V2.value,
+            "status": self.status.value,
+            "plan": self.plan.to_json_dict(),
+            "results": [result.to_json_dict() for result in self.results],
+            "audit": [dict(item) for item in self.audit],
+        }
 
-    def definition(self, name: str) -> ToolDefinition:
+
+class CapabilityRegistry:
+    def __init__(self, definitions: Sequence[ToolDefinition]):
+        self._definitions = {(definition.tool_id, definition.version): definition for definition in definitions}
+
+    def require(self, tool_id: str, version: str) -> ToolDefinition:
         try:
-            return self._definitions[name]
+            return self._definitions[(tool_id, version)]
         except KeyError as exc:
-            raise MissionValidationError(f"unknown rover tool: {name}") from exc
+            raise MissionValidationError(f"unknown tool: {tool_id}@{version}") from exc
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
-        return tuple(self._definitions[name] for name in sorted(self._definitions))
+        return tuple(self._definitions[key] for key in sorted(self._definitions))
 
-    def tool_definitions_json(self) -> list[dict[str, Any]]:
-        return [definition.to_json_dict() for definition in self.definitions()]
+    def to_json_dict(self) -> dict[str, Any]:
+        return {f"{definition.tool_id}@{definition.version}": definition.to_json_dict() for definition in self.definitions()}
 
-    def validate_tool_call(
-        self,
-        call: ToolCall,
-        *,
-        capabilities: CapabilityState,
-        approval_state: ApprovalState,
-        execution_mode: MissionExecutionMode,
-        remaining: RemainingBudgets,
-    ) -> ToolDefinition:
-        definition = self.definition(call.tool_name)
-        for capability in definition.capabilities_required:
-            if not capabilities.enabled(capability):
-                raise MissionValidationError(f"tool {call.tool_name} requires unavailable capability: {capability}")
-        approval_state = ApprovalState(approval_state)
-        execution_mode = MissionExecutionMode(execution_mode)
-        if definition.approval_required is ApprovalState.PHYSICAL_APPROVED:
-            if execution_mode is not MissionExecutionMode.PHYSICAL:
-                raise MissionValidationError(f"tool {call.tool_name} requires physical execution mode")
-            if approval_state is not ApprovalState.PHYSICAL_APPROVED:
-                raise MissionValidationError(f"tool {call.tool_name} requires physical approval")
-        if execution_mode is MissionExecutionMode.PHYSICAL and approval_state is not ApprovalState.PHYSICAL_APPROVED:
-            raise MissionValidationError("physical execution mode requires physical approval")
-        if execution_mode is not MissionExecutionMode.PHYSICAL and approval_state is ApprovalState.REPLAY_ONLY:
-            pass
-        _validate_value_against_schema(call.arguments, definition.input_schema, path=f"{call.tool_name}.arguments")
-        if remaining.tool_calls <= 0:
-            raise MissionValidationError("tool-call budget exhausted")
-        if definition.max_travel_m > remaining.travel_m:
-            raise MissionValidationError("travel budget exhausted")
-        if definition.counts_as_segment and remaining.segments <= 0:
-            raise MissionValidationError("segment budget exhausted")
-        return definition
 
-    def execute_tool(self, call: ToolCall, definition: ToolDefinition) -> ToolResult:
-        started = time.monotonic()
-        result = self._adapters[definition.name](call.arguments)
-        elapsed = time.monotonic() - started
-        if not isinstance(result, ToolResult):
-            raise MissionValidationError(f"tool {definition.name} adapter returned non-ToolResult")
-        duration = max(result.duration_s, elapsed)
-        if duration > definition.timeout_s:
-            raise MissionValidationError(f"tool {definition.name} exceeded timeout_s={definition.timeout_s}")
-        if result.travel_m > definition.max_travel_m:
-            raise MissionValidationError(f"tool {definition.name} exceeded declared travel limit")
-        _validate_value_against_schema(result.observation, definition.result_schema, path=f"{definition.name}.result")
+@dataclass
+class FakeCapabilityAdapters:
+    fail_tools: Mapping[str, str] = field(default_factory=dict)
+    block_tools: Mapping[str, str] = field(default_factory=dict)
+    duration_by_tool: Mapping[str, float] = field(default_factory=dict)
+    observation_by_tool: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    artifact_refs_by_tool: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    provenance_by_tool: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    cancel_after: Optional[int] = None
+    stop_before: Optional[str] = None
+    estop_before: Optional[str] = None
+
+    def execute(self, invocation: ToolInvocation, definition: ToolDefinition, *, started_at_s: float, index: int) -> ToolResult:
+        duration = float(self.duration_by_tool.get(invocation.tool_id, min(0.25, definition.timeout_s)))
+        completed_at_s = started_at_s + duration
+        if self.cancel_after is not None and index >= self.cancel_after:
+            return _tool_result(invocation, ToolResultStatus.CANCELLED, started_at_s, completed_at_s, error="cancel requested")
+        if self.stop_before == invocation.tool_id:
+            return _tool_result(invocation, ToolResultStatus.STOPPED, started_at_s, completed_at_s, error="STOP propagated")
+        if self.estop_before == invocation.tool_id:
+            return _tool_result(invocation, ToolResultStatus.ESTOPPED, started_at_s, completed_at_s, error="ESTOP propagated")
+        if invocation.tool_id in self.block_tools:
+            return _tool_result(invocation, ToolResultStatus.BLOCKED, started_at_s, completed_at_s, error=self.block_tools[invocation.tool_id])
+        if invocation.tool_id in self.fail_tools:
+            return _tool_result(invocation, ToolResultStatus.FAILED, started_at_s, completed_at_s, error=self.fail_tools[invocation.tool_id])
+        if invocation.tool_id == "pause_cancel_stop_estop":
+            action = str(invocation.arguments["action"])
+            status_by_action = {
+                "cancel": ToolResultStatus.CANCELLED,
+                "stop": ToolResultStatus.STOPPED,
+                "estop": ToolResultStatus.ESTOPPED,
+            }
+            status = status_by_action.get(action, ToolResultStatus.BLOCKED)
+            return ToolResult(
+                invocation=invocation,
+                status=status,
+                started_at_s=started_at_s,
+                completed_at_s=completed_at_s,
+                observation={"latched_state": action.upper()},
+                provenance={"adapter": "fake/replay", "deterministic": True},
+            )
+        observation, artifact_refs = _fake_observation(invocation)
+        if invocation.tool_id in self.observation_by_tool:
+            observation = dict(self.observation_by_tool[invocation.tool_id])
+        if invocation.tool_id in self.artifact_refs_by_tool:
+            artifact_refs = dict(self.artifact_refs_by_tool[invocation.tool_id])
+        provenance = {"adapter": "fake/replay", "deterministic": True}
+        if invocation.tool_id in self.provenance_by_tool:
+            provenance.update(self.provenance_by_tool[invocation.tool_id])
         return ToolResult(
-            status=result.status,
-            observation=result.observation,
-            artifacts=result.artifacts,
-            reason=result.reason,
-            duration_s=duration,
-            travel_m=result.travel_m,
+            invocation=invocation,
+            status=ToolResultStatus.COMPLETE,
+            started_at_s=started_at_s,
+            completed_at_s=completed_at_s,
+            observation=observation,
+            artifact_refs=artifact_refs,
+            provenance=provenance,
         )
 
 
-class ScriptedToolAdapter:
-    """Deterministic replay/mock adapter for tests and offline demos."""
+class DeterministicMissionRuntime:
+    def __init__(
+        self,
+        registry: CapabilityRegistry,
+        adapters: FakeCapabilityAdapters,
+        *,
+        now_s: float = 0.0,
+        budget_ceilings: Optional[MissionBudgets] = None,
+    ):
+        self.registry = registry
+        self.adapters = adapters
+        self.now_s = float(now_s)
+        self.budget_ceilings = budget_ceilings or MissionBudgets(max_steps=8, max_runtime_s=120.0, max_travel_m=2.0)
 
-    def __init__(self, results: Sequence[ToolResult]):
-        if not results:
-            raise MissionValidationError("scripted adapter requires at least one result")
-        self._results = list(results)
-        self.calls: list[Mapping[str, Any]] = []
+    def execute_plan(self, plan: MissionPlan) -> MissionRuntimeResult:
+        self._validate_plan_budgets(plan)
+        results: list[ToolResult] = []
+        audit: list[dict[str, Any]] = []
+        elapsed_s = 0.0
+        for index, invocation in enumerate(plan.invocations):
+            started_at = self.now_s + elapsed_s
+            definition = self._validate_invocation(invocation, plan, now_s=started_at)
+            remaining_runtime_s = plan.goal.budgets.max_runtime_s - elapsed_s
+            if _effective_timeout_s(definition, invocation) > remaining_runtime_s:
+                result = _tool_result(
+                    invocation,
+                    ToolResultStatus.TIMEOUT,
+                    started_at,
+                    started_at,
+                    error="tool timeout exceeds remaining mission runtime budget",
+                )
+                results.append(result)
+                audit.append(self._audit_entry(invocation, definition, result, elapsed_s))
+                return MissionRuntimeResult(plan, MissionRuntimeStatus.TIMEOUT, tuple(results), tuple(audit))
+            result = self.adapters.execute(invocation, definition, started_at_s=started_at, index=index)
+            elapsed_s += max(0.0, result.completed_at_s - result.started_at_s)
+            if result.completed_at_s - result.started_at_s > _effective_timeout_s(definition, invocation):
+                result = _tool_result(
+                    invocation,
+                    ToolResultStatus.TIMEOUT,
+                    result.started_at_s,
+                    result.started_at_s + _effective_timeout_s(definition, invocation),
+                    error=f"tool exceeded timeout_s={_effective_timeout_s(definition, invocation):g}; cancellation cleanup completed",
+                )
+                elapsed_s = max(0.0, result.completed_at_s - result.started_at_s)
+            else:
+                result = _validate_result_boundary(result, definition)
+            if elapsed_s > plan.goal.budgets.max_runtime_s and result.status is ToolResultStatus.COMPLETE:
+                result = _tool_result(
+                    invocation,
+                    ToolResultStatus.TIMEOUT,
+                    result.started_at_s,
+                    result.completed_at_s,
+                    error="mission runtime budget exceeded",
+                )
+            results.append(result)
+            audit.append(self._audit_entry(invocation, definition, result, elapsed_s))
+            if result.status is not ToolResultStatus.COMPLETE:
+                return MissionRuntimeResult(plan, _mission_status_for(result.status), tuple(results), tuple(audit))
+        return MissionRuntimeResult(plan, MissionRuntimeStatus.COMPLETE, tuple(results), tuple(audit))
 
-    def __call__(self, arguments: Mapping[str, Any]) -> ToolResult:
-        self.calls.append(dict(arguments))
-        index = min(len(self.calls) - 1, len(self._results) - 1)
-        return self._results[index]
+    def _validate_plan_budgets(self, plan: MissionPlan) -> None:
+        _reject_direct_ros_surfaces(plan.goal.to_json_dict())
+        if plan.goal.budgets.max_steps > self.budget_ceilings.max_steps:
+            raise MissionValidationError("mission plan exceeds trusted max_steps ceiling")
+        if plan.goal.budgets.max_runtime_s > self.budget_ceilings.max_runtime_s:
+            raise MissionValidationError("mission plan exceeds trusted max_runtime_s ceiling")
+        if len(plan.invocations) > plan.goal.budgets.max_steps:
+            raise MissionValidationError("mission plan exceeds max_steps budget")
+        travel = 0.0
+        for invocation in plan.invocations:
+            if invocation.tool_id in {"move_to_clearance", "bounded_exploration_segment"}:
+                if "max_travel_m" not in invocation.arguments:
+                    raise MissionValidationError(f"{invocation.tool_id} requires bounded max_travel_m")
+                try:
+                    max_travel_m = float(invocation.arguments["max_travel_m"])
+                except (TypeError, ValueError) as exc:
+                    raise MissionValidationError(f"{invocation.tool_id}.max_travel_m must be finite") from exc
+                if not math.isfinite(max_travel_m):
+                    raise MissionValidationError(f"{invocation.tool_id}.max_travel_m must be finite")
+                travel += max_travel_m
+        if self.budget_ceilings.max_travel_m is not None and travel > 0.0:
+            if plan.goal.budgets.max_travel_m is None:
+                raise MissionValidationError("mission plan requires max_travel_m within trusted ceiling")
+            if plan.goal.budgets.max_travel_m > self.budget_ceilings.max_travel_m:
+                raise MissionValidationError("mission plan exceeds trusted max_travel_m ceiling")
+        if plan.goal.budgets.max_travel_m is not None and travel > plan.goal.budgets.max_travel_m:
+            raise MissionValidationError("mission plan exceeds max_travel_m budget")
+
+    def _validate_invocation(self, invocation: ToolInvocation, plan: MissionPlan, *, now_s: float) -> ToolDefinition:
+        definition = self.registry.require(invocation.tool_id, invocation.tool_version)
+        if definition.availability is not CapabilityAvailability.AVAILABLE:
+            raise MissionValidationError(f"tool {invocation.tool_id} is {definition.availability.value}/unavailable")
+        _reject_direct_ros_surfaces(invocation.arguments)
+        _validate_schema(invocation.arguments, definition.argument_schema, path=invocation.tool_id)
+        if definition.requires_approval():
+            if invocation.approval is None or not invocation.approval.valid_for(definition.approval_class, now_s=now_s):
+                raise MissionValidationError(f"approval is stale or missing for {invocation.tool_id}")
+        del plan
+        return definition
+
+    @staticmethod
+    def _audit_entry(
+        invocation: ToolInvocation,
+        definition: ToolDefinition,
+        result: ToolResult,
+        elapsed_s: float,
+    ) -> dict[str, Any]:
+        return {
+            "api_version": MissionApiVersion.V2.value,
+            "correlation_id": invocation.correlation_id,
+            "tool_id": invocation.tool_id,
+            "tool_version": invocation.tool_version,
+            "status": result.status.value,
+            "safety_class": definition.safety_class,
+            "approval_class": definition.approval_class,
+            "resource_ownership": list(definition.resource_ownership),
+            "elapsed_s": elapsed_s,
+            "direct_ros_surface_exposed": False,
+        }
 
 
-def build_default_rover_tool_registry(*, registry_version: str = "mission_api.v2") -> RoverToolRegistry:
-    registry = RoverToolRegistry(registry_version=registry_version)
-    registry.register(
+def build_default_v2_registry(
+    *,
+    detector_classes: Sequence[str] = ("shoe",),
+    availability: Optional[Mapping[str, CapabilityAvailability]] = None,
+) -> CapabilityRegistry:
+    available = dict(availability or {})
+
+    def avail(tool_id: str) -> CapabilityAvailability:
+        value = available.get(tool_id, CapabilityAvailability.AVAILABLE)
+        return CapabilityAvailability(value)
+
+    definitions = (
         ToolDefinition(
-            name="create_room_map",
-            description="Build or load a bounded replay/mock room occupancy map artifact.",
-            input_schema=_schema({"map_name": "string"}, required=("map_name",)),
-            result_schema=_schema({"map_name": "string", "occupancy_map": "string", "coverage": "number"}, required=("map_name", "occupancy_map")),
-            timeout_s=5.0,
-            capabilities_required=("semantic_mapping", "artifacts"),
-        ),
-        lambda args: ToolResult(
-            ToolResultStatus.OK,
-            observation={"map_name": str(args["map_name"]), "occupancy_map": f"maps/{args['map_name']}.yaml", "coverage": 0.86},
-            artifacts={"occupancy_map": f"maps/{args['map_name']}.yaml"},
-            duration_s=0.01,
-        ),
-    )
-    registry.register(
-        ToolDefinition(
-            name="detect_objects",
-            description="Detect an allowlisted object class in replay/mock observations.",
-            input_schema=_schema({"object_class": "string", "source": "string"}, required=("object_class",)),
-            result_schema=_schema({"object_class": "string", "count": "integer", "detections": "array"}, required=("object_class", "count", "detections")),
-            timeout_s=5.0,
-            capabilities_required=("object_detection",),
-        ),
-        lambda args: ToolResult(
-            ToolResultStatus.OK,
-            observation={"object_class": str(args["object_class"]), "count": 2, "detections": [{"label": str(args["object_class"]), "confidence": 0.91}]},
-            artifacts={f"{args['object_class']}_detections": f"detections/{args['object_class']}.json"},
-            duration_s=0.01,
-        ),
-    )
-    registry.register(
-        ToolDefinition(
-            name="project_semantic_map",
-            description="Project allowlisted object detections into a semantic map artifact.",
-            input_schema=_schema({"map_name": "string", "object_class": "string"}, required=("map_name", "object_class")),
-            result_schema=_schema({"semantic_map": "string", "labels": "array"}, required=("semantic_map", "labels")),
-            timeout_s=5.0,
-            capabilities_required=("semantic_mapping", "artifacts"),
-        ),
-        lambda args: ToolResult(
-            ToolResultStatus.OK,
-            observation={"semantic_map": f"maps/{args['map_name']}_{args['object_class']}.json", "labels": [str(args["object_class"])]},
-            artifacts={"semantic_map": f"maps/{args['map_name']}_{args['object_class']}.json"},
-            duration_s=0.01,
-        ),
-    )
-    registry.register(
-        ToolDefinition(
-            name="approach_clearance",
-            description="Request one bounded supervised-motion segment to approach a target clearance; no direct motor control.",
-            input_schema=_schema({"target_clearance_m": "number"}, required=("target_clearance_m",)),
-            result_schema=_schema({"clearance_m": "number", "segment_complete": "boolean"}, required=("clearance_m", "segment_complete")),
+            "map_localize",
+            "1.0",
+            _schema({"mode": {"type": "string", "enum": ["replay", "live"]}}, required=()),
+            _schema({"map_frame": {"type": "string"}}),
+            preconditions=("map/localization adapter installed",),
+            availability=avail("map_localize"),
             timeout_s=10.0,
-            capabilities_required=("supervised_motion", "collision_stop", "estop", "telemetry"),
-            approval_required=ApprovalState.REPLAY_ONLY,
-            max_travel_m=1.0,
-            counts_as_segment=True,
+            safety_class="localization",
+            resource_ownership=("map", "localizer"),
+            effects=("loads or replays an allowlisted map/localization workflow",),
         ),
-        lambda args: ToolResult(
-            ToolResultStatus.OK,
-            observation={"clearance_m": float(args["target_clearance_m"]), "segment_complete": True},
-            duration_s=0.01,
-            travel_m=0.25,
-        ),
-    )
-    registry.register(
         ToolDefinition(
-            name="capture_observation",
-            description="Capture a replay/mock observation and artifact reference after deterministic motion settles.",
-            input_schema=_schema({"label": "string"}, required=("label",)),
-            result_schema=_schema({"label": "string", "artifact": "string"}, required=("label", "artifact")),
+            "bounded_exploration_segment",
+            "1.0",
+            _schema(
+                {
+                    "max_segments": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "segment_timeout_s": {"type": "number", "minimum": 0.1, "maximum": 30.0},
+                    "max_travel_m": {"type": "number", "minimum": 0.01, "maximum": 2.0},
+                }
+            ),
+            _schema({"completed_segments": {"type": "integer"}}),
+            preconditions=("supervised coordinator and collision stop are available",),
+            availability=avail("bounded_exploration_segment"),
+            timeout_s=30.0,
+            safety_class="supervised_motion",
+            approval_class="supervised_motion",
+            resource_ownership=("supervised_coordinator", "range_motion"),
+            effects=("runs bounded deterministic exploration through range_motion and collision_stop",),
+        ),
+        ToolDefinition(
+            "move_to_clearance",
+            "1.0",
+            _schema(
+                {
+                    "clearance_m": {"type": "number", "minimum": 0.05, "maximum": 2.0},
+                    "speed_mps": {"type": "number", "minimum": 0.01, "maximum": 0.2},
+                    "timeout_s": {"type": "number", "minimum": 0.1, "maximum": 30.0},
+                    "max_travel_m": {"type": "number", "minimum": 0.01, "maximum": 2.0},
+                }
+            ),
+            _schema({"target_clearance_m": {"type": "number"}}),
+            preconditions=("range target visible", "collision stop clear"),
+            availability=avail("move_to_clearance"),
+            timeout_s=30.0,
+            safety_class="supervised_motion",
+            approval_class="supervised_motion",
+            resource_ownership=("range_motion",),
+            effects=("requests bounded range_motion only; no direct motor writes",),
+        ),
+        ToolDefinition(
+            "rotate_scan",
+            "1.0",
+            _schema({"angle_deg": {"type": "number", "minimum": -180.0, "maximum": 180.0}}),
+            _schema({"scan_ref": {"type": "string"}}),
+            availability=avail("rotate_scan"),
+            timeout_s=10.0,
+            safety_class="supervised_motion",
+            approval_class="supervised_motion",
+            resource_ownership=("range_motion",),
+            effects=("bounded rotate/scan when adapter exists",),
+        ),
+        ToolDefinition(
+            "capture_observation",
+            "1.0",
+            _schema({"sensor": {"type": "string", "enum": ["replay", "camera", "lidar"]}}, required=()),
+            _schema({"observation_ref": {"type": "string"}}),
+            availability=avail("capture_observation"),
             timeout_s=5.0,
-            capabilities_required=("telemetry", "artifacts"),
+            safety_class="perception",
+            resource_ownership=("camera", "lidar"),
+            effects=("captures or replays an observation from allowlisted sensors",),
         ),
-        lambda args: ToolResult(
-            ToolResultStatus.OK,
-            observation={"label": str(args["label"]), "artifact": f"observations/{args['label']}.json"},
-            artifacts={"observation": f"observations/{args['label']}.json"},
-            duration_s=0.01,
-        ),
-    )
-    registry.register(
         ToolDefinition(
-            name="report_artifacts",
-            description="Return final bounded mission artifact references and summary.",
-            input_schema=_schema({"summary": "string"}, required=("summary",)),
-            result_schema=_schema({"summary": "string", "complete": "boolean"}, required=("summary", "complete")),
+            "detect_objects",
+            "1.0",
+            _schema({"object_class": {"type": "string", "enum": list(detector_classes)}}),
+            _schema({"detections_ref": {"type": "string"}}),
+            preconditions=("detector plugin installed for requested object_class",),
+            availability=avail("detect_objects"),
+            timeout_s=10.0,
+            safety_class="perception",
+            resource_ownership=("detector",),
+            effects=("runs an installed detector plugin for the requested object class",),
+        ),
+        ToolDefinition(
+            "project_detections_to_map",
+            "1.0",
+            _schema({"target_frame": {"type": "string", "enum": ["map"]}}, required=()),
+            _schema({"map_observations_ref": {"type": "string"}}),
+            availability=avail("project_detections_to_map"),
+            timeout_s=5.0,
+            safety_class="semantic_mapping",
+            resource_ownership=("semantic_projector",),
+            effects=("projects detector observations into the map frame",),
+        ),
+        ToolDefinition(
+            "generate_semantic_artifacts",
+            "1.0",
+            _schema(
+                {
+                    "artifact_kinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["semantic_map", "geojson", "annotated_map", "coverage_report", "mission_summary"],
+                        },
+                        "minItems": 1,
+                    }
+                }
+            ),
+            _schema({"artifact_refs": {"type": "object"}}),
+            availability=avail("generate_semantic_artifacts"),
+            timeout_s=10.0,
+            safety_class="artifact_generation",
+            resource_ownership=("artifact_writer",),
+            effects=("writes semantic/artifact references from validated pipeline outputs",),
+        ),
+        ToolDefinition(
+            "query_status_telemetry",
+            "1.0",
+            _schema({}, required=()),
+            _schema({"state": {"type": "string"}}),
+            availability=avail("query_status_telemetry"),
             timeout_s=2.0,
-            capabilities_required=("artifacts",),
+            safety_class="read_only",
+            resource_ownership=("mission_runtime",),
+            effects=("returns read-only mission telemetry",),
         ),
-        lambda args: ToolResult(
-            ToolResultStatus.OK,
-            observation={"summary": str(args["summary"]), "complete": True},
-            duration_s=0.01,
+        ToolDefinition(
+            "pause_cancel_stop_estop",
+            "1.0",
+            _schema({"action": {"type": "string", "enum": ["pause", "cancel", "stop", "estop"]}}),
+            _schema({"latched_state": {"type": "string"}}),
+            availability=avail("pause_cancel_stop_estop"),
+            timeout_s=2.0,
+            cancellation="authoritative",
+            safety_class="safety_control",
+            approval_class="none",
+            resource_ownership=("mission_runtime", "robot_side_safety"),
+            effects=("propagates cancellation/STOP/ESTOP semantics to deterministic runtime boundary",),
         ),
     )
-    return registry
+    return CapabilityRegistry(definitions)
 
 
-def remaining_budgets(budgets: MissionBudgets, *, iterations_used: int, runtime_used_s: float, tool_calls_used: int, travel_used_m: float, segments_used: int) -> RemainingBudgets:
-    return RemainingBudgets(
-        iterations=max(0, budgets.max_iterations - iterations_used),
-        runtime_s=max(0.0, budgets.max_runtime_s - runtime_used_s),
-        tool_calls=max(0, budgets.max_tool_calls - tool_calls_used),
-        travel_m=max(0.0, budgets.max_travel_m - travel_used_m),
-        segments=max(0, budgets.max_segments - segments_used),
+def build_canonical_shoe_mapping_v2_plan(*, goal_id: str = "shoe-room-map", approval: Optional[ApprovalGrant] = None) -> MissionPlan:
+    goal = MissionGoal(
+        goal_id=goal_id,
+        objective="Map the room and identify every shoe; produce semantic artifacts bounded to observed coverage.",
+        constraints={"area": "room", "coverage": "observed_only"},
+        success_criteria=(
+            "occupancy/localization workflow completes",
+            "shoe detections are projected into map frame",
+            "semantic artifacts are referenced",
+        ),
+        execution_mode="replay",
+        budgets=MissionBudgets(max_steps=8, max_runtime_s=120.0, max_travel_m=2.0),
+        requested_artifacts=("semantic_map", "mission_summary"),
+    )
+    return MissionPlan(
+        plan_id=f"{goal_id}-v2-plan",
+        goal=goal,
+        invocations=(
+            ToolInvocation("shoe-1", "map_localize", "1.0", {"mode": "replay"}),
+            ToolInvocation(
+                "shoe-2",
+                "bounded_exploration_segment",
+                "1.0",
+                {"max_segments": 2, "segment_timeout_s": 8.0, "max_travel_m": 1.0},
+                approval=approval,
+            ),
+            ToolInvocation("shoe-3", "capture_observation", "1.0", {"sensor": "replay"}),
+            ToolInvocation("shoe-4", "detect_objects", "1.0", {"object_class": "shoe"}),
+            ToolInvocation("shoe-5", "project_detections_to_map", "1.0", {"target_frame": "map"}),
+            ToolInvocation(
+                "shoe-6",
+                "generate_semantic_artifacts",
+                "1.0",
+                {"artifact_kinds": ["semantic_map", "geojson", "coverage_report", "mission_summary"]},
+            ),
+        ),
     )
 
 
-def _schema(properties: Mapping[str, str], *, required: Sequence[str] = ()) -> dict[str, Any]:
+def _schema(properties: Mapping[str, Any], *, required: Optional[Sequence[str]] = None) -> dict[str, Any]:
     return {
         "type": "object",
-        "properties": {name: {"type": type_name} for name, type_name in properties.items()},
-        "required": list(required),
+        "properties": dict(properties),
+        "required": list(properties if required is None else required),
         "additionalProperties": False,
     }
 
 
-def _validate_object_schema(schema: Mapping[str, Any], *, schema_name: str) -> None:
-    if schema.get("type") != "object":
-        raise MissionValidationError(f"{schema_name} must be an object schema")
-    if not isinstance(schema.get("properties", {}), Mapping):
-        raise MissionValidationError(f"{schema_name}.properties must be an object")
-    for name, spec in schema.get("properties", {}).items():
-        if _contains_direct_surface(str(name)) or _contains_direct_surface(str(spec)):
-            raise MissionValidationError(f"{schema_name} exposes a forbidden direct surface")
-        if not isinstance(spec, Mapping) or spec.get("type") not in {"string", "number", "integer", "boolean", "array", "object"}:
-            raise MissionValidationError(f"{schema_name}.{name} has unsupported type")
+def _validate_schema(value: Any, schema: Mapping[str, Any], *, path: str) -> None:
+    expected = schema.get("type")
+    if expected == "object":
+        if not isinstance(value, Mapping):
+            raise MissionValidationError(f"{path} must be an object")
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        for key in required:
+            if key not in value:
+                raise MissionValidationError(f"{path}.{key} is required")
+        if schema.get("additionalProperties") is False:
+            extras = [key for key in value if key not in properties]
+            if extras:
+                raise MissionValidationError(f"{path} contains unsupported argument: {extras[0]}")
+        for key, item in value.items():
+            if key in properties:
+                _validate_schema(item, properties[key], path=f"{path}.{key}")
+        return
+    if expected == "array":
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            raise MissionValidationError(f"{path} must be an array")
+        min_items = schema.get("minItems")
+        if min_items is not None and len(value) < int(min_items):
+            raise MissionValidationError(f"{path} must contain at least {min_items} items")
+        for index, item in enumerate(value):
+            _validate_schema(item, schema.get("items", {}), path=f"{path}[{index}]")
+        return
+    if expected == "string":
+        if not isinstance(value, str):
+            raise MissionValidationError(f"{path} must be a string")
+    elif expected == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise MissionValidationError(f"{path} must be a finite number")
+        if "minimum" in schema and float(value) < float(schema["minimum"]):
+            raise MissionValidationError(f"{path} below minimum")
+        if "maximum" in schema and float(value) > float(schema["maximum"]):
+            raise MissionValidationError(f"{path} above maximum")
+    elif expected == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise MissionValidationError(f"{path} must be an integer")
+        if "minimum" in schema and value < int(schema["minimum"]):
+            raise MissionValidationError(f"{path} below minimum")
+        if "maximum" in schema and value > int(schema["maximum"]):
+            raise MissionValidationError(f"{path} above maximum")
+    elif expected is not None:
+        raise MissionValidationError(f"unsupported schema type at {path}: {expected}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise MissionValidationError(f"{path} value {value!r} is not allowed")
 
 
-def _validate_value_against_schema(value: Mapping[str, Any], schema: Mapping[str, Any], *, path: str) -> None:
-    if not isinstance(value, Mapping):
-        raise MissionValidationError(f"{path} must be an object")
-    properties = schema.get("properties", {})
-    required = set(schema.get("required", ()))
-    missing = [name for name in required if name not in value]
-    if missing:
-        raise MissionValidationError(f"{path} missing required fields: {', '.join(sorted(missing))}")
-    if schema.get("additionalProperties") is False:
-        extra = [name for name in value if name not in properties]
-        if extra:
-            raise MissionValidationError(f"{path} has unexpected fields: {', '.join(sorted(extra))}")
-    for name, item in value.items():
-        if name not in properties:
+def _validate_result_boundary(result: ToolResult, definition: ToolDefinition) -> ToolResult:
+    try:
+        _reject_direct_ros_surfaces(result.observation)
+        _reject_direct_ros_surfaces(result.artifact_refs)
+        _reject_direct_ros_surfaces(result.error)
+        _reject_direct_ros_surfaces(result.provenance)
+    except MissionValidationError:
+        return _tool_result(
+            result.invocation,
+            ToolResultStatus.FAILED,
+            result.started_at_s,
+            result.completed_at_s,
+            error="adapter result failed boundary validation",
+        )
+    if result.status is not ToolResultStatus.COMPLETE:
+        return result
+    try:
+        _validate_schema(result.observation, definition.result_schema, path=f"{definition.tool_id}.result")
+    except MissionValidationError as exc:
+        return _tool_result(
+            result.invocation,
+            ToolResultStatus.FAILED,
+            result.started_at_s,
+            result.completed_at_s,
+            error=f"adapter result failed schema validation: {exc}",
+        )
+    if result.artifact_refs:
+        expected_artifacts = result.observation.get("artifact_refs") if isinstance(result.observation, Mapping) else None
+        if expected_artifacts != result.artifact_refs:
+            return _tool_result(
+                result.invocation,
+                ToolResultStatus.FAILED,
+                result.started_at_s,
+                result.completed_at_s,
+                error="adapter artifact_refs do not match declared result schema",
+            )
+    return result
+
+
+def _reject_direct_ros_surfaces(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _reject_direct_ros_surfaces(key)
+            _reject_direct_ros_surfaces(item)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        for item in value:
+            _reject_direct_ros_surfaces(item)
+    elif isinstance(value, str):
+        lowered = value.lower()
+        if any(surface in lowered for surface in UNSAFE_ROS_SURFACES):
+            raise MissionValidationError(f"direct ROS surface is not allowed: {value}")
+
+
+def _effective_timeout_s(definition: ToolDefinition, invocation: ToolInvocation) -> float:
+    candidates = [float(definition.timeout_s)]
+    for key in ("timeout_s", "segment_timeout_s"):
+        if key not in invocation.arguments:
             continue
-        expected = properties[name]["type"]
-        if expected == "string" and not isinstance(item, str):
-            raise MissionValidationError(f"{path}.{name} must be a string")
-        if expected == "number" and (not isinstance(item, (int, float)) or isinstance(item, bool) or not math.isfinite(float(item))):
-            raise MissionValidationError(f"{path}.{name} must be a finite number")
-        if expected == "integer" and (not isinstance(item, int) or isinstance(item, bool)):
-            raise MissionValidationError(f"{path}.{name} must be an integer")
-        if expected == "boolean" and not isinstance(item, bool):
-            raise MissionValidationError(f"{path}.{name} must be a boolean")
-        if expected == "array" and not isinstance(item, Sequence):
-            raise MissionValidationError(f"{path}.{name} must be an array")
-        if expected == "object" and not isinstance(item, Mapping):
-            raise MissionValidationError(f"{path}.{name} must be an object")
+        try:
+            value = float(invocation.arguments[key])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0.0:
+            candidates.append(value)
+    return min(candidates)
 
 
-def _reject_direct_surface_payload(*values: Any) -> None:
-    for value in values:
-        if _contains_direct_surface(repr(value).lower()):
-            raise MissionValidationError("direct ROS/motor/system surfaces are not accepted by mission_api.v2")
+def _fake_observation(invocation: ToolInvocation) -> tuple[dict[str, Any], dict[str, str]]:
+    tool_id = invocation.tool_id
+    if tool_id == "map_localize":
+        return {"map_frame": "map"}, {}
+    if tool_id == "bounded_exploration_segment":
+        return {"completed_segments": int(invocation.arguments["max_segments"])}, {}
+    if tool_id == "move_to_clearance":
+        return {"target_clearance_m": float(invocation.arguments["clearance_m"])}, {}
+    if tool_id == "rotate_scan":
+        return {"scan_ref": "artifacts/replay/rotate_scan.json"}, {}
+    if tool_id == "capture_observation":
+        return {"observation_ref": "artifacts/replay/observation.json"}, {}
+    if tool_id == "detect_objects":
+        object_class = str(invocation.arguments["object_class"])
+        return {"detections_ref": f"artifacts/replay/{object_class}_detections.json"}, {}
+    if tool_id == "project_detections_to_map":
+        return {"map_observations_ref": "artifacts/replay/map_observations.json"}, {}
+    if tool_id == "generate_semantic_artifacts":
+        refs = _artifact_refs(invocation.arguments["artifact_kinds"])
+        return {"artifact_refs": refs}, refs
+    if tool_id == "query_status_telemetry":
+        return {"state": "RUNNING"}, {}
+    return {"tool_id": tool_id}, {}
 
 
-def _contains_direct_surface(text: str) -> bool:
-    lowered = str(text).lower()
-    return any(token in lowered for token in DIRECT_SURFACE_TOKENS)
+def _artifact_refs(kinds: Sequence[str]) -> dict[str, str]:
+    suffixes = {
+        "semantic_map": "semantic_map.json",
+        "geojson": "semantic_map.geojson",
+        "annotated_map": "annotated_semantic_map.ppm",
+        "coverage_report": "coverage_uncertainty_report.md",
+        "mission_summary": "mission_summary.md",
+    }
+    return {kind: f"artifacts/vs06_semantic_map/{suffixes[kind]}" for kind in kinds}
 
 
-def _require_positive_int(name: str, value: int, cap: int) -> None:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0 or value > cap:
-        raise MissionValidationError(f"{name} must be an integer in 1..{cap}")
+def _tool_result(
+    invocation: ToolInvocation,
+    status: ToolResultStatus,
+    started_at_s: float,
+    completed_at_s: float,
+    *,
+    error: str,
+) -> ToolResult:
+    return ToolResult(
+        invocation=invocation,
+        status=status,
+        started_at_s=started_at_s,
+        completed_at_s=completed_at_s,
+        error={"message": error},
+        provenance={"adapter": "fake/replay", "deterministic": True},
+    )
 
 
-def _require_positive_float(name: str, value: float, cap: float) -> None:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)) or float(value) <= 0.0 or float(value) > cap:
-        raise MissionValidationError(f"{name} must be positive, finite, and <= {cap}")
-
-
-def _require_nonnegative_float(name: str, value: float, cap: float) -> None:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)) or float(value) < 0.0 or float(value) > cap:
-        raise MissionValidationError(f"{name} must be finite, non-negative, and <= {cap}")
+def _mission_status_for(status: ToolResultStatus) -> MissionRuntimeStatus:
+    return MissionRuntimeStatus(status.value)

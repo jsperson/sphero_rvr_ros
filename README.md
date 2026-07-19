@@ -20,7 +20,7 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) is the source-of-truth design for the independent lidar collision-stop supervisor and final `/cmd_vel` arbitration contract.
 - [docs/range_motion_controller.md](docs/range_motion_controller.md) documents the closed-loop lidar target-clearance motion primitive that publishes to `/cmd_vel` above the independent supervisor.
 - [docs/mission_api.md](docs/mission_api.md) documents the versioned Mission API schema and deterministic state machine for the canonical shoe-mapping command; it rejects direct `/cmd_vel`/generic ROS bridge requests.
-- [docs/mission_api_v2.md](docs/mission_api_v2.md) documents the allowlisted rover capability/tool registry for planner-selected deterministic adapters.
+- [docs/mission_api_v2.md](docs/mission_api_v2.md) documents the generic `mission_api.v2` typed tool registry/runtime boundary for LLM-operable rover goals without arbitrary ROS/motor exposure.
 - [docs/mission_language.md](docs/mission_language.md) documents the constrained deterministic plain-English translator that emits only validated Mission API schema or structured rejection for unsupported/unsafe requests.
 - [docs/mission_planner.md](docs/mission_planner.md) documents the ROS-free iterative LLM planner over allowlisted `mission_api.v2` rover tools, fake provider, optional OpenAI-compatible adapter, budgets, and manifest.
 - [docs/mission_observability.md](docs/mission_observability.md) documents the VS08A read-only responsive web/PWA mission observability surface over Mission API snapshots, mock/replay telemetry, event streaming, and final artifact links.
