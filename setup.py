@@ -54,6 +54,7 @@ setup(
                 "docs/mission_api.md",
                 "docs/mission_language.md",
                 "docs/mission_observability.md",
+                "docs/semantic_map_artifacts.md",
                 "docs/supervised_coordinator.md",
                 "docs/slam_replay.md",
                 "docs/vertical_slice_capability_matrix.md",
@@ -88,6 +89,7 @@ setup(
             "rvr_slam_replay_plan = sphero_rvr_driver.slam_replay_workflow:main",
             "rvr_shoe_detector_eval = sphero_rvr_driver.shoe_detector:main",
             "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
+            "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
         ],
     },
 )
