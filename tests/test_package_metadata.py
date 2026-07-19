@@ -32,6 +32,7 @@ EXPECTED_DATA_FILES = {
         "scripts/rvr-camera-node",
         "scripts/rvr-console",
         "scripts/rvr-shoe-detector-eval",
+        "scripts/rvr-slam-replay-plan",
         "scripts/rvr_motion_calibration.py",
     },
     "share/sphero_rvr_driver/docs": {
@@ -43,6 +44,7 @@ EXPECTED_DATA_FILES = {
         "docs/range_motion_controller.md",
         "docs/vertical_slice_capability_matrix.md",
         "docs/shoe_detector_replay.md",
+        "docs/slam_replay.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -152,13 +154,14 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/rosbag_capture_replay.md",
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
+        "docs/slam_replay.md",
         "docs/udev/99-rplidar.rules",
         "ros2 launch sphero_rvr_driver lidar.launch.py --show-args",
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
         "ros2 launch sphero_rvr_driver camera.launch.py --show-args",
         "launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
         "config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
-        "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr_motion_calibration.py`",
+        "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr_motion_calibration.py`",
     ]:
         assert token in readme
 
@@ -171,6 +174,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
         "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
         "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
+        "rvr_slam_replay_plan = sphero_rvr_driver.slam_replay_workflow:main",
         "rvr_shoe_detector_eval = sphero_rvr_driver.shoe_detector:main",
     } <= console_scripts
 

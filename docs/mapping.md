@@ -51,6 +51,36 @@ This starts lidar + `slam_toolbox`, but without the RVR driver there is no live
 `odom -> base_link` transform. That default is intentional: it is safe to inspect
 configuration and lidar/SLAM startup without exposing `/cmd_vel`.
 
+### Replay-first SLAM plan: no motors, no live sensors
+
+For replay-only mapping/map-save surface checks, do not start live lidar or
+camera launch files. Let the rosbag publish recorded data and force simulated
+time:
+
+```bash
+ros2 launch sphero_rvr_driver mapping.launch.py \
+  start_rvr:=false \
+  start_lidar:=false \
+  start_camera:=false \
+  start_slam:=true \
+  use_sim_time:=true
+```
+
+Print the full no-hardware replay/map-save/map-reload command plan with:
+
+```bash
+ros2 run sphero_rvr_driver rvr_slam_replay_plan <bag-path> \
+  --map-name vs02_replay_map \
+  --topic-count /scan=202 \
+  --topic-count /tf_static=3 \
+  --topic-count /odom=0 \
+  --topic-count /tf=0
+```
+
+See `docs/slam_replay.md` for the VS02 replay fixture map, manifest, and the
+explicit localization limit for the current camera/lidar bag: it has `/scan` and
+`/tf_static`, but no `/odom` or dynamic `/tf`.
+
 ### Camera only: no motors, measured defaults
 
 ```bash
