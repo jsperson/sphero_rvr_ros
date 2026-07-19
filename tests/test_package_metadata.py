@@ -43,6 +43,7 @@ EXPECTED_DATA_FILES = {
         "docs/lidar_collision_stop_supervisor.md",
         "docs/range_motion_controller.md",
         "docs/mission_api.md",
+        "docs/mission_api_v2.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
         "docs/mission_observability.md",
@@ -162,6 +163,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
         "docs/mission_observability.md",
+        "docs/mission_api_v2.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
         "docs/semantic_map_artifacts.md",
@@ -265,3 +267,27 @@ def test_mission_controls_design_documents_auth_gate_and_independent_safety() ->
     ]:
         assert token in design
     assert "docs/mission_controls.md" in readme
+
+
+def test_mission_api_v2_design_documents_registry_runtime_and_extension_boundary() -> None:
+    design = (REPO_ROOT / "docs" / "mission_api_v2.md").read_text()
+    readme = (REPO_ROOT / "README.md").read_text()
+
+    for token in [
+        "mission_api.v2",
+        "Human goal -> planner -> typed tool invocation -> deterministic runtime/adapters",
+        "MissionGoal",
+        "ToolDefinition",
+        "ToolInvocation",
+        "ToolResult",
+        "MissionPlan",
+        "approval classes",
+        "fail-closed",
+        "move_to_clearance",
+        "detect_objects",
+        "object_class",
+        "No arbitrary ROS topics",
+        "Extension guide",
+    ]:
+        assert token in design
+    assert "docs/mission_api_v2.md" in readme

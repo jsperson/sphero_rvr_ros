@@ -23,6 +23,7 @@ class MissionValidationError(ValueError):
 
 class MissionApiVersion(str, Enum):
     V1 = "mission_api.v1"
+    V2 = "mission_api.v2"
 
 
 class MissionState(str, Enum):
