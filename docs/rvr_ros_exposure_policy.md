@@ -101,7 +101,17 @@ Current additional safe operator surfaces:
 - subscribes: `set_all_leds` (`std_msgs/msg/ColorRGBA`) for bounded all-LED feedback;
 - services: `reset_yaw`, `reset_locator`, and `release_led_requests` (`std_srvs/srv/Trigger`).
 
-These are the right defaults. Future expansion should add operational state, not raw device reachability:
+These are the right defaults. Future expansion should add operational state, not raw device reachability.
+
+Core STOP/ESTOP dispatch guarantee:
+
+- `RVRDriver.stop()` and `RVRDriver.emergency_stop()` synchronously clear desired velocity before dispatch; `emergency_stop()` also latches the software ESTOP state.
+- STOP/ESTOP bypass the priority command queue so a request waiting for its response cannot block the zero-motor packet. They still call `Dispatcher.send()` and serialize through the dispatcher write lock; no code path writes directly to the transport.
+- The named `ESTOP_SOFTWARE_DISPATCH_BUDGET_S` used by tests is software packet-dispatch latency to the transport, not a claim about physical stopping distance or wheel/braking dynamics.
+- A motion generation invalidates every queued motor-capable command older than STOP/ESTOP. STOP allows newly submitted post-STOP motion under normal policy; ESTOP rejects new motor-capable commands until `clear_emergency_stop()` clears the software inhibit.
+- If a transport write is already holding the dispatcher lock, STOP/ESTOP wait behind that single serialized write rather than interleaving bytes. Queued telemetry may continue; queued stale motion becomes ineligible at the final dispatch check; shutdown cancels queue/reader tasks with explicit `asyncio.CancelledError` handling.
+
+Future expansion should add:
 
 - richer diagnostics for firmware/version, battery voltage state/thresholds, motor fault/stall/thermal state;
 - typed sensor topics for selected read-only sensors that support mapping, perception, or debugging.
