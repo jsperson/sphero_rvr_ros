@@ -56,6 +56,7 @@ setup(
                 "docs/mission_controls.md",
                 "docs/mission_language.md",
                 "docs/mission_planner.md",
+                "docs/rvr_mcp_server.md",
                 "docs/mission_observability.md",
                 "docs/semantic_map_artifacts.md",
                 "docs/supervised_coordinator.md",
@@ -93,6 +94,7 @@ setup(
             "rvr_shoe_detector_eval = sphero_rvr_driver.shoe_detector:main",
             "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
             "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
+            "rvr_mcp_server = sphero_rvr_driver.rvr_mcp_server:main",
         ],
     },
 )
