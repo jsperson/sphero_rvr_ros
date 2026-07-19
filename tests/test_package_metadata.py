@@ -43,6 +43,7 @@ EXPECTED_DATA_FILES = {
         "docs/lidar_collision_stop_supervisor.md",
         "docs/range_motion_controller.md",
         "docs/mission_api.md",
+        "docs/mission_controls.md",
         "docs/mission_language.md",
         "docs/mission_observability.md",
         "docs/supervised_coordinator.md",
@@ -160,6 +161,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
         "docs/mission_observability.md",
+        "docs/mission_controls.md",
         "docs/mission_language.md",
         "docs/supervised_coordinator.md",
         "docs/slam_replay.md",
@@ -238,3 +240,25 @@ def test_supervised_coordinator_design_documents_safe_mission_contract() -> None
         "no random bump-and-turn",
     ]:
         assert token in design
+
+
+def test_mission_controls_design_documents_auth_gate_and_independent_safety() -> None:
+    design = (REPO_ROOT / "docs" / "mission_controls.md").read_text()
+    readme = (REPO_ROOT / "README.md").read_text()
+
+    for token in [
+        "MissionControlSession",
+        "mission_api.v1",
+        "authenticated",
+        "mission:start",
+        "mission:cancel",
+        "mission:pause",
+        "PhysicalStartApproval",
+        "motor-capable mission start",
+        "replay",
+        "audit_log",
+        "robot-side STOP/ESTOP/collision supervisor remains independent",
+        "not a generic ROS bridge",
+    ]:
+        assert token in design
+    assert "docs/mission_controls.md" in readme

@@ -52,6 +52,7 @@ setup(
                 "docs/lidar_collision_stop_supervisor.md",
                 "docs/range_motion_controller.md",
                 "docs/mission_api.md",
+                "docs/mission_controls.md",
                 "docs/mission_language.md",
                 "docs/mission_observability.md",
                 "docs/supervised_coordinator.md",
