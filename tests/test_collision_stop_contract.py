@@ -22,6 +22,41 @@ def _node_calls(path: str) -> list[ast.Call]:
     return [node for node in ast.walk(module) if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Node"]
 
 
+def _register_process_exit_handlers(path: str) -> list[dict[str, object]]:
+    module = ast.parse((REPO_ROOT / path).read_text())
+    handlers = []
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "RegisterEventHandler":
+            continue
+        if not node.args or not isinstance(node.args[0], ast.Call):
+            continue
+        process_exit = node.args[0]
+        if getattr(process_exit.func, "id", None) != "OnProcessExit":
+            continue
+        target = _keyword(process_exit, "target_action")
+        condition = None
+        for keyword in node.keywords:
+            if keyword.arg == "condition" and isinstance(keyword.value, ast.Call):
+                if getattr(keyword.value.func, "id", None) == "IfCondition" and keyword.value.args:
+                    condition_arg = keyword.value.args[0]
+                    if isinstance(condition_arg, ast.Name):
+                        condition = condition_arg.id
+        reasons = []
+        for descendant in ast.walk(process_exit):
+            if isinstance(descendant, ast.Call) and getattr(descendant.func, "id", None) == "Shutdown":
+                reason = _keyword(descendant, "reason")
+                if isinstance(reason, ast.Constant):
+                    reasons.append(reason.value)
+        handlers.append(
+            {
+                "target": target.id if isinstance(target, ast.Name) else None,
+                "condition": condition,
+                "reasons": reasons,
+            }
+        )
+    return handlers
+
+
 def test_collision_stop_config_and_node_are_installed_package_surfaces():
     setup_text = (REPO_ROOT / "setup.py").read_text()
 
@@ -112,21 +147,28 @@ def test_live_nodes_tolerate_launch_shutdown_without_rclpy_shutdown_crash():
 
 
 def test_lidar_launch_shutdowns_graph_when_required_lidar_process_exits():
-    source = (REPO_ROOT / "launch" / "lidar.launch.py").read_text()
+    handlers = _register_process_exit_handlers("launch/lidar.launch.py")
 
-    assert "RegisterEventHandler" in source
-    assert "OnProcessExit" in source
-    assert "Shutdown" in source
-    assert "rplidar_node exited" in source
+    assert {
+        "target": "rplidar_node",
+        "condition": None,
+        "reasons": ["rplidar_node exited; shutting down lidar launch"],
+    } in handlers
 
 
-def test_supervised_launch_shutdowns_motor_graph_when_safety_process_exits():
-    source = (REPO_ROOT / "launch" / "supervised_rvr.launch.py").read_text()
+def test_supervised_launch_shutdowns_motor_graph_when_safety_or_driver_process_exits():
+    handlers = _register_process_exit_handlers("launch/supervised_rvr.launch.py")
 
-    assert "RegisterEventHandler" in source
-    assert "OnProcessExit" in source
-    assert "Shutdown" in source
-    assert "lidar_collision_stop_supervisor exited" in source
+    assert {
+        "target": "collision_stop_node",
+        "condition": "start_supervisor",
+        "reasons": ["lidar_collision_stop_supervisor exited; shutting down motor-capable launch"],
+    } in handlers
+    assert {
+        "target": "rvr_node",
+        "condition": None,
+        "reasons": ["sphero_rvr_driver exited; shutting down supervised launch"],
+    } in handlers
 
 
 def test_ros_transform_helper_extracts_planar_yaw_for_core_evaluation():

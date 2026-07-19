@@ -9,9 +9,116 @@ launches.
 from __future__ import annotations
 
 import math
-from typing import Any, Optional
+import threading
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
 from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanInput, Transform2D, TwistCommand
+
+
+@dataclass(frozen=True)
+class DriverForwardResult:
+    success: bool
+    message: str
+
+
+class DriverServiceForwarder:
+    """Forward public safety services to the driver with bounded confirmation.
+
+    The public supervisor services are only truthful if the downstream driver
+    response has actually arrived.  This helper waits on a Future completion
+    event; it does not spin an executor.  The ROS node must therefore run under
+    an executor that can make client futures progress while a service callback is
+    waiting, e.g. MultiThreadedExecutor with separate callback groups.
+    """
+
+    def __init__(self, *, timeout_s: float):
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        self._timeout_s = float(timeout_s)
+        self._lock = threading.Lock()
+        self._pending: dict[Any, threading.Event] = {}
+        self._shutdown = False
+
+    def call(self, client: Any, label: str, request_factory: Callable[[], Any]) -> DriverForwardResult:
+        if self.is_shutdown:
+            return DriverForwardResult(False, f"{label} not forwarded during shutdown; local supervisor state already forced zero")
+        if not client.service_is_ready():
+            return DriverForwardResult(False, f"{label} unavailable; local supervisor state already forced zero")
+        try:
+            future = client.call_async(request_factory())
+        except Exception as exc:
+            return DriverForwardResult(False, f"{label} request failed: {exc}; local supervisor state already forced zero")
+
+        done = threading.Event()
+        holder: dict[str, DriverForwardResult] = {}
+        with self._lock:
+            if self._shutdown:
+                self._cancel_future(future)
+                return DriverForwardResult(False, f"{label} not forwarded during shutdown; local supervisor state already forced zero")
+            self._pending[future] = done
+
+        def _complete(done_future: Any) -> None:
+            try:
+                if self.is_shutdown:
+                    holder.setdefault(
+                        "result",
+                        DriverForwardResult(False, f"{label} aborted during shutdown; local supervisor state already forced zero"),
+                    )
+                    return
+                result = done_future.result()
+                success = bool(getattr(result, "success", False))
+                message = str(getattr(result, "message", label))
+                holder["result"] = DriverForwardResult(success, message)
+            except Exception as exc:
+                if self.is_shutdown:
+                    holder["result"] = DriverForwardResult(
+                        False, f"{label} aborted during shutdown; local supervisor state already forced zero"
+                    )
+                else:
+                    holder["result"] = DriverForwardResult(
+                        False, f"{label} response failed: {exc}; local supervisor state already forced zero"
+                    )
+            finally:
+                with self._lock:
+                    self._pending.pop(done_future, None)
+                done.set()
+
+        future.add_done_callback(_complete)
+        if not done.wait(self._timeout_s):
+            with self._lock:
+                self._pending.pop(future, None)
+            self._cancel_future(future)
+            return DriverForwardResult(False, f"{label} timed out; local supervisor state already forced zero")
+        if self.is_shutdown:
+            return DriverForwardResult(False, f"{label} aborted during shutdown; local supervisor state already forced zero")
+        return holder.get(
+            "result",
+            DriverForwardResult(False, f"{label} completed without a response; local supervisor state already forced zero"),
+        )
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._shutdown = True
+            pending = list(self._pending.items())
+            self._pending.clear()
+        for future, done in pending:
+            self._cancel_future(future)
+            done.set()
+
+    @property
+    def is_shutdown(self) -> bool:
+        with self._lock:
+            return self._shutdown
+
+    @staticmethod
+    def _cancel_future(future: Any) -> None:
+        cancel = getattr(future, "cancel", None)
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:
+                pass
 
 
 def _stamp_seconds(stamp: Any) -> Optional[float]:
@@ -55,8 +162,9 @@ def main(args=None):
     import rclpy
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from geometry_msgs.msg import Twist
+    from rclpy.callback_groups import ReentrantCallbackGroup
     from rclpy.duration import Duration
-    from rclpy.executors import ExternalShutdownException
+    from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.time import Time
     from sensor_msgs.msg import LaserScan
@@ -67,8 +175,15 @@ def main(args=None):
     class LidarCollisionStopSupervisorNode(Node):
         def __init__(self):
             super().__init__("lidar_collision_stop_supervisor")
+            self._shutting_down = False
             self._declare_parameters()
             self._config = self._read_config()
+            self._driver_forwarder = DriverServiceForwarder(
+                timeout_s=float(self.get_parameter("driver_service_timeout_s").value)
+            )
+            self._state_lock = threading.RLock()
+            self._service_group = ReentrantCallbackGroup()
+            self._driver_client_group = ReentrantCallbackGroup()
             now = self._now_seconds()
             self._supervisor = CollisionStopSupervisor(self._config, now=now)
             self._tf_buffer = Buffer()
@@ -89,14 +204,34 @@ def main(args=None):
             self.create_subscription(Twist, requested_cmd_topic, self._on_cmd_vel, 10)
             self.create_subscription(LaserScan, scan_topic, self._on_scan, 10)
 
-            self._driver_stop_client = self.create_client(Trigger, str(self.get_parameter("driver_stop_service").value))
-            self._driver_estop_client = self.create_client(Trigger, str(self.get_parameter("driver_estop_service").value))
-            self._driver_clear_estop_client = self.create_client(Trigger, str(self.get_parameter("driver_clear_estop_service").value))
-            self.create_service(Trigger, "stop", self._on_stop)
-            self.create_service(Trigger, "estop", self._on_estop)
-            self.create_service(Trigger, "clear_estop", self._on_clear_estop)
+            self._driver_stop_client = self.create_client(
+                Trigger,
+                str(self.get_parameter("driver_stop_service").value),
+                callback_group=self._driver_client_group,
+            )
+            self._driver_estop_client = self.create_client(
+                Trigger,
+                str(self.get_parameter("driver_estop_service").value),
+                callback_group=self._driver_client_group,
+            )
+            self._driver_clear_estop_client = self.create_client(
+                Trigger,
+                str(self.get_parameter("driver_clear_estop_service").value),
+                callback_group=self._driver_client_group,
+            )
+            self.create_service(Trigger, "stop", self._on_stop, callback_group=self._service_group)
+            self.create_service(Trigger, "estop", self._on_estop, callback_group=self._service_group)
+            self.create_service(Trigger, "clear_estop", self._on_clear_estop, callback_group=self._service_group)
             self.create_service(Trigger, "collision_stop/reset", self._on_reset)
             self.create_timer(self._config.zero_publish_period_s, self._on_timer)
+
+        def destroy_node(self):
+            self._begin_shutdown()
+            super().destroy_node()
+
+        def _begin_shutdown(self):
+            self._shutting_down = True
+            self._driver_forwarder.shutdown()
 
         def _declare_parameters(self):
             defaults = CollisionStopConfig()
@@ -110,6 +245,7 @@ def main(args=None):
                 "driver_stop_service": "/rvr_driver/stop",
                 "driver_estop_service": "/rvr_driver/estop",
                 "driver_clear_estop_service": "/rvr_driver/clear_estop",
+                "driver_service_timeout_s": 1.0,
                 "base_frame": "base_link",
                 "laser_frame": "laser",
                 "max_scan_age_s": defaults.max_scan_age_s,
@@ -184,27 +320,28 @@ def main(args=None):
             )
 
         def _on_scan(self, msg):
-            header = getattr(msg, "header", None)
-            stamp_msg = getattr(header, "stamp", None)
-            stamp = _stamp_seconds(stamp_msg)
-            frame_id = str(getattr(header, "frame_id", "")) or self._config.laser_frame
-            transform_to_base, transform_error = self._lookup_scan_transform(frame_id, stamp_msg)
-            decision = self._supervisor.update_scan(
-                ScanInput(
-                    ranges=tuple(getattr(msg, "ranges", []) or []),
-                    angle_min=float(msg.angle_min),
-                    angle_increment=float(msg.angle_increment),
-                    range_min=float(msg.range_min),
-                    range_max=float(msg.range_max),
-                    stamp=stamp,
-                    received_at=self._now_seconds(),
-                    frame_id=frame_id,
-                    transform_to_base=transform_to_base,
-                    transform_error=transform_error,
-                ),
-                now=self._now_seconds(),
-            )
-            self._publish_decision(decision)
+            with self._state_lock:
+                header = getattr(msg, "header", None)
+                stamp_msg = getattr(header, "stamp", None)
+                stamp = _stamp_seconds(stamp_msg)
+                frame_id = str(getattr(header, "frame_id", "")) or self._config.laser_frame
+                transform_to_base, transform_error = self._lookup_scan_transform(frame_id, stamp_msg)
+                decision = self._supervisor.update_scan(
+                    ScanInput(
+                        ranges=tuple(getattr(msg, "ranges", []) or []),
+                        angle_min=float(msg.angle_min),
+                        angle_increment=float(msg.angle_increment),
+                        range_min=float(msg.range_min),
+                        range_max=float(msg.range_max),
+                        stamp=stamp,
+                        received_at=self._now_seconds(),
+                        frame_id=frame_id,
+                        transform_to_base=transform_to_base,
+                        transform_error=transform_error,
+                    ),
+                    now=self._now_seconds(),
+                )
+                self._publish_decision(decision)
 
         def _lookup_scan_transform(self, frame_id: str, stamp_msg) -> tuple[Optional[Transform2D], Optional[str]]:
             if frame_id == self._config.base_frame:
@@ -220,76 +357,64 @@ def main(args=None):
                 return _transform2d_from_transform_stamped(stamped), None
             except Exception as exc:
                 reason = _tf_error_reason(exc)
-                self.get_logger().warn(f"collision stop TF lookup failed: {reason}: {exc}")
+                if self._context_ok():
+                    self.get_logger().warn(f"collision stop TF lookup failed: {reason}: {exc}")
                 return None, reason
 
         def _on_cmd_vel(self, msg):
-            decision = self._supervisor.apply_command(
-                TwistCommand(float(msg.linear.x), float(msg.angular.z)), now=self._now_seconds()
-            )
-            self._publish_decision(decision)
+            with self._state_lock:
+                decision = self._supervisor.apply_command(
+                    TwistCommand(float(msg.linear.x), float(msg.angular.z)), now=self._now_seconds()
+                )
+                self._publish_decision(decision)
 
         def _on_timer(self):
-            decision = self._supervisor.tick(now=self._now_seconds())
-            self._publish_decision(decision)
+            with self._state_lock:
+                decision = self._supervisor.tick(now=self._now_seconds())
+                self._publish_decision(decision)
 
         def _on_stop(self, request, response):
-            decision = self._supervisor.stop(now=self._now_seconds())
-            self._publish_decision(decision)
+            with self._state_lock:
+                decision = self._supervisor.stop(now=self._now_seconds())
+                self._publish_decision(decision)
             ok, message = self._call_driver(self._driver_stop_client, "driver stop")
             response.success = ok
             response.message = message
             return response
 
         def _on_estop(self, request, response):
-            decision = self._supervisor.estop(now=self._now_seconds())
-            self._publish_decision(decision)
+            with self._state_lock:
+                decision = self._supervisor.estop(now=self._now_seconds())
+                self._publish_decision(decision)
             ok, message = self._call_driver(self._driver_estop_client, "driver estop")
             response.success = ok
             response.message = message
             return response
 
         def _on_clear_estop(self, request, response):
-            decision = self._supervisor.clear_estop(now=self._now_seconds())
-            self._publish_decision(decision)
+            with self._state_lock:
+                decision = self._supervisor.clear_estop(now=self._now_seconds())
+                self._publish_decision(decision)
             ok, message = self._call_driver(self._driver_clear_estop_client, "driver clear_estop")
             response.success = ok
             response.message = message
             return response
 
         def _on_reset(self, request, response):
-            result = self._supervisor.reset(now=self._now_seconds())
-            self._publish_decision(result.decision)
+            with self._state_lock:
+                result = self._supervisor.reset(now=self._now_seconds())
+                self._publish_decision(result.decision)
             response.success = result.accepted
             response.message = result.reason
             return response
 
         def _call_driver(self, client, label: str) -> tuple[bool, str]:
-            if not client.service_is_ready():
-                return False, f"{label} unavailable; local supervisor state already forced zero"
-            try:
-                future = client.call_async(Trigger.Request())
-            except Exception as exc:
-                self.get_logger().error(f"{label} request failed: {exc}")
-                return False, f"{label} request failed; local supervisor state already forced zero"
-
-            def _log_driver_result(done_future):
-                try:
-                    result = done_future.result()
-                except Exception as exc:
-                    self.get_logger().error(f"{label} async response failed: {exc}")
-                    return
-                success = bool(getattr(result, "success", False))
-                message = str(getattr(result, "message", label))
-                if success:
-                    self.get_logger().info(f"{label} async response: {message}")
-                else:
-                    self.get_logger().error(f"{label} async response rejected: {message}")
-
-            future.add_done_callback(_log_driver_result)
-            return True, f"{label} request sent; local supervisor state already forced zero"
+            result = self._driver_forwarder.call(client, label, Trigger.Request)
+            return result.success, result.message
 
         def _publish_decision(self, decision):
+            if not self._context_ok():
+                return
             msg = Twist()
             msg.linear.x = decision.output.linear_x
             msg.angular.z = decision.output.angular_z
@@ -311,6 +436,8 @@ def main(args=None):
             self._publish_diagnostics(decision)
 
         def _publish_diagnostics(self, decision):
+            if not self._context_ok():
+                return
             array = DiagnosticArray()
             array.header.stamp = self.get_clock().now().to_msg()
             status = DiagnosticStatus()
@@ -350,15 +477,22 @@ def main(args=None):
         def _now_seconds(self) -> float:
             return self.get_clock().now().nanoseconds / 1_000_000_000.0
 
+        def _context_ok(self) -> bool:
+            return not self._shutting_down and self.context.ok()
+
     def _fmt_optional(value):
         return "" if value is None else f"{float(value):.3f}"
 
     rclpy.init(args=args)
     node = LidarCollisionStopSupervisorNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node._begin_shutdown()
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

@@ -9,6 +9,7 @@ lidar_collision_stop_supervisor:
     driver_stop_service: /rvr_driver/stop
     driver_estop_service: /rvr_driver/estop
     driver_clear_estop_service: /rvr_driver/clear_estop
+    driver_service_timeout_s: 1.0
     base_frame: base_link
     laser_frame: laser
     tf_timeout_s: 0.05
