@@ -1,5 +1,7 @@
 import asyncio
 import struct
+import time
+from contextlib import suppress
 
 import pytest
 
@@ -9,6 +11,7 @@ from sphero_rvr_core.packet import Packet
 from sphero_rvr_core.commands import RVRCommands
 
 RAW_OFF = bytes([0, 0, 0, 0])
+ESTOP_SOFTWARE_DISPATCH_BUDGET_S = 0.10
 
 
 class FailingWriteTransport(FakeTransport):
@@ -22,6 +25,18 @@ class FailingWriteTransport(FakeTransport):
         if self.failures > 0 and packet.command_id == self.command_id:
             self.failures -= 1
             raise RuntimeError("injected write failure")
+        await super().write(data)
+
+
+class ReleaseControlledWriteTransport(FakeTransport):
+    def __init__(self):
+        super().__init__(auto_ack=False)
+        self.write_started = asyncio.Event()
+        self.release_write = asyncio.Event()
+
+    async def write(self, data: bytes) -> None:
+        self.write_started.set()
+        await self.release_write.wait()
         await super().write(data)
 
 
@@ -41,9 +56,230 @@ def _tank_drive_packets(transport: FakeTransport, driver: RVRDriver) -> list[Pac
     return [packet for packet in _packets(transport) if packet.command_id == driver.commands.CID_DRIVE_TANK_NORMALIZED]
 
 
+def _motion_packets(transport: FakeTransport, driver: RVRDriver) -> list[Packet]:
+    motion_cids = {
+        driver.commands.CID_RAW_MOTORS,
+        driver.commands.CID_DRIVE_WITH_HEADING,
+        driver.commands.CID_DRIVE_TANK_SI_UNITS,
+        driver.commands.CID_DRIVE_TANK_NORMALIZED,
+        driver.commands.CID_DRIVE_RC_SI_UNITS,
+        driver.commands.CID_DRIVE_RC_NORMALIZED,
+        driver.commands.CID_DRIVE_TO_POSITION_SI,
+    }
+    return [packet for packet in _packets(transport) if packet.command_id in motion_cids]
+
+
+async def _start_blocked_battery_request(driver: RVRDriver, transport: FakeTransport) -> asyncio.Task:
+    battery_task = asyncio.create_task(driver.get_battery_percentage())
+    await transport.wait_for_write()
+    assert Packet.decode(transport.writes[-1]).command_id == driver.commands.CID_GET_BATTERY_PERCENTAGE
+    return battery_task
+
+
+async def _cleanup_driver(driver: RVRDriver, *tasks: asyncio.Task) -> None:
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    for task in tasks:
+        with suppress(asyncio.CancelledError, TimeoutError):
+            await task
+    await driver.disconnect()
+
+
 def _decode_rc_payload(packet: Packet) -> tuple[float, float, int]:
     yaw, linear, flags = struct.unpack(">ffB", packet.payload)
     return yaw, linear, flags
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_bypasses_blocked_response_within_software_dispatch_budget():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
+    await driver.connect()
+    transport.writes.clear()
+    transport._write_event.clear()
+    battery_task = await _start_blocked_battery_request(driver, transport)
+
+    started = time.perf_counter()
+    await asyncio.wait_for(driver.emergency_stop(), timeout=ESTOP_SOFTWARE_DISPATCH_BUDGET_S)
+    elapsed = time.perf_counter() - started
+
+    try:
+        assert elapsed <= ESTOP_SOFTWARE_DISPATCH_BUDGET_S
+        assert _raw_motor_packets(transport, driver)[-1].payload == RAW_OFF
+    finally:
+        await _cleanup_driver(driver, battery_task)
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_motion_queued_before_it_without_replaying_after_stop_frame():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
+    await driver.connect()
+    transport.writes.clear()
+    transport._write_event.clear()
+    battery_task = await _start_blocked_battery_request(driver, transport)
+
+    stale_motion = asyncio.create_task(driver.drive_with_heading(speed=100, heading=90))
+    await asyncio.sleep(0)
+    await asyncio.wait_for(driver.stop(), timeout=ESTOP_SOFTWARE_DISPATCH_BUDGET_S)
+    stop_index = len(_packets(transport)) - 1
+
+    await asyncio.sleep(1.1)
+    with suppress(TimeoutError):
+        await stale_motion
+
+    try:
+        packets_after_stop = _packets(transport)[stop_index + 1 :]
+        assert all(packet.command_id != driver.commands.CID_DRIVE_WITH_HEADING for packet in packets_after_stop)
+    finally:
+        await _cleanup_driver(driver, battery_task, stale_motion)
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_queued_autonomous_ir_motion_before_it_can_dispatch():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
+    await driver.connect()
+    transport.writes.clear()
+    transport._write_event.clear()
+    battery_task = await _start_blocked_battery_request(driver, transport)
+
+    stale_ir_motion = asyncio.create_task(driver.start_ir_following(far_code=4, near_code=5))
+    await asyncio.sleep(0)
+    await asyncio.wait_for(driver.stop(), timeout=ESTOP_SOFTWARE_DISPATCH_BUDGET_S)
+
+    await asyncio.sleep(1.1)
+    with suppress(TimeoutError):
+        await stale_ir_motion
+
+    try:
+        packets = _packets(transport)
+        assert all(packet.command_id != driver.commands.CID_START_IR_FOLLOWING for packet in packets)
+    finally:
+        await _cleanup_driver(driver, battery_task, stale_ir_motion)
+
+
+@pytest.mark.asyncio
+async def test_stop_allows_new_post_stop_motion_after_invalidating_old_queued_motion():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
+    await driver.connect()
+    transport.writes.clear()
+    transport._write_event.clear()
+    battery_task = await _start_blocked_battery_request(driver, transport)
+
+    stale_motion = asyncio.create_task(driver.drive_with_heading(speed=100, heading=90))
+    await asyncio.sleep(0)
+    await asyncio.wait_for(driver.stop(), timeout=ESTOP_SOFTWARE_DISPATCH_BUDGET_S)
+    fresh_motion = asyncio.create_task(driver.drive_with_heading(speed=40, heading=180))
+
+    await asyncio.sleep(1.1)
+    with suppress(TimeoutError):
+        await stale_motion
+    await asyncio.wait_for(fresh_motion, timeout=0.2)
+
+    try:
+        heading_packets = [
+            packet for packet in _packets(transport) if packet.command_id == driver.commands.CID_DRIVE_WITH_HEADING
+        ]
+        assert len(heading_packets) == 1
+        assert heading_packets[0].payload == struct.pack(">BHB", 40, 180, 0)
+    finally:
+        await _cleanup_driver(driver, battery_task, stale_motion, fresh_motion)
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_in_progress_write_lock_without_interleaving_packet_bytes():
+    transport = ReleaseControlledWriteTransport()
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
+    await driver._dispatcher.start()
+
+    request_packet = driver.commands.get_battery_percentage(1)
+    request_task = asyncio.create_task(driver._dispatcher.request(request_packet, timeout=0.2))
+    await transport.write_started.wait()
+
+    stop_task = asyncio.create_task(driver.stop())
+    await asyncio.sleep(0.02)
+    assert transport.writes == []
+
+    transport.release_write.set()
+    await asyncio.wait_for(stop_task, timeout=ESTOP_SOFTWARE_DISPATCH_BUDGET_S)
+    with suppress(TimeoutError):
+        await request_task
+    await driver._dispatcher.stop()
+
+    packets = _packets(transport)
+    assert packets[0].command_id == driver.commands.CID_GET_BATTERY_PERCENTAGE
+    assert packets[1].command_id == driver.commands.CID_RAW_MOTORS
+    assert packets[1].payload == RAW_OFF
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_motion_already_waiting_on_dispatcher_write_lock():
+    transport = ReleaseControlledWriteTransport()
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
+    await driver._dispatcher.start()
+    await driver._queue.start()
+
+    request_packet = driver.commands.get_battery_percentage(1)
+    request_task = asyncio.create_task(driver._dispatcher.request(request_packet, timeout=0.2))
+    await transport.write_started.wait()
+
+    stale_motion = asyncio.create_task(driver.drive_with_heading(speed=100, heading=90))
+    await asyncio.sleep(0.02)
+    stop_task = asyncio.create_task(driver.stop())
+    await asyncio.sleep(0)
+
+    transport.release_write.set()
+    await asyncio.wait_for(stop_task, timeout=ESTOP_SOFTWARE_DISPATCH_BUDGET_S)
+    with suppress(TimeoutError):
+        await request_task
+    await asyncio.wait_for(stale_motion, timeout=0.2)
+    await driver._queue.stop()
+    await driver._dispatcher.stop()
+
+    packets = _packets(transport)
+    assert [packet.command_id for packet in packets] == [
+        driver.commands.CID_GET_BATTERY_PERCENTAGE,
+        driver.commands.CID_RAW_MOTORS,
+    ]
+    assert packets[1].payload == RAW_OFF
+
+
+@pytest.mark.asyncio
+async def test_estop_rejects_motor_capable_paths_until_clear_then_only_new_motion_runs():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
+    await driver.connect()
+    transport.writes.clear()
+
+    await driver.emergency_stop()
+
+    with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
+    with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.drive_with_heading(speed=20, heading=0)
+    with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.raw_motors(1, 20, 1, 20)
+    with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.drive_to_position_si(yaw_angle=0.0, x=1.0, y=0.0, linear_speed=0.2)
+    with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.start_ir_following(far_code=4, near_code=5)
+    with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.start_ir_evading(far_code=6, near_code=7)
+
+    await driver.clear_emergency_stop()
+    await driver.drive_with_heading(speed=20, heading=0)
+
+    await driver.disconnect()
+
+    motion_packets = _motion_packets(transport, driver)
+    assert [packet.command_id for packet in motion_packets] == [
+        driver.commands.CID_RAW_MOTORS,
+        driver.commands.CID_DRIVE_WITH_HEADING,
+        driver.commands.CID_RAW_MOTORS,
+    ]
 
 
 @pytest.mark.asyncio
@@ -70,7 +306,8 @@ async def test_emergency_stop_preempts_velocity_with_raw_motor_off_and_blocks_dr
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
     await asyncio.sleep(0.02)
     await driver.emergency_stop()
-    await driver.set_velocity(linear_mps=0.3, angular_rad_s=0.0)
+    with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.set_velocity(linear_mps=0.3, angular_rad_s=0.0)
     await asyncio.sleep(0.03)
     await driver.disconnect()
 

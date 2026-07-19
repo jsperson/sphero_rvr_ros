@@ -170,7 +170,7 @@ class Dispatcher:
             return matches[0]
         return None
 
-    async def request(self, packet: Packet, timeout: float = 1.0) -> Packet:
+    async def request(self, packet: Packet, timeout: float = 1.0, before_write: Optional[Callable[[], None]] = None) -> Packet:
         if not self._started:
             raise RuntimeError("dispatcher is not started")
         if self._reader_fault is not None:
@@ -181,6 +181,8 @@ class Dispatcher:
         self._pending[key] = future
         try:
             async with self._write_lock:
+                if before_write is not None:
+                    before_write()
                 await self._transport.write(packet.encode())
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
@@ -188,7 +190,7 @@ class Dispatcher:
         finally:
             self._pending.pop(key, None)
 
-    async def send(self, packet: Packet) -> None:
+    async def send(self, packet: Packet, before_write: Optional[Callable[[], None]] = None) -> None:
         """Send a packet that does not require a response.
 
         Fire-and-forget commands still go through the dispatcher's single write
@@ -199,6 +201,8 @@ class Dispatcher:
         if not self._started:
             raise RuntimeError("dispatcher is not started")
         async with self._write_lock:
+            if before_write is not None:
+                before_write()
             await self._transport.write(packet.encode())
 
     async def _read_loop(self) -> None:

@@ -24,7 +24,29 @@ from .transport import Transport
 LOGGER = logging.getLogger(__name__)
 
 
+class _StaleMotionCommand(RuntimeError):
+    """Internal signal that a queued motion packet was invalidated before write."""
+
+
 class RVRDriver:
+    _MOTOR_CAPABLE_COMMAND_IDS = frozenset(
+        {
+            RVRCommands.CID_RAW_MOTORS,
+            RVRCommands.CID_DRIVE_WITH_HEADING,
+            RVRCommands.CID_DRIVE_TANK_SI_UNITS,
+            RVRCommands.CID_DRIVE_TANK_NORMALIZED,
+            RVRCommands.CID_DRIVE_RC_SI_UNITS,
+            RVRCommands.CID_DRIVE_RC_NORMALIZED,
+            RVRCommands.CID_DRIVE_TO_POSITION_SI,
+        }
+    )
+    _SENSOR_MOTOR_CAPABLE_COMMAND_IDS = frozenset(
+        {
+            RVRCommands.CID_START_IR_FOLLOWING,
+            RVRCommands.CID_START_IR_EVADING,
+        }
+    )
+
     def __init__(
         self,
         transport: Transport,
@@ -66,6 +88,7 @@ class RVRDriver:
         self._last_velocity_update: Optional[float] = None
         self._connected = False
         self._emergency_stopped = False
+        self._motion_generation = 0
         self._fail_safe_active = False
         self._fail_safe_reason: Optional[str] = None
         self._control_task: Optional[asyncio.Task] = None
@@ -96,6 +119,7 @@ class RVRDriver:
         self._connected = False
 
     async def set_velocity(self, linear_mps: float, angular_rad_s: float) -> None:
+        self._raise_if_emergency_stopped()
         if self._fail_safe_active:
             raise RuntimeError("fail-safe fault active; clear safe stop before driving")
         self._desired_velocity = clamp_velocity(
@@ -108,20 +132,23 @@ class RVRDriver:
     async def stop(self) -> None:
         self._desired_velocity = None
         self._last_velocity_update = None
-        await self._send(self.commands.stop, CommandPriority.HIGH)
+        self._invalidate_motion_commands()
+        await self._send_immediate_safety(self.commands.stop)
 
     async def emergency_stop(self) -> None:
         self._emergency_stopped = True
         self._desired_velocity = None
         self._last_velocity_update = None
-        await self._send(self.commands.emergency_stop, CommandPriority.EMERGENCY)
+        self._invalidate_motion_commands()
+        await self._send_immediate_safety(self.commands.emergency_stop)
 
     async def clear_emergency_stop(self) -> None:
         self._emergency_stopped = False
 
     async def clear_fail_safe_fault(self) -> None:
         """Clear a transport fail-safe only after a stop command is accepted."""
-        await self._send(self.commands.stop, CommandPriority.HIGH)
+        self._invalidate_motion_commands()
+        await self._send_immediate_safety(self.commands.stop)
         self._fail_safe_active = False
         self._fail_safe_reason = None
 
@@ -139,12 +166,17 @@ class RVRDriver:
 
     async def drive_with_heading(self, speed: int, heading: int, reverse: bool = False) -> None:
         flags = 1 if reverse else 0
-        await self._send(lambda seq: self.commands.drive_with_heading(seq, speed, heading, flags), CommandPriority.NORMAL)
+        await self._send(
+            lambda seq: self.commands.drive_with_heading(seq, speed, heading, flags),
+            CommandPriority.NORMAL,
+            motor_capable=True,
+        )
 
     async def raw_motors(self, left_mode: int, left_speed: int, right_mode: int, right_speed: int) -> None:
         await self._send(
             lambda seq: self.commands.raw_motors(seq, left_mode, left_speed, right_mode, right_speed),
             CommandPriority.NORMAL,
+            motor_capable=True,
         )
 
     async def drive_to_position_si(
@@ -158,6 +190,7 @@ class RVRDriver:
         await self._send(
             lambda seq: self.commands.drive_to_position_si(seq, yaw_angle, x, y, linear_speed, flags),
             CommandPriority.NORMAL,
+            motor_capable=True,
         )
 
     async def echo(self, data: bytes, target: int = TARGET_BT) -> bytes:
@@ -353,13 +386,21 @@ class RVRDriver:
         await self._send(self.commands.stop_ir_broadcast, CommandPriority.LOW)
 
     async def start_ir_following(self, far_code: int, near_code: int) -> None:
-        await self._send(lambda seq: self.commands.start_ir_following(seq, far_code, near_code), CommandPriority.LOW)
+        await self._send(
+            lambda seq: self.commands.start_ir_following(seq, far_code, near_code),
+            CommandPriority.LOW,
+            motor_capable=True,
+        )
 
     async def stop_ir_following(self) -> None:
         await self._send(self.commands.stop_ir_following, CommandPriority.LOW)
 
     async def start_ir_evading(self, far_code: int, near_code: int) -> None:
-        await self._send(lambda seq: self.commands.start_ir_evading(seq, far_code, near_code), CommandPriority.LOW)
+        await self._send(
+            lambda seq: self.commands.start_ir_evading(seq, far_code, near_code),
+            CommandPriority.LOW,
+            motor_capable=True,
+        )
 
     async def stop_ir_evading(self) -> None:
         await self._send(self.commands.stop_ir_evading, CommandPriority.LOW)
@@ -490,7 +531,7 @@ class RVRDriver:
 
     async def _send_from_control_loop(self, packet_factory) -> None:
         try:
-            await self._send(packet_factory, CommandPriority.NORMAL)
+            await self._send(packet_factory, CommandPriority.NORMAL, motor_capable=True)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -500,10 +541,11 @@ class RVRDriver:
     async def _attempt_control_safe_stop(self, reason: str) -> None:
         self._desired_velocity = None
         self._last_velocity_update = None
+        self._invalidate_motion_commands()
         last_exc: Optional[BaseException] = None
         for attempt in range(1, self._safe_stop_attempts + 1):
             try:
-                await self._send(self.commands.stop, CommandPriority.HIGH)
+                await self._send_immediate_safety(self.commands.stop)
                 return
             except asyncio.CancelledError:
                 raise
@@ -525,13 +567,62 @@ class RVRDriver:
             self._fail_safe_active = True
             self._fail_safe_reason = f"{reason}: {last_exc}"
 
-    async def _send(self, packet_factory, priority: CommandPriority):
+    async def _send(self, packet_factory, priority: CommandPriority, *, motor_capable: bool = False):
         sequence_id = self._next_sequence_id()
         packet = packet_factory(sequence_id)
+        motor_capable = motor_capable or self._is_motor_capable_packet(packet)
+        generation = self._motion_generation if motor_capable else None
+        if motor_capable:
+            self._raise_if_emergency_stopped()
         expects_response = packet.flags & (FLAG_REQUEST_RESPONSE | FLAG_REQUEST_ERROR_ONLY)
-        if expects_response:
-            return await self._queue.submit(lambda: self._dispatcher.request(packet), priority=priority)
-        return await self._queue.submit(lambda: self._dispatcher.send(packet), priority=priority)
+        return await self._queue.submit(
+            lambda: self._dispatch_if_motion_current(
+                packet,
+                expects_response=bool(expects_response),
+                motion_generation=generation,
+            ),
+            priority=priority,
+        )
+
+    async def _send_immediate_safety(self, packet_factory) -> None:
+        sequence_id = self._next_sequence_id()
+        packet = packet_factory(sequence_id)
+        await self._dispatcher.send(packet)
+
+    async def _dispatch_if_motion_current(self, packet, *, expects_response: bool, motion_generation: Optional[int]):
+        if motion_generation is not None:
+            if not self._motion_dispatch_allowed(motion_generation):
+                return None
+        before_write = None
+        if motion_generation is not None:
+            before_write = lambda: self._raise_if_motion_dispatch_blocked(motion_generation)
+        try:
+            if expects_response:
+                return await self._dispatcher.request(packet, before_write=before_write)
+            return await self._dispatcher.send(packet, before_write=before_write)
+        except _StaleMotionCommand:
+            return None
+
+    def _invalidate_motion_commands(self) -> None:
+        self._motion_generation += 1
+
+    def _raise_if_emergency_stopped(self) -> None:
+        if self._emergency_stopped:
+            raise RuntimeError("emergency stop active; clear emergency stop before driving")
+
+    def _motion_dispatch_allowed(self, motion_generation: int) -> bool:
+        return not self._emergency_stopped and motion_generation == self._motion_generation
+
+    def _raise_if_motion_dispatch_blocked(self, motion_generation: int) -> None:
+        if not self._motion_dispatch_allowed(motion_generation):
+            raise _StaleMotionCommand("stale motion command invalidated before dispatch")
+
+    def _is_motor_capable_packet(self, packet) -> bool:
+        if packet.device_id == DID_DRIVE:
+            return packet.command_id in self._MOTOR_CAPABLE_COMMAND_IDS
+        if packet.device_id == DID_SENSOR:
+            return packet.command_id in self._SENSOR_MOTOR_CAPABLE_COMMAND_IDS
+        return False
 
     def _next_sequence_id(self) -> int:
         self._sequence_id = (self._sequence_id + 1) % 256
