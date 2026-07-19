@@ -51,6 +51,7 @@ setup(
                 "docs/camera_lidar_calibration.md",
                 "docs/lidar_collision_stop_supervisor.md",
                 "docs/range_motion_controller.md",
+                "docs/mission_api.md",
                 "docs/supervised_coordinator.md",
                 "docs/slam_replay.md",
                 "docs/shoe_detector_replay.md",
