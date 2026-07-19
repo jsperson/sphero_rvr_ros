@@ -108,6 +108,7 @@ def main(args=None):
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from geometry_msgs.msg import TransformStamped, Twist
     from nav_msgs.msg import Odometry
+    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from sensor_msgs.msg import BatteryState, Illuminance, Temperature
     from std_msgs.msg import ColorRGBA
@@ -304,6 +305,8 @@ def main(args=None):
             except Exception as exc:
                 self.get_logger().warn(f"battery query failed: {exc}")
                 return
+            if not self._context_ok():
+                return
 
             self._diagnostic_telemetry = DiagnosticTelemetry(
                 battery=snapshot,
@@ -333,6 +336,8 @@ def main(args=None):
                 readings = future.result()
             except Exception as exc:
                 self.get_logger().warn(f"temperature query failed: {exc}")
+                return
+            if not self._context_ok():
                 return
 
             stamp = self.get_clock().now().to_msg()
@@ -372,6 +377,8 @@ def main(args=None):
             except Exception as exc:
                 self.get_logger().warn(f"ambient light query failed: {exc}")
                 return
+            if not self._context_ok():
+                return
 
             msg = Illuminance()
             msg.header.stamp = self.get_clock().now().to_msg()
@@ -391,6 +398,8 @@ def main(args=None):
                 counts = future.result()
             except Exception as exc:
                 self.get_logger().warn(f"encoder odometry query failed: {exc}")
+                return
+            if not self._context_ok():
                 return
             sample = self._odom_tracker.update(counts, stamp=self.get_clock().now().nanoseconds / 1_000_000_000.0)
             if sample is None:
@@ -485,6 +494,8 @@ def main(args=None):
                 self.get_logger().warn(f"diagnostic metadata query failed: {exc}")
 
         def _publish_diagnostics(self):
+            if not self._context_ok():
+                return
             state = self._driver_thread.driver.get_state()
             summary = summarize_state(state, self._diagnostic_telemetry)
             status = DiagnosticStatus()
@@ -510,13 +521,18 @@ def main(args=None):
             except Exception as exc:
                 self.get_logger().error(f"{label} command failed: {exc}")
 
+        def _context_ok(self) -> bool:
+            return self.context.ok()
+
     rclpy.init(args=args)
     node = SpheroRVRNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

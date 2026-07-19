@@ -2,7 +2,9 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -21,6 +23,37 @@ def generate_launch_description():
     laser_roll = LaunchConfiguration("laser_roll")
     laser_pitch = LaunchConfiguration("laser_pitch")
     laser_yaw = LaunchConfiguration("laser_yaw")
+
+    static_tf_node = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="base_to_laser_static_tf",
+        output="screen",
+        arguments=[
+            "--x", laser_x,
+            "--y", laser_y,
+            "--z", laser_z,
+            "--roll", laser_roll,
+            "--pitch", laser_pitch,
+            "--yaw", laser_yaw,
+            "--frame-id", base_frame,
+            "--child-frame-id", frame_id,
+        ],
+    )
+    rplidar_node = Node(
+        package="rplidar_ros",
+        executable="rplidar_node",
+        name="rplidar_node",
+        output="screen",
+        parameters=[
+            str(lidar_config),
+            {
+                "serial_port": serial_port,
+                "serial_baudrate": serial_baudrate,
+                "frame_id": frame_id,
+            },
+        ],
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("serial_port", default_value="/dev/rplidar"),
@@ -57,34 +90,12 @@ def generate_launch_description():
             default_value="3.1239668018215028",
             description="Measured base_link -> laser yaw in radians.",
         ),
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="base_to_laser_static_tf",
-            output="screen",
-            arguments=[
-                "--x", laser_x,
-                "--y", laser_y,
-                "--z", laser_z,
-                "--roll", laser_roll,
-                "--pitch", laser_pitch,
-                "--yaw", laser_yaw,
-                "--frame-id", base_frame,
-                "--child-frame-id", frame_id,
-            ],
-        ),
-        Node(
-            package="rplidar_ros",
-            executable="rplidar_node",
-            name="rplidar_node",
-            output="screen",
-            parameters=[
-                str(lidar_config),
-                {
-                    "serial_port": serial_port,
-                    "serial_baudrate": serial_baudrate,
-                    "frame_id": frame_id,
-                },
-            ],
+        static_tf_node,
+        rplidar_node,
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=rplidar_node,
+                on_exit=[EmitEvent(event=Shutdown(reason="rplidar_node exited; shutting down lidar launch"))],
+            )
         ),
     ])

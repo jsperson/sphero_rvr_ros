@@ -92,6 +92,43 @@ def test_collision_stop_node_uses_real_tf_lookup_and_truthful_diagnostics():
     assert "tf_timeout_s" in source
 
 
+def test_collision_stop_public_services_do_not_spin_nested_executor():
+    source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py").read_text()
+
+    assert "spin_until_future_complete" not in source
+    assert "call_async" in source
+    assert "add_done_callback" in source
+
+
+def test_live_nodes_tolerate_launch_shutdown_without_rclpy_shutdown_crash():
+    collision_source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py").read_text()
+    rvr_source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "rvr_node.py").read_text()
+
+    for source in (collision_source, rvr_source):
+        assert "ExternalShutdownException" in source
+        assert "try_shutdown" in source
+    assert "_context_ok" in rvr_source
+    assert "self.context.ok()" in rvr_source
+
+
+def test_lidar_launch_shutdowns_graph_when_required_lidar_process_exits():
+    source = (REPO_ROOT / "launch" / "lidar.launch.py").read_text()
+
+    assert "RegisterEventHandler" in source
+    assert "OnProcessExit" in source
+    assert "Shutdown" in source
+    assert "rplidar_node exited" in source
+
+
+def test_supervised_launch_shutdowns_motor_graph_when_safety_process_exits():
+    source = (REPO_ROOT / "launch" / "supervised_rvr.launch.py").read_text()
+
+    assert "RegisterEventHandler" in source
+    assert "OnProcessExit" in source
+    assert "Shutdown" in source
+    assert "lidar_collision_stop_supervisor exited" in source
+
+
 def test_ros_transform_helper_extracts_planar_yaw_for_core_evaluation():
     half_yaw = math.pi / 4.0
     stamped = SimpleNamespace(

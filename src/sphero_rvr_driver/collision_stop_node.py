@@ -56,6 +56,7 @@ def main(args=None):
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from geometry_msgs.msg import Twist
     from rclpy.duration import Duration
+    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.time import Time
     from sensor_msgs.msg import LaserScan
@@ -266,12 +267,27 @@ def main(args=None):
         def _call_driver(self, client, label: str) -> tuple[bool, str]:
             if not client.service_is_ready():
                 return False, f"{label} unavailable; local supervisor state already forced zero"
-            future = client.call_async(Trigger.Request())
-            rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
-            if not future.done():
-                return False, f"{label} timed out; local supervisor state already forced zero"
-            result = future.result()
-            return bool(getattr(result, "success", False)), str(getattr(result, "message", label))
+            try:
+                future = client.call_async(Trigger.Request())
+            except Exception as exc:
+                self.get_logger().error(f"{label} request failed: {exc}")
+                return False, f"{label} request failed; local supervisor state already forced zero"
+
+            def _log_driver_result(done_future):
+                try:
+                    result = done_future.result()
+                except Exception as exc:
+                    self.get_logger().error(f"{label} async response failed: {exc}")
+                    return
+                success = bool(getattr(result, "success", False))
+                message = str(getattr(result, "message", label))
+                if success:
+                    self.get_logger().info(f"{label} async response: {message}")
+                else:
+                    self.get_logger().error(f"{label} async response rejected: {message}")
+
+            future.add_done_callback(_log_driver_result)
+            return True, f"{label} request sent; local supervisor state already forced zero"
 
         def _publish_decision(self, decision):
             msg = Twist()
@@ -341,6 +357,8 @@ def main(args=None):
     node = LidarCollisionStopSupervisorNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
