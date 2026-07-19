@@ -184,6 +184,7 @@ def test_mcp_returns_structured_validation_rejection_timeout_cancel_block_stop_e
     assert adapter.handle_request(_rpc("shutdown", request_id=3))["result"]["shutdown"] is True
     assert adapter.handle_request({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": "not-an-object"})["error"]["code"] == -32602
     assert adapter.handle_request({"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {"x": {object(): "bad"}}})["error"]["code"] == -32700
+    assert adapter.handle_request({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
 
     timeout = RvrMcpAdapter(adapters=FakeCapabilityAdapters(duration_by_tool={"capture_observation": 20.0})).call_tool(
         "rvr.capability.capture_observation", {"sensor": "replay", "client_session_id": "timeout"}
@@ -269,6 +270,7 @@ def test_stdio_entrypoint_handles_initialize_list_call_read_and_shutdown_in_proc
         json.dumps(request)
         for request in [
             _rpc("initialize", {"protocolVersion": "2024-11-05"}, 1),
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
             _rpc("tools/call", {"name": "rvr.capability.capture_observation", "arguments": {"sensor": "replay", "client_session_id": "stdio"}}, 2),
             _rpc("resources/read", {"uri": "rvr://mission/audit"}, 3),
             _rpc("shutdown", request_id=4),
@@ -279,6 +281,7 @@ def test_stdio_entrypoint_handles_initialize_list_call_read_and_shutdown_in_proc
     run_stdio_server()
 
     responses = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(responses) == 4
     assert responses[0]["result"]["serverInfo"]["name"] == "sphero-rvr-mcp"
     assert responses[1]["result"]["content"][0]["text"]
     call_payload = json.loads(responses[1]["result"]["content"][0]["text"])

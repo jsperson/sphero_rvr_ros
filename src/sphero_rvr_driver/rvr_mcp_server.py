@@ -217,13 +217,17 @@ class RvrMcpAdapter:
         except Exception as exc:  # pragma: no cover - defensive fail-closed boundary.
             return self._rejected_payload(context, f"unexpected MCP adapter error: {exc.__class__.__name__}")
 
-    def handle_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    def handle_request(self, request: Mapping[str, Any]) -> Optional[dict[str, Any]]:
         request_id = request.get("id")
         try:
             _ensure_jsonable(request)
             if request.get("jsonrpc") != "2.0":
                 return _error(request_id, -32600, "invalid JSON-RPC envelope")
             method = request.get("method")
+            if "id" not in request:
+                if method in {"notifications/initialized", "notifications/cancelled", "notifications/progress"}:
+                    return None
+                return None
             params = request.get("params", {})
             if params is None:
                 params = {}
@@ -460,7 +464,8 @@ def run_stdio_server(adapter: Optional[RvrMcpAdapter] = None) -> None:
                     response = server.handle_request(request)
             except json.JSONDecodeError:
                 response = _error(None, -32700, "parse error")
-            print(json.dumps(response, sort_keys=True), flush=True)
+            if response is not None:
+                print(json.dumps(response, sort_keys=True), flush=True)
             if server._shutdown:  # noqa: SLF001 - local loop termination flag.
                 break
     finally:
