@@ -31,6 +31,7 @@ EXPECTED_DATA_FILES = {
         "scripts/install-rvr-pi",
         "scripts/rvr-camera-node",
         "scripts/rvr-console",
+        "scripts/rvr-shoe-detector-eval",
         "scripts/rvr_motion_calibration.py",
     },
     "share/sphero_rvr_driver/docs": {
@@ -39,6 +40,9 @@ EXPECTED_DATA_FILES = {
         "docs/rosbag_capture_replay.md",
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
+        "docs/range_motion_controller.md",
+        "docs/vertical_slice_capability_matrix.md",
+        "docs/shoe_detector_replay.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -167,6 +171,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
         "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
         "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
+        "rvr_shoe_detector_eval = sphero_rvr_driver.shoe_detector:main",
     } <= console_scripts
 
 
