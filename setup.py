@@ -54,8 +54,9 @@ setup(
                 "docs/mission_api.md",
                 "docs/supervised_coordinator.md",
                 "docs/slam_replay.md",
-                "docs/shoe_detector_replay.md",
                 "docs/vertical_slice_capability_matrix.md",
+                "docs/shoe_detector_replay.md",
+                "docs/shoe_map_projection.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -84,6 +85,7 @@ setup(
             "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
             "rvr_slam_replay_plan = sphero_rvr_driver.slam_replay_workflow:main",
             "rvr_shoe_detector_eval = sphero_rvr_driver.shoe_detector:main",
+            "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
         ],
     },
 )

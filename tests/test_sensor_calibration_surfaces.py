@@ -113,6 +113,7 @@ def test_camera_config_and_calibration_runbook_are_packaged() -> None:
     assert "launch/camera.launch.py" in data_files["share/sphero_rvr_driver/launch"]
     assert "config/camera.yaml" in data_files["share/sphero_rvr_driver/config"]
     assert "docs/camera_lidar_calibration.md" in data_files["share/sphero_rvr_driver/docs"]
+    assert "docs/shoe_map_projection.md" in data_files["share/sphero_rvr_driver/docs"]
 
     camera_config = (REPO_ROOT / "config" / "camera.yaml").read_text()
     assert "camera_info_url:" in camera_config
@@ -141,6 +142,17 @@ def test_camera_config_and_calibration_runbook_are_packaged() -> None:
         "persistence after restart",
     ]:
         assert token in runbook
+
+    projection_doc = (REPO_ROOT / "docs" / "shoe_map_projection.md").read_text()
+    for token in [
+        "base_link -> camera_link",
+        "camera_link -> camera_optical_frame",
+        "ground-plane assumption",
+        "pose drift",
+        "calibration error",
+        "rvr_shoe_map_project",
+    ]:
+        assert token in projection_doc
 
 
 def test_camera_docs_use_camera_node_topics_and_runtime_artifact_language() -> None:

@@ -12,6 +12,8 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
 - [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
 - [docs/slam_replay.md](docs/slam_replay.md) covers the replay-first SLAM Toolbox map-save/map-reload plan, deterministic map fixture, and current localization limits.
+- [docs/shoe_detector_replay.md](docs/shoe_detector_replay.md) covers the replay-first shoe detector baseline, VS04 JSON schema, and evidence frames.
+- [docs/shoe_map_projection.md](docs/shoe_map_projection.md) covers VS05 map-frame shoe observation projection, timestamp/TF boundaries, tracking, spatial deduplication, and uncertainty limits.
 - [docs/rosbag_capture_replay.md](docs/rosbag_capture_replay.md) covers the dry-run-first rosbag2 capture/replay workflow, run manifest format, storage layout, cleanup, and motor-topic safety boundaries.
 - [docs/camera_lidar_calibration.md](docs/camera_lidar_calibration.md) is the no-hardware Pi Camera 3 / RPLIDAR calibration runbook, including measured camera intrinsics, measured TF defaults, and physical measurement steps.
 - [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
@@ -23,7 +25,7 @@ This project is intentionally starting fresh from the older MCP implementation. 
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
-Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/mission_api.md` and `docs/supervised_coordinator.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr_motion_calibration.py`.
+Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/mission_api.md`, `docs/supervised_coordinator.md`, and `docs/shoe_map_projection.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`; console commands include `rvr_shoe_detector_eval` and `rvr_shoe_map_project`.
 
 ## Current base-driver status
 

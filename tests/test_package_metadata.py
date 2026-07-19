@@ -46,6 +46,7 @@ EXPECTED_DATA_FILES = {
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
         "docs/shoe_detector_replay.md",
+        "docs/shoe_map_projection.md",
         "docs/slam_replay.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
@@ -158,13 +159,16 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/lidar_collision_stop_supervisor.md",
         "docs/supervised_coordinator.md",
         "docs/slam_replay.md",
+        "docs/shoe_detector_replay.md",
+        "docs/shoe_map_projection.md",
         "docs/udev/99-rplidar.rules",
         "ros2 launch sphero_rvr_driver lidar.launch.py --show-args",
         "ros2 launch sphero_rvr_driver mapping.launch.py --show-args",
         "ros2 launch sphero_rvr_driver camera.launch.py --show-args",
         "launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
         "config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
-        "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr_motion_calibration.py`",
+        "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`",
+        "console commands include `rvr_shoe_detector_eval` and `rvr_shoe_map_project`",
     ]:
         assert token in readme
 
@@ -179,6 +183,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
         "rvr_slam_replay_plan = sphero_rvr_driver.slam_replay_workflow:main",
         "rvr_shoe_detector_eval = sphero_rvr_driver.shoe_detector:main",
+        "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
     } <= console_scripts
 
 
