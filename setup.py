@@ -49,6 +49,7 @@ setup(
                 "docs/camera_lidar_calibration.md",
                 "docs/lidar_collision_stop_supervisor.md",
                 "docs/range_motion_controller.md",
+                "docs/vertical_slice_capability_matrix.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
