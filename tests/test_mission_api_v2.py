@@ -232,6 +232,34 @@ def test_runtime_rejects_unbounded_motion_excess_budgets_and_raw_movement_bypass
             )
         )
 
+    with pytest.raises(MissionValidationError, match="turn_angle.angle_deg must be non-zero"):
+        runtime.execute_plan(
+            MissionPlan(
+                goal=MissionGoal(
+                    goal_id="zero-turn",
+                    objective="zero-degree turn should be rejected before adapter execution",
+                    success_criteria=("validation error",),
+                    budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0),
+                ),
+                invocations=(
+                    ToolInvocation(
+                        "zero-turn",
+                        "turn_angle",
+                        "1.0",
+                        {"angle_deg": 0.0, "angular_speed_deg_s": 45.0, "timeout_s": 5.0},
+                        approval=_grant(),
+                    ),
+                ),
+            )
+        )
+
+    move_distance = registry.require("move_distance", "1.0")
+    turn_angle = registry.require("turn_angle", "1.0")
+    assert move_distance.argument_schema["properties"]["distance_m"]["minimum"] == 0.01
+    assert move_distance.approval_class == "supervised_motion"
+    assert turn_angle.argument_schema["properties"]["angle_deg"]["maximum"] == 180.0
+    assert turn_angle.resource_ownership == ("odom_motion",)
+
     result = runtime.execute_plan(
         MissionPlan(
             goal=goal,

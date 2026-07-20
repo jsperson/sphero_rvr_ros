@@ -84,6 +84,8 @@ class RangeMotionConfig:
     max_range_jump_m: float = 0.35
     stall_timeout_s: float = 0.75
     min_progress_m: float = 0.015
+    startup_grace_s: float = 0.0
+    min_odom_progress_m: float = 0.005
     max_odom_lidar_disagreement_m: float = 0.12
 
     def __post_init__(self) -> None:
@@ -97,11 +99,14 @@ class RangeMotionConfig:
             "rate_window_s",
             "stall_timeout_s",
             "min_progress_m",
+            "min_odom_progress_m",
             "max_odom_lidar_disagreement_m",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
+        if not math.isfinite(float(self.startup_grace_s)) or self.startup_grace_s < 0.0:
+            raise ValueError("startup_grace_s must be finite and non-negative")
         if self.min_speed_mps > self.max_speed_mps:
             raise ValueError("min_speed_mps must not exceed max_speed_mps")
 
@@ -115,6 +120,7 @@ class RangeMotionSample:
     left_clearance_m: Optional[float]
     right_clearance_m: Optional[float]
     odom_displacement_m: Optional[float] = None
+    target_candidates: Sequence[AngularRangeCandidate] = ()
 
 
 @dataclass(frozen=True)
@@ -123,6 +129,21 @@ class SurfaceTrack:
     confidence: float
     associated_count: int
     considered_count: int
+
+
+@dataclass(frozen=True)
+class AngularRangeCandidate:
+    range_m: float
+    angle_rad: float
+
+
+@dataclass(frozen=True)
+class TargetAssociationState:
+    range_m: Optional[float]
+    angle_rad: Optional[float]
+    confidence: float
+    associated_count: int = 0
+    considered_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -152,6 +173,7 @@ class _ControllerState:
     last_progress_at: float = 0.0
     stopped_reason: Optional[StopReason] = None
     range_window: Deque[tuple[float, float]] = field(default_factory=deque)
+    target_track: Optional[TargetAssociationState] = None
 
 
 class RangeMotionController:
@@ -162,7 +184,7 @@ class RangeMotionController:
         self._state: Optional[_ControllerState] = None
 
     def start(self, goal: MotionGoal, first_sample: RangeMotionSample) -> RangeMotionTelemetry:
-        clearance = _finite_optional(first_sample.target_clearance_m)
+        clearance, confidence, target_track = self._initial_clearance(first_sample)
         if clearance is None:
             self._state = None
             return self._stop(StopReason.TARGET_LOST, first_sample, confidence=0.0, health="target_lost")
@@ -173,10 +195,11 @@ class RangeMotionController:
             start_odom_m=_finite_optional(first_sample.odom_displacement_m),
             last_sample=first_sample,
             last_progress_at=float(first_sample.stamp),
+            target_track=target_track,
         )
         state.range_window.append((float(first_sample.stamp), clearance))
         self._state = state
-        return self._telemetry(first_sample, 0.0, StopReason.RUNNING, confidence=1.0)
+        return self._telemetry(first_sample, 0.0, StopReason.RUNNING, confidence=confidence)
 
     def update(
         self,
@@ -209,10 +232,10 @@ class RangeMotionController:
         if state.goal.timeout_s is not None and sample_time - state.started_at > state.goal.timeout_s:
             return self._latch_stop(StopReason.TIMEOUT, sample, confidence=0.0)
 
-        clearance = _finite_optional(sample.target_clearance_m)
+        clearance, confidence = self._associated_clearance(sample)
         if clearance is None:
             return self._latch_stop(StopReason.TARGET_LOST, sample, confidence=0.0)
-        last_clearance = _finite_optional(state.last_sample.target_clearance_m)
+        last_clearance = self._last_tracked_clearance()
         if last_clearance is not None and abs(clearance - last_clearance) > self.config.max_range_jump_m:
             return self._latch_stop(StopReason.TARGET_JUMP, sample, confidence=0.0)
         if self._unsafe_clearance(sample):
@@ -228,11 +251,15 @@ class RangeMotionController:
         if self._odom_disagrees(sample):
             return self._latch_stop(StopReason.ODOM_DISAGREEMENT, sample, confidence=0.2)
 
-        progress = self._lidar_progress(clearance)
-        if progress - state.last_progress_mark_m >= self.config.min_progress_m:
+        progress = self._progress_for_stall(sample, clearance)
+        min_progress = self.config.min_odom_progress_m if self._has_odom_progress(sample) else self.config.min_progress_m
+        if progress - state.last_progress_mark_m >= min_progress:
             state.last_progress_mark_m = progress
             state.last_progress_at = sample_time
-        elif sample_time - state.last_progress_at >= self.config.stall_timeout_s:
+        elif (
+            sample_time - state.started_at >= self.config.startup_grace_s
+            and sample_time - state.last_progress_at >= self.config.stall_timeout_s
+        ):
             return self._latch_stop(StopReason.STALL, sample, confidence=0.2)
 
         if self._target_reached(clearance):
@@ -241,7 +268,7 @@ class RangeMotionController:
         requested = self._requested_speed(sample, clearance)
         state.last_sample = sample
         state.last_command_mps = requested
-        return self._telemetry(sample, requested, StopReason.RUNNING, confidence=1.0)
+        return self._telemetry(sample, requested, StopReason.RUNNING, confidence=confidence)
 
     def _requested_speed(self, sample: RangeMotionSample, clearance: float) -> float:
         state = self._require_state()
@@ -253,6 +280,39 @@ class RangeMotionController:
         previous_mag = abs(state.last_command_mps)
         next_mag = min(desired_mag, previous_mag + max_delta, self.config.max_speed_mps)
         return state.goal.direction.sign * next_mag
+
+    def _initial_clearance(
+        self, sample: RangeMotionSample
+    ) -> tuple[Optional[float], float, Optional[TargetAssociationState]]:
+        if sample.target_candidates:
+            track = track_target_cluster(
+                previous=None,
+                candidates=sample.target_candidates,
+                range_gate_m=self.config.max_range_jump_m,
+                angle_gate_rad=0.20,
+            )
+            return track.range_m, track.confidence, track
+        return _finite_optional(sample.target_clearance_m), 1.0, None
+
+    def _associated_clearance(self, sample: RangeMotionSample) -> tuple[Optional[float], float]:
+        state = self._require_state()
+        if sample.target_candidates:
+            track = track_target_cluster(
+                previous=state.target_track,
+                candidates=sample.target_candidates,
+                range_gate_m=self.config.max_range_jump_m,
+                angle_gate_rad=0.20,
+            )
+            if track.range_m is not None:
+                state.target_track = track
+            return track.range_m, track.confidence
+        return _finite_optional(sample.target_clearance_m), 1.0
+
+    def _last_tracked_clearance(self) -> Optional[float]:
+        state = self._require_state()
+        if state.target_track is not None and state.target_track.range_m is not None:
+            return state.target_track.range_m
+        return _finite_optional(state.last_sample.target_clearance_m)
 
     def _target_reached(self, clearance: float) -> bool:
         return self._remaining(clearance) <= self.config.target_tolerance_m
@@ -268,6 +328,22 @@ class RangeMotionController:
         if state.goal.mode is MotionMode.APPROACH:
             return max(0.0, state.start_clearance_m - clearance)
         return max(0.0, clearance - state.start_clearance_m)
+
+    def _progress_for_stall(self, sample: RangeMotionSample, clearance: float) -> float:
+        odom_progress = self._odom_progress(sample)
+        if odom_progress is not None:
+            return odom_progress
+        return self._lidar_progress(clearance)
+
+    def _has_odom_progress(self, sample: RangeMotionSample) -> bool:
+        return self._odom_progress(sample) is not None
+
+    def _odom_progress(self, sample: RangeMotionSample) -> Optional[float]:
+        state = self._require_state()
+        odom = _finite_optional(sample.odom_displacement_m)
+        if odom is None or state.start_odom_m is None:
+            return None
+        return abs(odom - state.start_odom_m)
 
     def _measured_displacement(self, sample: RangeMotionSample) -> float:
         state = self._require_state()
@@ -339,9 +415,16 @@ class RangeMotionController:
             confidence=confidence,
             stop_reason=reason,
             target_clearance_m=state.goal.target_clearance_m,
-            current_clearance_m=_finite_optional(sample.target_clearance_m),
+            current_clearance_m=self._telemetry_clearance(sample),
             health=health,
         )
+
+    def _telemetry_clearance(self, sample: RangeMotionSample) -> Optional[float]:
+        clearance = _finite_optional(sample.target_clearance_m)
+        if clearance is not None:
+            return clearance
+        state = self._require_state()
+        return None if state.target_track is None else state.target_track.range_m
 
     def _require_state(self) -> _ControllerState:
         if self._state is None:
@@ -370,6 +453,67 @@ def track_stable_surface(
     compactness = 1.0 - min(1.0, spread / max(association_gate_m, 1e-9))
     confidence = max(0.0, min(1.0, density + 0.4 * compactness))
     return SurfaceTrack(clearance, confidence, len(associated), len(valid))
+
+
+def track_target_cluster(
+    *,
+    previous: Optional[TargetAssociationState],
+    candidates: Sequence[AngularRangeCandidate],
+    range_gate_m: float,
+    angle_gate_rad: float,
+) -> TargetAssociationState:
+    valid = [
+        AngularRangeCandidate(float(candidate.range_m), float(candidate.angle_rad))
+        for candidate in candidates
+        if math.isfinite(float(candidate.range_m)) and math.isfinite(float(candidate.angle_rad)) and float(candidate.range_m) > 0.0
+    ]
+    if not valid:
+        return TargetAssociationState(None, None, 0.0, 0, len(candidates))
+    if previous is not None and previous.range_m is not None and previous.angle_rad is not None:
+        associated = [
+            candidate
+            for candidate in valid
+            if abs(candidate.range_m - previous.range_m) <= range_gate_m
+            and abs(_angle_delta(candidate.angle_rad, previous.angle_rad)) <= angle_gate_rad
+        ]
+    else:
+        associated = _nearest_angular_cluster(valid, range_gate_m, angle_gate_rad)
+    if not associated:
+        return TargetAssociationState(None, None, 0.0, 0, len(valid))
+    ranges = [candidate.range_m for candidate in associated]
+    angles = [candidate.angle_rad for candidate in associated]
+    range_m = float(statistics.median(ranges))
+    angle_rad = math.atan2(
+        sum(math.sin(angle) for angle in angles) / len(angles),
+        sum(math.cos(angle) for angle in angles) / len(angles),
+    )
+    range_spread = max(ranges) - min(ranges) if len(ranges) > 1 else 0.0
+    angle_spread = max(abs(_angle_delta(angle, angle_rad)) for angle in angles) if len(angles) > 1 else 0.0
+    density = len(associated) / max(1, len(valid))
+    compactness = 1.0 - min(1.0, max(range_spread / max(range_gate_m, 1e-9), angle_spread / max(angle_gate_rad, 1e-9)))
+    confidence = max(0.0, min(1.0, density + 0.4 * compactness))
+    return TargetAssociationState(range_m, angle_rad, confidence, len(associated), len(valid))
+
+
+def _nearest_angular_cluster(
+    valid: Sequence[AngularRangeCandidate], range_gate_m: float, angle_gate_rad: float
+) -> list[AngularRangeCandidate]:
+    ordered = sorted(valid, key=lambda candidate: candidate.range_m)
+    best: list[AngularRangeCandidate] = []
+    for seed in ordered:
+        cluster = [
+            candidate
+            for candidate in ordered
+            if abs(candidate.range_m - seed.range_m) <= range_gate_m
+            and abs(_angle_delta(candidate.angle_rad, seed.angle_rad)) <= angle_gate_rad
+        ]
+        if len(cluster) > len(best):
+            best = cluster
+    return best or ([ordered[0]] if ordered else [])
+
+
+def _angle_delta(a: float, b: float) -> float:
+    return math.atan2(math.sin(a - b), math.cos(a - b))
 
 
 def _nearest_compact_cluster(valid_clearances_m: Sequence[float], association_gate_m: float) -> list[float]:

@@ -15,6 +15,7 @@ from sphero_rvr_driver.mission_api_v2 import (
     ToolResultStatus,
     build_default_v2_registry,
 )
+from sphero_rvr_driver.odometry import OdomMotionState
 from sphero_rvr_driver.physical_capability_adapters import PhysicalCapabilityAdapters
 from sphero_rvr_driver.range_motion import RangeMotionSample, StopReason
 from sphero_rvr_driver.supervised_coordinator import SegmentStatus
@@ -79,6 +80,33 @@ def _control_plan(action: str) -> MissionPlan:
             budgets=MissionBudgets(max_steps=1, max_runtime_s=5.0),
         ),
         invocations=(ToolInvocation("control-1", "pause_cancel_stop_estop", "1.0", {"action": action}),),
+    )
+
+
+def _odom_route_plan() -> MissionPlan:
+    return MissionPlan(
+        goal=MissionGoal(
+            goal_id="physical-odom-route",
+            objective="execute typed odometry route primitives",
+            success_criteria=("move_distance and turn_angle use measured odometry",),
+            budgets=MissionBudgets(max_steps=2, max_runtime_s=20.0, max_travel_m=0.5),
+        ),
+        invocations=(
+            ToolInvocation(
+                "move-distance-1",
+                "move_distance",
+                "1.0",
+                {"distance_m": 0.4572, "speed_mps": 0.10, "timeout_s": 10.0},
+                approval=_grant(),
+            ),
+            ToolInvocation(
+                "turn-angle-1",
+                "turn_angle",
+                "1.0",
+                {"angle_deg": -90.0, "angular_speed_deg_s": 45.0, "timeout_s": 6.0},
+                approval=_grant(),
+            ),
+        ),
     )
 
 
@@ -205,6 +233,68 @@ def test_physical_bounded_exploration_segment_uses_supervised_coordinator_and_me
     assert result.status is MissionRuntimeStatus.COMPLETE
     assert result.results[0].observation == {"completed_segments": 2}
     assert "/cmd_vel" not in str(result.to_json_dict())
+
+
+def test_physical_odom_primitives_return_signed_measured_terminal_results_without_motor_surfaces() -> None:
+    runtime = DeterministicMissionRuntime(
+        build_default_v2_registry(detector_classes=("shoe",)),
+        PhysicalCapabilityAdapters(
+            odom_states_by_correlation_id={
+                "move-distance-1": (
+                    OdomMotionState(stamp=100.0, x_m=0.0, y_m=0.0, yaw_rad=0.0),
+                    OdomMotionState(stamp=104.8, x_m=0.46, y_m=0.0, yaw_rad=0.0),
+                ),
+                "turn-angle-1": (
+                    OdomMotionState(stamp=105.0, x_m=0.46, y_m=0.0, yaw_rad=0.0),
+                    OdomMotionState(stamp=107.0, x_m=0.46, y_m=0.0, yaw_rad=-1.56),
+                ),
+            },
+            odom_state_wall_times_by_correlation_id={
+                "move-distance-1": (100.0, 104.8),
+                "turn-angle-1": (105.0, 107.0),
+            },
+        ),
+        now_s=100.0,
+    )
+
+    result = runtime.execute_plan(_odom_route_plan())
+
+    assert result.status is MissionRuntimeStatus.COMPLETE
+    assert result.results[0].observation["measured_distance_m"] == pytest.approx(0.46)
+    assert result.results[1].observation["measured_angle_deg"] == pytest.approx(-89.38, abs=0.01)
+    assert "/cmd_vel" not in str(result.to_json_dict())
+
+
+@pytest.mark.parametrize(
+    ("field", "status", "message"),
+    (
+        ("odom_stop_at_index_by_correlation_id", ToolResultStatus.STOPPED, "odom primitive stopped: stop"),
+        ("odom_estop_at_index_by_correlation_id", ToolResultStatus.ESTOPPED, "odom primitive stopped: estop"),
+        ("odom_cancel_at_index_by_correlation_id", ToolResultStatus.CANCELLED, "odom primitive stopped: cancelled"),
+        ("odom_collision_veto_at_index_by_correlation_id", ToolResultStatus.BLOCKED, "odom primitive stopped: collision_veto"),
+    ),
+)
+def test_physical_odom_primitive_propagates_authoritative_stops_during_execution(field, status, message) -> None:
+    adapter_kwargs = {
+        "odom_states_by_correlation_id": {
+            "move-distance-1": (
+                OdomMotionState(stamp=100.0, x_m=0.0, y_m=0.0, yaw_rad=0.0),
+                OdomMotionState(stamp=100.5, x_m=0.01, y_m=0.0, yaw_rad=0.0),
+            )
+        },
+        "odom_state_wall_times_by_correlation_id": {"move-distance-1": (100.0, 100.5)},
+        field: {"move-distance-1": 1},
+    }
+    runtime = DeterministicMissionRuntime(
+        build_default_v2_registry(detector_classes=("shoe",)),
+        PhysicalCapabilityAdapters(**adapter_kwargs),
+        now_s=100.0,
+    )
+
+    result = runtime.execute_plan(MissionPlan(goal=_odom_route_plan().goal, invocations=(_odom_route_plan().invocations[0],)))
+
+    assert result.results[0].status is status
+    assert result.results[0].error["message"] == message
 
 
 def test_physical_bounded_exploration_segment_blocks_without_measured_statuses_instead_of_faking_success() -> None:

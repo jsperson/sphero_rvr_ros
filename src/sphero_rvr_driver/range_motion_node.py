@@ -21,6 +21,7 @@ from .collision_stop import (
     evaluate_scan,
 )
 from .range_motion import (
+    AngularRangeCandidate,
     MotionDirection,
     MotionGoal,
     MotionMode,
@@ -57,6 +58,46 @@ def _scan_sector_candidates(scan: ScanInput, config: CollisionStopConfig, sector
     transform, _tf_available, _tf_reason = _resolve_scan_transform(scan, config)
     values = _sector_samples(scan, config, transform).get(sector, [])
     return tuple(float(value) for value in values if value is not None)
+
+
+def _scan_sector_angular_candidates(
+    scan: ScanInput, config: CollisionStopConfig, sector: str
+) -> tuple[AngularRangeCandidate, ...]:
+    transform, _tf_available, _tf_reason = _resolve_scan_transform(scan, config)
+    min_range = max(float(scan.range_min), config.min_range_m)
+    max_range = min(float(scan.range_max), config.max_range_m)
+    candidates: list[AngularRangeCandidate] = []
+    for index, raw_value in enumerate(scan.ranges):
+        try:
+            range_m = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(range_m) or range_m < min_range or range_m > max_range:
+            continue
+        scan_angle = scan.angle_min + index * scan.angle_increment
+        point_x = range_m * math.cos(scan_angle)
+        point_y = range_m * math.sin(scan_angle)
+        base_x, base_y = transform.transform_point(point_x, point_y)
+        angle_rad = math.atan2(base_y, base_x)
+        angle_deg = ((math.degrees(angle_rad) + 180.0) % 360.0) - 180.0
+        if _angle_in_sector(angle_deg, config, sector):
+            candidates.append(AngularRangeCandidate(range_m=range_m, angle_rad=angle_rad))
+    return tuple(candidates)
+
+
+def _angle_in_sector(angle_deg: float, config: CollisionStopConfig, sector: str) -> bool:
+    if sector == "front":
+        return config.front_stop_min_angle_deg <= angle_deg <= config.front_stop_max_angle_deg
+    if sector == "front_slow":
+        return config.front_slow_min_angle_deg <= angle_deg <= config.front_slow_max_angle_deg
+    if sector == "rear":
+        rear_width = abs(config.rear_stop_angle_width_deg)
+        return angle_deg >= 180.0 - rear_width or angle_deg <= -180.0 + rear_width
+    if sector == "left":
+        return config.left_spin_min_angle_deg <= angle_deg <= config.left_spin_max_angle_deg
+    if sector == "right":
+        return config.right_spin_min_angle_deg <= angle_deg <= config.right_spin_max_angle_deg
+    return False
 
 
 def _telemetry_to_json(telemetry: RangeMotionTelemetry) -> str:
@@ -364,6 +405,9 @@ def main(args=None):
                 left_clearance_m=nearest.get("left"),
                 right_clearance_m=nearest.get("right"),
                 odom_displacement_m=self._latest_odom_x,
+                target_candidates=()
+                if self._latest_scan is None
+                else _scan_sector_angular_candidates(self._latest_scan, self._scan_config, target_sector),
             )
 
         def _publish_zero_status(self, reason: str):

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import math
 from typing import Optional, Tuple
 
 from sphero_rvr_core.responses import EncoderCounts
+from .collision_stop import TwistCommand
 
 COVARIANCE_SIZE = 36
 SIGNED_INT32_MODULUS = 2**32
@@ -60,6 +62,218 @@ class OdomSample:
     twist_covariance: Tuple[float, ...] = field(default_factory=lambda: (0.0,) * COVARIANCE_SIZE)
     source: str = "encoder_counts"
     quality_note: str = ""
+
+
+class MotionPrimitiveKind(str, Enum):
+    MOVE_DISTANCE = "move_distance"
+    TURN_ANGLE = "turn_angle"
+
+
+class MotionPrimitiveStopReason(str, Enum):
+    RUNNING = "running"
+    TARGET_REACHED = "target_reached"
+    STALE_ODOM = "stale_odom"
+    STALL = "stall"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    STOP = "stop"
+    ESTOP = "estop"
+    COLLISION_VETO = "collision_veto"
+
+
+@dataclass(frozen=True)
+class OdomMotionState:
+    stamp: float
+    x_m: float
+    y_m: float
+    yaw_rad: float
+
+
+@dataclass(frozen=True)
+class MotionPrimitiveConfig:
+    distance_tolerance_m: float = 0.01
+    angle_tolerance_rad: float = math.radians(2.0)
+    heading_kp: float = 1.5
+    max_heading_correction_rad_s: float = 0.6
+    max_sample_age_s: float = 0.30
+    stall_timeout_s: float = 0.75
+    startup_grace_s: float = 1.50
+    min_progress_m: float = 0.015
+    min_angle_progress_rad: float = math.radians(2.0)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "distance_tolerance_m",
+            "angle_tolerance_rad",
+            "heading_kp",
+            "max_heading_correction_rad_s",
+            "max_sample_age_s",
+            "stall_timeout_s",
+            "startup_grace_s",
+            "min_progress_m",
+            "min_angle_progress_rad",
+        ):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be positive and finite")
+
+
+@dataclass(frozen=True)
+class MotionPrimitiveGoal:
+    kind: MotionPrimitiveKind
+    target: float
+    speed: float
+    timeout_s: float
+
+    def __post_init__(self) -> None:
+        if isinstance(self.kind, str):
+            object.__setattr__(self, "kind", MotionPrimitiveKind(self.kind))
+        if not math.isfinite(float(self.target)) or float(self.target) == 0.0:
+            raise ValueError("target must be non-zero and finite")
+        if not math.isfinite(float(self.speed)) or float(self.speed) <= 0.0:
+            raise ValueError("speed must be positive and finite")
+        if not math.isfinite(float(self.timeout_s)) or float(self.timeout_s) <= 0.0:
+            raise ValueError("timeout_s must be positive and finite")
+
+    @staticmethod
+    def move_distance(*, distance_m: float, speed_mps: float, timeout_s: float) -> "MotionPrimitiveGoal":
+        return MotionPrimitiveGoal(MotionPrimitiveKind.MOVE_DISTANCE, float(distance_m), float(speed_mps), float(timeout_s))
+
+    @staticmethod
+    def turn_angle(*, angle_rad: float, angular_speed_rad_s: float, timeout_s: float) -> "MotionPrimitiveGoal":
+        return MotionPrimitiveGoal(MotionPrimitiveKind.TURN_ANGLE, float(angle_rad), float(angular_speed_rad_s), float(timeout_s))
+
+
+@dataclass(frozen=True)
+class MotionPrimitiveTelemetry:
+    kind: MotionPrimitiveKind
+    command: TwistCommand
+    measured_distance_m: float
+    measured_angle_rad: float
+    stop_reason: MotionPrimitiveStopReason
+    health: str = "ok"
+
+
+@dataclass
+class _PrimitiveState:
+    goal: MotionPrimitiveGoal
+    started_at: float
+    start: OdomMotionState
+    last_state: OdomMotionState
+    last_progress: float = 0.0
+    last_progress_at: float = 0.0
+    stopped_reason: Optional[MotionPrimitiveStopReason] = None
+
+
+class MotionPrimitiveController:
+    """ROS-free measured-odometry controller for typed route primitives."""
+
+    def __init__(self, config: MotionPrimitiveConfig):
+        self.config = config
+        self._state: Optional[_PrimitiveState] = None
+
+    def start(self, goal: MotionPrimitiveGoal, state: OdomMotionState) -> MotionPrimitiveTelemetry:
+        self._state = _PrimitiveState(goal, float(state.stamp), state, state, last_progress_at=float(state.stamp))
+        return self._telemetry(state, TwistCommand(), MotionPrimitiveStopReason.RUNNING)
+
+    def update(
+        self,
+        state: OdomMotionState,
+        *,
+        now: Optional[float] = None,
+        cancel: bool = False,
+        stop: bool = False,
+        estop: bool = False,
+        collision_veto: bool = False,
+    ) -> MotionPrimitiveTelemetry:
+        current = self._require_state()
+        if current.stopped_reason is not None:
+            return self._telemetry(state, TwistCommand(), current.stopped_reason, health=current.stopped_reason.value)
+        sample_time = float(state.stamp)
+        wall_time = sample_time if now is None else float(now)
+        if estop:
+            return self._latch(MotionPrimitiveStopReason.ESTOP, state)
+        if stop:
+            return self._latch(MotionPrimitiveStopReason.STOP, state)
+        if collision_veto:
+            return self._latch(MotionPrimitiveStopReason.COLLISION_VETO, state)
+        if cancel:
+            return self._latch(MotionPrimitiveStopReason.CANCELLED, state)
+        if wall_time - sample_time > self.config.max_sample_age_s:
+            return self._latch(MotionPrimitiveStopReason.STALE_ODOM, state)
+        if sample_time - current.started_at > current.goal.timeout_s:
+            return self._latch(MotionPrimitiveStopReason.TIMEOUT, state)
+
+        signed_progress = self._signed_progress(state)
+        progress = max(0.0, signed_progress if current.goal.target >= 0.0 else -signed_progress)
+        if self._reached(progress):
+            return self._latch(MotionPrimitiveStopReason.TARGET_REACHED, state)
+        min_progress = self.config.min_progress_m if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE else self.config.min_angle_progress_rad
+        if progress - current.last_progress >= min_progress:
+            current.last_progress = progress
+            current.last_progress_at = sample_time
+        elif sample_time - current.started_at >= self.config.startup_grace_s and sample_time - current.last_progress_at >= self.config.stall_timeout_s:
+            return self._latch(MotionPrimitiveStopReason.STALL, state)
+
+        command = self._command(state)
+        current.last_state = state
+        return self._telemetry(state, command, MotionPrimitiveStopReason.RUNNING)
+
+    def _command(self, state: OdomMotionState) -> TwistCommand:
+        current = self._require_state()
+        sign = 1.0 if current.goal.target >= 0.0 else -1.0
+        if current.goal.kind is MotionPrimitiveKind.TURN_ANGLE:
+            return TwistCommand(linear_x=0.0, angular_z=sign * current.goal.speed)
+        heading_error = normalize_angle(float(state.yaw_rad) - float(current.start.yaw_rad))
+        correction = max(
+            -self.config.max_heading_correction_rad_s,
+            min(self.config.max_heading_correction_rad_s, -self.config.heading_kp * heading_error),
+        )
+        return TwistCommand(linear_x=sign * current.goal.speed, angular_z=correction)
+
+    def _signed_progress(self, state: OdomMotionState) -> float:
+        current = self._require_state()
+        if current.goal.kind is MotionPrimitiveKind.TURN_ANGLE:
+            return normalize_angle(float(state.yaw_rad) - float(current.start.yaw_rad))
+        dx = float(state.x_m) - float(current.start.x_m)
+        dy = float(state.y_m) - float(current.start.y_m)
+        heading = float(current.start.yaw_rad)
+        return dx * math.cos(heading) + dy * math.sin(heading)
+
+    def _progress(self, state: OdomMotionState) -> float:
+        current = self._require_state()
+        signed = self._signed_progress(state)
+        return max(0.0, signed if current.goal.target >= 0.0 else -signed)
+
+    def _reached(self, progress: float) -> bool:
+        current = self._require_state()
+        tolerance = self.config.distance_tolerance_m if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE else self.config.angle_tolerance_rad
+        return abs(float(current.goal.target)) - progress <= tolerance
+
+    def _latch(self, reason: MotionPrimitiveStopReason, state: OdomMotionState) -> MotionPrimitiveTelemetry:
+        current = self._require_state()
+        current.stopped_reason = reason
+        current.last_state = state
+        return self._telemetry(state, TwistCommand(), reason, health=reason.value)
+
+    def _telemetry(
+        self,
+        state: OdomMotionState,
+        command: TwistCommand,
+        reason: MotionPrimitiveStopReason,
+        *,
+        health: str = "ok",
+    ) -> MotionPrimitiveTelemetry:
+        current = self._require_state()
+        progress = self._progress(state)
+        distance = progress if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE else 0.0
+        angle = (progress if current.goal.target >= 0.0 else -progress) if current.goal.kind is MotionPrimitiveKind.TURN_ANGLE else 0.0
+        return MotionPrimitiveTelemetry(current.goal.kind, command, distance, angle, reason, health)
+
+    def _require_state(self) -> _PrimitiveState:
+        if self._state is None:
+            raise RuntimeError("motion primitive controller has not been started")
+        return self._state
 
 
 def normalize_angle(angle: float) -> float:

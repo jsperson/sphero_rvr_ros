@@ -4,7 +4,13 @@ from pathlib import Path
 
 from sphero_rvr_driver.collision_stop import CollisionStopConfig, ScanInput, Transform2D, TwistCommand
 from sphero_rvr_driver.range_motion import MotionDirection, MotionMode, RangeMotionTelemetry, StopReason
-from sphero_rvr_driver.range_motion_node import _goal_from_json, _goal_from_parameters, _scan_sector_candidates, _telemetry_to_json
+from sphero_rvr_driver.range_motion_node import (
+    _goal_from_json,
+    _goal_from_parameters,
+    _scan_sector_angular_candidates,
+    _scan_sector_candidates,
+    _telemetry_to_json,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,6 +71,11 @@ def test_range_motion_scan_candidates_keep_surface_cluster_not_only_nearest_poin
 
     assert 0.18 in candidates
     assert len([value for value in candidates if 0.49 <= value <= 0.51]) >= 7
+
+    angular_candidates = _scan_sector_angular_candidates(
+        scan, CollisionStopConfig(min_valid_ranges=1, min_valid_fraction=0.0), "front"
+    )
+    assert any(0.49 <= candidate.range_m <= 0.51 and abs(candidate.angle_rad) < 0.08 for candidate in angular_candidates)
 
 
 def test_range_motion_status_json_reports_measured_not_theoretical_motion():

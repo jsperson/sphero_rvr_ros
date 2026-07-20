@@ -7,6 +7,12 @@ from sphero_rvr_driver.odometry import (
     COVARIANCE_SIZE,
     DifferentialOdomConfig,
     DifferentialOdomTracker,
+    MotionPrimitiveConfig,
+    MotionPrimitiveController,
+    MotionPrimitiveGoal,
+    MotionPrimitiveKind,
+    MotionPrimitiveStopReason,
+    OdomMotionState,
     encoder_delta,
     planar_pose_covariance,
     planar_twist_covariance,
@@ -111,3 +117,47 @@ def test_config_rejects_invalid_covariance_and_modulus():
             wheel_track_m=0.5,
             encoder_count_modulus=0,
         )
+
+
+def test_move_distance_primitive_uses_measured_odom_progress_and_heading_hold():
+    controller = MotionPrimitiveController(MotionPrimitiveConfig(min_progress_m=0.01, startup_grace_s=1.0))
+    goal = MotionPrimitiveGoal.move_distance(distance_m=0.4572, speed_mps=0.10, timeout_s=10.0)
+
+    telemetry = controller.start(goal, OdomMotionState(stamp=0.0, x_m=0.0, y_m=0.0, yaw_rad=0.05))
+    assert telemetry.stop_reason is MotionPrimitiveStopReason.RUNNING
+
+    early = controller.update(OdomMotionState(stamp=0.8, x_m=0.008, y_m=0.0, yaw_rad=0.08))
+    assert early.stop_reason is MotionPrimitiveStopReason.RUNNING
+    assert early.command.linear_x > 0.0
+    assert early.command.angular_z < 0.0
+
+    done = controller.update(OdomMotionState(stamp=4.8, x_m=0.46, y_m=0.0, yaw_rad=0.05))
+    assert done.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED
+    assert done.measured_distance_m == pytest.approx(0.459425)
+    assert done.command.linear_x == 0.0
+
+
+def test_turn_angle_primitive_uses_measured_heading_and_stops_at_angle():
+    controller = MotionPrimitiveController(MotionPrimitiveConfig(angle_tolerance_rad=math.radians(2.0)))
+    goal = MotionPrimitiveGoal.turn_angle(angle_rad=math.radians(90.0), angular_speed_rad_s=0.5, timeout_s=8.0)
+
+    controller.start(goal, OdomMotionState(stamp=0.0, x_m=0.0, y_m=0.0, yaw_rad=0.0))
+    mid = controller.update(OdomMotionState(stamp=1.0, x_m=0.0, y_m=0.0, yaw_rad=math.radians(40.0)))
+    done = controller.update(OdomMotionState(stamp=2.2, x_m=0.0, y_m=0.0, yaw_rad=math.radians(89.0)))
+
+    assert mid.kind is MotionPrimitiveKind.TURN_ANGLE
+    assert mid.command.angular_z > 0.0
+    assert done.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED
+    assert done.measured_angle_rad == pytest.approx(math.radians(89.0))
+    assert done.command.angular_z == 0.0
+
+
+def test_turn_angle_primitive_preserves_signed_direction_and_rejects_wrong_way_rotation():
+    controller = MotionPrimitiveController(MotionPrimitiveConfig(angle_tolerance_rad=math.radians(2.0), startup_grace_s=0.5))
+    goal = MotionPrimitiveGoal.turn_angle(angle_rad=math.radians(-90.0), angular_speed_rad_s=0.5, timeout_s=8.0)
+
+    controller.start(goal, OdomMotionState(stamp=0.0, x_m=0.0, y_m=0.0, yaw_rad=0.0))
+    wrong_way = controller.update(OdomMotionState(stamp=1.0, x_m=0.0, y_m=0.0, yaw_rad=math.radians(89.0)))
+
+    assert wrong_way.stop_reason is MotionPrimitiveStopReason.STALL
+    assert wrong_way.measured_angle_rad == pytest.approx(0.0)

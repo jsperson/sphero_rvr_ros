@@ -35,6 +35,8 @@ planner:
       - map_localize
       - bounded_exploration_segment
       - move_to_clearance
+      - move_distance
+      - turn_angle
       - rotate_scan
       - capture_observation
       - detect_objects

@@ -471,6 +471,14 @@ class DeterministicMissionRuntime:
                 if not math.isfinite(max_travel_m):
                     raise MissionValidationError(f"{invocation.tool_id}.max_travel_m must be finite")
                 travel += max_travel_m
+            if invocation.tool_id == "move_distance":
+                try:
+                    distance_m = abs(float(invocation.arguments["distance_m"]))
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise MissionValidationError("move_distance.distance_m must be finite") from exc
+                if not math.isfinite(distance_m):
+                    raise MissionValidationError("move_distance.distance_m must be finite")
+                travel += distance_m
         if self.budget_ceilings.max_travel_m is not None and travel > 0.0:
             if plan.goal.budgets.max_travel_m is None:
                 raise MissionValidationError("mission plan requires max_travel_m within trusted ceiling")
@@ -485,6 +493,8 @@ class DeterministicMissionRuntime:
             raise MissionValidationError(f"tool {invocation.tool_id} is {definition.availability.value}/unavailable")
         _reject_direct_ros_surfaces(invocation.arguments)
         _validate_schema(invocation.arguments, definition.argument_schema, path=invocation.tool_id)
+        if invocation.tool_id == "turn_angle" and float(invocation.arguments["angle_deg"]) == 0.0:
+            raise MissionValidationError("turn_angle.angle_deg must be non-zero")
         if definition.requires_approval():
             if invocation.approval is None or not invocation.approval.valid_for(definition.approval_class, now_s=now_s):
                 raise MissionValidationError(f"approval is stale or missing for {invocation.tool_id}")
@@ -574,6 +584,44 @@ def build_default_v2_registry(
             approval_class="supervised_motion",
             resource_ownership=("range_motion",),
             effects=("requests bounded range_motion only; no direct motor writes",),
+        ),
+        ToolDefinition(
+            "move_distance",
+            "1.0",
+            _schema(
+                {
+                    "distance_m": {"type": "number", "minimum": 0.01, "maximum": 2.0},
+                    "speed_mps": {"type": "number", "minimum": 0.01, "maximum": 0.2},
+                    "timeout_s": {"type": "number", "minimum": 0.1, "maximum": 30.0},
+                }
+            ),
+            _schema({"measured_distance_m": {"type": "number"}, "stop_reason": {"type": "string"}}),
+            preconditions=("fresh odometry", "collision stop clear"),
+            availability=avail("move_distance"),
+            timeout_s=30.0,
+            safety_class="supervised_motion",
+            approval_class="supervised_motion",
+            resource_ownership=("odom_motion",),
+            effects=("requests bounded odometry distance primitive with heading hold; no direct motor writes",),
+        ),
+        ToolDefinition(
+            "turn_angle",
+            "1.0",
+            _schema(
+                {
+                    "angle_deg": {"type": "number", "minimum": -180.0, "maximum": 180.0},
+                    "angular_speed_deg_s": {"type": "number", "minimum": 1.0, "maximum": 90.0},
+                    "timeout_s": {"type": "number", "minimum": 0.1, "maximum": 30.0},
+                }
+            ),
+            _schema({"measured_angle_deg": {"type": "number"}, "stop_reason": {"type": "string"}}),
+            preconditions=("fresh heading odometry", "collision stop clear"),
+            availability=avail("turn_angle"),
+            timeout_s=30.0,
+            safety_class="supervised_motion",
+            approval_class="supervised_motion",
+            resource_ownership=("odom_motion",),
+            effects=("requests bounded odometry turn primitive; no direct motor writes",),
         ),
         ToolDefinition(
             "rotate_scan",
@@ -844,6 +892,10 @@ def _fake_observation(invocation: ToolInvocation) -> tuple[dict[str, Any], dict[
         return {"completed_segments": int(invocation.arguments["max_segments"])}, {}
     if tool_id == "move_to_clearance":
         return {"target_clearance_m": float(invocation.arguments["clearance_m"])}, {}
+    if tool_id == "move_distance":
+        return {"measured_distance_m": abs(float(invocation.arguments["distance_m"])), "stop_reason": "target_reached"}, {}
+    if tool_id == "turn_angle":
+        return {"measured_angle_deg": float(invocation.arguments["angle_deg"]), "stop_reason": "target_reached"}, {}
     if tool_id == "rotate_scan":
         return {"scan_ref": "artifacts/replay/rotate_scan.json"}, {}
     if tool_id == "capture_observation":
