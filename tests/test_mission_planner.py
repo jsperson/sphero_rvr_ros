@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 import base64
 import json
+from pathlib import Path
 
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_api_v2 import (
@@ -34,6 +35,27 @@ PNG_1X1 = base64.b64encode(
     b"\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
 ).decode("ascii")
 IMAGE_URL = f"data:image/png;base64,{PNG_1X1}"
+
+
+def _configured_mission_api_v2_allowed_tools() -> list[str]:
+    config_path = Path(__file__).resolve().parents[1] / "config" / "mission_planner.yaml"
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    allowed_tools: list[str] = []
+    in_allowed_tools = False
+    for line in lines:
+        if line.strip() == "allowed_tools:":
+            in_allowed_tools = True
+            continue
+        if not in_allowed_tools:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("-"):
+            allowed_tools.append(stripped.removeprefix("-").strip())
+            continue
+        break
+    return allowed_tools
 
 
 def _grant(now_s: float = 0.0) -> ApprovalGrant:
@@ -135,6 +157,16 @@ def test_openai_payload_contains_only_authorized_bounded_image_observation_and_a
     assert "move_to_clearance" in tool_schema["properties"]["tool_name"]["enum"]
     assert "/dev/" not in json.dumps(payload)
     assert "camera_node/image_raw" not in json.dumps(payload)
+
+
+def test_mission_planner_config_allowed_tools_match_default_v2_registry() -> None:
+    configured_tools = _configured_mission_api_v2_allowed_tools()
+    registry_tools = [
+        definition.tool_id for definition in build_default_v2_registry(detector_classes=("shoe", "backpack")).definitions()
+    ]
+
+    assert configured_tools
+    assert set(configured_tools) == set(registry_tools)
 
 
 def test_text_only_mission_builds_provider_neutral_openai_payload_without_image_content() -> None:

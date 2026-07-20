@@ -32,6 +32,8 @@ planner:
     forbid_raw_camera_or_ros_graph_access: true
   mission_api_v2:
     allowed_tools:
+      - map_localize
+      - bounded_exploration_segment
       - move_to_clearance
       - rotate_scan
       - capture_observation
