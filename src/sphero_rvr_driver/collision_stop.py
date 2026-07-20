@@ -416,6 +416,11 @@ class CollisionStopSupervisor:
             command = TwistCommand()
             reason = "stale_command"
 
+        if not _twist_is_finite(command):
+            self._latest_command = None
+            self._latest_command_at = None
+            return self._decision(CollisionState.STOPPED, "invalid_command", TwistCommand(), command, health, nearest, reset_required=True)
+
         bounded = self._bound(command)
         front = nearest.get("front")
         front_slow = nearest.get("front_slow")
@@ -516,3 +521,10 @@ class CollisionStopSupervisor:
 
 def _within(value: Optional[float], threshold: float) -> bool:
     return value is not None and value <= threshold
+
+
+def _twist_is_finite(command: TwistCommand) -> bool:
+    try:
+        return math.isfinite(float(command.linear_x)) and math.isfinite(float(command.angular_z))
+    except (TypeError, ValueError):
+        return False

@@ -1,4 +1,5 @@
 import asyncio
+import math
 import struct
 import time
 from contextlib import suppress
@@ -9,9 +10,16 @@ from sphero_rvr_core.driver import RVRDriver
 from sphero_rvr_core.fake_transport import FakeTransport
 from sphero_rvr_core.packet import Packet
 from sphero_rvr_core.commands import RVRCommands
+from sphero_rvr_core.safety import clamp
 
 RAW_OFF = bytes([0, 0, 0, 0])
 ESTOP_SOFTWARE_DISPATCH_BUDGET_S = 0.10
+
+
+@pytest.mark.parametrize("value", (math.nan, math.inf, -math.inf))
+def test_clamp_rejects_non_finite_values_instead_of_saturating_to_motion(value):
+    with pytest.raises(ValueError, match="non-finite"):
+        clamp(value, -0.1, 0.1)
 
 
 class FailingWriteTransport(FakeTransport):

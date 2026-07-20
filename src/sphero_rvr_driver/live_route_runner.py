@@ -244,23 +244,27 @@ class LiveRouteRunner:
 
     def abort(self, reason: str, state: LiveRouteState) -> None:
         """Force a terminal manifest state after node-side validation failures."""
-        self._finish(reason, self._status_for_terminal(reason), state)
+        self._finish(reason, state)
 
     def update(self, state: LiveRouteState) -> TwistCommand:
         if self._request is None or self._terminal_reason != RouteTerminalReason.RUNNING.value:
             return TwistCommand()
         terminal = self._safety_terminal(state)
         if terminal is not None:
-            self._finish(terminal, self._status_for_terminal(terminal), state)
+            self._finish(terminal, state)
             return TwistCommand()
         if float(state.stamp) - self._started_at > self._request.max_runtime_s:
-            self._finish(RouteTerminalReason.TIMEOUT.value, ToolResultStatus.TIMEOUT, state)
+            self._finish(RouteTerminalReason.TIMEOUT.value, state)
             return TwistCommand()
         if self._active is None:
             if self._segment_index >= len(self._request.segments):
-                self._finish(RouteTerminalReason.COMPLETE.value, ToolResultStatus.COMPLETE, state)
+                self._finish(RouteTerminalReason.COMPLETE.value, state)
                 return TwistCommand()
-            self._active = self._start_segment(self._request.segments[self._segment_index], state)
+            try:
+                self._active = self._start_segment(self._request.segments[self._segment_index], state)
+            except MissionValidationError as exc:
+                self._finish(_normalize_exception_terminal(exc), state)
+                return TwistCommand()
             return self._active.telemetry.command
         assert state.odom is not None
         telemetry = self._active.controller.update(
@@ -277,18 +281,18 @@ class LiveRouteRunner:
         self._record_active(telemetry, state)
         if telemetry.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED:
             if self._active and self._active.request.tool_id == "move_distance" and self._active_is_partial_translation():
-                self._finish(RouteTerminalReason.UNSAFE_CLEARANCE.value, ToolResultStatus.BLOCKED, state)
+                self._finish(RouteTerminalReason.UNSAFE_CLEARANCE.value, state)
                 return TwistCommand()
             self._segment_index += 1
             self._active = None
             return self.update(state)
         terminal = self._terminal_for_active_stop(telemetry.stop_reason, state)
-        self._finish(terminal, self._status_for_terminal(terminal), state)
+        self._finish(terminal, state)
         return TwistCommand()
 
     def manifest(self) -> LiveRouteManifest:
         request = self._require_request()
-        status = ToolResultStatus.COMPLETE if self._terminal_reason == RouteTerminalReason.COMPLETE.value else self._status_for_terminal(self._terminal_reason)
+        status = self._status_for_terminal(self._terminal_reason)
         return LiveRouteManifest(
             route_id=request.route_id,
             status=status,
@@ -424,8 +428,7 @@ class LiveRouteRunner:
             return RouteTerminalReason.STALL.value
         return _terminal_for_odom_stop(reason, kind=active.goal.kind)
 
-    def _finish(self, reason: str, status: ToolResultStatus, state: LiveRouteState) -> None:
-        del status
+    def _finish(self, reason: str, state: LiveRouteState) -> None:
         self._terminal_reason = reason
         self._last_collision_state = str(state.collision_state)
 

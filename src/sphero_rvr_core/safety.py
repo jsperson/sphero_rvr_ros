@@ -1,5 +1,6 @@
 """Safety helpers for clamping and timeout decisions."""
 
+import math
 import time
 from typing import Optional
 
@@ -11,6 +12,8 @@ def now_seconds() -> float:
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
+    if not math.isfinite(float(value)):
+        raise ValueError("cannot clamp non-finite value")
     return max(lower, min(upper, value))
 
 

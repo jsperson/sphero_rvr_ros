@@ -99,6 +99,20 @@ def test_clear_scan_passes_bounded_command_and_reports_sector_distances():
     assert decision.nearest["front"] == pytest.approx(2.0)
 
 
+@pytest.mark.parametrize("command", (TwistCommand(math.nan, 0.0), TwistCommand(math.inf, 0.0), TwistCommand(0.0, -math.inf)))
+def test_non_finite_collision_stop_command_fails_closed_to_zero(command):
+    cfg = CollisionStopConfig(max_forward_mps=0.10, max_angular_rad_s=0.4)
+    supervisor = CollisionStopSupervisor(cfg, now=0.0)
+    supervisor.update_scan(scan_with(stamp=0.0), now=0.0)
+
+    decision = supervisor.apply_command(command, now=0.1)
+
+    assert decision.state is CollisionState.STOPPED
+    assert decision.reason == "invalid_command"
+    assert decision.output == TwistCommand(0.0, 0.0)
+    assert decision.reset_required is True
+
+
 def test_missing_stale_and_malformed_scans_fail_closed():
     cfg = CollisionStopConfig(startup_grace_s=0.5, max_scan_age_s=0.3)
     supervisor = CollisionStopSupervisor(cfg, now=0.0)

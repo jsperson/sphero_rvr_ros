@@ -36,12 +36,26 @@ def _full_scan(stamp: float, *, range_m: float = 1.5, transform: Transform2D | N
     )
 
 
-def _state(stamp: float, x: float, y: float, yaw: float, *, scan: ScanInput | None = None, collision: str = "CLEAR") -> LiveRouteState:
+def _state(
+    stamp: float,
+    x: float,
+    y: float,
+    yaw: float,
+    *,
+    scan: ScanInput | None = None,
+    collision: str = "CLEAR",
+    stop: bool = False,
+    estop: bool = False,
+    cancel: bool = False,
+) -> LiveRouteState:
     return LiveRouteState(
         stamp=stamp,
         odom=OdomMotionState(stamp=stamp, x_m=x, y_m=y, yaw_rad=yaw),
         scan=scan or _full_scan(stamp),
         collision_state=collision,
+        stop=stop,
+        estop=estop,
+        cancel=cancel,
     )
 
 
@@ -95,8 +109,6 @@ def test_live_route_request_parses_mission_api_v2_invocations_with_budgets() -> 
 
 
 def test_dynamic_translation_cap_uses_tf_corrected_base_link_corridor() -> None:
-    # The close return is at -90 degrees in the laser frame; only the TF rotation
-    # makes it a base_link front-corridor obstacle.
     ranges = [2.0] * 181
     ranges[0] = 0.80
     scan = ScanInput(
@@ -170,9 +182,9 @@ def test_live_route_runner_propagates_stop_estop_cancel_and_stale_data() -> None
         segments=(RouteSegmentRequest("move", "move_distance", {"distance_m": 0.2, "speed_mps": 0.1, "timeout_s": 5.0}),),
     )
 
-    stopped = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), LiveRouteState(1.1, OdomMotionState(1.1, 0, 0, 0), _full_scan(1.1), stop=True)))
-    estopped = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), LiveRouteState(1.1, OdomMotionState(1.1, 0, 0, 0), _full_scan(1.1), estop=True)))
-    cancelled = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), LiveRouteState(1.1, OdomMotionState(1.1, 0, 0, 0), _full_scan(1.1), cancel=True)))
+    stopped = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), _state(1.1, 0.0, 0.0, 0.0, stop=True)))
+    estopped = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), _state(1.1, 0.0, 0.0, 0.0, estop=True)))
+    cancelled = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), _state(1.1, 0.0, 0.0, 0.0, cancel=True)))
     stale = run_route_replay(request, (LiveRouteState(1.0, OdomMotionState(0.0, 0, 0, 0), _full_scan(1.0)),))
 
     assert stopped.terminal_reason == "stopped"
@@ -262,6 +274,26 @@ def test_live_route_runner_blocks_after_partial_dynamic_cap_instead_of_completin
     assert manifest.executed_segments[0].executed["distance_m"] == pytest.approx(0.25)
 
 
+def test_segment_start_exception_terminally_deactivates_runner_with_manifest() -> None:
+    request = LiveRouteRequest(
+        route_id="too-close",
+        max_runtime_s=10.0,
+        max_travel_m=0.5,
+        segments=(RouteSegmentRequest("move", "move_distance", {"distance_m": 0.2, "speed_mps": 0.1, "timeout_s": 5.0}),),
+    )
+    runner = LiveRouteRunner(LiveRouteConfig(clearance_margin_m=0.40, min_translation_cap_m=0.05))
+
+    command = runner.start(request, _state(1.0, 0.0, 0.0, 0.0, scan=_full_scan(1.0, range_m=0.42)))
+
+    assert command.linear_x == 0.0
+    assert command.angular_z == 0.0
+    assert not runner.active
+    manifest = runner.manifest()
+    assert manifest.status is ToolResultStatus.BLOCKED
+    assert manifest.terminal_reason == "unsafe_clearance"
+    assert manifest.executed_segments == ()
+
+
 def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial_surfaces() -> None:
     setup_text = (REPO_ROOT / "setup.py").read_text()
     launch_text = (REPO_ROOT / "launch" / "supervised_rvr.launch.py").read_text()
@@ -278,5 +310,6 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert "cmd_vel_motor" not in node_source
     assert "create_publisher(Twist, self._supervisor_cmd_topic(), 10)" in node_source
     assert "cmd_vel_topic must remain /cmd_vel" in node_source
+    assert "rejected non-finite command; publishing zero" in node_source
     assert "TransformListener" in node_source
     assert "live_route/cancel" in node_source

@@ -1,13 +1,14 @@
 """ROS 2 node for the live Mission API v2 odometry route runner.
 
 The node subscribes to live state, accepts typed bounded route JSON, and publishes
-only the supervisor input topic. It never opens serial transport or the motor
-driver command surface.
+only the supervisor input topic. It never opens serial transport or a direct
+motor driver command surface.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from typing import Any, Optional
 
@@ -277,8 +278,18 @@ def main(args=None):
 
         def _publish_command(self, command) -> None:
             twist = Twist()
-            twist.linear.x = command.linear_x
-            twist.angular.z = command.angular_z
+            try:
+                linear_x = float(command.linear_x)
+                angular_z = float(command.angular_z)
+            except (TypeError, ValueError):
+                linear_x = 0.0
+                angular_z = 0.0
+            if not math.isfinite(linear_x) or not math.isfinite(angular_z):
+                self.get_logger().error("live route runner rejected non-finite command; publishing zero")
+                linear_x = 0.0
+                angular_z = 0.0
+            twist.linear.x = linear_x
+            twist.angular.z = angular_z
             self._cmd_pub.publish(twist)
 
         def _publish_zero_status(self, reason: str, error: dict[str, Any]) -> None:
