@@ -30,6 +30,7 @@ setup(
                 "config/slam_toolbox.yaml",
                 "config/camera.yaml",
                 "config/mission_planner.yaml",
+                "config/live_route_runner.yaml",
             ],
         ),
         (
@@ -88,6 +89,7 @@ setup(
             "rvr_tui = sphero_rvr_driver.tui:main",
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
             "range_motion_controller = sphero_rvr_driver.range_motion_node:main",
+            "live_route_runner = sphero_rvr_driver.live_route_runner_node:main",
             "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
             "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
             "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",

@@ -15,10 +15,12 @@ def generate_launch_description():
     rvr_config = pkg_share / "config" / "rvr.yaml"
     collision_stop_config = pkg_share / "config" / "collision_stop.yaml"
     range_motion_config = pkg_share / "config" / "range_motion.yaml"
+    live_route_config = pkg_share / "config" / "live_route_runner.yaml"
 
     serial_port = LaunchConfiguration("serial_port")
     start_supervisor = LaunchConfiguration("start_collision_stop")
     start_range_motion = LaunchConfiguration("start_range_motion")
+    start_live_route_runner = LaunchConfiguration("start_live_route_runner")
 
     rvr_node = Node(
         package="sphero_rvr_driver",
@@ -63,6 +65,21 @@ def generate_launch_description():
             PythonExpression(["'", start_supervisor, "' == 'true' and '", start_range_motion, "' == 'true'"])
         ),
     )
+    live_route_runner_node = Node(
+        package="sphero_rvr_driver",
+        executable="live_route_runner",
+        name="live_route_runner",
+        output="screen",
+        parameters=[str(live_route_config)],
+        remappings=[
+            ("cmd_vel", "/cmd_vel"),
+            ("scan", "/scan"),
+            ("odom", "/odom"),
+        ],
+        condition=IfCondition(
+            PythonExpression(["'", start_supervisor, "' == 'true' and '", start_live_route_runner, "' == 'true'"])
+        ),
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
@@ -76,8 +93,14 @@ def generate_launch_description():
             default_value="false",
             description="Start the optional closed-loop lidar range-motion controller above /cmd_vel.",
         ),
+        DeclareLaunchArgument(
+            "start_live_route_runner",
+            default_value="false",
+            description="Start the optional Mission API v2 live route runner above /cmd_vel.",
+        ),
         rvr_node,
         range_motion_node,
+        live_route_runner_node,
         collision_stop_node,
         RegisterEventHandler(
             OnProcessExit(

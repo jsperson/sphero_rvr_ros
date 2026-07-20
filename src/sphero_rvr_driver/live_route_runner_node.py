@@ -1,0 +1,331 @@
+"""ROS 2 node for the live Mission API v2 odometry route runner.
+
+The node subscribes to live state, accepts typed bounded route JSON, and publishes
+only the supervisor input topic. It never opens serial transport or the motor
+driver command surface.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from typing import Any, Optional
+
+from .collision_stop import CollisionStopConfig, CollisionState, ScanInput, Transform2D
+from .live_route_runner import LiveRouteConfig, LiveRouteRequest, LiveRouteRunner, LiveRouteState, route_request_from_json
+from .odometry import MotionPrimitiveConfig, OdomMotionState
+from .range_motion_node import _stamp_seconds, _tf_error_reason, _transform2d_from_transform_stamped
+
+
+def _odom_state(msg: Any) -> Optional[OdomMotionState]:
+    header = getattr(msg, "header", None)
+    stamp = _stamp_seconds(getattr(header, "stamp", None))
+    try:
+        pose = msg.pose.pose
+        position = pose.position
+        orientation = pose.orientation
+        qx = float(getattr(orientation, "x", 0.0))
+        qy = float(getattr(orientation, "y", 0.0))
+        qz = float(getattr(orientation, "z", 0.0))
+        qw = float(getattr(orientation, "w", 1.0))
+        import math
+
+        yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        return OdomMotionState(
+            stamp=float(stamp) if stamp is not None else 0.0,
+            x_m=float(position.x),
+            y_m=float(position.y),
+            yaw_rad=yaw,
+        )
+    except Exception:
+        return None
+
+
+def _source_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return "unknown"
+
+
+def main(args=None):
+    import rclpy
+    from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+    from geometry_msgs.msg import Twist
+    from nav_msgs.msg import Odometry
+    from rclpy.duration import Duration
+    from rclpy.executors import ExternalShutdownException
+    from rclpy.node import Node
+    from rclpy.time import Time
+    from sensor_msgs.msg import LaserScan
+    from std_msgs.msg import String
+    from std_srvs.srv import Trigger
+    from tf2_ros import Buffer, TransformListener
+
+    class LiveRouteRunnerNode(Node):
+        def __init__(self):
+            super().__init__("live_route_runner")
+            self._declare_parameters()
+            self._runner = LiveRouteRunner(self._read_config())
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
+            self._latest_request: Optional[LiveRouteRequest] = None
+            self._latest_scan: Optional[ScanInput] = None
+            self._latest_odom: Optional[OdomMotionState] = None
+            self._collision_state = CollisionState.CLEAR.value
+            self._stop = False
+            self._estop = False
+            self._cancel = False
+            self._source_sha = str(self.get_parameter("source_sha").value) or _source_sha()
+
+            self._cmd_pub = self.create_publisher(Twist, self._supervisor_cmd_topic(), 10)
+            self._status_pub = self.create_publisher(String, str(self.get_parameter("status_topic").value), 10)
+            self._diagnostics_pub = self.create_publisher(DiagnosticArray, str(self.get_parameter("diagnostics_topic").value), 10)
+            self.create_subscription(String, str(self.get_parameter("route_request_topic").value), self._on_route_request, 10)
+            self.create_subscription(LaserScan, str(self.get_parameter("scan_topic").value), self._on_scan, 10)
+            self.create_subscription(Odometry, str(self.get_parameter("odom_topic").value), self._on_odom, 10)
+            self.create_subscription(String, str(self.get_parameter("collision_state_topic").value), self._on_collision_state, 10)
+            self.create_subscription(String, str(self.get_parameter("stop_state_topic").value), self._on_stop_state, 10)
+            self.create_service(Trigger, "live_route/cancel", self._on_cancel)
+            self.create_timer(float(self.get_parameter("control_period_s").value), self._tick)
+
+        def _declare_parameters(self) -> None:
+            odom_defaults = MotionPrimitiveConfig()
+            scan_defaults = CollisionStopConfig()
+            for name, value in {
+                "route_request_topic": "/mission_api/v2/live_route/request",
+                "status_topic": "/mission_api/v2/live_route/status",
+                "diagnostics_topic": "/diagnostics",
+                "cmd_vel_topic": "/cmd_vel",
+                "scan_topic": "/scan",
+                "odom_topic": "/odom",
+                "collision_state_topic": "/collision_stop/state",
+                "stop_state_topic": "/mission_api/v2/control_state",
+                "control_period_s": 0.05,
+                "source_sha": "",
+                "base_frame": scan_defaults.base_frame,
+                "laser_frame": scan_defaults.laser_frame,
+                "fail_on_missing_tf": scan_defaults.fail_on_missing_tf,
+                "tf_timeout_s": scan_defaults.tf_timeout_s,
+                "min_valid_ranges": scan_defaults.min_valid_ranges,
+                "min_valid_fraction": scan_defaults.min_valid_fraction,
+                "min_range_m": scan_defaults.min_range_m,
+                "max_range_m": scan_defaults.max_range_m,
+                "sector_unknown_policy": scan_defaults.sector_unknown_policy,
+                "clearance_margin_m": 0.40,
+                "min_translation_cap_m": 0.01,
+                "max_translation_segment_m": 0.75,
+                "distance_tolerance_m": odom_defaults.distance_tolerance_m,
+                "angle_tolerance_rad": odom_defaults.angle_tolerance_rad,
+                "heading_kp": odom_defaults.heading_kp,
+                "max_heading_correction_rad_s": odom_defaults.max_heading_correction_rad_s,
+                "max_sample_age_s": odom_defaults.max_sample_age_s,
+                "stall_timeout_s": odom_defaults.stall_timeout_s,
+                "startup_grace_s": odom_defaults.startup_grace_s,
+                "min_progress_m": odom_defaults.min_progress_m,
+                "min_angle_progress_rad": odom_defaults.min_angle_progress_rad,
+            }.items():
+                self.declare_parameter(name, value)
+
+        def _read_config(self) -> LiveRouteConfig:
+            odom = MotionPrimitiveConfig(
+                distance_tolerance_m=float(self.get_parameter("distance_tolerance_m").value),
+                angle_tolerance_rad=float(self.get_parameter("angle_tolerance_rad").value),
+                heading_kp=float(self.get_parameter("heading_kp").value),
+                max_heading_correction_rad_s=float(self.get_parameter("max_heading_correction_rad_s").value),
+                max_sample_age_s=float(self.get_parameter("max_sample_age_s").value),
+                stall_timeout_s=float(self.get_parameter("stall_timeout_s").value),
+                startup_grace_s=float(self.get_parameter("startup_grace_s").value),
+                min_progress_m=float(self.get_parameter("min_progress_m").value),
+                min_angle_progress_rad=float(self.get_parameter("min_angle_progress_rad").value),
+            )
+            scan = CollisionStopConfig(
+                base_frame=str(self.get_parameter("base_frame").value),
+                laser_frame=str(self.get_parameter("laser_frame").value),
+                fail_on_missing_tf=bool(self.get_parameter("fail_on_missing_tf").value),
+                tf_timeout_s=float(self.get_parameter("tf_timeout_s").value),
+                min_valid_ranges=int(self.get_parameter("min_valid_ranges").value),
+                min_valid_fraction=float(self.get_parameter("min_valid_fraction").value),
+                min_range_m=float(self.get_parameter("min_range_m").value),
+                max_range_m=float(self.get_parameter("max_range_m").value),
+                sector_unknown_policy=str(self.get_parameter("sector_unknown_policy").value),
+            )
+            return LiveRouteConfig(
+                odom=odom,
+                scan=scan,
+                clearance_margin_m=float(self.get_parameter("clearance_margin_m").value),
+                min_translation_cap_m=float(self.get_parameter("min_translation_cap_m").value),
+                max_translation_segment_m=float(self.get_parameter("max_translation_segment_m").value),
+            )
+
+        def _supervisor_cmd_topic(self) -> str:
+            topic = str(self.get_parameter("cmd_vel_topic").value)
+            if topic != "/cmd_vel":
+                raise ValueError("live_route_runner cmd_vel_topic must remain /cmd_vel")
+            return "/cmd_vel"
+
+        def _on_route_request(self, msg) -> None:
+            try:
+                request = route_request_from_json(str(msg.data), source_sha=self._source_sha)
+            except Exception as exc:
+                self._publish_zero_status("invalid_route", {"message": str(exc)})
+                return
+            self._cancel = False
+            self._latest_request = request
+            try:
+                command = self._runner.start(request, self._current_state())
+            except Exception as exc:
+                self._runner.abort("invalid_route", self._current_state())
+                self._publish_zero_status("invalid_route", {"message": str(exc)})
+                self._publish_manifest()
+                return
+            self._publish_command(command)
+            if not self._runner.active:
+                self._publish_manifest()
+
+        def _on_scan(self, msg) -> None:
+            header = getattr(msg, "header", None)
+            stamp = _stamp_seconds(getattr(header, "stamp", None))
+            frame_id = str(getattr(header, "frame_id", "")) or str(self.get_parameter("laser_frame").value)
+            transform, transform_error = self._lookup_scan_transform(frame_id, getattr(header, "stamp", None))
+            self._latest_scan = ScanInput(
+                ranges=tuple(getattr(msg, "ranges", []) or []),
+                angle_min=float(msg.angle_min),
+                angle_increment=float(msg.angle_increment),
+                range_min=float(msg.range_min),
+                range_max=float(msg.range_max),
+                stamp=stamp,
+                received_at=self._now_seconds(),
+                frame_id=frame_id,
+                transform_to_base=transform,
+                transform_error=transform_error,
+            )
+
+        def _lookup_scan_transform(self, frame_id: str, stamp_msg) -> tuple[Optional[Transform2D], Optional[str]]:
+            base_frame = str(self.get_parameter("base_frame").value)
+            if frame_id == base_frame:
+                return Transform2D(), None
+            try:
+                time = Time.from_msg(stamp_msg) if stamp_msg is not None else Time()
+                stamped = self._tf_buffer.lookup_transform(
+                    base_frame,
+                    frame_id or str(self.get_parameter("laser_frame").value),
+                    time,
+                    timeout=Duration(seconds=float(self.get_parameter("tf_timeout_s").value)),
+                )
+                return _transform2d_from_transform_stamped(stamped), None
+            except Exception as exc:
+                reason = _tf_error_reason(exc)
+                self.get_logger().warn(f"live route TF lookup failed: {reason}: {exc}")
+                return None, reason
+
+        def _on_odom(self, msg) -> None:
+            self._latest_odom = _odom_state(msg)
+
+        def _on_collision_state(self, msg) -> None:
+            try:
+                payload = json.loads(str(msg.data))
+                self._collision_state = str(payload.get("state", payload.get("collision_state", self._collision_state)))
+            except Exception:
+                self._collision_state = str(getattr(msg, "data", self._collision_state))
+
+        def _on_stop_state(self, msg) -> None:
+            text = str(getattr(msg, "data", "")).lower()
+            self._stop = "stop" in text and "estop" not in text
+            self._estop = "estop" in text
+            self._cancel = "cancel" in text
+
+        def _on_cancel(self, request, response):
+            self._cancel = True
+            try:
+                command = self._runner.update(self._current_state())
+            except Exception as exc:
+                self._runner.abort("cancel_failed", self._current_state())
+                self._publish_zero_status("cancel_failed", {"message": str(exc)})
+                self._publish_manifest()
+                command = type("Zero", (), {"linear_x": 0.0, "angular_z": 0.0})()
+            self._publish_command(command)
+            self._publish_manifest()
+            response.success = True
+            response.message = "live route cancel requested; zero command published"
+            return response
+
+        def _tick(self) -> None:
+            if not self._runner.active:
+                return
+            try:
+                command = self._runner.update(self._current_state())
+            except Exception as exc:
+                self._runner.abort("invalid_route", self._current_state())
+                self._publish_zero_status("route_failed", {"message": str(exc)})
+                self._publish_manifest()
+                return
+            self._publish_command(command)
+            if not self._runner.active:
+                self._publish_manifest()
+
+        def _current_state(self) -> LiveRouteState:
+            return LiveRouteState(
+                stamp=self._now_seconds(),
+                odom=self._latest_odom,
+                scan=self._latest_scan,
+                collision_state=self._collision_state,
+                stop=self._stop,
+                estop=self._estop,
+                cancel=self._cancel,
+            )
+
+        def _publish_command(self, command) -> None:
+            twist = Twist()
+            twist.linear.x = command.linear_x
+            twist.angular.z = command.angular_z
+            self._cmd_pub.publish(twist)
+
+        def _publish_zero_status(self, reason: str, error: dict[str, Any]) -> None:
+            self._publish_command(type("Zero", (), {"linear_x": 0.0, "angular_z": 0.0})())
+            msg = String()
+            msg.data = json.dumps({"status": "failed", "terminal_reason": reason, "error": error}, sort_keys=True)
+            self._status_pub.publish(msg)
+
+        def _publish_manifest(self) -> None:
+            try:
+                manifest = self._runner.manifest()
+                msg = String()
+                msg.data = manifest.to_json()
+                self._status_pub.publish(msg)
+                self._publish_diagnostics(manifest)
+            except Exception as exc:
+                self.get_logger().error(f"failed to publish live route manifest: {exc}")
+
+        def _publish_diagnostics(self, manifest) -> None:
+            array = DiagnosticArray()
+            array.header.stamp = self.get_clock().now().to_msg()
+            status = DiagnosticStatus()
+            status.name = "live_route_runner"
+            status.hardware_id = "sphero_rvr_live_route_runner"
+            status.level = DiagnosticStatus.OK if manifest.status.value in {"complete", "running"} else DiagnosticStatus.WARN
+            status.message = f"live route: {manifest.terminal_reason}"
+            status.values = [
+                KeyValue(key="route_id", value=manifest.route_id),
+                KeyValue(key="status", value=manifest.status.value),
+                KeyValue(key="terminal_reason", value=manifest.terminal_reason),
+                KeyValue(key="measured_distance_m", value=f"{manifest.measured_distance_m:.3f}"),
+                KeyValue(key="measured_angle_deg", value=f"{manifest.measured_angle_deg:.3f}"),
+                KeyValue(key="collision_state", value=manifest.collision_state),
+                KeyValue(key="source_sha", value=manifest.source_sha),
+            ]
+            array.status = [status]
+            self._diagnostics_pub.publish(array)
+
+        def _now_seconds(self) -> float:
+            return self.get_clock().now().nanoseconds / 1_000_000_000.0
+
+    rclpy.init(args=args)
+    node = LiveRouteRunnerNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
