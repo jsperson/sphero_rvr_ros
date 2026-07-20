@@ -84,13 +84,19 @@ The default registry represents these deterministic tools:
 - `query_status_telemetry`: read-only mission telemetry.
 - `pause_cancel_stop_estop`: control semantics for pause/cancel/STOP/ESTOP propagation.
 
-`move_to_clearance` is how a user goal like “move until four inches from the object” becomes executable without exposing direct raw movement. The tool requires `clearance_m`, `speed_mps`, `timeout_s`, and `max_travel_m`. The adapter implementation stays on the bounded path:
+`move_to_clearance` is how a user goal like “move until four inches from the object” becomes executable without exposing direct raw movement. The tool requires `clearance_m`, `speed_mps`, `timeout_s`, and `max_travel_m`. The reviewed physical-control adapter maps it to the existing deterministic range-motion controller and returns only the declared `target_clearance_m` result. It blocks when required range observations or their wall-time receipt stamps are missing and fails closed on range-motion terminal safety states.
+
+`bounded_exploration_segment` maps to the deterministic supervised coordinator. The adapter consumes bounded clearance observations and measured range-motion segment statuses, lets the coordinator issue range-motion segment goals, and reports only `completed_segments` across the Mission API boundary. It never exposes internal topic names in `ToolResult` observation, error, provenance, artifact refs, or audit payloads.
+
+The adapter implementation stays on the bounded robot-side path:
 
 ```text
 range_motion -> /cmd_vel -> collision_stop -> /cmd_vel_motor
 ```
 
 The final motor sink is not a planner surface; it remains owned by the independent safety graph. Internal path/topic names are documentation and adapter internals, not fields returned through `ToolResult`.
+
+Physical adapter scope is intentionally narrow. `PhysicalCapabilityAdapters` supports the motor-control allowlist (`move_to_clearance`, `bounded_exploration_segment`, `pause_cancel_stop_estop`, and read-only `query_status_telemetry`) by routing through deterministic project controllers. Perception, mapping, detector, projection, and artifact-writing tools must have their own reviewed physical adapters before use; the physical adapter raises a validation error rather than faking replay success for those capabilities.
 
 ## Compatibility with mission_api.v1
 

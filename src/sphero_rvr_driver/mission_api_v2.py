@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Protocol, Sequence
 
 from .mission_api import MissionApiVersion, MissionValidationError
 
@@ -385,11 +385,16 @@ class FakeCapabilityAdapters:
         )
 
 
+class CapabilityAdaptersProtocol(Protocol):
+    def execute(self, invocation: ToolInvocation, definition: ToolDefinition, *, started_at_s: float, index: int) -> ToolResult:
+        ...
+
+
 class DeterministicMissionRuntime:
     def __init__(
         self,
         registry: CapabilityRegistry,
-        adapters: FakeCapabilityAdapters,
+        adapters: CapabilityAdaptersProtocol,
         *,
         now_s: float = 0.0,
         budget_ceilings: Optional[MissionBudgets] = None,
