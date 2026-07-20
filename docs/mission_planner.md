@@ -1,6 +1,6 @@
 # Iterative LLM planner over allowlisted rover tools
 
-`src/sphero_rvr_driver/mission_planner.py` implements a provider-neutral, ROS-free supervisory planner loop above `mission_api.v2`.
+`src/sphero_rvr_driver/mission_planner.py` implements a provider-neutral, ROS-free supervisory planner loop above `mission_api.v2`. The rover planner default is now first-party OpenAI `gpt-5.6` through the Responses API, not GLM-5.2/OpenRouter; OpenRouter/GLM remains optional text-only compatibility only.
 
 ## Shape
 
@@ -8,15 +8,15 @@ The loop is:
 
 ```text
 natural-language goal
-  -> bounded planner context
-  -> PlannerProvider structured response
+  -> bounded planner context plus explicitly authorized image observations when present
+  -> OpenAI supervisory planner / PlannerProvider structured response
   -> mission_api.v2 validation
   -> deterministic tool adapter
   -> structured observation/artifact refs
   -> replan until terminal stop reason
 ```
 
-The provider may request only registered typed tool calls. The planner never publishes ROS topics, never opens a rover transport, never owns high-rate control, never clears ESTOP, never approves its own physical gate, and never widens its own limits.
+The provider may request only registered typed tool calls. The planner never publishes ROS topics, never opens a rover transport, never owns high-rate control, never clears ESTOP, never approves its own physical gate, and never widens its own limits. The preserved authority chain is: human goal -> OpenAI supervisory planner -> Mission API v2 allowlist -> deterministic bounded capabilities -> independent collision/STOP/ESTOP -> deterministic rover driver.
 
 ## Providers
 
@@ -26,7 +26,32 @@ The provider may request only registered typed tool calls. The planner never pub
 - `tool_calls`: allowlisted `ToolCall` entries;
 - `message`: non-authoritative provider text.
 
-`FakePlannerProvider` is deterministic and drives the replay/mock test suite. `OpenAICompatiblePlannerProvider` is optional and configured only from constructor values or environment variable names (`OPENAI_BASE_URL`, `OPENAI_MODEL`, and an API-key env name such as `OPENAI_API_KEY`). Missing live-provider credentials raise a clear validation error; the fake provider is never reported as live evidence.
+Default rover planner config:
+
+```text
+provider: openai
+model_id: gpt-5.6
+api_surface: responses
+credential environment: OPENAI_API_KEY
+```
+
+Capability evidence checked against current OpenAI developer docs during this migration:
+
+- Models docs list GPT-5.6 / alias `gpt-5.6` and state latest OpenAI models support text and image input, text output, multilingual capabilities, and vision via the Responses API.
+- Images and vision docs show the Responses API accepting `input_image` content by image URL, base64 data URL, or file ID for analysis.
+- Function calling docs show Responses function tools defined by JSON Schema and `function_call` outputs.
+
+`FakePlannerProvider` is deterministic and drives the replay/mock test suite. `OpenAICompatiblePlannerProvider` defaults to the first-party OpenAI API and `gpt-5.6`, configured only from constructor values or environment variable names (`OPENAI_BASE_URL`, `OPENAI_MODEL`, and an API-key env name such as `OPENAI_API_KEY`). Missing live-provider credentials raise a clear validation error; the fake provider is never reported as live evidence. GLM-5.2 through OpenRouter remains optional text-only compatibility and fails closed for image observations.
+
+This rover planner config does not configure Hermes Kanban `coder`, `planner`, or `reviewer` agents, their models, or their credentials.
+
+## Image observation boundary
+
+Images stay behind typed observations. A caller must explicitly capture or replay an observation, mark it approved for planner use, provide bounded metadata, and pass only that image reference to the OpenAI payload. The planner never receives raw camera device access, ROS graph access, filesystem access, shell access, UART access, or continuous video control.
+
+Image observations fail closed before a provider call when they are not explicitly approved, missing an image URL/reference, unsupported MIME type, oversized, a raw camera/ROS graph reference such as `/dev/video0` or `/camera_node/image_raw`, or paired with prompt-injection/safety-bypass text.
+
+Safe manifests preserve provider/model identity and bounded observation metadata, but never include image bytes, base64 data URLs, bearer tokens, Authorization headers, or credential values.
 
 ## Planner context
 

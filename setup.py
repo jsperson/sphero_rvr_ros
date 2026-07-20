@@ -29,6 +29,7 @@ setup(
                 "config/lidar.yaml",
                 "config/slam_toolbox.yaml",
                 "config/camera.yaml",
+                "config/mission_planner.yaml",
             ],
         ),
         (

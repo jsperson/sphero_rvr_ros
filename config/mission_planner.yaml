@@ -1,0 +1,44 @@
+# ROS-free supervisory planner defaults for Sphero Mission API v2 replay/live planning.
+# This config is for the rover planner only. It does not configure Hermes Kanban
+# coder/planner/reviewer agents, their models, or their credentials.
+planner:
+  default_provider: openai
+  providers:
+    openai:
+      provider: openai
+      model_id: gpt-5.6
+      api_surface: responses
+      supports_image_input: true
+      supports_structured_outputs: true
+      supports_tool_calling: true
+      auth: first-party OpenAI API credential supplied by the runtime environment
+    openrouter_glm52_text_only:
+      provider: openrouter
+      model_id: z-ai/glm-5.2
+      api_surface: chat_completions_compat
+      supports_image_input: false
+      supports_structured_outputs: true
+      supports_tool_calling: true
+      default: false
+      note: OpenRouter/GLM remains optional text-only compatibility, not the Sphero default.
+  observations:
+    max_image_bytes: 20000000
+    allowed_image_mime_types:
+      - image/png
+      - image/jpeg
+      - image/webp
+      - image/gif
+    require_explicit_capture_authorization: true
+    forbid_raw_camera_or_ros_graph_access: true
+  mission_api_v2:
+    allowed_tools:
+      - move_to_clearance
+      - rotate_scan
+      - capture_observation
+      - detect_objects
+      - project_detections_to_map
+      - generate_semantic_artifacts
+      - query_status_telemetry
+      - pause_cancel_stop_estop
+    default_tool_version: "1.0"
+    max_travel_m: 2.0

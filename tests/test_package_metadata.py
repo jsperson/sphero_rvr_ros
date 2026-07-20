@@ -168,8 +168,9 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/mission_api_v2.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
-        "docs/mission_api_v2.md",
         "docs/mission_planner.md",
+        "gpt-5.6",
+        "docs/mission_api_v2.md",
         "docs/rvr_mcp_server.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
@@ -187,6 +188,25 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "LLM planner over allowlisted `mission_api.v2` rover tools",
     ]:
         assert token in readme
+
+
+def test_mission_planner_docs_and_config_distinguish_rover_planner_from_kanban_agents() -> None:
+    readme = (REPO_ROOT / "README.md").read_text()
+    docs = (REPO_ROOT / "docs" / "mission_planner.md").read_text()
+    config = (REPO_ROOT / "config" / "mission_planner.yaml").read_text()
+
+    for text in (readme, docs, config):
+        assert "gpt-5.6" in text
+        assert "OpenRouter" in text
+        assert "Kanban" in text
+    assert "provider: openai" in config
+    assert "model_id: gpt-5.6" in config
+    assert "supports_image_input: true" in config
+    assert "supports_image_input: false" in config
+    assert "OPENAI_API_KEY" in docs
+    assert "OPENAI_API_KEY" not in config
+    assert "raw camera" in docs
+    assert "Mission API v2" in docs
 
 
 def test_rosbag_console_scripts_are_installed() -> None:
