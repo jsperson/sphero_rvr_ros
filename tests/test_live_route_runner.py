@@ -47,12 +47,14 @@ def _state(
     stop: bool = False,
     estop: bool = False,
     cancel: bool = False,
+    collision_received_at: float | None = None,
 ) -> LiveRouteState:
     return LiveRouteState(
         stamp=stamp,
         odom=OdomMotionState(stamp=stamp, x_m=x, y_m=y, yaw_rad=yaw),
         scan=scan or _full_scan(stamp),
         collision_state=collision,
+        collision_received_at=stamp if collision_received_at is None else collision_received_at,
         stop=stop,
         estop=estop,
         cancel=cancel,
@@ -174,6 +176,63 @@ def test_live_route_runner_propagates_collision_supervisor_terminal_blocks(state
     assert manifest.status is status
 
 
+def test_live_route_runner_fails_closed_before_start_when_collision_state_never_received() -> None:
+    manifest = run_route_replay(_route(), (LiveRouteState(1.0, OdomMotionState(1.0, 0, 0, 0), _full_scan(1.0)),))
+
+    assert manifest.terminal_reason == "missing_collision_state"
+    assert manifest.status is ToolResultStatus.BLOCKED
+    assert manifest.executed_segments == ()
+
+
+def test_live_route_runner_fails_closed_when_collision_supervisor_goes_stale_after_clear() -> None:
+    config = LiveRouteConfig(collision_state_max_age_s=0.30)
+
+    manifest = run_route_replay(
+        _route(),
+        (
+            _state(1.0, 0.0, 0.0, 0.0, collision_received_at=1.0),
+            _state(1.4, 0.0, 0.0, 0.0, collision_received_at=1.0),
+        ),
+        config,
+    )
+
+    assert manifest.terminal_reason == "stale_collision_state"
+    assert manifest.status is ToolResultStatus.BLOCKED
+
+
+def test_live_route_runner_requires_new_route_request_after_collision_supervisor_restart() -> None:
+    config = LiveRouteConfig(collision_state_max_age_s=0.30)
+    runner = LiveRouteRunner(config)
+    request = LiveRouteRequest(
+        route_id="one-move",
+        max_runtime_s=10.0,
+        max_travel_m=0.5,
+        segments=(RouteSegmentRequest("move", "move_distance", {"distance_m": 0.2, "speed_mps": 0.1, "timeout_s": 5.0}),),
+    )
+
+    first = runner.start(request, _state(1.0, 0.0, 0.0, 0.0, collision_received_at=0.0))
+    recovered_without_request = runner.update(_state(1.1, 0.0, 0.0, 0.0, collision_received_at=1.1))
+
+    assert first.linear_x == 0.0
+    assert recovered_without_request.linear_x == 0.0
+    assert runner.manifest().terminal_reason == "stale_collision_state"
+    assert not runner.active
+
+    runner.start(request, _state(2.0, 0.0, 0.0, 0.0, collision_received_at=2.0))
+    restarted = runner.update(_state(2.1, 0.0, 0.0, 0.0, collision_received_at=2.1))
+
+    assert restarted.linear_x > 0.0
+    assert runner.active
+
+
+@pytest.mark.parametrize("collision", ["", "BOGUS", CollisionState.STARTUP.value, CollisionState.SLOW.value])
+def test_live_route_runner_treats_unknown_or_not_explicitly_clear_collision_state_as_missing(collision: str) -> None:
+    manifest = run_route_replay(_route(), (_state(1.0, 0.0, 0.0, 0.0, collision=collision),))
+
+    assert manifest.terminal_reason == "missing_collision_state"
+    assert manifest.status is ToolResultStatus.BLOCKED
+
+
 def test_live_route_runner_propagates_stop_estop_cancel_and_stale_data() -> None:
     request = LiveRouteRequest(
         route_id="one-move",
@@ -185,7 +244,7 @@ def test_live_route_runner_propagates_stop_estop_cancel_and_stale_data() -> None
     stopped = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), _state(1.1, 0.0, 0.0, 0.0, stop=True)))
     estopped = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), _state(1.1, 0.0, 0.0, 0.0, estop=True)))
     cancelled = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0), _state(1.1, 0.0, 0.0, 0.0, cancel=True)))
-    stale = run_route_replay(request, (LiveRouteState(1.0, OdomMotionState(0.0, 0, 0, 0), _full_scan(1.0)),))
+    stale = run_route_replay(request, (LiveRouteState(1.0, OdomMotionState(0.0, 0, 0, 0), _full_scan(1.0), CollisionState.CLEAR.value, 1.0),))
 
     assert stopped.terminal_reason == "stopped"
     assert estopped.terminal_reason == "estopped"
@@ -305,11 +364,20 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert "start_live_route_runner" in launch_text
     assert 'default_value="false"' in launch_text
     assert "cmd_vel_topic: /cmd_vel" in config_text
+    assert "collision_state_max_age_s: 0.30" in config_text
     assert "/cmd_vel_motor" not in config_text
     assert "Serial" not in node_source
     assert "cmd_vel_motor" not in node_source
     assert "create_publisher(Twist, self._supervisor_cmd_topic(), 10)" in node_source
     assert "cmd_vel_topic must remain /cmd_vel" in node_source
+    assert "_normalize_exception_terminal" in node_source
+    assert 'self._runner.abort("invalid_route"' not in node_source
+    assert 'self._publish_zero_status("route_failed"' not in node_source
     assert "rejected non-finite command; publishing zero" in node_source
     assert "TransformListener" in node_source
     assert "live_route/cancel" in node_source
+    assert "self._collision_state: Optional[str] = None" in node_source
+    assert "self._collision_received_at: Optional[float] = None" in node_source
+    assert "collision_received_at=self._collision_received_at" in node_source
+    assert "CollisionState(str(state).upper()).value" in node_source
+    assert setup_text.count("config/live_route_runner.yaml") == 1

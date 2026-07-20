@@ -40,6 +40,8 @@ class RouteTerminalReason(str, Enum):
     STALE_SCAN = "stale_scan"
     MISSING_ODOM = "missing_odom"
     MISSING_SCAN = "missing_scan"
+    MISSING_COLLISION_STATE = "missing_collision_state"
+    STALE_COLLISION_STATE = "stale_collision_state"
     UNSAFE_CLEARANCE = "unsafe_clearance"
     TIMEOUT = "timeout"
     STALL = "stall"
@@ -131,9 +133,10 @@ class LiveRouteConfig:
     clearance_margin_m: float = 0.40
     min_translation_cap_m: float = 0.01
     max_translation_segment_m: float = 0.75
+    collision_state_max_age_s: float = 0.30
 
     def __post_init__(self) -> None:
-        for name in ("clearance_margin_m", "min_translation_cap_m", "max_translation_segment_m"):
+        for name in ("clearance_margin_m", "min_translation_cap_m", "max_translation_segment_m", "collision_state_max_age_s"):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
@@ -144,7 +147,8 @@ class LiveRouteState:
     stamp: float
     odom: Optional[OdomMotionState]
     scan: Optional[ScanInput]
-    collision_state: str = CollisionState.CLEAR.value
+    collision_state: Optional[str] = None
+    collision_received_at: Optional[float] = None
     stop: bool = False
     estop: bool = False
     cancel: bool = False
@@ -226,7 +230,7 @@ class LiveRouteRunner:
         self._active: Optional[_ActiveSegment] = None
         self._executed: list[ExecutedRouteSegment] = []
         self._terminal_reason = RouteTerminalReason.IDLE.value
-        self._last_collision_state = CollisionState.CLEAR.value
+        self._last_collision_state = "MISSING"
 
     @property
     def active(self) -> bool:
@@ -363,13 +367,16 @@ class LiveRouteRunner:
         return scan_eval
 
     def _safety_terminal(self, state: LiveRouteState) -> Optional[str]:
-        self._last_collision_state = str(state.collision_state)
+        self._last_collision_state = str(state.collision_state or "MISSING")
         if state.estop:
             return RouteTerminalReason.ESTOPPED.value
         if state.stop:
             return RouteTerminalReason.STOPPED.value
         if state.cancel:
             return RouteTerminalReason.CANCELLED.value
+        collision_terminal = self._collision_terminal(state)
+        if collision_terminal is not None:
+            return collision_terminal
         if state.odom is None:
             return RouteTerminalReason.MISSING_ODOM.value
         if float(state.stamp) - float(state.odom.stamp) > self.config.odom.max_sample_age_s:
@@ -380,6 +387,25 @@ class LiveRouteRunner:
         if not scan_eval.healthy:
             return RouteTerminalReason.STALE_SCAN.value if scan_eval.reason == "stale_scan" else RouteTerminalReason.UNSAFE_CLEARANCE.value
         if _collision_veto(state.collision_state):
+            return RouteTerminalReason.COLLISION_VETO.value
+        return None
+
+    def _collision_terminal(self, state: LiveRouteState) -> Optional[str]:
+        if state.collision_state is None or state.collision_received_at is None:
+            return RouteTerminalReason.MISSING_COLLISION_STATE.value
+        try:
+            received_at = float(state.collision_received_at)
+            collision_state = CollisionState(str(state.collision_state).upper())
+        except (TypeError, ValueError):
+            return RouteTerminalReason.MISSING_COLLISION_STATE.value
+        age_s = float(state.stamp) - received_at
+        if not math.isfinite(age_s) or age_s < -1e-9:
+            return RouteTerminalReason.MISSING_COLLISION_STATE.value
+        if age_s > self.config.collision_state_max_age_s + 1e-9:
+            return RouteTerminalReason.STALE_COLLISION_STATE.value
+        if collision_state is not CollisionState.CLEAR:
+            if collision_state in {CollisionState.STARTUP, CollisionState.SLOW}:
+                return RouteTerminalReason.MISSING_COLLISION_STATE.value
             return RouteTerminalReason.COLLISION_VETO.value
         return None
 
@@ -430,7 +456,7 @@ class LiveRouteRunner:
 
     def _finish(self, reason: str, state: LiveRouteState) -> None:
         self._terminal_reason = reason
-        self._last_collision_state = str(state.collision_state)
+        self._last_collision_state = str(state.collision_state or "MISSING")
 
     @staticmethod
     def _status_for_terminal(reason: str) -> ToolResultStatus:
@@ -450,6 +476,8 @@ class LiveRouteRunner:
             RouteTerminalReason.STALE_SCAN.value,
             RouteTerminalReason.MISSING_ODOM.value,
             RouteTerminalReason.MISSING_SCAN.value,
+            RouteTerminalReason.MISSING_COLLISION_STATE.value,
+            RouteTerminalReason.STALE_COLLISION_STATE.value,
             RouteTerminalReason.UNSAFE_CLEARANCE.value,
         }:
             return ToolResultStatus.BLOCKED
@@ -533,8 +561,8 @@ def _normalize_exception_terminal(exc: Exception) -> str:
     return RouteTerminalReason.INVALID_ROUTE.value
 
 
-def _collision_veto(state: str) -> bool:
-    normalized = str(state).upper()
+def _collision_veto(state: Optional[str]) -> bool:
+    normalized = str(state or "").upper()
     return normalized in {
         CollisionState.STOPPED.value,
         CollisionState.SENSOR_STALE.value,

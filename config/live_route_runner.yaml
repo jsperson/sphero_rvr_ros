@@ -21,6 +21,7 @@ live_route_runner:
     clearance_margin_m: 0.40
     min_translation_cap_m: 0.01
     max_translation_segment_m: 0.75
+    collision_state_max_age_s: 0.30
     distance_tolerance_m: 0.01
     angle_tolerance_rad: 0.034906585
     heading_kp: 1.5

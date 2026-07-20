@@ -26,7 +26,6 @@ setup(
                 "config/rvr.yaml",
                 "config/collision_stop.yaml",
                 "config/range_motion.yaml",
-                "config/live_route_runner.yaml",
                 "config/lidar.yaml",
                 "config/slam_toolbox.yaml",
                 "config/camera.yaml",

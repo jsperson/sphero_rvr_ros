@@ -13,7 +13,14 @@ import subprocess
 from typing import Any, Optional
 
 from .collision_stop import CollisionStopConfig, CollisionState, ScanInput, Transform2D
-from .live_route_runner import LiveRouteConfig, LiveRouteRequest, LiveRouteRunner, LiveRouteState, route_request_from_json
+from .live_route_runner import (
+    LiveRouteConfig,
+    LiveRouteRequest,
+    LiveRouteRunner,
+    LiveRouteState,
+    _normalize_exception_terminal,
+    route_request_from_json,
+)
 from .odometry import MotionPrimitiveConfig, OdomMotionState
 from .range_motion_node import _stamp_seconds, _tf_error_reason, _transform2d_from_transform_stamped
 
@@ -73,7 +80,8 @@ def main(args=None):
             self._latest_request: Optional[LiveRouteRequest] = None
             self._latest_scan: Optional[ScanInput] = None
             self._latest_odom: Optional[OdomMotionState] = None
-            self._collision_state = CollisionState.CLEAR.value
+            self._collision_state: Optional[str] = None
+            self._collision_received_at: Optional[float] = None
             self._stop = False
             self._estop = False
             self._cancel = False
@@ -116,6 +124,7 @@ def main(args=None):
                 "clearance_margin_m": 0.40,
                 "min_translation_cap_m": 0.01,
                 "max_translation_segment_m": 0.75,
+                "collision_state_max_age_s": scan_defaults.max_scan_age_s,
                 "distance_tolerance_m": odom_defaults.distance_tolerance_m,
                 "angle_tolerance_rad": odom_defaults.angle_tolerance_rad,
                 "heading_kp": odom_defaults.heading_kp,
@@ -157,6 +166,7 @@ def main(args=None):
                 clearance_margin_m=float(self.get_parameter("clearance_margin_m").value),
                 min_translation_cap_m=float(self.get_parameter("min_translation_cap_m").value),
                 max_translation_segment_m=float(self.get_parameter("max_translation_segment_m").value),
+                collision_state_max_age_s=float(self.get_parameter("collision_state_max_age_s").value),
             )
 
         def _supervisor_cmd_topic(self) -> str:
@@ -176,8 +186,9 @@ def main(args=None):
             try:
                 command = self._runner.start(request, self._current_state())
             except Exception as exc:
-                self._runner.abort("invalid_route", self._current_state())
-                self._publish_zero_status("invalid_route", {"message": str(exc)})
+                reason = _normalize_exception_terminal(exc)
+                self._runner.abort(reason, self._current_state())
+                self._publish_zero_status(reason, {"message": str(exc)})
                 self._publish_manifest()
                 return
             self._publish_command(command)
@@ -224,11 +235,21 @@ def main(args=None):
             self._latest_odom = _odom_state(msg)
 
         def _on_collision_state(self, msg) -> None:
+            state = None
             try:
                 payload = json.loads(str(msg.data))
-                self._collision_state = str(payload.get("state", payload.get("collision_state", self._collision_state)))
+                if isinstance(payload, dict):
+                    state = payload.get("state", payload.get("collision_state"))
+                else:
+                    state = payload
             except Exception:
-                self._collision_state = str(getattr(msg, "data", self._collision_state))
+                state = getattr(msg, "data", None)
+            try:
+                self._collision_state = CollisionState(str(state).upper()).value
+                self._collision_received_at = self._now_seconds()
+            except Exception:
+                self._collision_state = None
+                self._collision_received_at = None
 
         def _on_stop_state(self, msg) -> None:
             text = str(getattr(msg, "data", "")).lower()
@@ -241,8 +262,9 @@ def main(args=None):
             try:
                 command = self._runner.update(self._current_state())
             except Exception as exc:
-                self._runner.abort("cancel_failed", self._current_state())
-                self._publish_zero_status("cancel_failed", {"message": str(exc)})
+                reason = _normalize_exception_terminal(exc)
+                self._runner.abort(reason, self._current_state())
+                self._publish_zero_status(reason, {"message": str(exc)})
                 self._publish_manifest()
                 command = type("Zero", (), {"linear_x": 0.0, "angular_z": 0.0})()
             self._publish_command(command)
@@ -257,8 +279,9 @@ def main(args=None):
             try:
                 command = self._runner.update(self._current_state())
             except Exception as exc:
-                self._runner.abort("invalid_route", self._current_state())
-                self._publish_zero_status("route_failed", {"message": str(exc)})
+                reason = _normalize_exception_terminal(exc)
+                self._runner.abort(reason, self._current_state())
+                self._publish_zero_status(reason, {"message": str(exc)})
                 self._publish_manifest()
                 return
             self._publish_command(command)
@@ -271,6 +294,7 @@ def main(args=None):
                 odom=self._latest_odom,
                 scan=self._latest_scan,
                 collision_state=self._collision_state,
+                collision_received_at=self._collision_received_at,
                 stop=self._stop,
                 estop=self._estop,
                 cancel=self._cancel,
