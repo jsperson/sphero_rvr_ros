@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from sphero_rvr_driver.mission_api import MissionValidationError
-from sphero_rvr_driver.mission_api_v2 import CapabilityAvailability, FakeCapabilityAdapters, build_default_v2_registry
+from sphero_rvr_driver.mission_api import CapabilityAvailability, FakeCapabilityAdapters, build_default_registry
 from sphero_rvr_driver.rvr_mcp_server import RvrMcpAdapter, run_stdio_server
 
 
@@ -82,7 +82,7 @@ def test_stdio_server_initializes_and_discovers_only_least_privilege_registry_to
 
 
 def test_mcp_tools_are_dynamic_over_registry_availability_and_do_not_duplicate_schemas() -> None:
-    registry = build_default_v2_registry(
+    registry = build_default_registry(
         detector_classes=("shoe", "backpack"),
         availability={"rotate_scan": CapabilityAvailability.UNSUPPORTED},
     )
@@ -118,7 +118,7 @@ def test_mcp_tools_are_dynamic_over_registry_availability_and_do_not_duplicate_s
 
 
 def test_mcp_exercises_shoe_backpack_and_clearance_plan_flows_with_audit_correlation() -> None:
-    adapter = RvrMcpAdapter(registry=build_default_v2_registry(detector_classes=("shoe", "backpack")))
+    adapter = RvrMcpAdapter(registry=build_default_registry(detector_classes=("shoe", "backpack")))
 
     shoe = adapter.call_tool("rvr.submit_plan", {"fixture": "canonical_shoe_mapping", "client_session_id": "session-shoe"})
     assert shoe["status"] == "complete"
@@ -134,7 +134,7 @@ def test_mcp_exercises_shoe_backpack_and_clearance_plan_flows_with_audit_correla
         {
             "goal_id": "backpack-mcp",
             "objective": "Map backpacks from replay observations.",
-            "success_criteria": ["backpack detections are projected"],
+            "success_criteria": ["backpack detections map"],
             "budgets": {"max_steps": 4, "max_runtime_s": 60.0, "max_travel_m": 1.0},
             "invocations": [
                 {"correlation_id": "bp-1", "tool_id": "capture_observation", "tool_version": "1.0", "arguments": {"sensor": "replay"}},
@@ -153,7 +153,7 @@ def test_mcp_exercises_shoe_backpack_and_clearance_plan_flows_with_audit_correla
         {
             "goal_id": "clearance-mcp",
             "objective": "Move to clearance, capture, and report.",
-            "success_criteria": ["bounded move completes", "report produced"],
+            "success_criteria": ["move clearance target", "observation", "mission summary"],
             "budgets": {"max_steps": 3, "max_runtime_s": 20.0, "max_travel_m": 0.25},
             "invocations": [
                 {

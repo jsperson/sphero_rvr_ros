@@ -1,8 +1,8 @@
 # Authenticated Mission API controls and physical start gate
 
-`src/sphero_rvr_driver/mission_controls.py` adds the VS08B control layer above the VS07 Mission API state machine and the VS03 supervised coordinator contract. It is ROS-free, dependency-free, and deliberately not a generic ROS bridge.
+`src/sphero_rvr_driver/mission_controls.py` adds an authenticated control layer above canonical Mission API plans and the supervised coordinator contract. It is ROS-free, dependency-free, and deliberately not a generic ROS bridge.
 
-The controls expose only authenticated versioned Mission API actions:
+The controls expose only authenticated Mission API actions:
 
 ```text
 POST /api/mission/start
@@ -22,7 +22,7 @@ Every browser/control action requires a `MissionPrincipal` with the matching per
 
 Missing principals and missing permissions fail closed with `MissionControlError`. Denials are still appended to `audit_log` with:
 
-- `api_version`, currently `mission_api.v1`
+- `api_version`, currently `mission_api.v2`
 - action and actor
 - decision (`denied`, `allowed`, or `latched`)
 - reason
@@ -41,11 +41,11 @@ A motor-capable mission start must use `MissionExecutionMode.PHYSICAL` and inclu
 - `gate_id`
 - optional reason
 
-Without that explicit gate, `MissionControlSession.start()` rejects the request and records a denied audit event. With the gate present, the session advances the Mission API state machine through `start_requested` and `validated`, preserving audit linkage to those mission events.
+Without that explicit gate, `MissionControlSession.start()` rejects the request and records a denied audit event. With the gate present, the session records `start_requested` and `validated`, preserving audit linkage to those mission events.
 
 ## Cancel and pause
 
-`MissionControlSession.pause()` applies the Mission API `pause_requested` event. `MissionControlSession.cancel()` latches `CANCELLED` through the Mission API result path. Both require their own permissions and write audit entries linked to the Mission API event log.
+`MissionControlSession.pause()` records the `pause_requested` event and moves the control state to `PAUSED`. `MissionControlSession.cancel()` latches `CANCELLED`. Both require their own permissions and write audit entries linked to the Mission API event log.
 
 Browser cancel/STOP is an operator control, not the sole safety mechanism. The robot-side STOP/ESTOP/collision supervisor remains independent and visible.
 
@@ -67,4 +67,4 @@ These events use actor `robot-side-supervisor` and decision `latched` in `audit_
 - Pause
 - Cancel / STOP mission
 
-The shell advertises `mission_api.v1` and repeats that the robot-side STOP/ESTOP/collision supervisor remains independent. It intentionally contains no direct motor route names or generic ROS bridge hooks.
+The shell advertises `mission_api.v2` and repeats that the robot-side STOP/ESTOP/collision supervisor remains independent. It intentionally contains no direct motor route names or generic ROS bridge hooks.

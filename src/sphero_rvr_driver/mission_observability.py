@@ -1,9 +1,9 @@
 """Read-only mission observability JSON and static PWA surfaces.
 
-The observability layer consumes the VS07 Mission API snapshot shape and only
-publishes GET-able status views.  It deliberately has no start/cancel/motor
-command route; later authenticated controls should live in a separate module so
-this surface can stay safe for replay demos and phones on local Wi-Fi.
+The observability layer consumes the canonical Mission API control snapshot
+shape and only publishes GET-able status views. It deliberately has no
+start/cancel/motor command route so this surface can stay safe for replay demos
+and phones on local Wi-Fi.
 """
 
 from __future__ import annotations
@@ -12,8 +12,6 @@ import html
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
-
-from .mission_api import MissionSnapshot
 
 
 class ReadOnlyRouteError(ValueError):
@@ -111,7 +109,7 @@ class StaticPwaBundle:
 
 @dataclass(frozen=True)
 class MissionObservabilitySnapshot:
-    mission: MissionSnapshot
+    mission: Any
     robot_health: Mapping[str, Any]
     sensor_freshness: Mapping[str, FreshnessStatus]
     battery: BatteryStatus
@@ -127,7 +125,7 @@ class MissionObservabilitySnapshot:
 
     @property
     def api_version(self) -> str:
-        return self.mission.api_version.value
+        return str(self.mission.to_json_dict()["api_version"])
 
     def to_json_dict(self) -> dict[str, Any]:
         mission_payload = self.mission.to_json_dict()
@@ -152,24 +150,21 @@ class MissionObservabilitySnapshot:
         }
 
 
-def build_mock_observability_snapshot(mission: MissionSnapshot) -> MissionObservabilitySnapshot:
-    """Build deterministic replay/mock observability from a VS07 mission snapshot."""
+def build_mock_observability_snapshot(mission: Any) -> MissionObservabilitySnapshot:
+    """Build deterministic replay/mock observability from a canonical mission snapshot."""
 
     artifact_links = {
         "occupancy_map": "artifacts/vs02_slam_replay/shoe_room_map.yaml",
         "semantic_map": "artifacts/vs05_shoe_map_projection/shoe_map_observations.json",
         "shoe_detections": "artifacts/vs04_shoe_detector_replay/shoe_detector_evaluation.json",
     }
-    result = mission.result.to_json_dict() if mission.result is not None else None
-    if result is not None:
-        artifact_links.update({key: value for key, value in result.get("artifacts", {}).items() if value})
-
-    telemetry = mission.telemetry
+    mission_payload = mission.to_json_dict()
+    telemetry = mission_payload.get("telemetry", {})
     return MissionObservabilitySnapshot(
         mission=mission,
         robot_health={
             "summary": "mock/replay",
-            "mission_state": mission.state.value,
+            "mission_state": mission_payload["state"],
             "terminal": bool(telemetry.get("terminal", False)),
             "direct_write_controls": False,
         },
@@ -182,7 +177,7 @@ def build_mock_observability_snapshot(mission: MissionSnapshot) -> MissionObserv
         },
         battery=BatteryStatus(percentage=0.76, voltage_v=7.34, charging=False),
         diagnostics=(
-            DiagnosticItem("mission_api", "OK", "VS07 snapshot serialized"),
+            DiagnosticItem("mission_api", "OK", "canonical snapshot serialized"),
             DiagnosticItem("observability", "OK", "read-only mock/replay surface"),
         ),
         pose=PosePreview(frame="map", x_m=1.0, y_m=2.0, yaw_rad=0.5),

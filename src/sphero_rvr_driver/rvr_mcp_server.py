@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
 from .mission_api import MissionApiVersion, MissionValidationError
-from .mission_api_v2 import (
+from .mission_api import (
     ApprovalGrant,
     CapabilityAvailability,
     CapabilityRegistry,
@@ -26,11 +26,14 @@ from .mission_api_v2 import (
     MissionGoal,
     MissionPlan,
     MissionRuntimeResult,
+    CriterionKind,
+    SuccessCriterion,
     ToolDefinition,
     ToolInvocation,
     ToolResult,
-    build_canonical_shoe_mapping_v2_plan,
-    build_default_v2_registry,
+    _arguments_digest,
+    build_canonical_shoe_mapping_plan,
+    build_default_registry,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -69,7 +72,7 @@ class McpCallContext:
 
 @dataclass
 class RvrMcpAdapter:
-    registry: CapabilityRegistry = field(default_factory=lambda: build_default_v2_registry(detector_classes=("shoe", "backpack")))
+    registry: CapabilityRegistry = field(default_factory=lambda: build_default_registry(detector_classes=("shoe", "backpack")))
     adapters: FakeCapabilityAdapters = field(default_factory=FakeCapabilityAdapters)
     source_sha: str = field(default_factory=lambda: _source_sha())
     now_s: float = 100.0
@@ -183,8 +186,9 @@ class RvrMcpAdapter:
                 runtime = self._runtime()
                 runtime._validate_plan_budgets(plan)  # noqa: SLF001 - validation endpoint over the canonical runtime.
                 elapsed_s = 0.0
+                used_approvals: set[str] = set()
                 for invocation in plan.invocations:
-                    definition = runtime._validate_invocation(invocation, plan, now_s=self.now_s + elapsed_s)  # noqa: SLF001
+                    definition = runtime._validate_invocation(invocation, plan, now_s=self.now_s + elapsed_s, used_approvals=used_approvals, physical_mode=False)  # noqa: SLF001
                     elapsed_s += _effective_timeout_from_arguments(definition, invocation.arguments)
                 return self._record_payload("validated", context, {"plan": plan.to_json_dict()})
             if name == "rvr.submit_plan":
@@ -200,14 +204,27 @@ class RvrMcpAdapter:
                 tool_id=definition.tool_id,
                 tool_version=definition.version,
                 arguments=args,
-                approval=self._approval_for(definition),
+                approval=self._approval_for(
+                    definition,
+                    context,
+                    mission_id=f"mcp-{context.session_id}",
+                    correlation_id=f"mcp-{context.session_id}-{definition.tool_id}",
+                    arguments=args,
+                ),
                 requested_at_s=self.now_s,
                 provenance={"mcp_server": SERVER_NAME, "mcp_session_id": context.session_id},
             )
             goal = MissionGoal(
                 goal_id=f"mcp-{context.session_id}",
                 objective=f"MCP request for {definition.tool_id}",
-                success_criteria=("requested capability validates and returns a structured result",),
+                success_criteria=(
+                    SuccessCriterion(
+                        criterion_id=f"{definition.tool_id}-complete",
+                        description=f"{definition.tool_id} completes through the Mission API runtime",
+                        kind=CriterionKind.TOOL_COMPLETE,
+                        tool_id=definition.tool_id,
+                    ),
+                ),
                 execution_mode="replay",
                 budgets=_single_call_budget(definition, args),
             )
@@ -282,7 +299,18 @@ class RvrMcpAdapter:
         if args.get("execution_mode") == "physical":
             raise MissionValidationError("MCP cannot start or authorize physical execution")
         if args.get("fixture") == "canonical_shoe_mapping":
-            return build_canonical_shoe_mapping_v2_plan(goal_id=str(args.get("goal_id", "mcp-shoe-mapping")), approval=self._supervised_replay_approval(context))
+            goal_id = str(args.get("goal_id", "mcp-shoe-mapping"))
+            shoe_motion_args = {"max_segments": 2, "segment_timeout_s": 8.0, "max_travel_m": 1.0}
+            return build_canonical_shoe_mapping_plan(
+                goal_id=goal_id,
+                approval=self._supervised_replay_approval(
+                    context,
+                    mission_id=goal_id,
+                    definition=self.registry.require("bounded_exploration_segment", "1.0"),
+                    correlation_id="shoe-2",
+                    arguments=shoe_motion_args,
+                ),
+            )
         invocations_arg = args.get("invocations")
         if not isinstance(invocations_arg, Sequence) or isinstance(invocations_arg, (str, bytes)):
             raise MissionValidationError("submit_plan requires invocations array or an allowed fixture")
@@ -311,13 +339,14 @@ class RvrMcpAdapter:
                 raise MissionValidationError("tool invocation arguments must be an object")
             _reject_forbidden_mcp_keys(call_args)
             definition = self.registry.require(str(item.get("tool_id", "")), str(item.get("tool_version", "1.0")))
+            correlation_id = str(item.get("correlation_id", f"mcp-{context.session_id}-{index}"))
             invocations.append(
                 ToolInvocation(
-                    correlation_id=str(item.get("correlation_id", f"mcp-{context.session_id}-{index}")),
+                    correlation_id=correlation_id,
                     tool_id=definition.tool_id,
                     tool_version=definition.version,
                     arguments=dict(call_args),
-                    approval=self._approval_for(definition, context),
+                    approval=self._approval_for(definition, context, mission_id=goal.goal_id, correlation_id=correlation_id, arguments=call_args),
                     requested_at_s=self.now_s + float(index),
                     provenance={"mcp_server": SERVER_NAME, "mcp_session_id": context.session_id},
                 )
@@ -337,20 +366,42 @@ class RvrMcpAdapter:
     def _runtime(self) -> DeterministicMissionRuntime:
         return DeterministicMissionRuntime(self.registry, self.adapters, now_s=self.now_s)
 
-    def _approval_for(self, definition: ToolDefinition, context: Optional[McpCallContext] = None) -> Optional[ApprovalGrant]:
+    def _approval_for(
+        self,
+        definition: ToolDefinition,
+        context: Optional[McpCallContext] = None,
+        *,
+        mission_id: str,
+        correlation_id: str,
+        arguments: Mapping[str, Any],
+    ) -> Optional[ApprovalGrant]:
         if not definition.requires_approval():
             return None
         if not self.replay_supervised_motion_enabled or definition.approval_class != "supervised_motion":
             return None
-        return self._supervised_replay_approval(context or McpCallContext("mcp-local-session"))
+        return self._supervised_replay_approval(context or McpCallContext("mcp-local-session"), mission_id=mission_id, definition=definition, correlation_id=correlation_id, arguments=arguments)
 
-    def _supervised_replay_approval(self, context: McpCallContext) -> ApprovalGrant:
+    def _supervised_replay_approval(
+        self,
+        context: McpCallContext,
+        *,
+        mission_id: str,
+        definition: ToolDefinition,
+        correlation_id: str,
+        arguments: Mapping[str, Any],
+    ) -> ApprovalGrant:
         return ApprovalGrant(
-            approval_id=f"mcp-replay-{context.session_id}",
+            approval_id=f"mcp-replay-{context.session_id}-{mission_id}",
             approved_by="mcp-local-replay-supervisor",
             approved_at_s=self.now_s - 1.0,
             expires_at_s=self.now_s + 3600.0,
             approval_class="supervised_motion",
+            mission_id=mission_id,
+            issued_to="mission-runtime",
+            tool_id=definition.tool_id,
+            correlation_id=correlation_id,
+            arguments_digest=_arguments_digest(arguments),
+            principal=f"mcp:{context.client_name}",
         )
 
     def _result_payload(self, result: MissionRuntimeResult, context: McpCallContext) -> dict[str, Any]:
@@ -508,7 +559,15 @@ def _tool_description(definition: ToolDefinition) -> str:
 
 
 def _single_call_budget(definition: ToolDefinition, args: Mapping[str, Any]) -> MissionBudgets:
-    travel = args.get("max_travel_m") if definition.tool_id in {"move_to_clearance", "bounded_exploration_segment"} else None
+    if definition.tool_id in {"move_to_clearance", "bounded_exploration_segment"}:
+        travel = args.get("max_travel_m")
+    elif definition.tool_id == "move_distance":
+        try:
+            travel = abs(float(args["distance_m"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MissionValidationError("move_distance.distance_m must be finite") from exc
+    else:
+        travel = None
     return MissionBudgets(max_steps=1, max_runtime_s=max(float(definition.timeout_s), 5.0), max_travel_m=travel)
 
 

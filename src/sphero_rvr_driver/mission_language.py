@@ -1,9 +1,9 @@
-"""Constrained plain-English translator for Mission API requests.
+"""Constrained plain-English translator for canonical Mission API plans.
 
-This module is intentionally deterministic and ROS-free.  It recognizes only the
-canonical shoe-mapping vertical slice and emits either a validated Mission API
-schema or a structured rejection.  It never publishes ROS topics, calls
-``/cmd_vel``, talks to a browser, or exposes a generic ROS bridge.
+This module is intentionally deterministic and ROS-free. It recognizes a narrow
+shoe-mapping fixture and emits either a validated generic Mission API plan or a
+structured rejection. It never publishes ROS topics, calls ``/cmd_vel``, talks to
+a browser, or exposes a generic ROS bridge.
 """
 
 from __future__ import annotations
@@ -14,11 +14,12 @@ from enum import Enum
 from typing import Any, Mapping, Optional
 
 from .mission_api import (
-    CapabilitySet,
-    MissionRequest,
+    CapabilityAvailability,
+    CapabilityRegistry,
+    MissionPlan,
     MissionValidationError,
-    build_canonical_shoe_mapping_request,
-    validate_mission_request,
+    build_canonical_shoe_mapping_plan,
+    build_default_registry,
 )
 
 
@@ -52,21 +53,21 @@ class MissionLanguageRejection:
 
 @dataclass(frozen=True)
 class MissionLanguageResult:
-    request: Optional[MissionRequest] = None
+    plan: Optional[MissionPlan] = None
     rejection: Optional[MissionLanguageRejection] = None
 
     @property
     def accepted(self) -> bool:
-        return self.request is not None
+        return self.plan is not None
 
     def __post_init__(self) -> None:
-        if (self.request is None) == (self.rejection is None):
+        if (self.plan is None) == (self.rejection is None):
             raise MissionValidationError("translator must emit exactly one schema or one rejection")
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
             "accepted": self.accepted,
-            "schema": None if self.request is None else self.request.to_json_dict(),
+            "schema": None if self.plan is None else self.plan.to_json_dict(),
             "rejection": None if self.rejection is None else self.rejection.to_json_dict(),
         }
 
@@ -156,7 +157,7 @@ def translate_plain_english_mission(
     text: str,
     *,
     mission_id: str = "shoe-room-map",
-    capabilities: Optional[CapabilitySet] = None,
+    registry: Optional[CapabilityRegistry] = None,
 ) -> MissionLanguageResult:
     """Translate constrained plain English into Mission API schema or rejection.
 
@@ -201,15 +202,22 @@ def translate_plain_english_mission(
             "Request is outside the constrained shoe-mapping language.",
         )
 
-    request = build_canonical_shoe_mapping_request(mission_id=mission_id)
+    plan = build_canonical_shoe_mapping_plan(goal_id=mission_id)
     try:
-        validate_mission_request(request, capabilities or CapabilitySet.all_enabled())
+        _validate_plan_registry(plan, registry or build_default_registry())
     except MissionValidationError as exc:
         return _reject(
             MissionLanguageRejectionReason.SCHEMA_VALIDATION_FAILED,
             f"Mission schema validation failed: {exc}",
         )
-    return MissionLanguageResult(request=request)
+    return MissionLanguageResult(plan=plan)
+
+
+def _validate_plan_registry(plan: MissionPlan, registry: CapabilityRegistry) -> None:
+    for invocation in plan.invocations:
+        definition = registry.require(invocation.tool_id, invocation.tool_version)
+        if definition.availability is not CapabilityAvailability.AVAILABLE:
+            raise MissionValidationError(f"tool {invocation.tool_id} is {definition.availability.value}/unavailable")
 
 
 def _normalize_text(text: str) -> str:

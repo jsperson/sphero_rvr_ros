@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sphero_rvr_driver.mission_api import MissionValidationError
-from sphero_rvr_driver.mission_api_v2 import FakeCapabilityAdapters, MissionBudgets
+from sphero_rvr_driver.mission_api import FakeCapabilityAdapters, MissionBudgets
 from sphero_rvr_driver.mission_planner import OpenAICompatiblePlannerProvider, IterativeMissionPlanner
 
 

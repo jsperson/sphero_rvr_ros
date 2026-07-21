@@ -4,13 +4,8 @@ import json
 
 import pytest
 
-from sphero_rvr_driver.mission_api import (
-    CapabilitySet,
-    MissionEventKind,
-    MissionStateMachine,
-    build_canonical_shoe_mapping_request,
-    validate_mission_request,
-)
+from sphero_rvr_driver.mission_api import build_canonical_shoe_mapping_plan
+from sphero_rvr_driver.mission_controls import MissionControlSession, MissionExecutionMode, MissionPrincipal
 from sphero_rvr_driver.mission_observability import (
     ReadOnlyRouteError,
     build_mock_observability_snapshot,
@@ -20,21 +15,23 @@ from sphero_rvr_driver.mission_observability import (
 )
 
 
-def _mission_machine() -> MissionStateMachine:
-    command = validate_mission_request(build_canonical_shoe_mapping_request(mission_id="obs-001"), CapabilitySet.all_enabled())
-    machine = MissionStateMachine(command)
-    machine.apply(MissionEventKind.START_REQUESTED)
-    machine.apply(MissionEventKind.VALIDATED)
-    return machine
+def _operator() -> MissionPrincipal:
+    return MissionPrincipal("operator:scott", permissions=("mission:start", "mission:pause"))
 
 
-def test_observability_snapshot_serializes_vs07_contract_read_only_status_surfaces() -> None:
-    snapshot = build_mock_observability_snapshot(_mission_machine().snapshot())
+def _mission_session() -> MissionControlSession:
+    session = MissionControlSession(build_canonical_shoe_mapping_plan(goal_id="obs-001"))
+    session.start(_operator(), mode=MissionExecutionMode.REPLAY)
+    return session
+
+
+def test_observability_snapshot_serializes_canonical_contract_read_only_status_surfaces() -> None:
+    snapshot = build_mock_observability_snapshot(_mission_session().snapshot())
     payload = snapshot.to_json_dict()
 
-    assert payload["api_version"] == "mission_api.v1"
+    assert payload["api_version"] == "mission_api.v2"
     assert payload["mission"]["mission_id"] == "obs-001"
-    assert payload["mission"]["state"] == "MAPPING"
+    assert payload["mission"]["state"] == "RUNNING"
     assert payload["read_only"] is True
     assert payload["allowed_methods"] == ["GET"]
     assert payload["write_endpoints"] == []
@@ -51,18 +48,18 @@ def test_observability_snapshot_serializes_vs07_contract_read_only_status_surfac
 
 
 def test_event_stream_frames_are_json_sse_for_mock_telemetry_progression() -> None:
-    machine = _mission_machine()
-    mapping = build_mock_observability_snapshot(machine.snapshot())
-    exploring = build_mock_observability_snapshot(machine.apply(MissionEventKind.MAPPING_STARTED))
+    session = _mission_session()
+    running = build_mock_observability_snapshot(session.snapshot())
+    paused = build_mock_observability_snapshot(session.pause(_operator()))
 
-    frames = list(iter_event_stream_frames((mapping, exploring)))
+    frames = list(iter_event_stream_frames((running, paused)))
 
     assert len(frames) == 2
     assert frames[0].startswith("event: mission_observability\n")
     first_data = json.loads(frames[0].split("data: ", 1)[1])
     second_data = json.loads(frames[1].split("data: ", 1)[1])
-    assert first_data["mission"]["state"] == "MAPPING"
-    assert second_data["mission"]["state"] == "EXPLORING"
+    assert first_data["mission"]["state"] == "RUNNING"
+    assert second_data["mission"]["state"] == "PAUSED"
     assert second_data["sensor_freshness"]["mission_state"]["fresh"] is True
 
 
@@ -89,7 +86,7 @@ def test_static_pwa_bundle_is_responsive_read_only_and_contains_observability_ho
 
 
 def test_observability_request_handler_exposes_only_get_routes_and_rejects_write_attempts() -> None:
-    snapshot = build_mock_observability_snapshot(_mission_machine().snapshot())
+    snapshot = build_mock_observability_snapshot(_mission_session().snapshot())
 
     status, content_type, body = handle_observability_request("GET", "/api/observability", snapshot)
     assert status == 200

@@ -15,7 +15,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .collision_stop import CollisionState, CollisionStopConfig, ScanEvaluation, ScanInput, TwistCommand, evaluate_scan
 from .mission_api import MissionValidationError
-from .mission_api_v2 import ToolInvocation, ToolResultStatus
+from .mission_api import ToolInvocation, ToolResultStatus
 from .odometry import (
     MotionPrimitiveConfig,
     MotionPrimitiveController,

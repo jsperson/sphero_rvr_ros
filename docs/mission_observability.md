@@ -1,6 +1,6 @@
 # Read-only mission observability web/PWA surface
 
-`src/sphero_rvr_driver/mission_observability.py` is the VS08A read-only observability layer over the VS07 Mission API snapshot contract. It is deliberately dependency-free and ROS-free so phone/laptop UI checks can run from static/mock/replay data before any authenticated mission controls exist.
+`src/sphero_rvr_driver/mission_observability.py` is the read-only observability layer over the canonical Mission API control snapshot contract. It is deliberately dependency-free and ROS-free so phone/laptop UI checks can run from static/mock/replay data without starting a motor-capable process.
 
 ## Scope
 
@@ -15,7 +15,7 @@ The surface exposes status only:
 - mission event log
 - final artifact links for `occupancy_map`, `semantic_map`, and `shoe_detections`
 
-It consumes `MissionSnapshot.to_json_dict()` semantics from `mission_api.v1` and preserves the Mission API state names and event names for downstream authenticated controls.
+It consumes `MissionControlSnapshot.to_json_dict()` semantics from the canonical `mission_api.v2` control layer and preserves Mission API state/event names for downstream authenticated controls.
 
 ## Read-only contract
 
@@ -28,7 +28,7 @@ GET /api/events          -> Server-Sent Events frame(s)
 GET /manifest.webmanifest -> PWA manifest
 ```
 
-No start, cancel, motor, raw ROS, or write route is exposed by VS08A. Unsupported route/method attempts raise `ReadOnlyRouteError`; downstream start/cancel work should use a separate authenticated module instead of adding mutation to this one.
+No start, cancel, motor, raw ROS, or write route is exposed by the observability surface. Unsupported route/method attempts raise `ReadOnlyRouteError`; start/cancel work belongs in the separate authenticated controls module.
 
 ## Static/PWA artifact
 
@@ -42,4 +42,4 @@ The HTML fetches `/api/observability` and binds JSON into each section. It inten
 
 ## Mock/replay telemetry
 
-`build_mock_observability_snapshot(mission_snapshot)` wraps a VS07 mission snapshot with deterministic mock/replay health data and artifact references. This gives a stable phone/laptop viewport target without starting hardware, camera, ROS launch files, or any motor-capable process.
+`build_mock_observability_snapshot(mission_snapshot)` wraps a canonical mission control snapshot with deterministic mock/replay health data and artifact references. This gives a stable phone/laptop viewport target without starting hardware, camera, ROS launch files, or any motor-capable process.

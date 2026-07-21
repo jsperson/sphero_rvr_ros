@@ -1,6 +1,6 @@
 # Constrained Mission language translator
 
-`src/sphero_rvr_driver/mission_language.py` is the ROS-free VS09 plain-English translator for the canonical shoe-mapping mission:
+`src/sphero_rvr_driver/mission_language.py` is the ROS-free plain-English translator for the canonical shoe-mapping fixture:
 
 ```text
 Map the room and identify every shoe. Put it on a map.
@@ -8,7 +8,7 @@ Map the room and identify every shoe. Put it on a map.
 
 The translator is deliberately narrow and deterministic. It does not call an LLM, open a browser, publish ROS topics, call `/cmd_vel`, or expose a generic ROS bridge. Its only outputs are:
 
-- a validated `mission_api.v1` `MissionRequest` schema for `semantic_room_shoe_mapping`; or
+- a validated canonical `mission_api.v2` `MissionPlan`; or
 - a structured rejection with a reason, message, `requires_confirmation: true`, and evidence about any detected unsafe surface.
 
 ## Accepted language
@@ -37,12 +37,12 @@ The translator returns a structured rejection instead of a partial or unsafe sch
 - direct movement requests such as driving forward, turning, spinning, reversing, speed/velocity, or distance/angle commands;
 - direct ROS requests mentioning `/cmd_vel`, `/cmd_vel_motor`, `cmd_vel`, raw motor, teleop, publishing, ROS topics, or ROS bridge surfaces;
 - prompt-injection-like attempts to ignore/bypass safety rules or expose a ROS bridge;
-- Mission API schema validation failures such as missing required capabilities.
+- Mission API schema validation failures such as an unavailable required registry tool.
 
 Every rejection keeps `unsafe_surfaces_exposed` empty. Detected unsafe text is reported as evidence only; it is never converted into a runnable ROS surface.
 
 ## Schema validation
 
-For accepted language, `translate_plain_english_mission()` builds the canonical Mission API request with `build_canonical_shoe_mapping_request()` and immediately validates it with `validate_mission_request()` against the supplied `CapabilitySet` or `CapabilitySet.all_enabled()` by default.
+For accepted language, `translate_plain_english_mission()` builds the canonical Mission API plan with `build_canonical_shoe_mapping_plan()` and immediately checks that every invocation is available in the supplied `CapabilityRegistry` or the default registry.
 
-If validation fails, the translator emits `schema_validation_failed` and no schema. This preserves the downstream contract: consumers receive either a validated mission schema or an explicit rejection that requires confirmation.
+If validation fails, the translator emits `schema_validation_failed` and no schema. This preserves the downstream contract: consumers receive either a validated mission plan or an explicit rejection that requires confirmation.

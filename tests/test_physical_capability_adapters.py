@@ -3,17 +3,20 @@ from __future__ import annotations
 import pytest
 
 from sphero_rvr_driver.mission_api import MissionValidationError
-from sphero_rvr_driver.mission_api_v2 import (
+from sphero_rvr_driver.mission_api import (
     ApprovalGrant,
     CapabilityAvailability,
+    CriterionKind,
     DeterministicMissionRuntime,
     MissionBudgets,
     MissionGoal,
-    MissionPlan,
     MissionRuntimeStatus,
+    MissionPlan,
+    SuccessCriterion,
     ToolInvocation,
     ToolResultStatus,
-    build_default_v2_registry,
+    _arguments_digest,
+    build_default_registry,
 )
 from sphero_rvr_driver.odometry import OdomMotionState
 from sphero_rvr_driver.physical_capability_adapters import PhysicalCapabilityAdapters
@@ -21,13 +24,29 @@ from sphero_rvr_driver.range_motion import RangeMotionSample, StopReason
 from sphero_rvr_driver.supervised_coordinator import SegmentStatus
 
 
-def _grant(now_s: float = 100.0) -> ApprovalGrant:
+def _grant(
+    now_s: float = 100.0,
+    *,
+    mission_id: str = "physical-move",
+    approval_id: str = "operator-approval-1",
+    tool_id: str = "move_to_clearance",
+    correlation_id: str = "move-1",
+    arguments: dict | None = None,
+) -> ApprovalGrant:
+    if arguments is None:
+        arguments = {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.5}
     return ApprovalGrant(
-        approval_id="operator-approval-1",
+        approval_id=approval_id,
         approved_by="operator:scott",
         approved_at_s=now_s,
         expires_at_s=now_s + 60.0,
         approval_class="supervised_motion",
+        mission_id=mission_id,
+        issued_to="mission-runtime",
+        tool_id=tool_id,
+        correlation_id=correlation_id,
+        arguments_digest=_arguments_digest(arguments),
+        principal="operator:scott",
     )
 
 
@@ -36,7 +55,9 @@ def _move_plan(*, max_steps: int = 1) -> MissionPlan:
         goal=MissionGoal(
             goal_id="physical-move",
             objective="move until four inches from the object",
-            success_criteria=("bounded range motion reaches requested clearance",),
+            success_criteria=(
+                SuccessCriterion("physical-move-complete", "bounded range motion reaches requested clearance", CriterionKind.TOOL_COMPLETE, tool_id="move_to_clearance"),
+            ),
             budgets=MissionBudgets(max_steps=max_steps, max_runtime_s=30.0, max_travel_m=0.5),
         ),
         invocations=(
@@ -56,7 +77,9 @@ def _exploration_plan() -> MissionPlan:
         goal=MissionGoal(
             goal_id="physical-exploration",
             objective="run two bounded exploration segments",
-            success_criteria=("supervised coordinator completes bounded segments",),
+            success_criteria=(
+                SuccessCriterion("physical-exploration-complete", "supervised coordinator completes bounded segments", CriterionKind.TOOL_COMPLETE, tool_id="bounded_exploration_segment"),
+            ),
             budgets=MissionBudgets(max_steps=1, max_runtime_s=30.0, max_travel_m=1.0),
         ),
         invocations=(
@@ -65,7 +88,12 @@ def _exploration_plan() -> MissionPlan:
                 "bounded_exploration_segment",
                 "1.0",
                 {"max_segments": 2, "segment_timeout_s": 4.0, "max_travel_m": 0.6},
-                approval=_grant(),
+                approval=_grant(
+                    mission_id="physical-exploration",
+                    tool_id="bounded_exploration_segment",
+                    correlation_id="explore-1",
+                    arguments={"max_segments": 2, "segment_timeout_s": 4.0, "max_travel_m": 0.6},
+                ),
             ),
         ),
     )
@@ -88,7 +116,10 @@ def _odom_route_plan() -> MissionPlan:
         goal=MissionGoal(
             goal_id="physical-odom-route",
             objective="execute typed odometry route primitives",
-            success_criteria=("move_distance and turn_angle use measured odometry",),
+            success_criteria=(
+                SuccessCriterion("physical-move-distance-complete", "move_distance uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),
+                SuccessCriterion("physical-turn-angle-complete", "turn_angle uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="turn_angle"),
+            ),
             budgets=MissionBudgets(max_steps=2, max_runtime_s=20.0, max_travel_m=0.5),
         ),
         invocations=(
@@ -97,14 +128,26 @@ def _odom_route_plan() -> MissionPlan:
                 "move_distance",
                 "1.0",
                 {"distance_m": 0.4572, "speed_mps": 0.10, "timeout_s": 10.0},
-                approval=_grant(),
+                approval=_grant(
+                    mission_id="physical-odom-route",
+                    approval_id="operator-approval-move-distance",
+                    tool_id="move_distance",
+                    correlation_id="move-distance-1",
+                    arguments={"distance_m": 0.4572, "speed_mps": 0.10, "timeout_s": 10.0},
+                ),
             ),
             ToolInvocation(
                 "turn-angle-1",
                 "turn_angle",
                 "1.0",
                 {"angle_deg": -90.0, "angular_speed_deg_s": 45.0, "timeout_s": 6.0},
-                approval=_grant(),
+                approval=_grant(
+                    mission_id="physical-odom-route",
+                    approval_id="operator-approval-turn-angle",
+                    tool_id="turn_angle",
+                    correlation_id="turn-angle-1",
+                    arguments={"angle_deg": -90.0, "angular_speed_deg_s": 45.0, "timeout_s": 6.0},
+                ),
             ),
         ),
     )
@@ -124,7 +167,7 @@ def _sample(t: float, clearance: float, *, odom_x: float = 0.0, front: float = 1
 
 def test_physical_move_to_clearance_uses_range_motion_controller_without_leaking_motor_surfaces() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             move_samples_by_correlation_id={
                 "move-1": (
@@ -153,7 +196,7 @@ def test_physical_move_to_clearance_uses_range_motion_controller_without_leaking
 
 def test_physical_move_to_clearance_fails_closed_when_range_motion_does_not_reach_target() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             move_samples_by_correlation_id={
                 "move-1": (
@@ -177,7 +220,7 @@ def test_physical_move_to_clearance_fails_closed_when_range_motion_does_not_reac
 
 def test_physical_move_to_clearance_fails_closed_on_stale_samples_instead_of_rebasing_sample_time() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             move_samples_by_correlation_id={
                 "move-1": (
@@ -199,7 +242,7 @@ def test_physical_move_to_clearance_fails_closed_on_stale_samples_instead_of_reb
 
 def test_physical_move_to_clearance_blocks_when_sample_wall_times_are_missing() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             move_samples_by_correlation_id={"move-1": (_sample(100.0, 0.50, odom_x=0.0),)}
         ),
@@ -215,7 +258,7 @@ def test_physical_move_to_clearance_blocks_when_sample_wall_times_are_missing() 
 
 def test_physical_bounded_exploration_segment_uses_supervised_coordinator_and_measured_statuses() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             exploration_clearances_m=(0.80, 0.70, 0.60),
             exploration_segment_statuses_by_correlation_id={
@@ -237,7 +280,7 @@ def test_physical_bounded_exploration_segment_uses_supervised_coordinator_and_me
 
 def test_physical_odom_primitives_return_signed_measured_terminal_results_without_motor_surfaces() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             odom_states_by_correlation_id={
                 "move-distance-1": (
@@ -257,12 +300,39 @@ def test_physical_odom_primitives_return_signed_measured_terminal_results_withou
         now_s=100.0,
     )
 
-    result = runtime.execute_plan(_odom_route_plan())
+    route_plan = _odom_route_plan()
+    with pytest.raises(MissionValidationError, match="exclusive resource conflict"):
+        runtime.execute_plan(route_plan)
 
-    assert result.status is MissionRuntimeStatus.COMPLETE
-    assert result.results[0].observation["measured_distance_m"] == pytest.approx(0.46)
-    assert result.results[1].observation["measured_angle_deg"] == pytest.approx(-89.38, abs=0.01)
-    assert "/cmd_vel" not in str(result.to_json_dict())
+    move_result = runtime.execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="physical-odom-route",
+                objective="execute measured move_distance primitive",
+                success_criteria=(SuccessCriterion("physical-move-distance-complete", "move_distance uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),),
+                budgets=MissionBudgets(max_steps=1, max_runtime_s=20.0, max_travel_m=0.5),
+            ),
+            invocations=(route_plan.invocations[0],),
+        )
+    )
+    turn_result = runtime.execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="physical-odom-route",
+                objective="execute measured turn_angle primitive",
+                success_criteria=(SuccessCriterion("physical-turn-angle-complete", "turn_angle uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="turn_angle"),),
+                budgets=MissionBudgets(max_steps=1, max_runtime_s=20.0),
+            ),
+            invocations=(route_plan.invocations[1],),
+        )
+    )
+
+    assert move_result.status is MissionRuntimeStatus.COMPLETE
+    assert turn_result.status is MissionRuntimeStatus.COMPLETE
+    assert move_result.results[0].observation["measured_distance_m"] == pytest.approx(0.46)
+    assert turn_result.results[0].observation["measured_angle_deg"] == pytest.approx(-89.38, abs=0.01)
+    assert "/cmd_vel" not in str(move_result.to_json_dict())
+    assert "/cmd_vel" not in str(turn_result.to_json_dict())
 
 
 @pytest.mark.parametrize(
@@ -286,7 +356,7 @@ def test_physical_odom_primitive_propagates_authoritative_stops_during_execution
         field: {"move-distance-1": 1},
     }
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(**adapter_kwargs),
         now_s=100.0,
     )
@@ -299,7 +369,7 @@ def test_physical_odom_primitive_propagates_authoritative_stops_during_execution
 
 def test_physical_bounded_exploration_segment_blocks_without_measured_statuses_instead_of_faking_success() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(exploration_clearances_m=(0.80, 0.70, 0.60)),
         now_s=100.0,
     )
@@ -313,7 +383,7 @@ def test_physical_bounded_exploration_segment_blocks_without_measured_statuses_i
 
 def test_physical_bounded_exploration_segment_fails_closed_on_measured_segment_failure() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             exploration_clearances_m=(0.80, 0.70, 0.60),
             exploration_segment_statuses_by_correlation_id={
@@ -332,7 +402,7 @@ def test_physical_bounded_exploration_segment_fails_closed_on_measured_segment_f
 
 def test_physical_bounded_exploration_segment_fails_closed_on_cleanup_uncertain_segment_status() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(
             exploration_clearances_m=(0.80, 0.70, 0.60),
             exploration_segment_statuses_by_correlation_id={
@@ -353,7 +423,7 @@ def test_physical_bounded_exploration_segment_fails_closed_on_cleanup_uncertain_
 
 def test_physical_adapter_blocks_motion_when_required_observations_are_missing_instead_of_faking_success() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(),
         now_s=100.0,
     )
@@ -366,7 +436,7 @@ def test_physical_adapter_blocks_motion_when_required_observations_are_missing_i
 
 
 def test_physical_adapter_propagates_stop_estop_and_cancel_without_running_motion() -> None:
-    registry = build_default_v2_registry(detector_classes=("shoe",))
+    registry = build_default_registry(detector_classes=("shoe",))
     stopped = DeterministicMissionRuntime(registry, PhysicalCapabilityAdapters(stop_before="move_to_clearance"), now_s=100.0)
     estopped = DeterministicMissionRuntime(registry, PhysicalCapabilityAdapters(estop_before="move_to_clearance"), now_s=100.0)
     control = DeterministicMissionRuntime(registry, PhysicalCapabilityAdapters(), now_s=100.0)
@@ -385,7 +455,7 @@ def test_physical_adapter_propagates_stop_estop_and_cancel_without_running_motio
 
 def test_physical_adapter_rejects_malformed_unavailable_and_over_budget_motion_before_adapter_execution() -> None:
     unavailable = DeterministicMissionRuntime(
-        build_default_v2_registry(
+        build_default_registry(
             detector_classes=("shoe",), availability={"move_to_clearance": CapabilityAvailability.UNAVAILABLE}
         ),
         PhysicalCapabilityAdapters(),
@@ -424,22 +494,22 @@ def test_physical_adapter_rejects_malformed_unavailable_and_over_budget_motion_b
     with pytest.raises(MissionValidationError, match="unavailable"):
         unavailable.execute_plan(_move_plan())
     with pytest.raises(MissionValidationError, match="direct ROS surface"):
-        DeterministicMissionRuntime(build_default_v2_registry(), PhysicalCapabilityAdapters(), now_s=100.0).execute_plan(
+        DeterministicMissionRuntime(build_default_registry(), PhysicalCapabilityAdapters(), now_s=100.0).execute_plan(
             malformed_plan
         )
     with pytest.raises(MissionValidationError, match="max_travel_m budget"):
-        DeterministicMissionRuntime(build_default_v2_registry(), PhysicalCapabilityAdapters(), now_s=100.0).execute_plan(
+        DeterministicMissionRuntime(build_default_registry(), PhysicalCapabilityAdapters(), now_s=100.0).execute_plan(
             over_budget_plan
         )
 
 
 def test_physical_adapter_rejects_non_control_capabilities_until_real_adapters_exist() -> None:
     runtime = DeterministicMissionRuntime(
-        build_default_v2_registry(detector_classes=("shoe",)),
+        build_default_registry(detector_classes=("shoe",)),
         PhysicalCapabilityAdapters(),
         now_s=100.0,
     )
-    with pytest.raises(MissionValidationError, match="capture_observation requires a dedicated physical adapter"):
+    with pytest.raises(MissionValidationError, match="capture_observation is not bound to a healthy adapter"):
         runtime.execute_plan(
             MissionPlan(
                 goal=MissionGoal(

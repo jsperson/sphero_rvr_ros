@@ -43,7 +43,7 @@ EXPECTED_DATA_FILES = {
         "docs/lidar_collision_stop_supervisor.md",
         "docs/range_motion_controller.md",
         "docs/mission_api.md",
-        "docs/mission_api_v2.md",
+        "docs/mission_api.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
         "docs/mission_planner.md",
@@ -165,12 +165,12 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
         "docs/mission_observability.md",
-        "docs/mission_api_v2.md",
+        "docs/mission_api.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
         "docs/mission_planner.md",
         "gpt-5.6",
-        "docs/mission_api_v2.md",
+        "docs/mission_api.md",
         "docs/rvr_mcp_server.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
@@ -206,7 +206,7 @@ def test_mission_planner_docs_and_config_distinguish_rover_planner_from_kanban_a
     assert "OPENAI_API_KEY" in docs
     assert "OPENAI_API_KEY" not in config
     assert "raw camera" in docs
-    assert "Mission API v2" in docs
+    assert "Mission API" in docs
 
 
 def test_rosbag_console_scripts_are_installed() -> None:
@@ -280,7 +280,7 @@ def test_mission_controls_design_documents_auth_gate_and_independent_safety() ->
 
     for token in [
         "MissionControlSession",
-        "mission_api.v1",
+        "mission_api.v2",
         "authenticated",
         "mission:start",
         "mission:cancel",
@@ -296,8 +296,8 @@ def test_mission_controls_design_documents_auth_gate_and_independent_safety() ->
     assert "docs/mission_controls.md" in readme
 
 
-def test_mission_api_v2_design_documents_registry_runtime_and_extension_boundary() -> None:
-    design = (REPO_ROOT / "docs" / "mission_api_v2.md").read_text()
+def test_mission_api_design_documents_registry_runtime_and_extension_boundary() -> None:
+    design = (REPO_ROOT / "docs" / "mission_api.md").read_text()
     readme = (REPO_ROOT / "README.md").read_text()
 
     for token in [
@@ -317,4 +317,4 @@ def test_mission_api_v2_design_documents_registry_runtime_and_extension_boundary
         "Extension guide",
     ]:
         assert token in design
-    assert "docs/mission_api_v2.md" in readme
+    assert "docs/mission_api.md" in readme

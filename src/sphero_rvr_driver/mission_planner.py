@@ -2,7 +2,7 @@
 
 The planner is a low-rate supervisory loop. It never publishes ROS topics and
 never owns motor control; providers may only propose structured tool calls that
-are validated and executed by the deterministic :mod:`mission_api_v2` runtime.
+are validated and executed by the deterministic :mod:`mission_api` runtime.
 """
 
 from __future__ import annotations
@@ -19,18 +19,21 @@ from enum import Enum
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from .mission_api import MissionValidationError
-from .mission_api_v2 import (
+from .mission_api import (
     ApprovalGrant,
     CapabilityRegistry,
+    CriterionKind,
     DeterministicMissionRuntime,
     FakeCapabilityAdapters,
     MissionBudgets,
     MissionGoal,
     MissionPlan,
     MissionRuntimeStatus,
+    SuccessCriterion,
     ToolInvocation,
     ToolResult,
-    build_default_v2_registry,
+    _arguments_digest,
+    build_default_registry,
 )
 
 
@@ -285,7 +288,7 @@ def build_openai_responses_payload(
     return {
         "model": config.model_id,
         "input": [{"role": "user", "content": content}],
-        "tools": [_mission_api_v2_tool_schema(), _planner_terminal_decision_tool_schema()],
+        "tools": [_mission_api_tool_schema(), _planner_terminal_decision_tool_schema()],
         "tool_choice": "auto",
         "parallel_tool_calls": False,
         "max_output_tokens": 2048,
@@ -470,7 +473,7 @@ class IterativeMissionPlanner:
     ):
         if max_iterations <= 0:
             raise MissionValidationError("planner max_iterations must be positive")
-        self.registry = registry or build_default_v2_registry(detector_classes=("shoe", "backpack"))
+        self.registry = registry or build_default_registry(detector_classes=("shoe", "backpack"))
         self.provider = provider
         self.adapters = adapters or FakeCapabilityAdapters()
         self.budgets = budgets
@@ -579,24 +582,52 @@ class IterativeMissionPlanner:
         )
 
     def _execute_call(self, goal_text: str, iteration: int, call: ToolCall) -> ToolResult:
+        mission_id = f"planner-{iteration}"
+        correlation_id = call.call_id or f"planner-{iteration}-{call.tool_name}"
+        approval = self._approval_for_call(call, mission_id=mission_id, correlation_id=correlation_id)
         invocation = ToolInvocation(
-            call.call_id or f"planner-{iteration}-{call.tool_name}",
+            correlation_id,
             call.tool_name,
             call.tool_version,
             call.arguments,
-            approval=self.approval_grants.get(call.tool_name),
+            approval=approval,
             requested_at_s=float(iteration),
             provenance={"planner": getattr(self.provider, "provider_id", "unknown")},
         )
         mission_goal = MissionGoal(
-            goal_id=f"planner-{iteration}",
+            goal_id=mission_id,
             objective=goal_text,
-            success_criteria=("planner-selected tool validates and executes through mission_api.v2",),
+            success_criteria=(
+                SuccessCriterion(
+                    criterion_id=f"{call.tool_name}-complete",
+                    description=f"{call.tool_name} completes through mission_api.v2",
+                    kind=CriterionKind.TOOL_COMPLETE,
+                    tool_id=call.tool_name,
+                ),
+            ),
             budgets=MissionBudgets(max_steps=1, max_runtime_s=self.budgets.max_runtime_s, max_travel_m=self.budgets.max_travel_m),
         )
         runtime = DeterministicMissionRuntime(self.registry, self.adapters, budget_ceilings=self.budgets)
         result = runtime.execute_plan(MissionPlan(goal=mission_goal, invocations=(invocation,), plan_id=f"planner-{iteration}-{call.call_id}"))
         return result.results[-1]
+
+    def _approval_for_call(self, call: ToolCall, *, mission_id: str, correlation_id: str) -> Optional[ApprovalGrant]:
+        grant = self.approval_grants.get(call.tool_name)
+        if grant is None:
+            return None
+        return ApprovalGrant(
+            approval_id=grant.approval_id,
+            approved_by=grant.approved_by,
+            approved_at_s=grant.approved_at_s,
+            expires_at_s=grant.expires_at_s,
+            approval_class=grant.approval_class,
+            mission_id=mission_id,
+            issued_to="mission-runtime",
+            tool_id=call.tool_name,
+            correlation_id=correlation_id,
+            arguments_digest=_arguments_digest(call.arguments),
+            principal=grant.principal or grant.approved_by,
+        )
 
     def _remaining(self, iterations_used: int, runtime_used_s: float, tool_calls_used: int) -> RemainingPlannerBudgets:
         return RemainingPlannerBudgets(
@@ -649,10 +680,10 @@ def _reject_raw_observation_surface(text: str) -> None:
         raise MissionValidationError("raw camera device, ROS graph, or continuous video access is not allowed")
 
 
-def _mission_api_v2_tool_schema() -> dict[str, Any]:
+def _mission_api_tool_schema() -> dict[str, Any]:
     return {
         "type": "function",
-        "name": "mission_api_v2",
+        "name": "mission_api",
         "description": "Request one allowlisted deterministic Sphero rover mission_api.v2 capability. This is not a ROS bridge.",
         "strict": True,
         "parameters": {
@@ -662,7 +693,7 @@ def _mission_api_v2_tool_schema() -> dict[str, Any]:
                 "tool_name": {
                     "type": "string",
                     "enum": [
-                        definition.tool_id for definition in build_default_v2_registry(detector_classes=("shoe", "backpack")).definitions()
+                        definition.tool_id for definition in build_default_registry(detector_classes=("shoe", "backpack")).definitions()
                     ],
                     "description": "The bounded mission_api.v2 tool to request.",
                 },
@@ -752,7 +783,7 @@ def _parse_openai_responses_body(body: Mapping[str, Any]) -> PlannerProviderResp
         if item.get("type") == "function_call":
             name = str(item.get("name", ""))
             arguments = _parse_responses_function_arguments(item.get("arguments", ""))
-            if name == "mission_api_v2":
+            if name == "mission_api":
                 tool_calls.append(
                     ToolCall(
                         tool_name=str(arguments.get("tool_name", "")),

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import subprocess
 from typing import Any, Mapping, Optional, Sequence
 
-from .mission_api import MissionValidationError
-from .mission_api_v2 import ToolDefinition, ToolInvocation, ToolResult, ToolResultStatus
+from .mission_api import CompletedExecutionHandle, MissionValidationError, physical_adapter_authority
+from .mission_api import ToolDefinition, ToolInvocation, ToolResult, ToolResultStatus
 from .odometry import (
     MotionPrimitiveConfig,
     MotionPrimitiveController,
@@ -53,6 +54,21 @@ class PhysicalCapabilityAdapters:
     to replay/fake results.
     """
 
+    cooperative_execution: bool = field(default=True, init=False)
+    physical_authority: object = field(default_factory=physical_adapter_authority, init=False, repr=False)
+    execution_mode: str = "physical"
+    authority_kind: str = "physical"
+    healthy: bool = True
+    evidence_level: str = "live_bounded_physical"
+    deployed_sha: str = field(default_factory=lambda: _source_sha())
+    satisfied_preconditions: Sequence[str] = (
+        "supervised coordinator and collision stop are available",
+        "range target visible",
+        "collision stop clear",
+        "fresh odometry",
+        "fresh heading odometry",
+    )
+
     move_samples_by_correlation_id: Mapping[str, Sequence[RangeMotionSample]] = field(default_factory=dict)
     move_sample_wall_times_by_correlation_id: Mapping[str, Sequence[float]] = field(default_factory=dict)
     odom_states_by_correlation_id: Mapping[str, Sequence[OdomMotionState]] = field(default_factory=dict)
@@ -65,6 +81,19 @@ class PhysicalCapabilityAdapters:
     exploration_segment_statuses_by_correlation_id: Mapping[str, Sequence[SegmentStatus]] = field(default_factory=dict)
     stop_before: str = ""
     estop_before: str = ""
+
+    supported_tool_ids: Sequence[str] = (
+        "move_to_clearance",
+        "move_distance",
+        "turn_angle",
+        "bounded_exploration_segment",
+        "pause_cancel_stop_estop",
+        "query_status_telemetry",
+    )
+
+    def begin_execution(self, invocation: ToolInvocation, definition: ToolDefinition, *, started_at_s: float, index: int) -> CompletedExecutionHandle:
+        """Return an already-idle handle; this adapter only consumes finite captured samples."""
+        return CompletedExecutionHandle(self.execute(invocation, definition, started_at_s=started_at_s, index=index))
 
     def execute(self, invocation: ToolInvocation, definition: ToolDefinition, *, started_at_s: float, index: int) -> ToolResult:
         del index
@@ -406,3 +435,10 @@ def _terminal_result(
         error={"message": message},
         provenance=dict(_PHYSICAL_PROVENANCE),
     )
+
+
+def _source_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+    except Exception:
+        return "unknown"

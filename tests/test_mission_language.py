@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sphero_rvr_driver.mission_api import CapabilitySet, MissionValidationError
+from sphero_rvr_driver.mission_api import CapabilityAvailability, MissionValidationError, build_default_registry
 from sphero_rvr_driver.mission_language import (
     MissionLanguageRejectionReason,
     translate_plain_english_mission,
@@ -17,19 +17,17 @@ def test_canonical_plain_english_translates_to_validated_mission_schema_only() -
 
     assert result.accepted is True
     assert result.rejection is None
-    assert result.request is not None
+    assert result.plan is not None
     payload = result.to_json_dict()
     assert payload == {
         "accepted": True,
-        "schema": result.request.to_json_dict(),
+        "schema": result.plan.to_json_dict(),
         "rejection": None,
     }
-    assert payload["schema"]["api_version"] == "mission_api.v1"
-    assert payload["schema"]["mission_id"] == "lang-001"
-    assert payload["schema"]["mission_type"] == "semantic_room_shoe_mapping"
-    assert payload["schema"]["room_mapping"]["semantic_labels"] == ["shoe"]
-    assert payload["schema"]["requested_ros_topics"] == []
-    assert payload["schema"]["raw_ros_command"] is None
+    assert payload["schema"]["goal"]["api_version"] == "mission_api.v2"
+    assert payload["schema"]["goal"]["goal_id"] == "lang-001"
+    assert payload["schema"]["invocations"][3]["tool_id"] == "detect_objects"
+    assert payload["schema"]["invocations"][3]["arguments"] == {"object_class": "shoe"}
 
 
 @pytest.mark.parametrize(
@@ -45,9 +43,9 @@ def test_reasonable_shoe_mapping_paraphrases_are_accepted(phrase: str) -> None:
     result = translate_plain_english_mission(phrase, mission_id="para-001")
 
     assert result.accepted is True
-    assert result.request is not None
-    assert result.request.mission_type == "semantic_room_shoe_mapping"
-    assert result.request.room_mapping["semantic_labels"] == ["shoe"]
+    assert result.plan is not None
+    assert result.plan.goal.goal_id == "para-001"
+    assert any(invocation.tool_id == "detect_objects" for invocation in result.plan.invocations)
 
 
 @pytest.mark.parametrize(
@@ -69,7 +67,7 @@ def test_unsupported_unsafe_and_prompt_injection_requests_are_structured_rejecti
     result = translate_plain_english_mission(phrase, mission_id="reject-001")
 
     assert result.accepted is False
-    assert result.request is None
+    assert result.plan is None
     assert result.rejection is not None
     assert result.rejection.reason is expected_reason
     assert result.to_json_dict()["schema"] is None
@@ -81,14 +79,14 @@ def test_schema_validation_failures_return_structured_rejection_not_invalid_sche
     result = translate_plain_english_mission(
         CANONICAL,
         mission_id="invalid-schema",
-        capabilities=CapabilitySet.all_enabled(shoe_detection=False),
+        registry=build_default_registry(availability={"detect_objects": CapabilityAvailability.UNAVAILABLE}),
     )
 
     assert result.accepted is False
-    assert result.request is None
+    assert result.plan is None
     assert result.rejection is not None
     assert result.rejection.reason is MissionLanguageRejectionReason.SCHEMA_VALIDATION_FAILED
-    assert "shoe_detection" in result.rejection.message
+    assert "detect_objects" in result.rejection.message
     assert result.rejection.requires_confirmation is True
 
 

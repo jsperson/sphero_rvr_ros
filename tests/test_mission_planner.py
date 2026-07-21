@@ -6,12 +6,12 @@ import json
 from pathlib import Path
 
 from sphero_rvr_driver.mission_api import MissionValidationError
-from sphero_rvr_driver.mission_api_v2 import (
+from sphero_rvr_driver.mission_api import (
     ApprovalGrant,
     CapabilityAvailability,
     FakeCapabilityAdapters,
     MissionBudgets,
-    build_default_v2_registry,
+    build_default_registry,
 )
 from sphero_rvr_driver.mission_planner import (
     ImageObservation,
@@ -38,7 +38,7 @@ PNG_1X1 = base64.b64encode(
 IMAGE_URL = f"data:image/png;base64,{PNG_1X1}"
 
 
-def _configured_mission_api_v2_allowed_tools() -> list[str]:
+def _configured_mission_api_allowed_tools() -> list[str]:
     config_path = Path(__file__).resolve().parents[1] / "config" / "mission_planner.yaml"
     lines = config_path.read_text(encoding="utf-8").splitlines()
     allowed_tools: list[str] = []
@@ -59,13 +59,15 @@ def _configured_mission_api_v2_allowed_tools() -> list[str]:
     return allowed_tools
 
 
-def _grant(now_s: float = 0.0) -> ApprovalGrant:
+def _grant(now_s: float = 0.0, *, mission_id: str = "planner-1") -> ApprovalGrant:
     return ApprovalGrant(
         approval_id="operator-approval-1",
         approved_by="operator:scott",
         approved_at_s=now_s,
         expires_at_s=now_s + 60.0,
         approval_class="supervised_motion",
+        mission_id=mission_id,
+        issued_to="mission-runtime",
     )
 
 
@@ -83,7 +85,7 @@ def _planner(
     budgets: MissionBudgets | None = None,
 ) -> _PlannerWithProvider:
     return IterativeMissionPlanner(
-        registry=build_default_v2_registry(detector_classes=detector_classes, availability=availability),
+        registry=build_default_registry(detector_classes=detector_classes, availability=availability),
         provider=FakePlannerProvider(responses),
         adapters=adapters,
         approval_grants=approval_grants,
@@ -152,7 +154,7 @@ def test_openai_payload_contains_only_authorized_bounded_image_observation_and_a
     content = payload["input"][0]["content"]
     assert {item["type"] for item in content} == {"input_text", "input_image"}
     assert next(item for item in content if item["type"] == "input_image")["image_url"] == IMAGE_URL
-    assert [tool["name"] for tool in payload["tools"]] == ["mission_api_v2", "planner_terminal_decision"]
+    assert [tool["name"] for tool in payload["tools"]] == ["mission_api", "planner_terminal_decision"]
     tool_schema = payload["tools"][0]["parameters"]
     assert tool_schema["additionalProperties"] is False
     assert "move_to_clearance" in tool_schema["properties"]["tool_name"]["enum"]
@@ -161,9 +163,9 @@ def test_openai_payload_contains_only_authorized_bounded_image_observation_and_a
 
 
 def test_mission_planner_config_allowed_tools_match_default_v2_registry() -> None:
-    configured_tools = _configured_mission_api_v2_allowed_tools()
+    configured_tools = _configured_mission_api_allowed_tools()
     registry_tools = [
-        definition.tool_id for definition in build_default_v2_registry(detector_classes=("shoe", "backpack")).definitions()
+        definition.tool_id for definition in build_default_registry(detector_classes=("shoe", "backpack")).definitions()
     ]
 
     assert configured_tools
@@ -229,7 +231,7 @@ def test_openai_provider_posts_first_party_responses_tool_payload_and_parses_fun
                     "output": [
                         {
                             "type": "function_call",
-                            "name": "mission_api_v2",
+                            "name": "mission_api",
                             "call_id": "fc_capture",
                             "arguments": json.dumps(
                                 {
@@ -272,7 +274,7 @@ def test_openai_provider_posts_first_party_responses_tool_payload_and_parses_fun
     assert request.headers["Authorization"] == "Bearer test-key"
     payload = json.loads(request.data.decode("utf-8"))
     assert payload["model"] == "gpt-5.6"
-    assert [tool["name"] for tool in payload["tools"]] == ["mission_api_v2", "planner_terminal_decision"]
+    assert [tool["name"] for tool in payload["tools"]] == ["mission_api", "planner_terminal_decision"]
     assert payload["parallel_tool_calls"] is False
     assert any(item["type"] == "input_image" for item in payload["input"][0]["content"])
     assert IMAGE_URL not in next(item for item in payload["input"][0]["content"] if item["type"] == "input_text")["text"]
@@ -313,7 +315,7 @@ def test_openai_provider_retries_transient_response_failures_and_rejects_malform
             return False
 
         def read(self):
-            return json.dumps({"output": [{"type": "function_call", "name": "mission_api_v2", "arguments": "not-json"}]}).encode(
+            return json.dumps({"output": [{"type": "function_call", "name": "mission_api", "arguments": "not-json"}]}).encode(
                 "utf-8"
             )
 

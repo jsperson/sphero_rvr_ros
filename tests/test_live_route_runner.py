@@ -16,7 +16,7 @@ from sphero_rvr_driver.live_route_runner import (
     route_request_from_json,
     run_route_replay,
 )
-from sphero_rvr_driver.mission_api_v2 import ToolResultStatus
+from sphero_rvr_driver.mission_api import ToolResultStatus
 from sphero_rvr_driver.odometry import MotionPrimitiveConfig, OdomMotionState
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -77,7 +77,7 @@ def _route() -> LiveRouteRequest:
     )
 
 
-def test_live_route_request_parses_mission_api_v2_invocations_with_budgets() -> None:
+def test_live_route_request_parses_canonical_mission_api_invocations_with_budgets() -> None:
     payload = json.dumps(
         {
             "plan": {

@@ -30,7 +30,7 @@ planner:
       - image/gif
     require_explicit_capture_authorization: true
     forbid_raw_camera_or_ros_graph_access: true
-  mission_api_v2:
+  mission_api:
     allowed_tools:
       - map_localize
       - bounded_exploration_segment
