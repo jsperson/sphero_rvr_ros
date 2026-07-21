@@ -149,7 +149,6 @@ class MissionService:
             raise MissionValidationError("session_id is required")
         if source not in {"mcp", "planner", "cli", "api"}:
             raise MissionValidationError("mission source must be mcp, planner, cli, or api")
-        plan = self._bind_replay_approvals(plan, session_id=session_id, source=source)
         namespace = credential_namespace or ("physical" if self.mode == "live" else "replay")
         mission_id = submission_id or plan.goal.goal_id
         with self._lock:
@@ -164,6 +163,11 @@ class MissionService:
                 })
             execution_started = False
             try:
+                plan = self._bind_replay_approvals(
+                    plan,
+                    session_id=session_id,
+                    source=source,
+                )
                 self._validate_authority(plan, namespace)
                 self._validate_session_latch(session_id)
                 ledger = self._session_ledger(session_id)
@@ -194,6 +198,12 @@ class MissionService:
                             "invocation",
                             {"invocation": invocation.to_json_dict(), "source": source},
                         )
+                    self._append_event(
+                        mission_id,
+                        session_id,
+                        "running",
+                        {"status": "running"},
+                    )
                 execution_started = True
                 result = runtime.execute_plan(plan)
                 return self._record_result(mission_id, session_id, result, ledger)

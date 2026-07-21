@@ -97,6 +97,7 @@ def test_persistent_service_restart_fails_closed_and_event_log_reconstructs_exec
     assert [event["kind"] for event in service.events("mission-one")] == [
         "proposal",
         "invocation",
+        "running",
         "observation",
         "terminal",
     ]
@@ -177,6 +178,7 @@ def test_validation_error_after_execution_starts_requires_recovery(tmp_path: Pat
 
 def test_running_transition_and_invocation_events_commit_before_execution(tmp_path: Path) -> None:
     database = tmp_path / "durable.sqlite3"
+    proposed_plan = _move_plan("durable", "move")
 
     class InspectingAdapters(FakeCapabilityAdapters):
         def begin_execution(self, *args, **kwargs):
@@ -184,19 +186,42 @@ def test_running_transition_and_invocation_events_commit_before_execution(tmp_pa
                 status = observer.execute(
                     "SELECT status FROM missions WHERE mission_id = 'durable'"
                 ).fetchone()
-                kinds = [
-                    row[0]
+                records = [
+                    (row[0], json.loads(row[1]))
                     for row in observer.execute(
-                        "SELECT kind FROM events WHERE mission_id = 'durable' ORDER BY event_id"
+                        "SELECT kind, payload_json FROM events "
+                        "WHERE mission_id = 'durable' ORDER BY event_id"
                     )
                 ]
             assert status == ("running",)
-            assert kinds == ["proposal", "approval", "invocation"]
+            assert [kind for kind, _payload in records] == [
+                "proposal",
+                "approval",
+                "invocation",
+                "running",
+            ]
+            proposal, approval, invocation, running = [payload for _kind, payload in records]
+            assert proposal == {
+                "source": "api",
+                "mode": "replay",
+                "credential_namespace": "replay",
+                "plan": proposed_plan.to_json_dict(),
+            }
+            assert proposal["plan"]["invocations"][0]["approval"] is None
+            assert approval["approval"]["approved_by"] == "mission-service-replay-supervisor"
+            assert invocation == {
+                "invocation": {
+                    **proposed_plan.invocations[0].to_json_dict(),
+                    "approval": approval["approval"],
+                },
+                "source": "api",
+            }
+            assert running == {"status": "running"}
             return super().begin_execution(*args, **kwargs)
 
     service = _service(database, adapters=InspectingAdapters())
     result = service.submit_plan(
-        _move_plan("durable", "move"), session_id="durable", source="api"
+        proposed_plan, session_id="durable", source="api"
     )
 
     assert result["status"] == "complete"
