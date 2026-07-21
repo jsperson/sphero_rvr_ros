@@ -1786,13 +1786,14 @@ def test_architecture_has_one_canonical_mission_api_module_and_registry() -> Non
 
     default_registry_defs = 0
     for path in repo_root.rglob("*"):
+        relative_path = path.relative_to(repo_root)
         if (
             path.is_dir()
-            or ".git" in path.parts
-            or ".worktrees" in path.parts
-            or ".pytest_cache" in path.parts
-            or "build" in path.parts
-            or "dist" in path.parts
+            or ".git" in relative_path.parts
+            or ".worktrees" in relative_path.parts
+            or ".pytest_cache" in relative_path.parts
+            or "build" in relative_path.parts
+            or "dist" in relative_path.parts
             or path.suffix in {".pyc", ".png", ".jpg", ".jpeg", ".gif"}
         ):
             continue
@@ -1800,7 +1801,7 @@ def test_architecture_has_one_canonical_mission_api_module_and_registry() -> Non
             content = path.read_text()
         except UnicodeDecodeError:
             continue
-        rel = path.relative_to(repo_root).as_posix()
+        rel = relative_path.as_posix()
         if rel == "tests/test_mission_api.py":
             content = content.replace('removed_module = "mission_api" + "_v2"', "")
             content = content.replace('"build_canonical_shoe_mapping_request",', "")
