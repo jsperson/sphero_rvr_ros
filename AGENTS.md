@@ -4,9 +4,12 @@
 
 - Never run bare `pytest` or `python -m pytest` for this repository.
 - Use `python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv` for the full suite.
-- Use the same runner with `--timeout 60` for focused suites.
-- Do not run concurrent full suites against the same checkout.
-- The runner enforces a repository-wide nonblocking lock; exit code `75` means another test run owns it and is **NO VERDICT**.
-- Exit code `124`, `BOUNDED_PYTEST_TIMEOUT`, interruption, or external termination is **NO VERDICT**—never PASS or a technical code-review FAIL.
-- After a timeout, verify the process group was reaped. Rerun once with `-vv` and the same hard deadline to identify the last test; repeated timeouts are test-infrastructure findings.
-- Record the exact SHA, command, duration/result, and cleanup in review handoffs.
+- Use the same runner with `--timeout 60 -- -vv <focused paths>` for focused suites.
+- Quiet mode is rejected because a timeout must identify the last test reached.
+- Do not run concurrent suites against this repository.
+- Exit `75` means another run owns the repository lock and is **NO VERDICT**.
+- Exit `124` means timeout and is **NO VERDICT**.
+- Exit `125` means leaked descendants or incomplete cleanup and is **NO VERDICT**.
+- Exit `129`, `130`, or `143` means interruption/signal cleanup and is **NO VERDICT**.
+- On timeout or interruption, verify the process group was reaped. A repeated bounded verbose timeout is a test-infrastructure finding, never PASS or a technical code-review FAIL.
+- Record the exact SHA, shell-quoted command, duration/result, and cleanup in review handoffs.

@@ -29,7 +29,7 @@ def test_ci_workflow_declares_ros_build_import_launch_cleanup_and_latency_gates(
     assert result == REQUIRED_SYSTEM_CI_JOBS
     assert "colcon build" in workflow
     assert "python -m sphero_rvr_driver.system_validation" in workflow
-    assert "pytest tests/test_system_validation.py" in workflow
+    assert "scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_system_validation.py" in workflow
 
 
 def test_current_sha_corpus_manifest_requires_all_no_motion_topics_and_exact_sha(tmp_path: Path) -> None:

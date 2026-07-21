@@ -356,7 +356,7 @@ def assert_ci_workflow_covers_system_gates(workflow_text: str) -> tuple[str, ...
         "ros2 pkg executables sphero_rvr_driver",
         "ros2 launch sphero_rvr_driver supervised_rvr.launch.py --show-args",
         "python -m sphero_rvr_driver.system_validation",
-        "pytest tests/test_system_validation.py",
+        "scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_system_validation.py",
     ):
         if token not in workflow_text:
             missing.append(token)

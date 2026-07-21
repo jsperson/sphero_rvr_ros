@@ -14,8 +14,8 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: pip install -e . pytest pytest-asyncio
-      - run: pytest tests -q
-      - run: pytest tests/test_system_validation.py -q
+      - run: python scripts/run_pytest_bounded.py --timeout 90 -- -vv tests
+      - run: python scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_system_validation.py
       - run: python -m sphero_rvr_driver.system_validation --repo-root "$GITHUB_WORKSPACE"
 
   ros2-colcon-system-gates:
