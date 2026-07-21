@@ -22,6 +22,7 @@ from sphero_rvr_driver.mission_api import (
     _arguments_digest,
     build_canonical_shoe_mapping_plan,
     build_default_registry,
+    issue_approval_grant,
     physical_adapter_authority,
 )
 from sphero_rvr_driver.physical_capability_adapters import PhysicalCapabilityAdapters
@@ -30,6 +31,7 @@ from sphero_rvr_driver.physical_capability_adapters import PhysicalCapabilityAda
 def _grant(
     now_s: float = 100.0,
     *,
+    expires_at_s: float | None = None,
     mission_id: str = "goal-motion",
     approval_id: str = "operator-approval-1",
     tool_id: str = "move_to_clearance",
@@ -38,11 +40,11 @@ def _grant(
 ) -> ApprovalGrant:
     if arguments is None:
         arguments = {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.2}
-    return ApprovalGrant(
+    return issue_approval_grant(
         approval_id=approval_id,
         approved_by="operator:scott",
         approved_at_s=now_s,
-        expires_at_s=now_s + 60.0,
+        expires_at_s=now_s + 60.0 if expires_at_s is None else expires_at_s,
         approval_class="supervised_motion",
         mission_id=mission_id,
         issued_to="mission-runtime",
@@ -484,18 +486,11 @@ def test_runtime_rejects_approval_replay_wrong_identity_and_wrong_mission_bindin
             )
         )
 
-    replayed = ApprovalGrant(
-        approval_id="replayed-approval",
-        approved_by="operator:scott",
-        approved_at_s=100.0,
-        expires_at_s=120.0,
-        approval_class="supervised_motion",
+    replayed = _grant(
         mission_id="approval-binding",
-        issued_to="mission-runtime",
-        tool_id="move_to_clearance",
+        approval_id="replayed-approval",
         correlation_id="move-1",
-        arguments_digest=_arguments_digest({"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.2}),
-        principal="operator:scott",
+        arguments={"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.2},
     )
     with pytest.raises(MissionValidationError, match="approval replay"):
         runtime.execute_plan(
@@ -1319,6 +1314,359 @@ def test_latest_review_resource_and_approval_blockers_are_regressed() -> None:
                     budgets=MissionBudgets(max_steps=2, max_runtime_s=10.0),
                 ),
                 invocations=(ToolInvocation("a", "custom_a", "1.0", {}), ToolInvocation("b", "custom_b", "1.0", {})),
+            )
+        )
+
+
+def test_replay_adapter_must_attest_declared_preconditions() -> None:
+    registry = build_default_registry(detector_classes=("shoe",))
+    runtime = DeterministicMissionRuntime(
+        registry,
+        FakeCapabilityAdapters(satisfied_preconditions=None),
+        now_s=100.0,
+    )
+
+    with pytest.raises(MissionValidationError, match="preconditions are not attested"):
+        runtime.execute_plan(
+            MissionPlan(
+                goal=MissionGoal(
+                    goal_id="replay-preconditions",
+                    objective="replay adapters cannot silently bypass preconditions",
+                    success_criteria=(SuccessCriterion("detect", "detect completed", CriterionKind.TOOL_COMPLETE, tool_id="detect_objects"),),
+                    budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0),
+                ),
+                invocations=(ToolInvocation("detect", "detect_objects", "1.0", {"object_class": "shoe"}),),
+            )
+        )
+
+
+def test_rebased_review_terminal_text_artifact_and_unsigned_approval_blockers_are_regressed() -> None:
+    registry = build_default_registry(detector_classes=("shoe",))
+
+    unsigned_args = {"distance_m": 0.1, "speed_mps": 0.05, "timeout_s": 3.0}
+    unsigned = ApprovalGrant(
+        approval_id="caller-minted",
+        approved_by="operator:scott",
+        approved_at_s=100.0,
+        expires_at_s=200.0,
+        approval_class="supervised_motion",
+        mission_id="unsigned-approval",
+        issued_to="mission-runtime",
+        tool_id="move_distance",
+        correlation_id="move",
+        arguments_digest=_arguments_digest(unsigned_args),
+        principal="operator:scott",
+    )
+    with pytest.raises(MissionValidationError, match="approval signature"):
+        DeterministicMissionRuntime(registry, FakeCapabilityAdapters(), now_s=100.0).execute_plan(
+            MissionPlan(
+                goal=MissionGoal(
+                    goal_id="unsigned-approval",
+                    objective="caller-created approvals cannot mint authority",
+                    success_criteria=(SuccessCriterion("done", "move done", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),),
+                    budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0, max_travel_m=0.5),
+                ),
+                invocations=(ToolInvocation("move", "move_distance", "1.0", unsigned_args, approval=unsigned),),
+            )
+        )
+
+    text_success = DeterministicMissionRuntime(registry, FakeCapabilityAdapters(), now_s=100.0).execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="running-state-text",
+                objective="legacy text criteria are not production completion evidence",
+                success_criteria=("running state",),
+                budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0),
+            ),
+            invocations=(ToolInvocation("status", "query_status_telemetry", "1.0", {}),),
+        )
+    )
+    assert text_success.status is MissionRuntimeStatus.FAILED
+    assert "typed success criteria" in text_success.results[-1].error["message"]
+
+    runtime = DeterministicMissionRuntime(registry, FakeCapabilityAdapters(), now_s=100.0)
+    stopped = runtime.execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="latched-stop",
+                objective="STOP latches across execute_plan calls",
+                success_criteria=(SuccessCriterion("stop", "stop completed", CriterionKind.TOOL_COMPLETE, tool_id="pause_cancel_stop_estop"),),
+                budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0),
+            ),
+            invocations=(ToolInvocation("stop", "pause_cancel_stop_estop", "1.0", {"action": "stop"}),),
+        )
+    )
+    assert stopped.status is MissionRuntimeStatus.STOPPED
+    with pytest.raises(MissionValidationError, match="terminal runtime state STOPPED"):
+        runtime.execute_plan(
+            MissionPlan(
+                goal=MissionGoal(
+                    goal_id="after-stop",
+                    objective="no execution after stop",
+                    success_criteria=(SuccessCriterion("status", "status completed", CriterionKind.TOOL_COMPLETE, tool_id="query_status_telemetry"),),
+                    budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0),
+                ),
+                invocations=(ToolInvocation("status", "query_status_telemetry", "1.0", {}),),
+            )
+        )
+
+    weak_artifact = DeterministicMissionRuntime(
+        registry,
+        FakeCapabilityAdapters(
+            observation_by_tool={"generate_semantic_artifacts": {"artifact_refs": {"mission_summary": "artifacts/vs06_semantic_map/mission_summary.md"}}},
+            artifact_refs_by_tool={"generate_semantic_artifacts": {"mission_summary": "artifacts/vs06_semantic_map/mission_summary.md"}},
+            provenance_by_tool={"generate_semantic_artifacts": {"adapter": "fake/replay", "deterministic": True}},
+        ),
+        now_s=100.0,
+    ).execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="weak-artifact-provenance",
+                objective="artifact refs require hash and invocation provenance",
+                success_criteria=(SuccessCriterion("mission-summary", "mission summary artifact exists", CriterionKind.ARTIFACT_PRESENT, field="mission_summary"),),
+                requested_artifacts=("mission_summary",),
+                budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0),
+            ),
+            invocations=(ToolInvocation("artifact", "generate_semantic_artifacts", "1.0", {"artifact_kinds": ["mission_summary"]}),),
+        )
+    )
+    assert weak_artifact.status is MissionRuntimeStatus.FAILED
+    assert "artifact_refs failed provenance validation" in weak_artifact.results[-1].error["message"]
+
+
+def test_cumulative_runtime_ledger_uses_executed_time_not_repeated_plan_ceiling() -> None:
+    empty_schema = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+    tool_id_result_schema = {
+        "type": "object",
+        "properties": {"tool_id": {"type": "string"}},
+        "required": ["tool_id"],
+        "additionalProperties": False,
+    }
+    registry = CapabilityRegistry((ToolDefinition("short_read", "1.0", empty_schema, tool_id_result_schema, timeout_s=0.25),))
+    runtime = DeterministicMissionRuntime(
+        registry,
+        FakeCapabilityAdapters(duration_by_tool={"short_read": 0.25}),
+        now_s=100.0,
+        budget_ceilings=MissionBudgets(max_steps=4, max_runtime_s=1.0),
+    )
+
+    def plan(correlation_id: str) -> MissionPlan:
+        return MissionPlan(
+            goal=MissionGoal(
+                goal_id=f"runtime-ledger-{correlation_id}",
+                objective="session runtime ledger decrements actual bounded execution time",
+                success_criteria=(SuccessCriterion("done", "short_read completed", CriterionKind.TOOL_COMPLETE, tool_id="short_read"),),
+                budgets=MissionBudgets(max_steps=1, max_runtime_s=1.0),
+            ),
+            invocations=(ToolInvocation(correlation_id, "short_read", "1.0", {}),),
+        )
+
+    assert runtime.execute_plan(plan("one")).status is MissionRuntimeStatus.COMPLETE
+    assert runtime.execute_plan(plan("two")).status is MissionRuntimeStatus.COMPLETE
+
+
+def test_cumulative_runtime_clock_expires_later_plan_approval() -> None:
+    registry = build_default_registry(detector_classes=("shoe",))
+    runtime = DeterministicMissionRuntime(
+        registry,
+        FakeCapabilityAdapters(duration_by_tool={"query_status_telemetry": 2.0}),
+        now_s=100.0,
+        budget_ceilings=MissionBudgets(max_steps=2, max_runtime_s=5.0, max_travel_m=1.0),
+    )
+    status_plan = MissionPlan(
+        goal=MissionGoal(
+            goal_id="advance-clock",
+            objective="advance the mission session clock",
+            success_criteria=(SuccessCriterion("status", "status completed", CriterionKind.TOOL_COMPLETE, tool_id="query_status_telemetry"),),
+            budgets=MissionBudgets(max_steps=1, max_runtime_s=2.0),
+        ),
+        invocations=(ToolInvocation("status", "query_status_telemetry", "1.0", {}),),
+    )
+    assert runtime.execute_plan(status_plan).status is MissionRuntimeStatus.COMPLETE
+
+    move_args = {"distance_m": 0.1, "speed_mps": 0.05, "timeout_s": 1.0}
+    move_plan = MissionPlan(
+        goal=MissionGoal(
+            goal_id="approval-after-clock-advance",
+            objective="reject approval expired on the cumulative mission clock",
+            success_criteria=(SuccessCriterion("move", "move completed", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),),
+            budgets=MissionBudgets(max_steps=1, max_runtime_s=1.0, max_travel_m=0.1),
+        ),
+        invocations=(
+            ToolInvocation(
+                "move",
+                "move_distance",
+                "1.0",
+                move_args,
+                approval=_grant(
+                    now_s=100.0,
+                    expires_at_s=101.5,
+                    mission_id="approval-after-clock-advance",
+                    tool_id="move_distance",
+                    correlation_id="move",
+                    arguments=move_args,
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(MissionValidationError, match="approval is stale or missing"):
+        runtime.execute_plan(move_plan)
+
+
+def test_trusted_monotonic_clock_expires_approval_when_adapter_underreports_time() -> None:
+    clock = [0.0]
+
+    class ClockAdvancingHandle:
+        def __init__(self, result, advance_s):
+            self.result = result
+            self.advance_s = advance_s
+
+        def wait(self, timeout_s):
+            del timeout_s
+            clock[0] += self.advance_s
+            return self.result
+
+        def cancel(self):
+            return None
+
+        def cleanup(self, timeout_s):
+            del timeout_s
+            return True
+
+        def wait_idle(self, timeout_s):
+            del timeout_s
+            return True
+
+    class UnderreportingAdapters(FakeCapabilityAdapters):
+        def begin_execution(self, invocation, definition, *, started_at_s, index):
+            result = self.execute(invocation, definition, started_at_s=started_at_s, index=index)
+            return ClockAdvancingHandle(result, 2.0 if invocation.tool_id == "query_status_telemetry" else 0.0)
+
+    registry = build_default_registry(detector_classes=("shoe",))
+    runtime = DeterministicMissionRuntime(
+        registry,
+        UnderreportingAdapters(duration_by_tool={"query_status_telemetry": 0.0}),
+        now_s=100.0,
+        clock_s=lambda: clock[0],
+    )
+    move_args = {"distance_m": 0.1, "speed_mps": 0.05, "timeout_s": 1.0}
+    approval = _grant(
+        now_s=100.0,
+        expires_at_s=101.5,
+        mission_id="trusted-monotonic-clock",
+        tool_id="move_distance",
+        correlation_id="move",
+        arguments=move_args,
+    )
+
+    with pytest.raises(MissionValidationError, match="approval is stale or missing"):
+        runtime.execute_plan(
+            MissionPlan(
+                goal=MissionGoal(
+                    goal_id="trusted-monotonic-clock",
+                    objective="adapter timestamps cannot hold approval time still",
+                    success_criteria=(SuccessCriterion("move", "move completed", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),),
+                    budgets=MissionBudgets(max_steps=2, max_runtime_s=5.0, max_travel_m=0.1),
+                ),
+                invocations=(
+                    ToolInvocation("status", "query_status_telemetry", "1.0", {}),
+                    ToolInvocation("move", "move_distance", "1.0", move_args, approval=approval),
+                ),
+            )
+        )
+
+
+def test_timeout_ledger_preserves_prior_elapsed_runtime() -> None:
+    empty_schema = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+    tool_id_result_schema = {
+        "type": "object",
+        "properties": {"tool_id": {"type": "string"}},
+        "required": ["tool_id"],
+        "additionalProperties": False,
+    }
+    registry = CapabilityRegistry(
+        (
+            ToolDefinition("first", "1.0", empty_schema, tool_id_result_schema, timeout_s=1.0),
+            ToolDefinition("times_out", "1.0", empty_schema, tool_id_result_schema, timeout_s=1.0),
+            ToolDefinition("later", "1.0", empty_schema, tool_id_result_schema, timeout_s=1.0),
+        )
+    )
+    runtime = DeterministicMissionRuntime(
+        registry,
+        FakeCapabilityAdapters(duration_by_tool={"first": 0.25, "times_out": 2.0, "later": 1.0}),
+        budget_ceilings=MissionBudgets(max_steps=3, max_runtime_s=2.0),
+    )
+    timed_out = runtime.execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="timeout-ledger",
+                objective="preserve elapsed time before a timeout",
+                success_criteria=(SuccessCriterion("later", "later completed", CriterionKind.TOOL_COMPLETE, tool_id="later"),),
+                budgets=MissionBudgets(max_steps=2, max_runtime_s=2.0),
+            ),
+            invocations=(ToolInvocation("first", "first", "1.0", {}), ToolInvocation("timeout", "times_out", "1.0", {})),
+        )
+    )
+    assert timed_out.status is MissionRuntimeStatus.TIMEOUT
+
+    later_plan = MissionPlan(
+        goal=MissionGoal(
+            goal_id="after-timeout",
+            objective="cumulative runtime cannot be reclaimed after timeout",
+            success_criteria=(SuccessCriterion("later", "later completed", CriterionKind.TOOL_COMPLETE, tool_id="later"),),
+            budgets=MissionBudgets(max_steps=1, max_runtime_s=1.0),
+        ),
+        invocations=(ToolInvocation("later", "later", "1.0", {}),),
+    )
+    with pytest.raises(MissionValidationError, match="cumulative max_runtime_s"):
+        runtime.execute_plan(later_plan)
+
+
+def test_prestart_timeout_records_prior_execution_in_cumulative_ledger() -> None:
+    empty_schema = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+    tool_id_result_schema = {
+        "type": "object",
+        "properties": {"tool_id": {"type": "string"}},
+        "required": ["tool_id"],
+        "additionalProperties": False,
+    }
+    registry = CapabilityRegistry(
+        (
+            ToolDefinition("first", "1.0", empty_schema, tool_id_result_schema, timeout_s=1.0),
+            ToolDefinition("cannot_start", "1.0", empty_schema, tool_id_result_schema, timeout_s=1.0),
+            ToolDefinition("later", "1.0", empty_schema, tool_id_result_schema, timeout_s=1.1),
+        )
+    )
+    runtime = DeterministicMissionRuntime(
+        registry,
+        FakeCapabilityAdapters(duration_by_tool={"first": 1.0}),
+        budget_ceilings=MissionBudgets(max_steps=3, max_runtime_s=2.0),
+    )
+
+    timed_out = runtime.execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="prestart-timeout-ledger",
+                objective="do not discard work completed before a tool cannot start",
+                success_criteria=(SuccessCriterion("first", "first completed", CriterionKind.TOOL_COMPLETE, tool_id="first"),),
+                budgets=MissionBudgets(max_steps=2, max_runtime_s=1.5),
+            ),
+            invocations=(ToolInvocation("first", "first", "1.0", {}), ToolInvocation("blocked", "cannot_start", "1.0", {})),
+        )
+    )
+    assert timed_out.status is MissionRuntimeStatus.TIMEOUT
+    assert [item.invocation.correlation_id for item in timed_out.results] == ["first", "blocked"]
+
+    with pytest.raises(MissionValidationError, match="cumulative max_runtime_s"):
+        runtime.execute_plan(
+            MissionPlan(
+                goal=MissionGoal(
+                    goal_id="after-prestart-timeout",
+                    objective="prior elapsed time remains charged",
+                    success_criteria=(SuccessCriterion("later", "later completed", CriterionKind.TOOL_COMPLETE, tool_id="later"),),
+                    budgets=MissionBudgets(max_steps=1, max_runtime_s=1.1),
+                ),
+                invocations=(ToolInvocation("later", "later", "1.0", {}),),
             )
         )
 

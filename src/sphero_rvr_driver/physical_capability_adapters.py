@@ -41,7 +41,7 @@ from .supervised_coordinator import (
     SupervisedCoordinator,
 )
 
-_PHYSICAL_PROVENANCE = {"adapter": "physical/supervised_control", "deterministic": True}
+_PHYSICAL_PROVENANCE = {"adapter": "physical/supervised_control_fixture", "deterministic": True}
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class PhysicalCapabilityAdapters:
     execution_mode: str = "physical"
     authority_kind: str = "physical"
     healthy: bool = True
-    evidence_level: str = "live_bounded_physical"
+    evidence_level: str = "bounded_physical_fixture"
     deployed_sha: str = field(default_factory=lambda: _source_sha())
     satisfied_preconditions: Sequence[str] = (
         "supervised coordinator and collision stop are available",

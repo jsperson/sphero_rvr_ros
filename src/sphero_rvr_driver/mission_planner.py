@@ -90,6 +90,7 @@ class RemainingPlannerBudgets:
     runtime_s: float
     tool_calls: int
     travel_m: Optional[float]
+    provider_calls: Optional[int]
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +98,7 @@ class RemainingPlannerBudgets:
             "runtime_s": self.runtime_s,
             "tool_calls": self.tool_calls,
             "travel_m": self.travel_m,
+            "provider_calls": self.provider_calls,
         }
 
 
@@ -503,20 +505,26 @@ class IterativeMissionPlanner:
         decisions: list[Mapping[str, Any]] = []
         artifacts: dict[str, str] = {}
         tool_calls_used = 0
+        travel_used_m = 0.0
+        provider_calls_used = 0
         stop_reason = PlannerStopReason.BUDGET_EXHAUSTED
+        mission_id = "planner-run"
+        runtime = DeterministicMissionRuntime(self.registry, self.adapters, budget_ceilings=self.budgets)
 
         for iteration in range(1, self.max_iterations + 1):
             elapsed = time.monotonic() - started
-            remaining = self._remaining(iteration - 1, elapsed, tool_calls_used)
+            remaining = self._remaining(iteration - 1, elapsed, tool_calls_used, travel_used_m, provider_calls_used)
             if cancel_requested():
                 stop_reason = PlannerStopReason.CANCELLED
                 decisions.append(_decision(iteration, "cancelled", "operator cancellation requested"))
                 break
-            if remaining.runtime_s <= 0 or remaining.tool_calls <= 0:
+            if remaining.runtime_s <= 0 or remaining.tool_calls <= 0 or remaining.provider_calls == 0:
                 decisions.append(_decision(iteration, "budget_exhausted", "planner budget exhausted before provider call"))
                 break
 
-            context = self._context(goal, observations, remaining, image_observations=image_observations)
+            context = self._context(goal, observations, remaining, runtime=runtime, image_observations=image_observations)
+            runtime.consume_provider_call()
+            provider_calls_used += 1
             response = self.provider.plan(context)
             decisions.append({"iteration": iteration, "provider_response": response.to_json_dict()})
 
@@ -537,18 +545,19 @@ class IterativeMissionPlanner:
                 continue
 
             for call in response.tool_calls:
-                if tool_calls_used >= self.budgets.max_steps:
+                if tool_calls_used >= self._max_tool_calls():
                     stop_reason = PlannerStopReason.BUDGET_EXHAUSTED
                     break
+                tool_calls_used += 1
                 proposed.append(call.to_json_dict())
                 try:
-                    result = self._execute_call(goal, iteration, call)
+                    result = self._execute_call(goal, iteration, call, mission_id=mission_id, runtime=runtime)
                 except MissionValidationError as exc:
                     rejected.append({"call": call.to_json_dict(), "reason": str(exc), "iteration": iteration})
                     observations.append(PlannerObservation(iteration, call.tool_name, "rejected", reason=str(exc)))
                     continue
 
-                tool_calls_used += 1
+                travel_used_m += self._call_travel_m(call)
                 artifacts.update(result.artifact_refs)
                 executed.append({"call": call.to_json_dict(), "result": result.to_json_dict(), "iteration": iteration})
                 reason = ""
@@ -581,8 +590,15 @@ class IterativeMissionPlanner:
             else "attempted",
         )
 
-    def _execute_call(self, goal_text: str, iteration: int, call: ToolCall) -> ToolResult:
-        mission_id = f"planner-{iteration}"
+    def _execute_call(
+        self,
+        goal_text: str,
+        iteration: int,
+        call: ToolCall,
+        *,
+        mission_id: str,
+        runtime: DeterministicMissionRuntime,
+    ) -> ToolResult:
         correlation_id = call.call_id or f"planner-{iteration}-{call.tool_name}"
         approval = self._approval_for_call(call, mission_id=mission_id, correlation_id=correlation_id)
         invocation = ToolInvocation(
@@ -605,37 +621,69 @@ class IterativeMissionPlanner:
                     tool_id=call.tool_name,
                 ),
             ),
-            budgets=MissionBudgets(max_steps=1, max_runtime_s=self.budgets.max_runtime_s, max_travel_m=self.budgets.max_travel_m),
+            budgets=MissionBudgets(max_steps=1, max_runtime_s=self._tool_runtime_budget(call), max_travel_m=self.budgets.max_travel_m),
         )
-        runtime = DeterministicMissionRuntime(self.registry, self.adapters, budget_ceilings=self.budgets)
         result = runtime.execute_plan(MissionPlan(goal=mission_goal, invocations=(invocation,), plan_id=f"planner-{iteration}-{call.call_id}"))
         return result.results[-1]
 
     def _approval_for_call(self, call: ToolCall, *, mission_id: str, correlation_id: str) -> Optional[ApprovalGrant]:
-        grant = self.approval_grants.get(call.tool_name)
+        grant = self.approval_grants.get(call.call_id) or self.approval_grants.get(call.tool_name)
         if grant is None:
             return None
-        return ApprovalGrant(
-            approval_id=grant.approval_id,
-            approved_by=grant.approved_by,
-            approved_at_s=grant.approved_at_s,
-            expires_at_s=grant.expires_at_s,
-            approval_class=grant.approval_class,
-            mission_id=mission_id,
-            issued_to="mission-runtime",
-            tool_id=call.tool_name,
-            correlation_id=correlation_id,
-            arguments_digest=_arguments_digest(call.arguments),
-            principal=grant.principal or grant.approved_by,
-        )
+        if (
+            grant.mission_id != mission_id
+            or grant.tool_id != call.tool_name
+            or grant.correlation_id != correlation_id
+            or grant.arguments_digest != _arguments_digest(call.arguments)
+        ):
+            raise MissionValidationError(f"approval binding mismatch for planner tool call: {call.tool_name}")
+        return grant
 
-    def _remaining(self, iterations_used: int, runtime_used_s: float, tool_calls_used: int) -> RemainingPlannerBudgets:
+    def _tool_runtime_budget(self, call: ToolCall) -> float:
+        definition = self.registry.require(call.tool_name, call.tool_version)
+        candidates = [float(definition.timeout_s)]
+        for key in ("timeout_s", "segment_timeout_s"):
+            value = call.arguments.get(key)
+            if isinstance(value, (int, float)) and value > 0:
+                candidates.append(float(value))
+        return min(self.budgets.max_runtime_s, max(0.1, min(candidates)))
+
+    @staticmethod
+    def _call_travel_m(call: ToolCall) -> float:
+        if call.tool_name in {"move_to_clearance", "bounded_exploration_segment"}:
+            try:
+                return max(0.0, float(call.arguments.get("max_travel_m", 0.0)))
+            except (TypeError, ValueError):
+                return 0.0
+        if call.tool_name == "move_distance":
+            try:
+                return abs(float(call.arguments.get("distance_m", 0.0)))
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    def _remaining(
+        self,
+        iterations_used: int,
+        runtime_used_s: float,
+        tool_calls_used: int,
+        travel_used_m: float = 0.0,
+        provider_calls_used: int = 0,
+    ) -> RemainingPlannerBudgets:
         return RemainingPlannerBudgets(
             iterations=max(0, self.max_iterations - iterations_used),
             runtime_s=max(0.0, self.budgets.max_runtime_s - runtime_used_s),
-            tool_calls=max(0, self.budgets.max_steps - tool_calls_used),
-            travel_m=self.budgets.max_travel_m,
+            tool_calls=max(0, self._max_tool_calls() - tool_calls_used),
+            travel_m=None if self.budgets.max_travel_m is None else max(0.0, self.budgets.max_travel_m - travel_used_m),
+            provider_calls=None
+            if self.budgets.max_provider_calls is None
+            else max(0, self.budgets.max_provider_calls - provider_calls_used),
         )
+
+    def _max_tool_calls(self) -> int:
+        if self.budgets.max_tool_calls is None:
+            return self.budgets.max_steps
+        return min(self.budgets.max_steps, self.budgets.max_tool_calls)
 
     def _context(
         self,
@@ -643,13 +691,16 @@ class IterativeMissionPlanner:
         observations: Sequence[PlannerObservation],
         remaining: RemainingPlannerBudgets,
         *,
+        runtime: DeterministicMissionRuntime,
         image_observations: Sequence[ImageObservation] = (),
     ) -> dict[str, Any]:
+        live_capability_state = runtime.capability_state()
         return {
             "goal": goal,
             "api_version": "mission_api.v2",
             "registry_version": self.registry_version,
-            "available_tools": self.registry.to_json_dict(),
+            "available_tools": _planner_available_tools(self.registry, live_capability_state),
+            "live_capability_state": live_capability_state,
             "approval_classes_granted": sorted(self.approval_grants),
             "remaining_budgets": remaining.to_json_dict(),
             "history": [observation.to_json_dict() for observation in observations[-12:]],
@@ -854,6 +905,18 @@ def _contains_provider_policy_bypass(message: str) -> bool:
             "expand budget",
         )
     )
+
+
+def _planner_available_tools(registry: CapabilityRegistry, live_capability_state: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    tools: dict[str, Any] = {}
+    for definition in registry.definitions():
+        key = f"{definition.tool_id}@{definition.version}"
+        state = live_capability_state.get(key, {})
+        if state.get("bound") is True and state.get("healthy") is True:
+            payload = definition.to_json_dict()
+            payload["live_state"] = dict(state)
+            tools[key] = payload
+    return tools
 
 
 def _stop_reason_for_runtime_status(status: MissionRuntimeStatus) -> Optional[PlannerStopReason]:

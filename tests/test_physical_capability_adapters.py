@@ -17,6 +17,7 @@ from sphero_rvr_driver.mission_api import (
     ToolResultStatus,
     _arguments_digest,
     build_default_registry,
+    issue_approval_grant,
 )
 from sphero_rvr_driver.odometry import OdomMotionState
 from sphero_rvr_driver.physical_capability_adapters import PhysicalCapabilityAdapters
@@ -35,7 +36,7 @@ def _grant(
 ) -> ApprovalGrant:
     if arguments is None:
         arguments = {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.5}
-    return ApprovalGrant(
+    return issue_approval_grant(
         approval_id=approval_id,
         approved_by="operator:scott",
         approved_at_s=now_s,
@@ -188,7 +189,7 @@ def test_physical_move_to_clearance_uses_range_motion_controller_without_leaking
     tool_result = result.results[0]
     assert tool_result.status is ToolResultStatus.COMPLETE
     assert tool_result.observation == {"target_clearance_m": pytest.approx(0.1016)}
-    assert tool_result.provenance == {"adapter": "physical/supervised_control", "deterministic": True}
+    assert tool_result.provenance == {"adapter": "physical/supervised_control_fixture", "deterministic": True}
     payload = result.to_json_dict()
     assert "/cmd_vel" not in str(payload)
     assert "/cmd_vel_motor" not in str(payload)

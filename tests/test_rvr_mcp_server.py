@@ -89,12 +89,17 @@ def test_mcp_tools_are_dynamic_over_registry_availability_and_do_not_duplicate_s
     adapter = RvrMcpAdapter(registry=registry, adapters=FakeCapabilityAdapters())
 
     tools = adapter.list_tools()
-    rotate = next(tool for tool in tools if tool["name"] == "rvr.capability.rotate_scan")
     detect = next(tool for tool in tools if tool["name"] == "rvr.capability.detect_objects")
 
-    assert rotate["annotations"]["availability"] == "unsupported"
+    assert "rvr.capability.rotate_scan" not in {tool["name"] for tool in tools}
     assert detect["inputSchema"] is registry.require("detect_objects", "1.0").argument_schema
     assert detect["inputSchema"]["properties"]["object_class"]["enum"] == ["shoe", "backpack"]
+    assert detect["annotations"]["live_state"]["bound"] is True
+    assert detect["annotations"]["live_state"]["healthy"] is True
+
+    unhealthy = RvrMcpAdapter(registry=registry, adapters=FakeCapabilityAdapters(healthy=False))
+    unhealthy_names = {tool["name"] for tool in unhealthy.list_tools()}
+    assert "rvr.capability.detect_objects" not in unhealthy_names
 
     unsupported = adapter.call_tool("rvr.capability.rotate_scan", {"angle_deg": 10})
     assert unsupported["status"] == "rejected"
@@ -214,6 +219,45 @@ def test_mcp_returns_structured_validation_rejection_timeout_cancel_block_stop_e
     shutdown = adapter.shutdown("server shutdown")
     assert shutdown["status"] == "cancelled"
     assert shutdown["audit_manifest"]["stop_reason"] == "server_shutdown"
+
+
+def test_mcp_direct_calls_reuse_session_runtime_for_latched_terminal_state() -> None:
+    adapter = RvrMcpAdapter()
+
+    stopped = adapter.call_tool("rvr.capability.pause_cancel_stop_estop", {"action": "stop", "client_session_id": "latched-session"})
+    assert stopped["status"] == "stopped"
+
+    after_stop = adapter.call_tool("rvr.capability.capture_observation", {"sensor": "replay", "client_session_id": "latched-session"})
+    assert after_stop["status"] == "rejected"
+    assert "terminal runtime state STOPPED" in after_stop["error"]["message"]
+
+    different_session = adapter.call_tool("rvr.capability.capture_observation", {"sensor": "replay", "client_session_id": "fresh-session"})
+    assert different_session["status"] == "complete"
+
+
+def test_mcp_session_issues_unique_approval_for_each_bounded_motion_call() -> None:
+    adapter = RvrMcpAdapter()
+    arguments = {"distance_m": 0.1, "speed_mps": 0.05, "timeout_s": 1.0, "client_session_id": "motion-session"}
+
+    first = adapter.call_tool("rvr.capability.move_distance", arguments)
+    second = adapter.call_tool("rvr.capability.move_distance", arguments)
+
+    assert first["status"] == "complete"
+    assert second["status"] == "complete"
+
+
+def test_mcp_session_enforces_cumulative_default_step_ceiling() -> None:
+    adapter = RvrMcpAdapter()
+    statuses = [
+        adapter.call_tool(
+            "rvr.capability.capture_observation",
+            {"sensor": "replay", "client_session_id": "budget-session"},
+        )["status"]
+        for _ in range(9)
+    ]
+
+    assert statuses[:8] == ["complete"] * 8
+    assert statuses[8] == "rejected"
 
 
 def test_mcp_adversarial_inputs_fail_closed_without_secret_or_authority_leakage() -> None:

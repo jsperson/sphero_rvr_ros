@@ -25,7 +25,7 @@ from .live_route_runner import (
     RouteSegmentRequest,
     run_route_replay,
 )
-from .mission_api_v2 import ToolResultStatus
+from .mission_api import ToolResultStatus
 from .odometry import MotionPrimitiveConfig, OdomMotionState
 
 REQUIRED_SYSTEM_CI_JOBS = (

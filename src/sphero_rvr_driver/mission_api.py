@@ -16,10 +16,13 @@ from pathlib import Path
 import queue
 import subprocess
 import hashlib
+import hmac
 import json
+import secrets
+import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 class MissionValidationError(ValueError):
     """Raised when a Mission API request or runtime boundary is invalid."""
@@ -30,6 +33,7 @@ class MissionApiVersion(str, Enum):
 
 
 _PHYSICAL_ADAPTER_AUTHORITY = object()
+_APPROVAL_GRANT_SECRET = secrets.token_bytes(32)
 
 
 def physical_adapter_authority() -> object:
@@ -245,6 +249,7 @@ class ApprovalGrant:
     correlation_id: Optional[str] = None
     arguments_digest: Optional[str] = None
     principal: Optional[str] = None
+    grant_signature: str = ""
 
     def __post_init__(self) -> None:
         if not self.approval_id or not self.approved_by:
@@ -267,6 +272,9 @@ class ApprovalGrant:
         if self.issued_to != issued_to:
             return False
         return True
+
+    def has_trusted_signature(self) -> bool:
+        return bool(self.grant_signature) and hmac.compare_digest(self.grant_signature, _approval_grant_signature(self))
 
     def rejection_reason(
         self,
@@ -297,7 +305,72 @@ class ApprovalGrant:
             "correlation_id": self.correlation_id,
             "arguments_digest": self.arguments_digest,
             "principal": self.principal,
+            "grant_signature": self.grant_signature,
         }
+
+
+def issue_approval_grant(
+    *,
+    approval_id: str,
+    approved_by: str,
+    approved_at_s: float,
+    expires_at_s: float,
+    approval_class: str,
+    mission_id: str,
+    issued_to: str = "mission-runtime",
+    tool_id: str,
+    correlation_id: str,
+    arguments_digest: str,
+    principal: str,
+) -> ApprovalGrant:
+    """Issue a process-local Mission API approval bound to one execution envelope."""
+
+    unsigned = ApprovalGrant(
+        approval_id=approval_id,
+        approved_by=approved_by,
+        approved_at_s=approved_at_s,
+        expires_at_s=expires_at_s,
+        approval_class=approval_class,
+        mission_id=mission_id,
+        issued_to=issued_to,
+        tool_id=tool_id,
+        correlation_id=correlation_id,
+        arguments_digest=arguments_digest,
+        principal=principal,
+    )
+    return ApprovalGrant(
+        approval_id=unsigned.approval_id,
+        approved_by=unsigned.approved_by,
+        approved_at_s=unsigned.approved_at_s,
+        expires_at_s=unsigned.expires_at_s,
+        approval_class=unsigned.approval_class,
+        mission_id=unsigned.mission_id,
+        issued_to=unsigned.issued_to,
+        tool_id=unsigned.tool_id,
+        correlation_id=unsigned.correlation_id,
+        arguments_digest=unsigned.arguments_digest,
+        principal=unsigned.principal,
+        grant_signature=_approval_grant_signature(unsigned),
+    )
+
+
+def _approval_grant_signature(grant: ApprovalGrant) -> str:
+    message = "|".join(
+        (
+            grant.approval_id,
+            grant.approved_by,
+            repr(float(grant.approved_at_s)),
+            repr(float(grant.expires_at_s)),
+            grant.approval_class,
+            grant.mission_id or "",
+            grant.issued_to or "",
+            grant.tool_id or "",
+            grant.correlation_id or "",
+            grant.arguments_digest or "",
+            grant.principal or "",
+        )
+    ).encode("utf-8")
+    return hmac.new(_APPROVAL_GRANT_SECRET, message, hashlib.sha256).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -534,6 +607,19 @@ class FakeCapabilityAdapters:
         provenance = {"adapter": "fake/replay", "deterministic": True}
         if invocation.tool_id in self.provenance_by_tool:
             provenance.update(self.provenance_by_tool[invocation.tool_id])
+        if artifact_refs and invocation.tool_id not in self.provenance_by_tool:
+            provenance.setdefault("artifact_hashes", _artifact_hashes(artifact_refs))
+            provenance.setdefault(
+                "artifact_provenance",
+                {
+                    kind: {
+                        "correlation_id": invocation.correlation_id,
+                        "tool_id": invocation.tool_id,
+                        "execution_mode": self.execution_mode,
+                    }
+                    for kind in artifact_refs
+                },
+            )
         return ToolResult(
             invocation=invocation,
             status=ToolResultStatus.COMPLETE,
@@ -545,7 +631,7 @@ class FakeCapabilityAdapters:
         )
 
 
-    def begin_execution(self, invocation: ToolInvocation, definition: ToolDefinition, *, started_at_s: float, index: int) -> "CompletedExecutionHandle":
+    def begin_execution(self, invocation: ToolInvocation, definition: ToolDefinition, *, started_at_s: float, index: int) -> "AdapterExecutionHandle":
         return CompletedExecutionHandle(self.execute(invocation, definition, started_at_s=started_at_s, index=index))
 
 
@@ -593,10 +679,13 @@ class DeterministicMissionRuntime:
         *,
         now_s: float = 0.0,
         budget_ceilings: Optional[MissionBudgets] = None,
+        clock_s: Optional[Callable[[], float]] = None,
     ):
         self.registry = registry
         self.adapters = adapters
         self.now_s = float(now_s)
+        self._clock_s = clock_s or time.monotonic
+        self._clock_origin_s: Optional[float] = None
         self._explicit_budget_ceilings = budget_ceilings is not None
         self.budget_ceilings = budget_ceilings or MissionBudgets(max_steps=8, max_runtime_s=120.0, max_travel_m=2.0)
         self._ledger_steps = 0
@@ -608,6 +697,7 @@ class DeterministicMissionRuntime:
         self._ledger_provider_calls = 0
         self._ledger_approvals: set[str] = set()
         self._resource_owner: dict[str, str] = {}
+        self._terminal_status: Optional[MissionRuntimeStatus] = None
 
     def capability_state(self) -> dict[str, dict[str, Any]]:
         mode = str(getattr(self.adapters, "execution_mode", "unknown"))
@@ -629,7 +719,27 @@ class DeterministicMissionRuntime:
             for definition in self.registry.definitions()
         }
 
+    def consume_provider_call(self) -> None:
+        """Charge one external planner-provider call to the session ledger."""
+
+        self._ensure_clock_started()
+        if (
+            self.budget_ceilings.max_provider_calls is not None
+            and self._ledger_provider_calls + 1 > self.budget_ceilings.max_provider_calls
+        ):
+            raise MissionValidationError("mission session exceeds cumulative max_provider_calls budget")
+        self._ledger_provider_calls += 1
+
     def execute_plan(self, plan: MissionPlan) -> MissionRuntimeResult:
+        self._ensure_clock_started()
+        terminal_status = self._terminal_status
+        if terminal_status in {
+            MissionRuntimeStatus.CANCELLED,
+            MissionRuntimeStatus.STOPPED,
+            MissionRuntimeStatus.ESTOPPED,
+        }:
+            assert terminal_status is not None
+            raise MissionValidationError(f"terminal runtime state {terminal_status.value.upper()} is latched")
         plan_travel_m = self._validate_plan_budgets(plan)
         self._validate_plan_resources(plan)
         physical_mode = plan.goal.execution_mode == "physical"
@@ -642,8 +752,9 @@ class DeterministicMissionRuntime:
         elapsed_s = 0.0
         used_approvals: set[str] = set(self._ledger_approvals)
         self._validate_cumulative_ledger(plan, plan_travel_m)
+        session_started_at = self.now_s + self._elapsed_session_s()
         for index, invocation in enumerate(plan.invocations):
-            started_at = self.now_s + elapsed_s
+            started_at = max(session_started_at + elapsed_s, self.now_s + self._elapsed_session_s())
             definition = self._validate_invocation(invocation, plan, now_s=started_at, used_approvals=used_approvals, physical_mode=physical_mode)
             remaining_runtime_s = plan.goal.budgets.max_runtime_s - elapsed_s
             if _effective_timeout_s(definition, invocation) > remaining_runtime_s:
@@ -656,14 +767,17 @@ class DeterministicMissionRuntime:
                 )
                 results.append(result)
                 audit.append(self._audit_entry(invocation, definition, result, elapsed_s))
+                self._record_ledger(plan, results[:-1], elapsed_s, used_approvals)
                 return MissionRuntimeResult(plan, MissionRuntimeStatus.TIMEOUT, tuple(results), tuple(audit))
             self._acquire_resources(definition, invocation)
             try:
                 result = self._execute_adapter(invocation, definition, started_at_s=started_at, index=index)
             finally:
                 self._release_resources(definition, invocation)
-            elapsed_s += max(0.0, result.completed_at_s - result.started_at_s)
-            if result.completed_at_s - result.started_at_s > _effective_timeout_s(definition, invocation):
+            result_duration_s = max(0.0, result.completed_at_s - result.started_at_s)
+            elapsed_s += result_duration_s
+            elapsed_s = max(elapsed_s, self.now_s + self._elapsed_session_s() - session_started_at)
+            if result_duration_s > _effective_timeout_s(definition, invocation):
                 result = _tool_result(
                     invocation,
                     ToolResultStatus.TIMEOUT,
@@ -671,7 +785,7 @@ class DeterministicMissionRuntime:
                     result.started_at_s + _effective_timeout_s(definition, invocation),
                     error=f"tool exceeded timeout_s={_effective_timeout_s(definition, invocation):g}; cancellation cleanup completed",
                 )
-                elapsed_s = max(0.0, result.completed_at_s - result.started_at_s)
+                elapsed_s -= result_duration_s - max(0.0, result.completed_at_s - result.started_at_s)
             else:
                 result = _validate_result_boundary(result, definition, physical_mode=physical_mode)
             if elapsed_s > plan.goal.budgets.max_runtime_s and result.status is ToolResultStatus.COMPLETE:
@@ -686,7 +800,9 @@ class DeterministicMissionRuntime:
             audit.append(self._audit_entry(invocation, definition, result, elapsed_s))
             if result.status is not ToolResultStatus.COMPLETE:
                 self._record_ledger(plan, results, elapsed_s, used_approvals)
-                return MissionRuntimeResult(plan, _mission_status_for(result.status), tuple(results), tuple(audit))
+                status = _mission_status_for(result.status)
+                self._record_terminal_status(status)
+                return MissionRuntimeResult(plan, status, tuple(results), tuple(audit))
         completion_budget_error = self._completion_budget_error(plan, results)
         if completion_budget_error:
             result = _tool_result(
@@ -721,7 +837,10 @@ class DeterministicMissionRuntime:
                 ToolResultStatus.FAILED,
                 results[-1].started_at_s if results else self.now_s,
                 results[-1].completed_at_s if results else self.now_s,
-                error="mission completion missing success criteria evidence: " + ", ".join(item.criterion_id for item in missing_criteria),
+                error="mission completion missing success criteria evidence: "
+                + ", ".join(item.criterion_id for item in missing_criteria)
+                + "; "
+                + "; ".join(item.reason for item in missing_criteria if item.reason),
             )
             results[-1] = result
             audit[-1] = self._audit_entry(result.invocation, self.registry.require(result.invocation.tool_id, result.invocation.tool_version), result, elapsed_s)
@@ -729,6 +848,10 @@ class DeterministicMissionRuntime:
             return MissionRuntimeResult(plan, MissionRuntimeStatus.FAILED, tuple(results), tuple(audit), tuple(criterion_results))
         self._record_ledger(plan, results, elapsed_s, used_approvals)
         return MissionRuntimeResult(plan, MissionRuntimeStatus.COMPLETE, tuple(results), tuple(audit), tuple(criterion_results))
+
+    def _record_terminal_status(self, status: MissionRuntimeStatus) -> None:
+        if status in {MissionRuntimeStatus.CANCELLED, MissionRuntimeStatus.STOPPED, MissionRuntimeStatus.ESTOPPED}:
+            self._terminal_status = status
 
     def _validate_plan_budgets(self, plan: MissionPlan) -> float:
         _reject_direct_ros_surfaces(plan.goal.to_json_dict())
@@ -770,7 +893,12 @@ class DeterministicMissionRuntime:
     def _validate_cumulative_ledger(self, plan: MissionPlan, plan_travel_m: float) -> None:
         if self._explicit_budget_ceilings and self._ledger_steps + len(plan.invocations) > self.budget_ceilings.max_steps:
             raise MissionValidationError("mission session exceeds cumulative max_steps budget")
-        if self._explicit_budget_ceilings and self._ledger_runtime_s + plan.goal.budgets.max_runtime_s > self.budget_ceilings.max_runtime_s:
+        cumulative_runtime_s = self._elapsed_session_s() + _planned_runtime_s(plan, self.registry)
+        if (
+            self._explicit_budget_ceilings
+            and cumulative_runtime_s > self.budget_ceilings.max_runtime_s
+            and not math.isclose(cumulative_runtime_s, self.budget_ceilings.max_runtime_s, abs_tol=1e-3)
+        ):
             raise MissionValidationError("mission session exceeds cumulative max_runtime_s budget")
         if self.budget_ceilings.max_travel_m is not None and self._ledger_travel_m + plan_travel_m > self.budget_ceilings.max_travel_m:
             raise MissionValidationError("mission session exceeds cumulative max_travel_m budget")
@@ -787,13 +915,25 @@ class DeterministicMissionRuntime:
 
     def _record_ledger(self, plan: MissionPlan, results: Sequence[ToolResult], elapsed_s: float, used_approvals: set[str]) -> None:
         self._ledger_steps += len(results)
-        self._ledger_runtime_s += elapsed_s
-        self._ledger_travel_m += _planned_travel_m(plan)
+        self._ledger_runtime_s = max(self._ledger_runtime_s + elapsed_s, self._clock_elapsed_s())
+        self._ledger_travel_m += _result_invocations_travel_m(results)
         self._ledger_observations += sum(1 for result in results if result.observation)
         self._ledger_artifacts += sum(len(result.artifact_refs) for result in results)
         self._ledger_tool_calls += len(results)
         self._ledger_provider_calls += _provider_calls_from_results(results)
         self._ledger_approvals = set(used_approvals)
+
+    def _clock_elapsed_s(self) -> float:
+        if self._clock_origin_s is None:
+            return 0.0
+        return max(0.0, float(self._clock_s()) - self._clock_origin_s)
+
+    def _elapsed_session_s(self) -> float:
+        return max(self._ledger_runtime_s, self._clock_elapsed_s())
+
+    def _ensure_clock_started(self) -> None:
+        if self._clock_origin_s is None:
+            self._clock_origin_s = float(self._clock_s())
 
     def _validate_plan_resources(self, plan: MissionPlan) -> None:
         owners: dict[str, tuple[str, str]] = {}
@@ -850,6 +990,8 @@ class DeterministicMissionRuntime:
                 raise MissionValidationError(f"approval argument binding mismatch for {invocation.tool_id}")
             if invocation.approval.principal is None:
                 raise MissionValidationError(f"approval principal binding required for {invocation.tool_id}")
+            if not invocation.approval.has_trusted_signature():
+                raise MissionValidationError(f"approval signature is invalid or missing for {invocation.tool_id}")
             if invocation.approval.approval_id in used_approvals:
                 raise MissionValidationError(f"approval replay detected for {invocation.tool_id}")
             used_approvals.add(invocation.approval.approval_id)
@@ -860,9 +1002,8 @@ class DeterministicMissionRuntime:
             return
         satisfied = getattr(self.adapters, "satisfied_preconditions", None)
         if satisfied is None:
-            if physical_mode:
-                raise MissionValidationError(f"tool {definition.tool_id} preconditions are not attested by physical adapter")
-            return
+            mode = "physical" if physical_mode else "replay"
+            raise MissionValidationError(f"tool {definition.tool_id} preconditions are not attested by {mode} adapter")
         satisfied_set = {str(item) for item in satisfied}
         missing = tuple(item for item in definition.preconditions if item not in satisfied_set)
         if missing:
@@ -1287,7 +1428,7 @@ def _validate_result_boundary(result: ToolResult, definition: ToolDefinition, *,
                 result.completed_at_s,
                 error="adapter artifact_refs do not match declared result schema",
             )
-        missing = _invalid_artifact_refs(result.artifact_refs)
+        missing = _invalid_artifact_refs(result.artifact_refs, result.provenance, result.invocation, physical_mode=physical_mode)
         if missing:
             return _tool_result(
                 result.invocation,
@@ -1312,6 +1453,25 @@ def _planned_travel_m(plan: MissionPlan) -> float:
         elif invocation.tool_id == "move_distance":
             travel += abs(float(invocation.arguments.get("distance_m", 0.0)))
     return travel
+
+
+def _result_invocations_travel_m(results: Sequence[ToolResult]) -> float:
+    travel = 0.0
+    for result in results:
+        invocation = result.invocation
+        if invocation.tool_id in {"move_to_clearance", "bounded_exploration_segment"}:
+            travel += float(invocation.arguments.get("max_travel_m", 0.0))
+        elif invocation.tool_id == "move_distance":
+            travel += abs(float(invocation.arguments.get("distance_m", 0.0)))
+    return travel
+
+
+def _planned_runtime_s(plan: MissionPlan, registry: CapabilityRegistry) -> float:
+    runtime_s = 0.0
+    for invocation in plan.invocations:
+        definition = registry.require(invocation.tool_id, invocation.tool_version)
+        runtime_s += _effective_timeout_s(definition, invocation)
+    return min(float(plan.goal.budgets.max_runtime_s), runtime_s)
 
 
 def _is_reviewed_physical_adapter(adapters: Any) -> bool:
@@ -1367,19 +1527,54 @@ def _default_satisfied_preconditions() -> tuple[str, ...]:
     )
 
 
-def _invalid_artifact_refs(artifact_refs: Mapping[str, str]) -> tuple[str, ...]:
+def _artifact_hashes(artifact_refs: Mapping[str, str]) -> dict[str, str]:
+    repo_root = Path(__file__).resolve().parents[2]
+    hashes: dict[str, str] = {}
+    for kind, ref in artifact_refs.items():
+        path = repo_root / ref
+        if path.is_file():
+            hashes[str(kind)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashes
+
+
+def _invalid_artifact_refs(
+    artifact_refs: Mapping[str, str],
+    provenance: Mapping[str, Any],
+    invocation: ToolInvocation,
+    *,
+    physical_mode: bool,
+) -> tuple[str, ...]:
     repo_root = Path(__file__).resolve().parents[2]
     invalid: list[str] = []
+    expected_hashes = provenance.get("artifact_hashes")
+    artifact_provenance = provenance.get("artifact_provenance")
     for kind, ref in artifact_refs.items():
+        kind_text = str(kind)
         if not isinstance(ref, str) or not ref.strip():
-            invalid.append(str(kind))
+            invalid.append(kind_text)
             continue
         path = Path(ref)
         if path.is_absolute() or ".." in path.parts or path.parts[:1] != ("artifacts",):
-            invalid.append(str(kind))
+            invalid.append(kind_text)
             continue
-        if not (repo_root / path).is_file():
-            invalid.append(str(kind))
+        absolute_path = repo_root / path
+        if not absolute_path.is_file():
+            invalid.append(kind_text)
+            continue
+        if not isinstance(expected_hashes, Mapping) or expected_hashes.get(kind) != hashlib.sha256(absolute_path.read_bytes()).hexdigest():
+            invalid.append(kind_text)
+            continue
+        if not isinstance(artifact_provenance, Mapping) or not isinstance(artifact_provenance.get(kind), Mapping):
+            invalid.append(kind_text)
+            continue
+        artifact_owner = artifact_provenance[kind]
+        expected_mode = "physical" if physical_mode else "replay"
+        if (
+            artifact_owner.get("correlation_id") != invocation.correlation_id
+            or artifact_owner.get("tool_id") != invocation.tool_id
+            or artifact_owner.get("execution_mode") != expected_mode
+        ):
+            invalid.append(kind_text)
     return tuple(invalid)
 
 
@@ -1541,14 +1736,12 @@ def _evaluate_success_criterion(
             {"tool_id": criterion.tool_id, "field": criterion.field, "actual": actual},
             "observation evidence mismatch" if actual != criterion.expected else "",
         )
-    evidence_text = _success_evidence_text(completed_by_tool, artifact_refs)
-    tokens = tuple(_significant_tokens(criterion.description))
-    satisfied = bool(tokens) and all(token in evidence_text for token in tokens)
+    del completed_by_tool, artifact_refs
     return CriterionResult(
         criterion.criterion_id,
-        satisfied,
+        False,
         {"description": criterion.description},
-        "no validated runtime evidence matched criterion text" if not satisfied else "",
+        "legacy text criteria are advisory only; production completion requires typed success criteria",
     )
 
 

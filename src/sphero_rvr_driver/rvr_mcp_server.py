@@ -34,6 +34,7 @@ from .mission_api import (
     _arguments_digest,
     build_canonical_shoe_mapping_plan,
     build_default_registry,
+    issue_approval_grant,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -81,10 +82,13 @@ class RvrMcpAdapter:
     def __post_init__(self) -> None:
         self._audit_events: list[dict[str, Any]] = []
         self._artifact_refs: dict[str, str] = {}
+        self._runtimes: dict[str, DeterministicMissionRuntime] = {}
+        self._direct_call_counter = 0
         self._last_status = "idle"
         self._shutdown = False
 
     def list_tools(self) -> list[dict[str, Any]]:
+        live_capability_state = DeterministicMissionRuntime(self.registry, self.adapters, now_s=self.now_s).capability_state()
         tools: list[dict[str, Any]] = [
             {
                 "name": "rvr.list_capabilities",
@@ -108,6 +112,9 @@ class RvrMcpAdapter:
             },
         ]
         for definition in self.registry.definitions():
+            state = live_capability_state[f"{definition.tool_id}@{definition.version}"]
+            if state["bound"] is not True or state["healthy"] is not True:
+                continue
             tools.append(
                 {
                     "name": _mcp_tool_name(definition),
@@ -120,6 +127,7 @@ class RvrMcpAdapter:
                         "availability": definition.availability.value,
                         "safety_class": definition.safety_class,
                         "approval_class": definition.approval_class,
+                        "live_state": dict(state),
                         "readOnlyHint": definition.approval_class == "none" and definition.safety_class == "read_only",
                         "destructiveHint": False,
                     },
@@ -183,7 +191,7 @@ class RvrMcpAdapter:
                 return self._record_payload("complete", context, self._mission_status_payload(context))
             if name == "rvr.validate_plan":
                 plan = self._plan_from_arguments(args, context)
-                runtime = self._runtime()
+                runtime = self._runtime(context)
                 runtime._validate_plan_budgets(plan)  # noqa: SLF001 - validation endpoint over the canonical runtime.
                 elapsed_s = 0.0
                 used_approvals: set[str] = set()
@@ -193,14 +201,16 @@ class RvrMcpAdapter:
                 return self._record_payload("validated", context, {"plan": plan.to_json_dict()})
             if name == "rvr.submit_plan":
                 plan = self._plan_from_arguments(args, context)
-                return self._result_payload(self._runtime().execute_plan(plan), context)
+                return self._result_payload(self._runtime(context).execute_plan(plan), context)
             definition = self._definition_for_mcp_tool(name)
             if definition is None:
                 raise MissionValidationError(f"unsupported MCP tool: {name}")
             if definition.availability is not CapabilityAvailability.AVAILABLE:
                 raise MissionValidationError(f"tool {definition.tool_id} is {definition.availability.value}")
+            self._direct_call_counter += 1
+            correlation_id = f"mcp-{context.session_id}-{self._direct_call_counter}-{definition.tool_id}"
             invocation = ToolInvocation(
-                correlation_id=f"mcp-{context.session_id}-{definition.tool_id}",
+                correlation_id=correlation_id,
                 tool_id=definition.tool_id,
                 tool_version=definition.version,
                 arguments=args,
@@ -208,7 +218,7 @@ class RvrMcpAdapter:
                     definition,
                     context,
                     mission_id=f"mcp-{context.session_id}",
-                    correlation_id=f"mcp-{context.session_id}-{definition.tool_id}",
+                    correlation_id=correlation_id,
                     arguments=args,
                 ),
                 requested_at_s=self.now_s,
@@ -228,7 +238,10 @@ class RvrMcpAdapter:
                 execution_mode="replay",
                 budgets=_single_call_budget(definition, args),
             )
-            return self._result_payload(self._runtime().execute_plan(MissionPlan(goal=goal, invocations=(invocation,), plan_id=f"mcp-{context.session_id}-plan")), context)
+            return self._result_payload(
+                self._runtime(context).execute_plan(MissionPlan(goal=goal, invocations=(invocation,), plan_id=f"mcp-{context.session_id}-{self._direct_call_counter}-plan")),
+                context,
+            )
         except MissionValidationError as exc:
             return self._rejected_payload(context, str(exc))
         except Exception as exc:  # pragma: no cover - defensive fail-closed boundary.
@@ -317,19 +330,8 @@ class RvrMcpAdapter:
         budgets_arg = args.get("budgets", {})
         if not isinstance(budgets_arg, Mapping):
             raise MissionValidationError("budgets must be an object")
-        goal = MissionGoal(
-            goal_id=str(args.get("goal_id", f"mcp-{context.session_id}")),
-            objective=str(args.get("objective", "MCP-submitted bounded mission_api.v2 plan")),
-            success_criteria=tuple(str(item) for item in args.get("success_criteria", ("bounded MCP plan validates",))),
-            constraints=args.get("constraints", {}) if isinstance(args.get("constraints", {}), Mapping) else {},
-            execution_mode="replay",
-            budgets=MissionBudgets(
-                max_steps=int(budgets_arg.get("max_steps", max(1, len(invocations_arg)))),
-                max_runtime_s=float(budgets_arg.get("max_runtime_s", 120.0)),
-                max_travel_m=budgets_arg.get("max_travel_m"),
-            ),
-            requested_artifacts=tuple(str(item) for item in args.get("requested_artifacts", ())),
-        )
+        goal_id = str(args.get("goal_id", f"mcp-{context.session_id}"))
+        requested_artifacts = tuple(str(item) for item in args.get("requested_artifacts", ()))
         invocations: list[ToolInvocation] = []
         for index, item in enumerate(invocations_arg):
             if not isinstance(item, Mapping):
@@ -346,11 +348,24 @@ class RvrMcpAdapter:
                     tool_id=definition.tool_id,
                     tool_version=definition.version,
                     arguments=dict(call_args),
-                    approval=self._approval_for(definition, context, mission_id=goal.goal_id, correlation_id=correlation_id, arguments=call_args),
+                    approval=self._approval_for(definition, context, mission_id=goal_id, correlation_id=correlation_id, arguments=call_args),
                     requested_at_s=self.now_s + float(index),
                     provenance={"mcp_server": SERVER_NAME, "mcp_session_id": context.session_id},
                 )
             )
+        goal = MissionGoal(
+            goal_id=goal_id,
+            objective=str(args.get("objective", "MCP-submitted bounded mission_api.v2 plan")),
+            success_criteria=_typed_mcp_success_criteria(invocations, requested_artifacts),
+            constraints=args.get("constraints", {}) if isinstance(args.get("constraints", {}), Mapping) else {},
+            execution_mode="replay",
+            budgets=MissionBudgets(
+                max_steps=int(budgets_arg.get("max_steps", max(1, len(invocations_arg)))),
+                max_runtime_s=float(budgets_arg.get("max_runtime_s", 120.0)),
+                max_travel_m=budgets_arg.get("max_travel_m"),
+            ),
+            requested_artifacts=requested_artifacts,
+        )
         return MissionPlan(goal=goal, invocations=tuple(invocations), plan_id=str(args.get("plan_id", f"mcp-{context.session_id}-plan")))
 
     def _definition_for_mcp_tool(self, name: str) -> Optional[ToolDefinition]:
@@ -363,8 +378,17 @@ class RvrMcpAdapter:
                 return definition
         return None
 
-    def _runtime(self) -> DeterministicMissionRuntime:
-        return DeterministicMissionRuntime(self.registry, self.adapters, now_s=self.now_s)
+    def _runtime(self, context: McpCallContext) -> DeterministicMissionRuntime:
+        runtime = self._runtimes.get(context.session_id)
+        if runtime is None:
+            runtime = DeterministicMissionRuntime(
+                self.registry,
+                self.adapters,
+                now_s=self.now_s,
+                budget_ceilings=MissionBudgets(max_steps=8, max_runtime_s=120.0, max_travel_m=2.0),
+            )
+            self._runtimes[context.session_id] = runtime
+        return runtime
 
     def _approval_for(
         self,
@@ -390,8 +414,8 @@ class RvrMcpAdapter:
         correlation_id: str,
         arguments: Mapping[str, Any],
     ) -> ApprovalGrant:
-        return ApprovalGrant(
-            approval_id=f"mcp-replay-{context.session_id}-{mission_id}",
+        return issue_approval_grant(
+            approval_id=f"mcp-replay-{context.session_id}-{mission_id}-{correlation_id}",
             approved_by="mcp-local-replay-supervisor",
             approved_at_s=self.now_s - 1.0,
             expires_at_s=self.now_s + 3600.0,
@@ -587,6 +611,30 @@ def _reject_forbidden_mcp_keys(args: Mapping[str, Any]) -> None:
             raise MissionValidationError(f"MCP clients cannot provide forbidden authority or surface: {key}")
         if isinstance(value, Mapping):
             _reject_forbidden_mcp_keys(value)
+
+
+def _typed_mcp_success_criteria(
+    invocations: Sequence[ToolInvocation], requested_artifacts: Sequence[str]
+) -> tuple[SuccessCriterion, ...]:
+    criteria: list[SuccessCriterion] = [
+        SuccessCriterion(
+            criterion_id=f"{invocation.correlation_id}-complete",
+            description=f"{invocation.tool_id} completed through the Mission API runtime",
+            kind=CriterionKind.TOOL_COMPLETE,
+            tool_id=invocation.tool_id,
+        )
+        for invocation in invocations
+    ]
+    criteria.extend(
+        SuccessCriterion(
+            criterion_id=f"{artifact}-present",
+            description=f"{artifact} artifact is present",
+            kind=CriterionKind.ARTIFACT_PRESENT,
+            field=artifact,
+        )
+        for artifact in requested_artifacts
+    )
+    return tuple(criteria)
 
 
 def _source_sha() -> str:

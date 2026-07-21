@@ -11,7 +11,9 @@ from sphero_rvr_driver.mission_api import (
     CapabilityAvailability,
     FakeCapabilityAdapters,
     MissionBudgets,
+    _arguments_digest,
     build_default_registry,
+    issue_approval_grant,
 )
 from sphero_rvr_driver.mission_planner import (
     ImageObservation,
@@ -59,15 +61,29 @@ def _configured_mission_api_allowed_tools() -> list[str]:
     return allowed_tools
 
 
-def _grant(now_s: float = 0.0, *, mission_id: str = "planner-1") -> ApprovalGrant:
-    return ApprovalGrant(
-        approval_id="operator-approval-1",
+def _grant(
+    now_s: float = 0.0,
+    *,
+    mission_id: str = "planner-run",
+    tool_id: str = "move_to_clearance",
+    correlation_id: str = "approach",
+    arguments: dict[str, object] | None = None,
+    approval_id: str = "operator-approval-1",
+) -> ApprovalGrant:
+    if arguments is None:
+        arguments = {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.25}
+    return issue_approval_grant(
+        approval_id=approval_id,
         approved_by="operator:scott",
         approved_at_s=now_s,
         expires_at_s=now_s + 60.0,
         approval_class="supervised_motion",
         mission_id=mission_id,
         issued_to="mission-runtime",
+        tool_id=tool_id,
+        correlation_id=correlation_id,
+        arguments_digest=_arguments_digest(arguments),
+        principal="operator:scott",
     )
 
 
@@ -486,6 +502,8 @@ def test_planner_replans_after_unavailable_capability_then_partial_observation()
     assert manifest.rejected_calls[0]["call"]["tool_name"] == "rotate_scan"
     assert "unavailable" in manifest.rejected_calls[0]["reason"]
     assert manifest.executed_calls[0]["call"]["tool_name"] == "capture_observation"
+    assert "rotate_scan@1.0" not in planner.provider.contexts[0]["available_tools"]
+    assert planner.provider.contexts[0]["live_capability_state"]["rotate_scan@1.0"]["healthy"] is False
     assert planner.provider.contexts[1]["history"][0]["status"] == "rejected"
 
 
@@ -567,3 +585,131 @@ def test_budget_exhaustion_and_planner_cannot_grant_its_own_motion_approval() ->
     physical_manifest = no_motion_approval.run("approach using no external motion approval")
     assert physical_manifest.executed_calls == ()
     assert "approval is stale or missing" in physical_manifest.rejected_calls[0]["reason"]
+
+
+def test_planner_runtime_ledger_and_approval_bindings_survive_multiple_tool_calls() -> None:
+    first_args: dict[str, object] = {"distance_m": 1.5, "speed_mps": 0.05, "timeout_s": 3.0}
+    second_args: dict[str, object] = {"distance_m": 1.5, "speed_mps": 0.05, "timeout_s": 3.0}
+    planner = _planner(
+        [
+            PlannerProviderResponse(
+                tool_calls=(
+                    _call("move_distance", first_args, "move-1"),
+                    _call("move_distance", second_args, "move-2"),
+                )
+            ),
+        ],
+        approval_grants={
+            "move_distance": _grant(
+                tool_id="move_distance",
+                correlation_id="move-1",
+                arguments=first_args,
+                approval_id="move-1-approval",
+            )
+        },
+        budgets=MissionBudgets(max_steps=4, max_runtime_s=30.0, max_travel_m=2.0),
+    )
+
+    manifest = planner.run("Move twice, but never exceed the mission travel ceiling.")
+
+    assert len(manifest.executed_calls) == 1
+    assert manifest.executed_calls[0]["call"]["call_id"] == "move-1"
+    assert manifest.rejected_calls[0]["call"]["call_id"] == "move-2"
+    assert "approval binding mismatch" in manifest.rejected_calls[0]["reason"] or "cumulative max_travel_m" in manifest.rejected_calls[0]["reason"]
+
+
+def test_planner_remaining_budget_context_decrements_cumulative_travel() -> None:
+    first_args: dict[str, object] = {"distance_m": 0.75, "speed_mps": 0.05, "timeout_s": 3.0}
+    second_args: dict[str, object] = {"distance_m": 0.25, "speed_mps": 0.05, "timeout_s": 3.0}
+    planner = _planner(
+        [
+            PlannerProviderResponse(tool_calls=(_call("move_distance", first_args, "move-1"),)),
+            PlannerProviderResponse(tool_calls=(_call("move_distance", second_args, "move-2"),)),
+        ],
+        approval_grants={
+            "move_distance": _grant(
+                tool_id="move_distance",
+                correlation_id="move-1",
+                arguments=first_args,
+                approval_id="move-1-approval",
+            )
+        },
+        budgets=MissionBudgets(max_steps=4, max_runtime_s=30.0, max_travel_m=1.0),
+    )
+
+    manifest = planner.run("Report remaining travel after every bounded movement.")
+
+    assert manifest.executed_calls[0]["call"]["call_id"] == "move-1"
+    assert planner.provider.contexts[0]["remaining_budgets"]["travel_m"] == pytest.approx(1.0)
+    assert planner.provider.contexts[1]["remaining_budgets"]["travel_m"] == pytest.approx(0.25)
+
+
+def test_planner_provider_call_budget_is_cumulative_and_visible_in_context() -> None:
+    planner = _planner(
+        [
+            PlannerProviderResponse(tool_calls=(_call("capture_observation", {"sensor": "replay"}, "capture"),)),
+            PlannerProviderResponse(decision=PlannerDecision.COMPLETE),
+        ],
+        budgets=MissionBudgets(max_steps=4, max_runtime_s=30.0, max_provider_calls=1),
+    )
+
+    manifest = planner.run("Use at most one provider call.")
+
+    assert manifest.stop_reason is PlannerStopReason.BUDGET_EXHAUSTED
+    assert len(planner.provider.contexts) == 1
+    assert planner.provider.contexts[0]["remaining_budgets"]["provider_calls"] == 1
+
+
+def test_planner_tool_call_budget_counts_rejected_attempts() -> None:
+    planner = _planner(
+        [
+            PlannerProviderResponse(
+                tool_calls=(
+                    _call("detect_objects", {"object_class": "cat"}, "invalid"),
+                    _call("capture_observation", {"sensor": "replay"}, "would-exceed-budget"),
+                )
+            ),
+        ],
+        budgets=MissionBudgets(max_steps=4, max_runtime_s=30.0, max_tool_calls=1),
+    )
+
+    manifest = planner.run("Rejected tool attempts still consume the call budget.")
+
+    assert manifest.stop_reason is PlannerStopReason.BUDGET_EXHAUSTED
+    assert [item["call"]["call_id"] for item in manifest.rejected_calls] == ["invalid"]
+    assert manifest.executed_calls == ()
+
+
+def test_planner_accepts_distinct_envelope_bound_approvals_for_same_tool() -> None:
+    first_args: dict[str, object] = {"distance_m": 0.25, "speed_mps": 0.05, "timeout_s": 1.0}
+    second_args: dict[str, object] = {"distance_m": 0.25, "speed_mps": 0.05, "timeout_s": 1.0}
+    planner = _planner(
+        [
+            PlannerProviderResponse(
+                tool_calls=(
+                    _call("move_distance", first_args, "move-1"),
+                    _call("move_distance", second_args, "move-2"),
+                )
+            ),
+        ],
+        approval_grants={
+            "move-1": _grant(
+                tool_id="move_distance",
+                correlation_id="move-1",
+                arguments=first_args,
+                approval_id="move-1-approval",
+            ),
+            "move-2": _grant(
+                tool_id="move_distance",
+                correlation_id="move-2",
+                arguments=second_args,
+                approval_id="move-2-approval",
+            ),
+        },
+        budgets=MissionBudgets(max_steps=2, max_runtime_s=5.0, max_travel_m=1.0),
+    )
+
+    manifest = planner.run("Execute two separately approved bounded moves.")
+
+    assert [item["call"]["call_id"] for item in manifest.executed_calls] == ["move-1", "move-2"]
+    assert manifest.rejected_calls == ()
