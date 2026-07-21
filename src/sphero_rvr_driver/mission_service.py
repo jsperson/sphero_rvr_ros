@@ -7,7 +7,6 @@ restarts.  Motion is never resumed from persisted state.
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import replace
 import fcntl
 import json
@@ -16,7 +15,6 @@ from pathlib import Path
 import socket
 import socketserver
 import sqlite3
-import subprocess
 import threading
 import time
 import stat
@@ -61,10 +59,11 @@ class MissionService:
         self,
         database: str | Path,
         *,
+        source_sha: str,
+        deployed_sha: str,
         registry: Optional[CapabilityRegistry] = None,
         adapters: Any = None,
         mode: str = "replay",
-        source_sha: Optional[str] = None,
         session_budgets: MissionBudgets = MissionBudgets(
             max_steps=8,
             max_runtime_s=120.0,
@@ -78,10 +77,13 @@ class MissionService:
     ) -> None:
         if mode not in {"replay", "live"}:
             raise MissionValidationError("mission service mode must be replay or live")
+        source_provenance = _require_provenance(source_sha, "source_sha")
+        deployed_provenance = _require_provenance(deployed_sha, "deployed_sha")
         database_target = str(database)
-        self.database = Path(database_target)
         self._database_owner_lock = None
         if database_target != ":memory:":
+            self.database = Path(database_target).expanduser().resolve(strict=False)
+            database_target = str(self.database)
             self.database.parent.mkdir(parents=True, exist_ok=True)
             database_owner_lock = open(f"{self.database}.owner.lock", "a+b")
             try:
@@ -95,11 +97,13 @@ class MissionService:
                     f"mission service database already owned: {self.database}"
                 ) from exc
             self._database_owner_lock = database_owner_lock
+        else:
+            self.database = Path(database_target)
         self.registry = registry or build_default_registry(detector_classes=("shoe", "backpack"))
         self.adapters = adapters or FakeCapabilityAdapters()
         self.mode = mode
-        self.source_sha = source_sha or _source_sha()
-        self.deployed_sha = str(getattr(self.adapters, "deployed_sha", "unknown"))
+        self.source_sha = source_provenance
+        self.deployed_sha = deployed_provenance
         self.session_budgets = session_budgets
         self._clock_s = clock_s or time.time
         self._lock = threading.RLock()
@@ -672,13 +676,11 @@ def _json_load(value: str, default: Any) -> Any:
     return json.loads(value)
 
 
-def _source_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=2
-        ).strip()
-    except Exception:
-        return "unknown"
+def _require_provenance(value: str, name: str) -> str:
+    provenance = str(value).strip()
+    if not provenance or provenance.lower() == "unknown":
+        raise MissionValidationError(f"{name} must be injected from reviewed build provenance")
+    return provenance
 
 
 def mission_plan_from_json(payload: Mapping[str, Any]) -> MissionPlan:
@@ -853,27 +855,3 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
             mission_id = request.get("mission_id")
             return self.service.events(None if mission_id is None else str(mission_id))
         raise MissionValidationError(f"unsupported mission service operation: {operation}")
-
-
-def main(argv: Optional[Sequence[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description="Persistent local rover mission service")
-    parser.add_argument("--socket", default=os.environ.get("RVR_MISSION_SOCKET", str(Path.home() / ".local/state/sphero-rvr/mission.sock")))
-    parser.add_argument("--database", default=os.environ.get("RVR_MISSION_DB", str(Path.home() / ".local/state/sphero-rvr/missions.sqlite3")))
-    parser.add_argument("--mode", choices=("replay",), default="replay")
-    args = parser.parse_args(argv)
-    server = MissionServiceServer(
-        args.socket,
-        lambda: MissionService(
-            args.database,
-            adapters=FakeCapabilityAdapters(),
-            mode=args.mode,
-        ),
-    )
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()
-
-
-if __name__ == "__main__":
-    main()

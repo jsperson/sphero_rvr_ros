@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 
 import pytest
 
@@ -18,6 +19,12 @@ from sphero_rvr_driver.mission_api import (
     build_default_registry,
 )
 from sphero_rvr_driver.mission_service import MissionService, MissionServiceServer
+
+
+def _service(database: Path, **kwargs):
+    kwargs.setdefault("source_sha", "source-test-sha")
+    kwargs.setdefault("deployed_sha", "deployed-test-sha")
+    return MissionService(database, **kwargs)
 
 
 
@@ -72,7 +79,7 @@ def _move_plan(goal_id: str, correlation_id: str) -> MissionPlan:
 
 def test_persistent_service_restart_fails_closed_and_event_log_reconstructs_execution(tmp_path: Path) -> None:
     database = tmp_path / "missions.sqlite3"
-    service = MissionService(
+    service = _service(
         database,
         registry=build_default_registry(detector_classes=("shoe",)),
         adapters=FakeCapabilityAdapters(deployed_sha="deployed-test-sha"),
@@ -97,7 +104,7 @@ def test_persistent_service_restart_fails_closed_and_event_log_reconstructs_exec
     service.close()
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE missions SET status = 'running' WHERE mission_id = 'mission-one'")
-    restarted = MissionService(
+    restarted = _service(
         database,
         registry=build_default_registry(detector_classes=("shoe",)),
         adapters=FakeCapabilityAdapters(deployed_sha="deployed-test-sha"),
@@ -117,7 +124,7 @@ def test_persistent_service_restart_fails_closed_and_event_log_reconstructs_exec
 
 
 def test_service_rejects_mode_namespace_crossing(tmp_path: Path) -> None:
-    service = MissionService(
+    service = _service(
         tmp_path / "replay.sqlite3",
         registry=build_default_registry(detector_classes=("shoe",)),
         adapters=FakeCapabilityAdapters(),
@@ -138,7 +145,7 @@ def test_executor_process_failure_latches_session_and_requires_recovery(tmp_path
         def begin_execution(self, *_args, **_kwargs):
             raise RuntimeError("simulated executor process death")
 
-    service = MissionService(tmp_path / "crash.sqlite3", adapters=ExplodingAdapters())
+    service = _service(tmp_path / "crash.sqlite3", adapters=ExplodingAdapters())
 
     with pytest.raises(RuntimeError, match="simulated executor process death"):
         service.submit_plan(_status_plan("crashed", "status"), session_id="crash", source="api")
@@ -158,7 +165,7 @@ def test_validation_error_after_execution_starts_requires_recovery(tmp_path: Pat
         def begin_execution(self, *_args, **_kwargs):
             raise MissionValidationError("adapter unavailable: cleanup could not prove quiescence")
 
-    service = MissionService(tmp_path / "unsafe.sqlite3", adapters=UnprovenQuiescenceAdapters())
+    service = _service(tmp_path / "unsafe.sqlite3", adapters=UnprovenQuiescenceAdapters())
 
     with pytest.raises(MissionValidationError, match="could not prove quiescence"):
         service.submit_plan(_status_plan("unsafe", "status"), session_id="unsafe", source="api")
@@ -187,7 +194,7 @@ def test_running_transition_and_invocation_events_commit_before_execution(tmp_pa
             assert kinds == ["proposal", "approval", "invocation"]
             return super().begin_execution(*args, **kwargs)
 
-    service = MissionService(database, adapters=InspectingAdapters())
+    service = _service(database, adapters=InspectingAdapters())
     result = service.submit_plan(
         _move_plan("durable", "move"), session_id="durable", source="api"
     )
@@ -197,7 +204,7 @@ def test_running_transition_and_invocation_events_commit_before_execution(tmp_pa
 
 def test_event_log_is_append_only_json_and_contains_artifact_and_sha_evidence(tmp_path: Path) -> None:
     database = tmp_path / "events.sqlite3"
-    service = MissionService(database, adapters=FakeCapabilityAdapters(), source_sha="source-sha")
+    service = _service(database, adapters=FakeCapabilityAdapters(), source_sha="source-sha")
     result = service.submit_plan(_status_plan("event-mission", "status"), session_id="events", source="cli")
 
     records = service.events("event-mission")
@@ -216,7 +223,7 @@ def test_local_socket_service_owns_status_cancel_and_events(tmp_path: Path) -> N
     socket_path = Path("/tmp") / f"rvr-mission-{tmp_path.name}.sock"
     server = MissionServiceServer(
         socket_path,
-        lambda: MissionService(tmp_path / "socket.sqlite3", adapters=FakeCapabilityAdapters()),
+        lambda: _service(tmp_path / "socket.sqlite3", adapters=FakeCapabilityAdapters()),
     )
     assert socket_path.stat().st_mode & 0o777 == 0o600
     try:
@@ -242,7 +249,7 @@ def test_local_socket_refuses_second_owner_before_database_recovery(tmp_path: Pa
     database = tmp_path / "owner.sqlite3"
     first_server = MissionServiceServer(
         socket_path,
-        lambda: MissionService(database, adapters=FakeCapabilityAdapters()),
+        lambda: _service(database, adapters=FakeCapabilityAdapters()),
     )
     first_server.service.submit_plan(
         _status_plan("active", "status"), session_id="active", source="api"
@@ -253,7 +260,7 @@ def test_local_socket_refuses_second_owner_before_database_recovery(tmp_path: Pa
         with pytest.raises(MissionValidationError, match="database already owned"):
             MissionServiceServer(
                 competing_socket_path,
-                lambda: MissionService(database, adapters=FakeCapabilityAdapters()),
+                lambda: _service(database, adapters=FakeCapabilityAdapters()),
             )
         assert first_server.service.status("active")["status"] == "running"
         assert [event["kind"] for event in first_server.service.events("active")].count(
@@ -261,3 +268,69 @@ def test_local_socket_refuses_second_owner_before_database_recovery(tmp_path: Pa
         ) == 0
     finally:
         first_server.server_close()
+
+
+def test_database_symlink_alias_cannot_acquire_a_second_owner(tmp_path: Path) -> None:
+    database = tmp_path / "owner.sqlite3"
+    alias = tmp_path / "owner-alias.sqlite3"
+    first = _service(database, adapters=FakeCapabilityAdapters())
+    alias.symlink_to(database)
+    second = None
+    try:
+        with pytest.raises(MissionValidationError, match="database already owned"):
+            second = _service(alias, adapters=FakeCapabilityAdapters())
+    finally:
+        if second is not None:
+            second.close()
+        first.close()
+
+
+def test_injected_provenance_is_independent_of_unrelated_git_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unrelated = tmp_path / "unrelated-checkout"
+    unrelated.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=unrelated, check=True)
+    (unrelated / "README").write_text("unrelated\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=unrelated, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Mission Service Test",
+            "-c",
+            "user.email=mission-service@example.invalid",
+            "commit",
+            "-qm",
+            "unrelated commit",
+        ],
+        cwd=unrelated,
+        check=True,
+    )
+    unrelated_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=unrelated, text=True
+    ).strip()
+    monkeypatch.chdir(unrelated)
+
+    service = MissionService(
+        tmp_path / "provenance.sqlite3",
+        adapters=FakeCapabilityAdapters(),
+        source_sha="reviewed-source-sha",
+        deployed_sha="deployed-build-sha",
+    )
+    try:
+        service.submit_plan(
+            _status_plan("provenance", "status"),
+            session_id="provenance",
+            source="api",
+        )
+        status = service.status("provenance")
+        events = service.events("provenance")
+    finally:
+        service.close()
+
+    assert unrelated_sha not in {status["source_sha"], status["deployed_sha"]}
+    assert status["source_sha"] == "reviewed-source-sha"
+    assert status["deployed_sha"] == "deployed-build-sha"
+    assert all(event["source_sha"] == "reviewed-source-sha" for event in events)
+    assert all(event["deployed_sha"] == "deployed-build-sha" for event in events)

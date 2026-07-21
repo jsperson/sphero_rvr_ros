@@ -18,7 +18,6 @@ setup(
                 "launch/lidar.launch.py",
                 "launch/mapping.launch.py",
                 "launch/camera.launch.py",
-                "launch/mission_service.launch.py",
             ],
         ),
         (
@@ -56,7 +55,6 @@ setup(
                 "docs/lidar_collision_stop_supervisor.md",
                 "docs/range_motion_controller.md",
                 "docs/mission_api.md",
-                "docs/mission_service.md",
                 "docs/mission_controls.md",
                 "docs/mission_language.md",
                 "docs/mission_planner.md",
@@ -101,7 +99,6 @@ setup(
             "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
             "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
             "rvr_mcp_server = sphero_rvr_driver.rvr_mcp_server:main",
-            "rvr_mission_service = sphero_rvr_driver.mission_service:main",
             "rvr_system_ci_check = sphero_rvr_driver.system_validation:main",
         ],
     },
