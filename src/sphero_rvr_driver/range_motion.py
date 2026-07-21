@@ -71,7 +71,7 @@ class MotionGoal:
 
 @dataclass(frozen=True)
 class RangeMotionConfig:
-    max_speed_mps: float = 0.20
+    max_speed_mps: float = 0.10
     min_speed_mps: float = 0.04
     acceleration_mps2: float = 0.40
     slowdown_distance_m: float = 0.20
@@ -159,6 +159,7 @@ class RangeMotionTelemetry:
     target_clearance_m: Optional[float]
     current_clearance_m: Optional[float]
     health: str = "ok"
+    collision_state: str = "unknown"
 
 
 @dataclass
@@ -393,6 +394,7 @@ class RangeMotionController:
             target_clearance_m=None,
             current_clearance_m=_finite_optional(sample.target_clearance_m),
             health=health,
+            collision_state="unknown",
         )
 
     def _telemetry(
@@ -408,7 +410,7 @@ class RangeMotionController:
         return RangeMotionTelemetry(
             command=TwistCommand(linear_x=velocity_mps, angular_z=0.0),
             requested_velocity_mps=velocity_mps,
-            forwarded_velocity_mps=velocity_mps if reason is StopReason.RUNNING else 0.0,
+            forwarded_velocity_mps=0.0,
             lidar_range_rate_mps=_range_rate(tuple(state.range_window)),
             odom_velocity_mps=_odom_velocity(state.last_sample, sample),
             measured_displacement_m=self._measured_displacement(sample),
@@ -417,6 +419,7 @@ class RangeMotionController:
             target_clearance_m=state.goal.target_clearance_m,
             current_clearance_m=self._telemetry_clearance(sample),
             health=health,
+            collision_state="unknown",
         )
 
     def _telemetry_clearance(self, sample: RangeMotionSample) -> Optional[float]:

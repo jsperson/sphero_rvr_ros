@@ -76,6 +76,7 @@ def test_supervised_launch_remaps_driver_away_from_public_cmd_vel_and_private_se
     assert "rvr_driver/clear_estop" in source
     assert "lidar_collision_stop_supervisor" in source
     assert "collision_stop.yaml" in source
+    assert "condition=IfCondition(start_supervisor)" in source
 
 
 def test_mapping_motor_capable_launch_uses_supervised_graph_by_default():
@@ -85,6 +86,7 @@ def test_mapping_motor_capable_launch_uses_supervised_graph_by_default():
     assert "allow_unsupervised_rvr" in source
     assert "supervised_rvr.launch.py" in source
     assert "MOTOR-CAPABLE supervised" in source
+    assert "start_rvr requires start_collision_stop" in source
 
 
 def test_rvr_direct_launch_warns_it_is_unsupervised_low_level_only():
@@ -92,6 +94,8 @@ def test_rvr_direct_launch_warns_it_is_unsupervised_low_level_only():
 
     assert "UNSUPERVISED" in source
     assert "supervised_rvr.launch.py" in source
+    assert "allow_unsupervised_rvr" in source
+    assert "condition=IfCondition(allow_unsupervised_rvr)" in source
 
 
 def test_rosbag_docs_explicitly_reject_motor_bound_supervisor_topic():

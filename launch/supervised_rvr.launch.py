@@ -34,6 +34,7 @@ def generate_launch_description():
             ("estop", "/rvr_driver/estop"),
             ("clear_estop", "/rvr_driver/clear_estop"),
         ],
+        condition=IfCondition(start_supervisor),
     )
     collision_stop_node = Node(
         package="sphero_rvr_driver",
@@ -86,7 +87,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "start_collision_stop",
             default_value="true",
-            description="Must remain true for operator motor-capable launches; false is development-only.",
+            description="Must remain true for motor-capable launches; false starts no driver and is test/development-only.",
         ),
         DeclareLaunchArgument(
             "start_range_motion",

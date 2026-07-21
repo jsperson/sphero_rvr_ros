@@ -95,6 +95,8 @@ class CollisionStopConfig:
     stop_distance_m: float = 0.35
     slow_distance_m: float = 0.60
     reverse_stop_distance_m: float = 0.25
+    measured_stop_time_s: float = 0.50
+    braking_distance_margin_m: float = 0.02
     release_distance_m: float = 0.45
     release_time_s: float = 0.50
     min_forward_scale: float = 0.0
@@ -121,6 +123,10 @@ class CollisionStopConfig:
             raise ValueError("slow_distance_m must be greater than stop_distance_m")
         if self.release_distance_m <= self.stop_distance_m:
             raise ValueError("release_distance_m must be greater than stop_distance_m")
+        if self.measured_stop_time_s < 0.0:
+            raise ValueError("measured_stop_time_s must be non-negative")
+        if self.braking_distance_margin_m < 0.0:
+            raise ValueError("braking_distance_margin_m must be non-negative")
         if not (0.0 <= self.min_forward_scale <= 1.0):
             raise ValueError("min_forward_scale must be between 0 and 1")
 
@@ -419,7 +425,7 @@ class CollisionStopSupervisor:
         if not _twist_is_finite(command):
             self._latest_command = None
             self._latest_command_at = None
-            return self._decision(CollisionState.STOPPED, "invalid_command", TwistCommand(), command, health, nearest, reset_required=True)
+            return self._decision(CollisionState.STOPPED, "non_finite_command", TwistCommand(), command, health, nearest, reset_required=True)
 
         bounded = self._bound(command)
         front = nearest.get("front")
@@ -440,16 +446,20 @@ class CollisionStopSupervisor:
                 return self._decision(CollisionState.CLEAR, "auto_released", TwistCommand(), command, health, nearest)
             return self._decision(CollisionState.STOPPED, "reset_required", TwistCommand(), command, health, nearest, reset_required=True)
 
-        if bounded.linear_x > 0.0 and _within(front, self.config.stop_distance_m):
+        front_stop_distance = self._front_stop_distance(bounded)
+        rear_stop_distance = self._rear_stop_distance(bounded)
+        turn_stop_distance = self._turn_stop_distance(bounded)
+
+        if bounded.linear_x > 0.0 and _within(front, front_stop_distance):
             self._clear_since = None
             return self._decision(CollisionState.STOPPED, "front_stop", TwistCommand(), command, health, nearest, reset_required=True)
-        if bounded.linear_x < 0.0 and _within(rear, self.config.reverse_stop_distance_m):
+        if bounded.linear_x < 0.0 and _within(rear, rear_stop_distance):
             output = TwistCommand(0.0, bounded.angular_z)
             return self._decision(CollisionState.SLOW, "rear_hold", output, command, health, nearest)
-        if bounded.angular_z > 0.0 and _within(left, self.config.stop_distance_m):
+        if bounded.angular_z > 0.0 and _within(left, turn_stop_distance):
             bounded = TwistCommand(bounded.linear_x, 0.0)
             reason = "left_turn_blocked"
-        if bounded.angular_z < 0.0 and _within(right, self.config.stop_distance_m):
+        if bounded.angular_z < 0.0 and _within(right, turn_stop_distance):
             bounded = TwistCommand(bounded.linear_x, 0.0)
             reason = "right_turn_blocked"
         if bounded.linear_x > 0.0 and front_slow is not None and front_slow < self.config.slow_distance_m:
@@ -485,6 +495,22 @@ class CollisionStopSupervisor:
         raw = (distance - self.config.stop_distance_m) / span
         return max(self.config.min_forward_scale, min(1.0, raw))
 
+    def _front_stop_distance(self, command: TwistCommand) -> float:
+        dynamic = self.config.footprint_front_m + self.config.payload_margin_m + self._braking_distance(command.linear_x)
+        return max(self.config.stop_distance_m, dynamic)
+
+    def _rear_stop_distance(self, command: TwistCommand) -> float:
+        dynamic = self.config.footprint_rear_m + self.config.payload_margin_m + self._braking_distance(command.linear_x)
+        return max(self.config.reverse_stop_distance_m, dynamic)
+
+    def _turn_stop_distance(self, command: TwistCommand) -> float:
+        lateral_extent = max(self.config.footprint_left_m, self.config.footprint_right_m)
+        dynamic = lateral_extent + self.config.payload_margin_m + self._braking_distance(command.angular_z)
+        return max(self.config.stop_distance_m, dynamic)
+
+    def _braking_distance(self, speed: float) -> float:
+        return abs(float(speed)) * self.config.measured_stop_time_s + self.config.braking_distance_margin_m
+
     def _bound(self, command: TwistCommand) -> TwistCommand:
         linear = max(-self.config.max_forward_mps, min(self.config.max_forward_mps, float(command.linear_x)))
         angular = max(-self.config.max_angular_rad_s, min(self.config.max_angular_rad_s, float(command.angular_z)))
@@ -519,8 +545,8 @@ class CollisionStopSupervisor:
         return self._last_decision
 
 
-def _within(value: Optional[float], threshold: float) -> bool:
-    return value is not None and value <= threshold
+def _within(distance: Optional[float], threshold: float) -> bool:
+    return distance is not None and distance <= threshold
 
 
 def _twist_is_finite(command: TwistCommand) -> bool:

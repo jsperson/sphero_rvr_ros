@@ -3,12 +3,14 @@ range_motion_controller:
     goal_topic: /range_motion/goal
     status_topic: /range_motion/status
     cmd_vel_topic: /cmd_vel
+    collision_state_topic: /collision_stop/state
+    control_period_s: 0.05
     scan_topic: /scan
     odom_topic: /odom
     diagnostics_topic: /diagnostics
     base_frame: base_link
     laser_frame: laser
-    max_speed_mps: 0.20
+    max_speed_mps: 0.10
     min_speed_mps: 0.04
     acceleration_mps2: 0.40
     slowdown_distance_m: 0.20

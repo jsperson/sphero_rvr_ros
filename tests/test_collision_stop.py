@@ -108,9 +108,43 @@ def test_non_finite_collision_stop_command_fails_closed_to_zero(command):
     decision = supervisor.apply_command(command, now=0.1)
 
     assert decision.state is CollisionState.STOPPED
-    assert decision.reason == "invalid_command"
+    assert decision.reason == "non_finite_command"
     assert decision.output == TwistCommand(0.0, 0.0)
     assert decision.reset_required is True
+
+
+def test_non_finite_collision_command_fails_closed_without_motion():
+    supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=0.0)
+    supervisor.update_scan(scan_with(stamp=0.0), now=0.0)
+
+    for value in (math.nan, math.inf, -math.inf):
+        decision = supervisor.apply_command(TwistCommand(value, value), now=0.1)
+
+        assert decision.state is CollisionState.STOPPED
+        assert decision.reason == "non_finite_command"
+        assert decision.output == TwistCommand(0.0, 0.0)
+
+
+def test_collision_stop_uses_footprint_payload_and_speed_dependent_braking_distance():
+    cfg = CollisionStopConfig(
+        min_valid_ranges=1,
+        min_valid_fraction=0.0,
+        stop_distance_m=0.10,
+        slow_distance_m=0.60,
+        footprint_front_m=0.30,
+        payload_margin_m=0.10,
+        measured_stop_time_s=1.0,
+        braking_distance_margin_m=0.0,
+        max_forward_mps=0.10,
+    )
+    supervisor = CollisionStopSupervisor(cfg, now=0.0)
+    supervisor.update_scan(scan_with(front=0.49, stamp=0.0), now=0.0)
+
+    decision = supervisor.apply_command(TwistCommand(0.10, 0.0), now=0.0)
+
+    assert decision.state is CollisionState.STOPPED
+    assert decision.reason == "front_stop"
+    assert decision.output == TwistCommand(0.0, 0.0)
 
 
 def test_missing_stale_and_malformed_scans_fail_closed():

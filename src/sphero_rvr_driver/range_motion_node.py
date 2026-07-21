@@ -13,6 +13,7 @@ import math
 from typing import Any, Mapping, Optional
 
 from .collision_stop import (
+    CollisionState,
     CollisionStopConfig,
     ScanInput,
     Transform2D,
@@ -106,6 +107,7 @@ def _telemetry_to_json(telemetry: RangeMotionTelemetry) -> str:
             "stop_reason": telemetry.stop_reason.value,
             "requested_velocity_mps": telemetry.requested_velocity_mps,
             "forwarded_velocity_mps": telemetry.forwarded_velocity_mps,
+            "collision_state": telemetry.collision_state,
             "lidar_range_rate_mps": telemetry.lidar_range_rate_mps,
             "odom_velocity_mps": telemetry.odom_velocity_mps,
             "measured_displacement_m": telemetry.measured_displacement_m,
@@ -194,6 +196,8 @@ def main(args=None):
             self._latest_scan: Optional[ScanInput] = None
             self._latest_odom_x: Optional[float] = None
             self._tracked_target_clearance_m: Optional[float] = None
+            self._latest_collision_state = CollisionState.STARTUP.value
+            self._latest_forwarded_velocity_mps = 0.0
             self._last_status = "idle"
 
             self._cmd_pub = self.create_publisher(Twist, str(self.get_parameter("cmd_vel_topic").value), 10)
@@ -202,8 +206,11 @@ def main(args=None):
             self.create_subscription(String, str(self.get_parameter("goal_topic").value), self._on_goal, 10)
             self.create_subscription(LaserScan, str(self.get_parameter("scan_topic").value), self._on_scan, 10)
             self.create_subscription(Odometry, str(self.get_parameter("odom_topic").value), self._on_odom, 10)
+            self.create_subscription(Twist, str(self.get_parameter("observed_cmd_vel_topic").value), self._on_observed_cmd_vel, 10)
+            self.create_subscription(String, str(self.get_parameter("collision_state_topic").value), self._on_collision_state, 10)
             self.create_service(Trigger, "range_motion/start", self._on_start_service)
             self.create_service(Trigger, "range_motion/cancel", self._on_cancel)
+            self.create_timer(float(self.get_parameter("control_period_s").value), self._on_timer)
 
         def _declare_parameters(self):
             motion_defaults = RangeMotionConfig()
@@ -215,6 +222,9 @@ def main(args=None):
                 "scan_topic": "/scan",
                 "odom_topic": "/odom",
                 "diagnostics_topic": "/diagnostics",
+                "observed_cmd_vel_topic": "/cmd_vel_motor",
+                "collision_state_topic": "/collision_stop/state",
+                "control_period_s": 0.05,
                 "base_frame": scan_defaults.base_frame,
                 "laser_frame": scan_defaults.laser_frame,
                 "max_speed_mps": motion_defaults.max_speed_mps,
@@ -372,6 +382,31 @@ def main(args=None):
         def _on_odom(self, msg):
             self._latest_odom_x = _odom_x(msg)
 
+        def _on_observed_cmd_vel(self, msg):
+            try:
+                self._latest_forwarded_velocity_mps = float(msg.linear.x)
+            except Exception:
+                self._latest_forwarded_velocity_mps = 0.0
+
+        def _on_collision_state(self, msg):
+            text = str(getattr(msg, "data", ""))
+            self._latest_collision_state = text.split()[0] if text else CollisionState.STARTUP.value
+
+        def _on_timer(self):
+            if self._active_goal is None:
+                return
+            sample = self._current_sample(self._active_goal)
+            if sample is None:
+                self._active_goal = None
+                self._tracked_target_clearance_m = None
+                self._publish_zero_status("missing_scan")
+                return
+            telemetry = self._controller.update(sample, now=self._now_seconds())
+            self._publish_telemetry(telemetry)
+            if telemetry.stop_reason.value != "running":
+                self._active_goal = None
+                self._tracked_target_clearance_m = None
+
         def _on_cancel(self, request, response):
             self._active_goal = None
             self._tracked_target_clearance_m = None
@@ -414,11 +449,25 @@ def main(args=None):
             twist = Twist()
             self._cmd_pub.publish(twist)
             msg = String()
-            msg.data = json.dumps({"stop_reason": reason, "forwarded_velocity_mps": 0.0}, sort_keys=True)
+            msg.data = json.dumps({"stop_reason": reason, "forwarded_velocity_mps": 0.0, "collision_state": self._latest_collision_state}, sort_keys=True)
             self._status_pub.publish(msg)
             self._last_status = reason
 
         def _publish_telemetry(self, telemetry: RangeMotionTelemetry):
+            telemetry = RangeMotionTelemetry(
+                command=telemetry.command,
+                requested_velocity_mps=telemetry.requested_velocity_mps,
+                forwarded_velocity_mps=self._latest_forwarded_velocity_mps if telemetry.stop_reason.value == "running" else 0.0,
+                collision_state=self._latest_collision_state,
+                lidar_range_rate_mps=telemetry.lidar_range_rate_mps,
+                odom_velocity_mps=telemetry.odom_velocity_mps,
+                measured_displacement_m=telemetry.measured_displacement_m,
+                confidence=telemetry.confidence,
+                stop_reason=telemetry.stop_reason,
+                target_clearance_m=telemetry.target_clearance_m,
+                current_clearance_m=telemetry.current_clearance_m,
+                health=telemetry.health,
+            )
             twist = Twist()
             twist.linear.x = telemetry.command.linear_x
             twist.angular.z = telemetry.command.angular_z
@@ -441,6 +490,7 @@ def main(args=None):
                 "stop_reason": telemetry.stop_reason.value,
                 "requested_velocity_mps": f"{telemetry.requested_velocity_mps:.3f}",
                 "forwarded_velocity_mps": f"{telemetry.forwarded_velocity_mps:.3f}",
+                "collision_state": telemetry.collision_state,
                 "lidar_range_rate_mps": f"{telemetry.lidar_range_rate_mps:.3f}",
                 "odom_velocity_mps": "" if telemetry.odom_velocity_mps is None else f"{telemetry.odom_velocity_mps:.3f}",
                 "measured_displacement_m": f"{telemetry.measured_displacement_m:.3f}",

@@ -2,10 +2,11 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, EmitEvent, IncludeLaunchDescription
 from launch.conditions import IfCondition
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -65,6 +66,14 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(str(rvr_launch)),
             launch_arguments={"start_collision_stop": start_collision_stop}.items(),
             condition=IfCondition(start_rvr),
+        ),
+        EmitEvent(
+            event=Shutdown(reason="start_rvr requires start_collision_stop:=true unless allow_unsupervised_rvr:=true"),
+            condition=IfCondition(
+                PythonExpression([
+                    "'", start_rvr, "' == 'true' and '", start_collision_stop, "' != 'true' and '", allow_unsupervised_rvr, "' != 'true'"
+                ])
+            ),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(lidar_launch)),

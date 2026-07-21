@@ -17,10 +17,19 @@ def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def finite_or_zero(value: float) -> float:
+    """Return a finite motion value or fail closed to zero."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return result if math.isfinite(result) else 0.0
+
+
 def clamp_velocity(command: VelocityCommand, max_linear_mps: float, max_angular_rad_s: float) -> VelocityCommand:
     return VelocityCommand(
-        linear_mps=clamp(command.linear_mps, -max_linear_mps, max_linear_mps),
-        angular_rad_s=clamp(command.angular_rad_s, -max_angular_rad_s, max_angular_rad_s),
+        linear_mps=clamp(finite_or_zero(command.linear_mps), -max_linear_mps, max_linear_mps),
+        angular_rad_s=clamp(finite_or_zero(command.angular_rad_s), -max_angular_rad_s, max_angular_rad_s),
     )
 
 

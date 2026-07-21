@@ -59,6 +59,18 @@ def test_forward_approach_ramps_slows_and_stops_at_measured_target_not_duration(
     assert stopped.lidar_range_rate_mps < 0.0
 
 
+def test_range_motion_default_speed_ceiling_matches_collision_supervisor_cap():
+    assert RangeMotionConfig().max_speed_mps == pytest.approx(0.10)
+    controller = RangeMotionController(RangeMotionConfig(acceleration_mps2=10.0))
+    controller.start(MotionGoal(direction=MotionDirection.FORWARD, mode=MotionMode.APPROACH, target_clearance_m=0.10), sample(0.0, 0.50))
+
+    telemetry = controller.update(sample(1.0, 0.40, odom_x=0.01))
+
+    assert telemetry.requested_velocity_mps <= 0.10
+    assert telemetry.forwarded_velocity_mps == 0.0
+    assert telemetry.collision_state == "unknown"
+
+
 def test_reverse_release_uses_measured_progress_when_actual_speed_is_below_commanded():
     cfg = RangeMotionConfig(max_speed_mps=0.25, acceleration_mps2=2.0, target_tolerance_m=0.01)
     controller = RangeMotionController(cfg)

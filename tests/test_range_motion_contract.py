@@ -96,6 +96,7 @@ def test_range_motion_status_json_reports_measured_not_theoretical_motion():
 
     assert '"lidar_range_rate_mps": -0.04' in payload
     assert '"measured_displacement_m": 0.12' in payload
+    assert '"collision_state": "unknown"' in payload
     assert "velocity * duration" not in payload
 
 
@@ -112,6 +113,8 @@ def test_range_motion_ros_node_is_installed_and_publishes_to_supervisor_input_no
     assert "cmd_vel_topic: /cmd_vel" in config_text
     assert "fail_on_missing_tf: true" in config_text
     assert "/cmd_vel_motor" not in config_text
+    assert "observed_cmd_vel_topic" in node_source
+    assert "_on_observed_cmd_vel" in node_source
     assert "motor_cmd_topic" not in node_source
     assert "RangeMotionController" in node_source
     assert "TransformListener" in node_source

@@ -59,6 +59,7 @@ class RVRDriver:
         max_angular_raw_motor_duty: Optional[int] = None,
         safe_stop_attempts: int = 2,
         safe_stop_retry_delay: float = 0.02,
+        safety_dispatch_timeout_s: float = 0.10,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -67,6 +68,7 @@ class RVRDriver:
         self._command_timeout = command_timeout
         self._safe_stop_attempts = max(1, int(safe_stop_attempts))
         self._safe_stop_retry_delay = max(0.0, float(safe_stop_retry_delay))
+        self._safety_dispatch_timeout_s = max(0.001, float(safety_dispatch_timeout_s))
         self._max_linear_mps = max_linear_mps
         self._max_angular_rad_s = max_angular_rad_s
         self._max_raw_motor_duty = max(0, min(255, int(max_raw_motor_duty)))
@@ -587,7 +589,12 @@ class RVRDriver:
     async def _send_immediate_safety(self, packet_factory) -> None:
         sequence_id = self._next_sequence_id()
         packet = packet_factory(sequence_id)
-        await self._dispatcher.send(packet)
+        try:
+            await asyncio.wait_for(self._dispatcher.send(packet), timeout=self._safety_dispatch_timeout_s)
+        except asyncio.TimeoutError as exc:
+            self._fail_safe_active = True
+            self._fail_safe_reason = "safety stop dispatch exceeded software budget"
+            raise TimeoutError("safety stop dispatch exceeded software budget") from exc
 
     async def _dispatch_if_motion_current(self, packet, *, expects_response: bool, motion_generation: Optional[int]):
         if motion_generation is not None:

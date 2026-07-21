@@ -224,6 +224,30 @@ async def test_stop_waits_for_in_progress_write_lock_without_interleaving_packet
 
 
 @pytest.mark.asyncio
+async def test_stop_fails_closed_if_write_contention_exceeds_dispatch_budget():
+    transport = ReleaseControlledWriteTransport()
+    driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0, safety_dispatch_timeout_s=0.02)
+    await driver._dispatcher.start()
+
+    request_packet = driver.commands.get_battery_percentage(1)
+    request_task = asyncio.create_task(driver._dispatcher.request(request_packet, timeout=0.2))
+    await transport.write_started.wait()
+
+    started = time.perf_counter()
+    with pytest.raises(TimeoutError, match="safety stop dispatch exceeded"):
+        await driver.stop()
+    elapsed = time.perf_counter() - started
+
+    transport.release_write.set()
+    with suppress(TimeoutError):
+        await request_task
+    await driver._dispatcher.stop()
+
+    assert elapsed < ESTOP_SOFTWARE_DISPATCH_BUDGET_S
+    assert driver.get_state().fail_safe_active
+
+
+@pytest.mark.asyncio
 async def test_stop_invalidates_motion_already_waiting_on_dispatcher_write_lock():
     transport = ReleaseControlledWriteTransport()
     driver = RVRDriver(transport=transport, control_period=10.0, command_timeout=10.0)
@@ -394,6 +418,22 @@ async def test_driver_clamps_mixed_turn_velocity_before_tank_differential_arc():
     assert tank_packets
     assert tank_packets[0].payload == bytes([0, 127])
     assert not _rc_drive_packets(transport, driver)
+
+
+@pytest.mark.asyncio
+async def test_driver_fails_non_finite_velocity_closed_to_zero():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
+    await driver.connect()
+
+    await driver.set_velocity(linear_mps=float("nan"), angular_rad_s=float("inf"))
+    await asyncio.sleep(0.03)
+    await driver.disconnect()
+
+    for packet in _rc_drive_packets(transport, driver):
+        _yaw, linear, _flags = _decode_rc_payload(packet)
+        assert linear == pytest.approx(0.0)
+    assert all(packet.payload == RAW_OFF for packet in _raw_motor_packets(transport, driver))
 
 
 @pytest.mark.asyncio

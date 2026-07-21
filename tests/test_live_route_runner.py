@@ -350,6 +350,20 @@ def test_segment_start_exception_terminally_deactivates_runner_with_manifest() -
     manifest = runner.manifest()
     assert manifest.status is ToolResultStatus.BLOCKED
     assert manifest.terminal_reason == "unsafe_clearance"
+
+
+def test_live_route_runner_rejects_non_finite_route_motion_inputs_without_execution() -> None:
+    request = LiveRouteRequest(
+        route_id="nan-route",
+        max_runtime_s=10.0,
+        max_travel_m=0.5,
+        segments=(RouteSegmentRequest("move", "move_distance", {"distance_m": 0.2, "speed_mps": math.nan, "timeout_s": 5.0}),),
+    )
+
+    manifest = run_route_replay(request, (_state(1.0, 0.0, 0.0, 0.0),))
+
+    assert manifest.status is ToolResultStatus.FAILED
+    assert manifest.terminal_reason == "invalid_route"
     assert manifest.executed_segments == ()
 
 
