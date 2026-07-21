@@ -35,6 +35,9 @@ DEFAULT_CAPTURE_TOPICS = (
     "/tf",
     "/tf_static",
     "/diagnostics",
+    "/collision_stop/state",
+    "/mission_api/v2/live_route/request",
+    "/mission_api/v2/live_route/status",
 )
 DEFAULT_REPLAY_TOPICS = DEFAULT_CAPTURE_TOPICS
 DEFAULT_SHUTDOWN_GRACE_SECONDS = 10.0

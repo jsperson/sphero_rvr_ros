@@ -67,6 +67,7 @@ setup(
                 "docs/vertical_slice_capability_matrix.md",
                 "docs/shoe_detector_replay.md",
                 "docs/shoe_map_projection.md",
+                "docs/system_validation.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -99,6 +100,7 @@ setup(
             "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
             "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
             "rvr_mcp_server = sphero_rvr_driver.rvr_mcp_server:main",
+            "rvr_system_ci_check = sphero_rvr_driver.system_validation:main",
         ],
     },
 )

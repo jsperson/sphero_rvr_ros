@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python-unit-system-gates:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -15,3 +15,63 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e . pytest pytest-asyncio
       - run: pytest tests -q
+      - run: pytest tests/test_system_validation.py -q
+      - run: python -m sphero_rvr_driver.system_validation --repo-root "$GITHUB_WORKSPACE"
+
+  ros2-colcon-system-gates:
+    runs-on: ubuntu-latest
+    container: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install ROS build/test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git \
+            python3-pip \
+            python3-pytest \
+            python3-pytest-asyncio \
+            python3-rosdep \
+            python3-vcstool \
+            python3-colcon-common-extensions \
+            ros-jazzy-ament-cmake \
+            ros-jazzy-launch-testing \
+            ros-jazzy-launch-testing-ros
+          rm -rf /var/lib/apt/lists/*
+      - name: Prepare colcon workspace
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/rvr_ws/src
+          cp -a "$GITHUB_WORKSPACE" /tmp/rvr_ws/src/sphero_rvr_ros
+          cd /tmp/rvr_ws
+          vcs import src < src/sphero_rvr_ros/workspace.repos || true
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y --rosdistro jazzy
+      - name: colcon build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source /opt/ros/jazzy/setup.bash
+          cd /tmp/rvr_ws
+          colcon build --event-handlers console_direct+ --packages-select sphero_rvr_driver
+      - name: Import, entry point, launch-description, and cleanup gates
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source /opt/ros/jazzy/setup.bash
+          source /tmp/rvr_ws/install/setup.bash
+          cd /tmp/rvr_ws/src/sphero_rvr_ros
+          python3 - <<'PY'
+          import importlib.metadata
+          import sphero_rvr_driver.system_validation as system_validation
+          executables = {ep.name for ep in importlib.metadata.entry_points(group='console_scripts')}
+          required = {'rvr_node', 'live_route_runner', 'rvr_rosbag_capture', 'rvr_system_ci_check'}
+          missing = required - executables
+          if missing:
+              raise SystemExit(f'missing console_scripts: {sorted(missing)}')
+          raise SystemExit(system_validation.main(['--repo-root', '.']))
+          PY
+          ros2 pkg executables sphero_rvr_driver
+          ros2 launch sphero_rvr_driver supervised_rvr.launch.py --show-args
+          pgrep -af 'rvr_node|live_route_runner|lidar_collision_stop_supervisor|range_motion_controller|ros2 launch' && exit 1 || true

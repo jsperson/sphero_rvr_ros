@@ -18,6 +18,7 @@ from sphero_rvr_driver.rosbag_workflow import (
     replay_main,
     write_manifest,
 )
+from sphero_rvr_driver.system_validation import REQUIRED_CURRENT_SHA_TOPICS
 
 
 def test_capture_plan_defaults_to_safe_rosbag_record_topics(tmp_path):
@@ -31,6 +32,18 @@ def test_capture_plan_defaults_to_safe_rosbag_record_topics(tmp_path):
     assert "/camera/image_raw" not in plan.topics
     assert "/camera/camera_info" not in plan.topics
     assert "/cmd_vel" not in plan.command
+
+
+def test_default_rosbag_topics_cover_current_sha_integration_corpus_without_motor_topics():
+    for topic in REQUIRED_CURRENT_SHA_TOPICS:
+        assert topic in DEFAULT_CAPTURE_TOPICS
+        assert topic in DEFAULT_REPLAY_TOPICS
+    assert "/cmd_vel" not in DEFAULT_CAPTURE_TOPICS
+    assert "/cmd_vel_motor" not in DEFAULT_CAPTURE_TOPICS
+    assert "/mission_api/v2/live_route/request" in DEFAULT_CAPTURE_TOPICS
+    assert "/mission_api/v2/live_route/status" in DEFAULT_CAPTURE_TOPICS
+    assert "/live_route/command" not in DEFAULT_CAPTURE_TOPICS
+    assert "/live_route/status" not in DEFAULT_CAPTURE_TOPICS
 
 
 def test_capture_plan_allows_documented_topic_overrides_and_additions(tmp_path):
