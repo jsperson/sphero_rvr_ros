@@ -17,6 +17,7 @@ from sphero_rvr_driver.mission_planner import (
     ImageObservation,
     FakePlannerProvider,
     IterativeMissionPlanner,
+    OpenAICompatiblePlannerProvider,
     PlannerDecision,
     default_planner_config,
     build_openai_responses_payload,
@@ -151,7 +152,7 @@ def test_openai_payload_contains_only_authorized_bounded_image_observation_and_a
     content = payload["input"][0]["content"]
     assert {item["type"] for item in content} == {"input_text", "input_image"}
     assert next(item for item in content if item["type"] == "input_image")["image_url"] == IMAGE_URL
-    assert [tool["name"] for tool in payload["tools"]] == ["mission_api_v2"]
+    assert [tool["name"] for tool in payload["tools"]] == ["mission_api_v2", "planner_terminal_decision"]
     tool_schema = payload["tools"][0]["parameters"]
     assert tool_schema["additionalProperties"] is False
     assert "move_to_clearance" in tool_schema["properties"]["tool_name"]["enum"]
@@ -180,6 +181,7 @@ def test_text_only_mission_builds_provider_neutral_openai_payload_without_image_
     ("observation", "message"),
     [
         (_image_observation(approved_for_planner=False), "not approved"),
+        (_image_observation(approved_for_planner="true"), "not approved"),
         (_image_observation(image_url=""), "image_url is required"),
         (_image_observation(mime_type="image/svg+xml"), "unsupported image mime_type"),
         (_image_observation(size_bytes=21_000_000), "exceeds"),
@@ -207,6 +209,168 @@ def test_safe_provider_manifest_preserves_provider_model_identity_without_image_
     assert PNG_1X1 not in manifest_text
     assert "OPENAI_API_KEY" not in manifest_text
     assert "Authorization" not in manifest_text
+
+
+def test_openai_provider_posts_first_party_responses_tool_payload_and_parses_function_calls(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    requests = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "model": "gpt-5.6-2026-07-15",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "mission_api_v2",
+                            "call_id": "fc_capture",
+                            "arguments": json.dumps(
+                                {
+                                    "tool_name": "capture_observation",
+                                    "arguments": {"sensor": "replay"},
+                                    "call_id": "capture-1",
+                                }
+                            ),
+                        },
+                        {
+                            "type": "function_call",
+                            "name": "planner_terminal_decision",
+                            "call_id": "fc_continue",
+                            "arguments": json.dumps({"decision": "continue", "message": "capture first"}),
+                        },
+                    ],
+                }
+            ).encode("utf-8")
+
+    def _urlopen(request, timeout):
+        requests.append(request)
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    provider = OpenAICompatiblePlannerProvider(model="gpt-5.6", base_url="https://api.openai.com/v1")
+    response = provider.plan(
+        {
+            "goal": "Capture one bounded observation.",
+            "image_observations": [_image_observation().__dict__],
+            "safe": True,
+        }
+    )
+
+    assert response.decision is PlannerDecision.CONTINUE
+    assert response.message == "capture first"
+    assert response.tool_calls == (ToolCall("capture_observation", {"sensor": "replay"}, "capture-1"),)
+    request = requests[0]
+    assert request.full_url == "https://api.openai.com/v1/responses"
+    assert request.headers["Authorization"] == "Bearer test-key"
+    payload = json.loads(request.data.decode("utf-8"))
+    assert payload["model"] == "gpt-5.6"
+    assert [tool["name"] for tool in payload["tools"]] == ["mission_api_v2", "planner_terminal_decision"]
+    assert payload["parallel_tool_calls"] is False
+    assert any(item["type"] == "input_image" for item in payload["input"][0]["content"])
+    assert IMAGE_URL not in next(item for item in payload["input"][0]["content"] if item["type"] == "input_text")["text"]
+    assert "chat/completions" not in request.full_url
+
+
+def test_openai_provider_rejects_openrouter_endpoint_mismatch_without_network(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    provider = OpenAICompatiblePlannerProvider(model="gpt-5.6", base_url="https://openrouter.ai/api/v1")
+
+    with pytest.raises(MissionValidationError, match="OpenAI provider must use first-party OpenAI Responses endpoint"):
+        provider.plan({"goal": "Query status."})
+
+
+def test_openai_provider_rejects_image_context_without_explicit_approval(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    provider = OpenAICompatiblePlannerProvider(model="gpt-5.6", base_url="https://api.openai.com/v1")
+    raw_observation = _image_observation().__dict__.copy()
+    raw_observation.pop("approved_for_planner")
+
+    with pytest.raises(MissionValidationError, match="not approved"):
+        provider.plan({"goal": "Inspect this bounded observation.", "image_observations": [raw_observation]})
+
+    raw_observation["approved_for_planner"] = "true"
+    with pytest.raises(MissionValidationError, match="not approved"):
+        provider.plan({"goal": "Inspect this bounded observation.", "image_observations": [raw_observation]})
+
+
+def test_openai_provider_retries_transient_response_failures_and_rejects_malformed_output(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    attempts = 0
+
+    class _MalformedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"output": [{"type": "function_call", "name": "mission_api_v2", "arguments": "not-json"}]}).encode(
+                "utf-8"
+            )
+
+    def _urlopen(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("slow first attempt")
+        return _MalformedResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    provider = OpenAICompatiblePlannerProvider(model="gpt-5.6", base_url="https://api.openai.com/v1", max_retries=1)
+    with pytest.raises(MissionValidationError, match="malformed Responses function_call arguments"):
+        provider.plan({"goal": "Query status."})
+
+    assert attempts == 2
+
+
+def test_openai_provider_converts_refusal_to_rejected_planner_response(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    class _RefusalResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"output": [{"type": "message", "content": [{"type": "refusal", "refusal": "cannot safely comply"}]}]}
+            ).encode("utf-8")
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: _RefusalResponse())
+
+    provider = OpenAICompatiblePlannerProvider(model="gpt-5.6", base_url="https://api.openai.com/v1")
+    response = provider.plan({"goal": "Query status."})
+
+    assert response.decision is PlannerDecision.REJECT
+    assert response.message == "cannot safely comply"
+    assert response.tool_calls == ()
+
+
+def test_iterative_planner_threads_approved_image_observations_and_rejects_unapproved_images() -> None:
+    observation = _image_observation()
+    planner = _planner([PlannerProviderResponse(decision=PlannerDecision.COMPLETE)])
+
+    manifest = planner.run("Inspect the approved frame.", image_observations=(observation,))
+
+    assert manifest.stop_reason is PlannerStopReason.COMPLETE
+    assert planner.provider.contexts[0]["image_observations"] == [observation.safe_manifest_dict()]
+    assert planner.provider.contexts[0]["approved_image_observations"][0]["image_url"] == IMAGE_URL
+    assert "/dev/" not in json.dumps(planner.provider.contexts[0])
+
+    with pytest.raises(MissionValidationError, match="not approved"):
+        planner.run("Inspect the frame.", image_observations=(_image_observation(approved_for_planner=False),))
 
 
 def test_fake_provider_maps_canonical_shoe_goal_through_allowlisted_tools_and_manifest() -> None:
@@ -247,6 +411,7 @@ def test_fake_provider_maps_canonical_shoe_goal_through_allowlisted_tools_and_ma
     assert payload["artifacts"]["semantic_map"] == "artifacts/vs06_semantic_map/semantic_map.json"
     assert payload["registry_version"] == "test-registry"
     assert payload["source_sha"] == "test-sha"
+    assert payload["api_surface"] == "scripted"
     assert payload["live_provider_validation"] == "live provider validation pending"
     assert "available_tools" in planner.provider.contexts[0]
     assert "remaining_budgets" in planner.provider.contexts[0]
