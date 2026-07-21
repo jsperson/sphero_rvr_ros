@@ -32,14 +32,7 @@ class MissionApiVersion(str, Enum):
     V2 = "mission_api.v2"
 
 
-_PHYSICAL_ADAPTER_AUTHORITY = object()
 _APPROVAL_GRANT_SECRET = secrets.token_bytes(32)
-
-
-def physical_adapter_authority() -> object:
-    """Return the process-local marker used by reviewed physical adapters."""
-
-    return _PHYSICAL_ADAPTER_AUTHORITY
 
 
 UNSAFE_ROS_SURFACES = (
@@ -249,6 +242,7 @@ class ApprovalGrant:
     correlation_id: Optional[str] = None
     arguments_digest: Optional[str] = None
     principal: Optional[str] = None
+    execution_mode: str = "replay"
     grant_signature: str = ""
 
     def __post_init__(self) -> None:
@@ -305,11 +299,12 @@ class ApprovalGrant:
             "correlation_id": self.correlation_id,
             "arguments_digest": self.arguments_digest,
             "principal": self.principal,
+            "execution_mode": self.execution_mode,
             "grant_signature": self.grant_signature,
         }
 
 
-def issue_approval_grant(
+def _issue_approval_grant(
     *,
     approval_id: str,
     approved_by: str,
@@ -322,6 +317,7 @@ def issue_approval_grant(
     correlation_id: str,
     arguments_digest: str,
     principal: str,
+    execution_mode: str = "replay",
 ) -> ApprovalGrant:
     """Issue a process-local Mission API approval bound to one execution envelope."""
 
@@ -337,6 +333,7 @@ def issue_approval_grant(
         correlation_id=correlation_id,
         arguments_digest=arguments_digest,
         principal=principal,
+        execution_mode=execution_mode,
     )
     return ApprovalGrant(
         approval_id=unsigned.approval_id,
@@ -350,6 +347,7 @@ def issue_approval_grant(
         correlation_id=unsigned.correlation_id,
         arguments_digest=unsigned.arguments_digest,
         principal=unsigned.principal,
+        execution_mode=unsigned.execution_mode,
         grant_signature=_approval_grant_signature(unsigned),
     )
 
@@ -368,6 +366,7 @@ def _approval_grant_signature(grant: ApprovalGrant) -> str:
             grant.correlation_id or "",
             grant.arguments_digest or "",
             grant.principal or "",
+            grant.execution_mode,
         )
     ).encode("utf-8")
     return hmac.new(_APPROVAL_GRANT_SECRET, message, hashlib.sha256).hexdigest()
@@ -696,6 +695,11 @@ class DeterministicMissionRuntime:
         self._ledger_tool_calls = 0
         self._ledger_provider_calls = 0
         self._ledger_approvals: set[str] = set()
+        self._validation_steps = 0
+        self._validation_runtime_s = 0.0
+        self._validation_travel_m = 0.0
+        self._validation_tool_calls = 0
+        self._validation_approvals: set[str] = set()
         self._resource_owner: dict[str, str] = {}
         self._terminal_status: Optional[MissionRuntimeStatus] = None
 
@@ -729,6 +733,47 @@ class DeterministicMissionRuntime:
         ):
             raise MissionValidationError("mission session exceeds cumulative max_provider_calls budget")
         self._ledger_provider_calls += 1
+
+    def validate_plan(self, plan: MissionPlan) -> None:
+        """Validate and charge a bounded preflight ledger without reserving execution budget."""
+
+        plan_travel_m = self._validate_plan_budgets(plan)
+        self._validate_plan_resources(plan)
+        planned_runtime_s = _planned_runtime_s(plan, self.registry)
+        plan_steps = len(plan.invocations)
+        if self._validation_steps + plan_steps > self.budget_ceilings.max_steps:
+            raise MissionValidationError("mission session exceeds cumulative validation max_steps budget")
+        if self._validation_runtime_s + planned_runtime_s > self.budget_ceilings.max_runtime_s:
+            raise MissionValidationError("mission session exceeds cumulative validation max_runtime_s budget")
+        if (
+            self.budget_ceilings.max_travel_m is not None
+            and self._validation_travel_m + plan_travel_m > self.budget_ceilings.max_travel_m
+        ):
+            raise MissionValidationError("mission session exceeds cumulative validation max_travel_m budget")
+        if (
+            self.budget_ceilings.max_tool_calls is not None
+            and self._validation_tool_calls + plan_steps > self.budget_ceilings.max_tool_calls
+        ):
+            raise MissionValidationError("mission session exceeds cumulative validation max_tool_calls budget")
+
+        elapsed_s = 0.0
+        used_approvals = set(self._validation_approvals)
+        physical_mode = plan.goal.execution_mode == "physical"
+        for invocation in plan.invocations:
+            definition = self._validate_invocation(
+                invocation,
+                plan,
+                now_s=self.now_s + elapsed_s,
+                used_approvals=used_approvals,
+                physical_mode=physical_mode,
+            )
+            elapsed_s += _effective_timeout_s(definition, invocation)
+
+        self._validation_steps += plan_steps
+        self._validation_runtime_s += planned_runtime_s
+        self._validation_travel_m += plan_travel_m
+        self._validation_tool_calls += plan_steps
+        self._validation_approvals = used_approvals
 
     def execute_plan(self, plan: MissionPlan) -> MissionRuntimeResult:
         self._ensure_clock_started()
@@ -992,6 +1037,8 @@ class DeterministicMissionRuntime:
                 raise MissionValidationError(f"approval principal binding required for {invocation.tool_id}")
             if not invocation.approval.has_trusted_signature():
                 raise MissionValidationError(f"approval signature is invalid or missing for {invocation.tool_id}")
+            if invocation.approval.execution_mode != plan.goal.execution_mode:
+                raise MissionValidationError(f"approval execution mode binding mismatch for {invocation.tool_id}")
             if invocation.approval.approval_id in used_approvals:
                 raise MissionValidationError(f"approval replay detected for {invocation.tool_id}")
             used_approvals.add(invocation.approval.approval_id)
@@ -1483,7 +1530,6 @@ def _is_reviewed_physical_adapter(adapters: Any) -> bool:
         type(adapters) is PhysicalCapabilityAdapters
         and getattr(adapters, "execution_mode", "") == "physical"
         and getattr(adapters, "authority_kind", "") == "physical"
-        and getattr(adapters, "physical_authority", None) is _PHYSICAL_ADAPTER_AUTHORITY
     )
 
 
@@ -1561,6 +1607,9 @@ def _invalid_artifact_refs(
         if not absolute_path.is_file():
             invalid.append(kind_text)
             continue
+        if not _artifact_matches_kind(kind_text, absolute_path):
+            invalid.append(kind_text)
+            continue
         if not isinstance(expected_hashes, Mapping) or expected_hashes.get(kind) != hashlib.sha256(absolute_path.read_bytes()).hexdigest():
             invalid.append(kind_text)
             continue
@@ -1576,6 +1625,41 @@ def _invalid_artifact_refs(
         ):
             invalid.append(kind_text)
     return tuple(invalid)
+
+
+def _artifact_matches_kind(kind: str, path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if kind == "semantic_map":
+        if suffix != ".json":
+            return False
+        payload = _read_json_object(path)
+        return payload is not None and isinstance(payload.get("map"), Mapping) and isinstance(payload.get("objects"), list)
+    if kind == "geojson":
+        if suffix not in {".geojson", ".json"}:
+            return False
+        payload = _read_json_object(path)
+        return payload is not None and payload.get("type") == "FeatureCollection" and isinstance(payload.get("features"), list)
+    if kind == "annotated_map":
+        if suffix not in {".ppm", ".png", ".jpg", ".jpeg"}:
+            return False
+        header = path.read_bytes()[:8]
+        return header.startswith((b"P3", b"P6", b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"))
+    if kind in {"coverage_report", "mission_summary"}:
+        if suffix != ".md":
+            return False
+        try:
+            return bool(path.read_text(encoding="utf-8").strip())
+        except UnicodeDecodeError:
+            return False
+    return False
+
+
+def _read_json_object(path: Path) -> Optional[Mapping[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
 
 
 def _reject_direct_ros_surfaces(value: Any) -> None:
@@ -1683,27 +1767,40 @@ def _execute_adapter_in_process(
     result_queue = context.Queue(maxsize=1)
     process = context.Process(target=_adapter_process_entry, args=(adapter, invocation, definition, started_at_s, index, result_queue))
     process.start()
-    process.join(timeout_s)
-    if process.is_alive():
-        process.terminate()
-        process.join(1.0)
+    try:
+        try:
+            # Drain the queue before joining. Joining first can deadlock when the
+            # child is waiting for its queue feeder to flush into a full pipe.
+            kind, payload = result_queue.get(timeout=timeout_s)
+        except queue.Empty:
+            if process.is_alive():
+                return _tool_result(
+                    invocation,
+                    ToolResultStatus.TIMEOUT,
+                    started_at_s,
+                    started_at_s + timeout_s,
+                    error=f"tool exceeded timeout_s={timeout_s:g}; cancellation cleanup completed",
+                )
+            return _tool_result(
+                invocation,
+                ToolResultStatus.FAILED,
+                started_at_s,
+                started_at_s,
+                error="adapter process exited without a result",
+            )
+        if kind == "ok":
+            return payload
+        return _tool_result(invocation, ToolResultStatus.FAILED, started_at_s, started_at_s, error=str(payload))
+    finally:
+        process.join(0.1)
+        if process.is_alive():
+            process.terminate()
+            process.join(1.0)
         if process.is_alive():
             process.kill()
             process.join(1.0)
-        return _tool_result(
-            invocation,
-            ToolResultStatus.TIMEOUT,
-            started_at_s,
-            started_at_s + timeout_s,
-            error=f"tool exceeded timeout_s={timeout_s:g}; cancellation cleanup completed",
-        )
-    try:
-        kind, payload = result_queue.get_nowait()
-    except queue.Empty:
-        return _tool_result(invocation, ToolResultStatus.FAILED, started_at_s, started_at_s, error="adapter process exited without a result")
-    if kind == "ok":
-        return payload
-    return _tool_result(invocation, ToolResultStatus.FAILED, started_at_s, started_at_s, error=str(payload))
+        result_queue.close()
+        result_queue.join_thread()
 
 
 def _evaluate_success_criterion(

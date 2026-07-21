@@ -13,7 +13,7 @@ from sphero_rvr_driver.mission_api import (
     MissionBudgets,
     _arguments_digest,
     build_default_registry,
-    issue_approval_grant,
+    _issue_approval_grant,
 )
 from sphero_rvr_driver.mission_planner import (
     ImageObservation,
@@ -72,7 +72,7 @@ def _grant(
 ) -> ApprovalGrant:
     if arguments is None:
         arguments = {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.25}
-    return issue_approval_grant(
+    return _issue_approval_grant(
         approval_id=approval_id,
         approved_by="operator:scott",
         approved_at_s=now_s,

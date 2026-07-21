@@ -15,7 +15,7 @@ from sphero_rvr_driver.mission_controls import (
     PhysicalStartApproval,
     build_static_controls_bundle,
     handle_mission_control_request,
-    issue_physical_start_approval,
+    _issue_physical_start_approval,
 )
 
 
@@ -32,7 +32,7 @@ def _operator() -> MissionPrincipal:
 
 def _physical_gate_for(mission_id: str, *, gate_id: str = "rvr-physical-start-gate") -> PhysicalStartApproval:
     approved_at = datetime.now(timezone.utc)
-    return issue_physical_start_approval(
+    return _issue_physical_start_approval(
         approved_by="physical-button:operator-present",
         approved_at=approved_at.isoformat(),
         expires_at=(approved_at + timedelta(minutes=5)).isoformat(),
@@ -188,7 +188,7 @@ def test_terminal_control_states_are_latched_and_physical_gate_expiry_is_enforce
     with pytest.raises(MissionControlError, match="terminal state ESTOPPED"):
         estop_session.start(_operator(), mode=MissionExecutionMode.REPLAY)
 
-    expired = issue_physical_start_approval(
+    expired = _issue_physical_start_approval(
         approved_by="physical-button:operator-present",
         approved_at="2026-07-19T01:25:00Z",
         expires_at="2026-07-19T01:20:00Z",
@@ -199,7 +199,7 @@ def test_terminal_control_states_are_latched_and_physical_gate_expiry_is_enforce
     with pytest.raises(MissionControlError, match="trusted physical gate"):
         _session().start(_operator(), mode=MissionExecutionMode.PHYSICAL, physical_approval=expired)
 
-    ancient = issue_physical_start_approval(
+    ancient = _issue_physical_start_approval(
         approved_by="physical-button:operator-present",
         approved_at="2020-01-01T00:00:00Z",
         expires_at="2020-01-01T00:05:00Z",

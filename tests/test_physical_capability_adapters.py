@@ -17,7 +17,7 @@ from sphero_rvr_driver.mission_api import (
     ToolResultStatus,
     _arguments_digest,
     build_default_registry,
-    issue_approval_grant,
+    _issue_approval_grant,
 )
 from sphero_rvr_driver.odometry import OdomMotionState
 from sphero_rvr_driver.physical_capability_adapters import PhysicalCapabilityAdapters
@@ -36,7 +36,7 @@ def _grant(
 ) -> ApprovalGrant:
     if arguments is None:
         arguments = {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.5}
-    return issue_approval_grant(
+    return _issue_approval_grant(
         approval_id=approval_id,
         approved_by="operator:scott",
         approved_at_s=now_s,
@@ -48,6 +48,7 @@ def _grant(
         correlation_id=correlation_id,
         arguments_digest=_arguments_digest(arguments),
         principal="operator:scott",
+        execution_mode="physical",
     )
 
 
@@ -56,6 +57,7 @@ def _move_plan(*, max_steps: int = 1) -> MissionPlan:
         goal=MissionGoal(
             goal_id="physical-move",
             objective="move until four inches from the object",
+            execution_mode="physical",
             success_criteria=(
                 SuccessCriterion("physical-move-complete", "bounded range motion reaches requested clearance", CriterionKind.TOOL_COMPLETE, tool_id="move_to_clearance"),
             ),
@@ -78,6 +80,7 @@ def _exploration_plan() -> MissionPlan:
         goal=MissionGoal(
             goal_id="physical-exploration",
             objective="run two bounded exploration segments",
+            execution_mode="physical",
             success_criteria=(
                 SuccessCriterion("physical-exploration-complete", "supervised coordinator completes bounded segments", CriterionKind.TOOL_COMPLETE, tool_id="bounded_exploration_segment"),
             ),
@@ -105,6 +108,7 @@ def _control_plan(action: str) -> MissionPlan:
         goal=MissionGoal(
             goal_id=f"physical-control-{action}",
             objective="propagate mission control action",
+            execution_mode="physical",
             success_criteria=("mission control action latches at runtime boundary",),
             budgets=MissionBudgets(max_steps=1, max_runtime_s=5.0),
         ),
@@ -117,6 +121,7 @@ def _odom_route_plan() -> MissionPlan:
         goal=MissionGoal(
             goal_id="physical-odom-route",
             objective="execute typed odometry route primitives",
+            execution_mode="physical",
             success_criteria=(
                 SuccessCriterion("physical-move-distance-complete", "move_distance uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),
                 SuccessCriterion("physical-turn-angle-complete", "turn_angle uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="turn_angle"),
@@ -310,6 +315,7 @@ def test_physical_odom_primitives_return_signed_measured_terminal_results_withou
             goal=MissionGoal(
                 goal_id="physical-odom-route",
                 objective="execute measured move_distance primitive",
+                execution_mode="physical",
                 success_criteria=(SuccessCriterion("physical-move-distance-complete", "move_distance uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),),
                 budgets=MissionBudgets(max_steps=1, max_runtime_s=20.0, max_travel_m=0.5),
             ),
@@ -321,6 +327,7 @@ def test_physical_odom_primitives_return_signed_measured_terminal_results_withou
             goal=MissionGoal(
                 goal_id="physical-odom-route",
                 objective="execute measured turn_angle primitive",
+                execution_mode="physical",
                 success_criteria=(SuccessCriterion("physical-turn-angle-complete", "turn_angle uses measured odometry", CriterionKind.TOOL_COMPLETE, tool_id="turn_angle"),),
                 budgets=MissionBudgets(max_steps=1, max_runtime_s=20.0),
             ),
@@ -478,6 +485,7 @@ def test_physical_adapter_rejects_malformed_unavailable_and_over_budget_motion_b
         goal=MissionGoal(
             goal_id="physical-move-over-budget",
             objective="move too far",
+            execution_mode="physical",
             success_criteria=("budget rejects untrusted travel",),
             budgets=MissionBudgets(max_steps=1, max_runtime_s=30.0, max_travel_m=0.25),
         ),
@@ -516,6 +524,7 @@ def test_physical_adapter_rejects_non_control_capabilities_until_real_adapters_e
                 goal=MissionGoal(
                     goal_id="no-fake-perception",
                     objective="capture a real observation",
+                    execution_mode="physical",
                     success_criteria=("no fake physical perception",),
                     budgets=MissionBudgets(max_steps=1, max_runtime_s=30.0),
                 ),

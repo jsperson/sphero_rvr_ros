@@ -106,7 +106,7 @@ class PhysicalStartApproval:
         return payload
 
 
-def issue_physical_start_approval(
+def _issue_physical_start_approval(
     *,
     approved_by: str,
     approved_at: str,

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+import sphero_rvr_driver.mission_api as mission_api_module
+import sphero_rvr_driver.mission_controls as mission_controls_module
+import sphero_rvr_driver.physical_capability_adapters as physical_adapters_module
+
 from sphero_rvr_driver.mission_api import (
     ApprovalGrant,
     CapabilityAvailability,
@@ -22,8 +26,7 @@ from sphero_rvr_driver.mission_api import (
     _arguments_digest,
     build_canonical_shoe_mapping_plan,
     build_default_registry,
-    issue_approval_grant,
-    physical_adapter_authority,
+    _issue_approval_grant,
 )
 from sphero_rvr_driver.physical_capability_adapters import PhysicalCapabilityAdapters
 
@@ -40,7 +43,7 @@ def _grant(
 ) -> ApprovalGrant:
     if arguments is None:
         arguments = {"clearance_m": 0.1016, "speed_mps": 0.05, "timeout_s": 3.0, "max_travel_m": 0.2}
-    return issue_approval_grant(
+    return _issue_approval_grant(
         approval_id=approval_id,
         approved_by="operator:scott",
         approved_at_s=now_s,
@@ -63,6 +66,48 @@ def _shoe_grant(mission_id: str, approval_id: str = "shoe-motion-approval") -> A
         correlation_id="shoe-2",
         arguments={"max_segments": 2, "segment_timeout_s": 8.0, "max_travel_m": 1.0},
     )
+
+
+def test_runtime_trust_authority_has_no_public_caller_minting_helpers() -> None:
+    assert not hasattr(mission_api_module, "issue_approval_grant")
+    assert not hasattr(mission_api_module, "physical_adapter_authority")
+    assert not hasattr(mission_controls_module, "issue_physical_start_approval")
+    assert not hasattr(physical_adapters_module, "physical_adapter_authority")
+
+
+def test_replay_approval_authority_cannot_authorize_physical_execution() -> None:
+    arguments = {"distance_m": 0.1, "speed_mps": 0.05, "timeout_s": 3.0}
+    approval = _issue_approval_grant(
+        approval_id="replay-only",
+        approved_by="replay-supervisor",
+        approved_at_s=100.0,
+        expires_at_s=120.0,
+        approval_class="supervised_motion",
+        mission_id="physical-with-replay-authority",
+        tool_id="move_distance",
+        correlation_id="move",
+        arguments_digest=_arguments_digest(arguments),
+        principal="replay-supervisor",
+    )
+    plan = MissionPlan(
+        goal=MissionGoal(
+            goal_id="physical-with-replay-authority",
+            objective="replay authority cannot cross into physical execution",
+            success_criteria=(
+                SuccessCriterion("move", "move completes", CriterionKind.TOOL_COMPLETE, tool_id="move_distance"),
+            ),
+            execution_mode="physical",
+            budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0, max_travel_m=0.5),
+        ),
+        invocations=(ToolInvocation("move", "move_distance", "1.0", arguments, approval=approval),),
+    )
+
+    with pytest.raises(MissionValidationError, match="approval execution mode binding mismatch"):
+        DeterministicMissionRuntime(
+            build_default_registry(detector_classes=("shoe",)),
+            PhysicalCapabilityAdapters(),
+            now_s=100.0,
+        ).execute_plan(plan)
 
 
 def test_v2_mission_goal_and_registry_are_generic_not_shoe_contracts() -> None:
@@ -1034,7 +1079,7 @@ def test_latest_runtime_trust_blockers_are_regressed() -> None:
         authority_kind="physical",
         provenance_by_tool={"query_status_telemetry": {"adapter": "physical/spoofed", "deterministic": True}},
     )
-    spoofed_marker.physical_authority = physical_adapter_authority()  # type: ignore[attr-defined]
+    spoofed_marker.physical_authority = object()  # type: ignore[attr-defined]
     with pytest.raises(MissionValidationError, match="physical execution requires physical adapters"):
         DeterministicMissionRuntime(registry, spoofed_marker, now_s=100.0).execute_plan(
             MissionPlan(goal=physical_goal, invocations=(ToolInvocation("status", "query_status_telemetry", "1.0", {}),))
@@ -1048,7 +1093,6 @@ def test_latest_runtime_trust_blockers_are_regressed() -> None:
             "cooperative_execution": True,
             "execution_mode": "physical",
             "authority_kind": "physical",
-            "physical_authority": physical_adapter_authority(),
             "healthy": True,
             "evidence_level": "live_bounded_physical",
             "supported_tool_ids": ("query_status_telemetry",),
@@ -1152,6 +1196,53 @@ def test_latest_runtime_trust_blockers_are_regressed() -> None:
                 invocations=(ToolInvocation("move", "move_distance", "1.0", missing_precondition_args, approval=missing_precondition_grant),),
             )
         )
+
+
+@pytest.mark.parametrize(
+    "wrong_type_ref",
+    (
+        "artifacts/vs06_semantic_map/mission_summary.md",
+        "artifacts/vs02_slam_replay_fixture_map/manifest.json",
+    ),
+)
+def test_artifact_kind_contract_rejects_wrong_extension_and_content_type(wrong_type_ref: str) -> None:
+    registry = build_default_registry(detector_classes=("shoe",))
+    result = DeterministicMissionRuntime(
+        registry,
+        FakeCapabilityAdapters(
+            observation_by_tool={"generate_semantic_artifacts": {"artifact_refs": {"semantic_map": wrong_type_ref}}},
+            artifact_refs_by_tool={"generate_semantic_artifacts": {"semantic_map": wrong_type_ref}},
+        ),
+        now_s=100.0,
+    ).execute_plan(
+        MissionPlan(
+            goal=MissionGoal(
+                goal_id="wrong-artifact-kind",
+                objective="artifact kinds require matching file types",
+                success_criteria=(
+                    SuccessCriterion(
+                        "semantic-map",
+                        "semantic map artifact exists",
+                        CriterionKind.ARTIFACT_PRESENT,
+                        field="semantic_map",
+                    ),
+                ),
+                requested_artifacts=("semantic_map",),
+                budgets=MissionBudgets(max_steps=1, max_runtime_s=10.0),
+            ),
+            invocations=(
+                ToolInvocation(
+                    "artifact",
+                    "generate_semantic_artifacts",
+                    "1.0",
+                    {"artifact_kinds": ["semantic_map"]},
+                ),
+            ),
+        )
+    )
+
+    assert result.status is MissionRuntimeStatus.FAILED
+    assert "artifact_refs failed provenance validation" in result.results[-1].error["message"]
 
 
 def test_cumulative_ledger_and_physical_approval_envelope_survive_replans() -> None:

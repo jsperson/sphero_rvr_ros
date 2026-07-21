@@ -14,7 +14,7 @@ import math
 import subprocess
 from typing import Any, Mapping, Optional, Sequence
 
-from .mission_api import CompletedExecutionHandle, MissionValidationError, physical_adapter_authority
+from .mission_api import CompletedExecutionHandle, MissionValidationError
 from .mission_api import ToolDefinition, ToolInvocation, ToolResult, ToolResultStatus
 from .odometry import (
     MotionPrimitiveConfig,
@@ -55,7 +55,6 @@ class PhysicalCapabilityAdapters:
     """
 
     cooperative_execution: bool = field(default=True, init=False)
-    physical_authority: object = field(default_factory=physical_adapter_authority, init=False, repr=False)
     execution_mode: str = "physical"
     authority_kind: str = "physical"
     healthy: bool = True

@@ -122,6 +122,29 @@ def test_mcp_tools_are_dynamic_over_registry_availability_and_do_not_duplicate_s
     assert "object_class" in invalid_plan["error"]["message"]
 
 
+def test_mcp_validate_plan_has_a_cumulative_per_session_validation_budget() -> None:
+    adapter = RvrMcpAdapter()
+    arguments = {
+        "client_session_id": "validation-ceiling",
+        "goal_id": "same-session-validation",
+        "invocations": [
+            {
+                "correlation_id": "status",
+                "tool_id": "query_status_telemetry",
+                "tool_version": "1.0",
+                "arguments": {},
+            }
+        ],
+        "budgets": {"max_steps": 1, "max_runtime_s": 5.0},
+    }
+
+    responses = [adapter.call_tool("rvr.validate_plan", arguments) for _ in range(9)]
+
+    assert [response["status"] for response in responses[:8]] == ["validated"] * 8
+    assert responses[8]["status"] == "rejected"
+    assert "cumulative validation max_steps" in responses[8]["error"]["message"]
+
+
 def test_mcp_exercises_shoe_backpack_and_clearance_plan_flows_with_audit_correlation() -> None:
     adapter = RvrMcpAdapter(registry=build_default_registry(detector_classes=("shoe", "backpack")))
 

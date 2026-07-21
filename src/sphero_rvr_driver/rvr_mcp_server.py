@@ -34,7 +34,7 @@ from .mission_api import (
     _arguments_digest,
     build_canonical_shoe_mapping_plan,
     build_default_registry,
-    issue_approval_grant,
+    _issue_approval_grant,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -191,13 +191,7 @@ class RvrMcpAdapter:
                 return self._record_payload("complete", context, self._mission_status_payload(context))
             if name == "rvr.validate_plan":
                 plan = self._plan_from_arguments(args, context)
-                runtime = self._runtime(context)
-                runtime._validate_plan_budgets(plan)  # noqa: SLF001 - validation endpoint over the canonical runtime.
-                elapsed_s = 0.0
-                used_approvals: set[str] = set()
-                for invocation in plan.invocations:
-                    definition = runtime._validate_invocation(invocation, plan, now_s=self.now_s + elapsed_s, used_approvals=used_approvals, physical_mode=False)  # noqa: SLF001
-                    elapsed_s += _effective_timeout_from_arguments(definition, invocation.arguments)
+                self._runtime(context).validate_plan(plan)
                 return self._record_payload("validated", context, {"plan": plan.to_json_dict()})
             if name == "rvr.submit_plan":
                 plan = self._plan_from_arguments(args, context)
@@ -414,7 +408,7 @@ class RvrMcpAdapter:
         correlation_id: str,
         arguments: Mapping[str, Any],
     ) -> ApprovalGrant:
-        return issue_approval_grant(
+        return _issue_approval_grant(
             approval_id=f"mcp-replay-{context.session_id}-{mission_id}-{correlation_id}",
             approved_by="mcp-local-replay-supervisor",
             approved_at_s=self.now_s - 1.0,
@@ -593,15 +587,6 @@ def _single_call_budget(definition: ToolDefinition, args: Mapping[str, Any]) -> 
     else:
         travel = None
     return MissionBudgets(max_steps=1, max_runtime_s=max(float(definition.timeout_s), 5.0), max_travel_m=travel)
-
-
-def _effective_timeout_from_arguments(definition: ToolDefinition, args: Mapping[str, Any]) -> float:
-    candidates = [float(definition.timeout_s)]
-    for key in ("timeout_s", "segment_timeout_s"):
-        value = args.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
-            candidates.append(float(value))
-    return min(candidates)
 
 
 def _reject_forbidden_mcp_keys(args: Mapping[str, Any]) -> None:
