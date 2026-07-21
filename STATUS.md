@@ -6,9 +6,9 @@ Updated: 2026-07-21
 
 - `main` and `origin/main`: `a1675335f5e2e998dd8a455d8833adec7fb1f43f` (`merge: persistent mission service slice 1`).
 - Main checkout is clean.
-- Active implementation draft: local branch `wip/m1-persistent-no-motion-service` at `d7dece7`.
-- The WIP branch adds the live read-only mission-service seam and passed `tests/test_mission_service.py`: 18 tests in 0.96 seconds using the bounded runner.
-- Current objective: deploy one persistent no-motion mission owner with truthful live status. Route submission and physical motion authority remain disabled in this package.
+- Current MVP: prove that a real first-party LLM prompt can produce operator-approved typed `move_distance` / `turn_angle` calls that drive the physical rover through the live route runner and collision supervisor with measured results.
+- Existing evidence covers the real planner with fake adapters and the physical route components separately; it is not accepted evidence of LLM-selected physical driving.
+- Preserved supporting draft: local branch `wip/m1-persistent-no-motion-service` at `e1905b8`. It passed `tests/test_mission_service.py` (18 tests in 1.01 seconds) but is paused until the prompt-driving MVP is proven.
 - Product direction: map-driven web UI plus text-based LLM interaction for mapping, semantic search, adaptive exploration, and obstacle-avoiding navigation. See `docs/product_direction.md`.
 - Repository cleanup reduced task worktrees from 58 to one active in-repo WIP worktree. Historical dirty drafts and evidence are preserved under local `archive/kanban/*` branches.
 - Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros` on Ubuntu Server 24.04 / ROS 2 Jazzy.

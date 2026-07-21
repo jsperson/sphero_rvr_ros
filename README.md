@@ -4,6 +4,8 @@ Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission fram
 
 The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
 
+The immediate MVP is narrower: enter a driving prompt, have a real model propose typed bounded distance/turn actions, explicitly approve the proposal, and execute measured movement through the live route runner and collision supervisor. The project does not yet claim this real-model-to-physical-rover chain has been proven.
+
 ## Documentation map for operators and maintainers
 
 - [docs/product_direction.md](docs/product_direction.md) defines the current product end state, system shape, and delivery sequence.
@@ -159,9 +161,9 @@ The driver, lidar/camera calibration, collision boundary, replay SLAM, semantic 
 
 The active sequence is:
 
-1. persistent no-motion mission service with truthful live status;
-2. bounded submit/status/cancel client;
-3. measured navigation through the collision supervisor;
+1. real-LLM prompt-driven physical rover proof;
+2. persistent mission service with truthful live status;
+3. bounded durable submit/status/cancel clients;
 4. adaptive LLM exploration over validated candidate objectives;
 5. live observation, object detection, semantic projection, and coverage;
 6. supervised shoe-mapping vertical slice;

@@ -32,9 +32,9 @@ The LLM selects mission-level objectives: which reachable region to explore, whe
 
 ## Delivery sequence
 
-1. Deploy one persistent no-motion mission owner with truthful live status.
-2. Add one bounded submit/status/cancel client.
-3. Bind measured motion and navigation through the existing collision boundary.
+1. Prove the core hypothesis: a real LLM driving the physical rover from a text prompt through typed bounded tools, explicit operator approval, measured execution, and the existing collision boundary.
+2. Deploy one persistent mission owner with truthful live status.
+3. Add bounded durable submit/status/cancel clients.
 4. Add adaptive LLM exploration over independently generated and validated candidate objectives.
 5. Bind timestamped observation, useful object detection, map projection, tracking, and searched-coverage accounting.
 6. Complete a shoe-mapping vertical slice in replay and supervised physical operation.
@@ -45,7 +45,9 @@ Shoe mapping is the first acceptance slice, not a hard-coded product boundary. O
 
 ## Current implementation focus
 
-The current work package is the persistent no-motion mission service. A preserved draft lives on local branch `wip/m1-persistent-no-motion-service`. It must be reviewed, completed, and deployed without enabling route submission or physical motion authority before later clients or executors are added.
+The current MVP is prompt-driven physical control. The repository has a real OpenAI planner, typed `move_distance` and `turn_angle` tools, physical capability adapters, a live route runner, measured odometry, and collision supervision, but these pieces have not been accepted as one real-model-to-physical-rover chain.
+
+The first implementation must add a proposal-first CLI and production bridge from real model tool decisions to live route requests. Physical execution remains separately approved by the operator and bounded to a small staged proof. The persistent no-motion service draft remains preserved on local branch `wip/m1-persistent-no-motion-service` for the following milestone.
 
 ## Delivery discipline
 
@@ -54,4 +56,3 @@ The current work package is the persistent no-motion mission service. A preserve
 - Reopen security architecture only when authority or an external control boundary changes.
 - Use focused bounded tests during iteration; treat a full-suite timeout as test infrastructure, not a product failure.
 - Preserve truthful partial, blocked, cancelled, stopped, and estopped outcomes instead of forcing nominal completion.
-
