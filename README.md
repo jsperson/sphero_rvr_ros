@@ -1,11 +1,12 @@
 # sphero_rvr_ros
 
-Concurrency-safe Sphero RVR core driver plus a ROS 2 adapter package.
+Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission framework for an LLM-supervised semantic rover.
 
-This project is intentionally starting fresh from the older MCP implementation. The MCP repo remains useful as a protocol reference, but this repo is built around ROS 2 needs: one serial owner, request/response dispatching, safety preemption, and continuous velocity control.
+The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
 
 ## Documentation map for operators and maintainers
 
+- [docs/product_direction.md](docs/product_direction.md) defines the current product end state, system shape, and delivery sequence.
 - [docs/rvr_capability_matrix.md](docs/rvr_capability_matrix.md) is the full official SDK/protocol capability matrix. It is the source of truth for core API parity, ROS exposure decisions, and required validation tokens.
 - [docs/rvr_ros_exposure_policy.md](docs/rvr_ros_exposure_policy.md) explains the ROS exposure policy: full API parity belongs in `sphero_rvr_core`; ROS exposes only typed, bounded, operational surfaces.
 - [docs/rvr_api_gap_report.md](docs/rvr_api_gap_report.md) is the parity handoff: what is implemented, what remains intentionally core-only/omitted, and which commands validate the state.
@@ -152,36 +153,22 @@ ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true
 
 See `docs/mapping.md`, `docs/slam_replay.md`, and `docs/lidar_collision_stop_supervisor.md` before running live mapping.
 
-## Roadmap: lidar, SLAM, cameras, autonomy, and AI commands
+## Product roadmap
 
-Near-term roadmap after the base driver/TUI is stable:
+The driver, lidar/camera calibration, collision boundary, replay SLAM, semantic artifacts, typed Mission API, and bounded LLM planner are foundations for the product rather than separate end states.
 
-1. **Lidar + scan visualization** — add a ROS 2-supported USB 2D lidar, publish `/scan`, add `base_link -> laser`, and verify in RViz while stationary.
-2. **Manual SLAM mapping** — run `slam_toolbox`, drive slowly with teleop/TUI, and save room maps with `nav2_map_server`.
-3. **Camera + object recognition** — start with a cheap USB webcam or Raspberry Pi Camera Module 3 for object inventory; keep the software interface swappable for a later depth camera such as a used RealSense D435 or Luxonis OAK-D Lite.
-4. **Semantic map labels** — combine object detections with robot pose, camera bearing, and later depth estimates to place labels on the saved map.
-5. **Localization + cautious Nav2** — only after map save/load, odometry/tf, stop/estop, stale-command timeout, and localization are reliable.
-6. **AI command layer** — support high-level requests such as “map the room” or “map the room and identify objects” by mapping natural language to allowlisted deterministic ROS workflows/actions. The LLM must not directly publish arbitrary `/cmd_vel` or bypass motor safety gates.
+The active sequence is:
 
-Target AI shape:
+1. persistent no-motion mission service with truthful live status;
+2. bounded submit/status/cancel client;
+3. measured navigation through the collision supervisor;
+4. adaptive LLM exploration over validated candidate objectives;
+5. live observation, object detection, semantic projection, and coverage;
+6. supervised shoe-mapping vertical slice;
+7. map-driven conversational web interface;
+8. point-to-point navigation and a second semantic mission.
 
-```text
-User: “map the room”
-  -> AI parses intent: map_the_room
-  -> checks prerequisites and safety gates
-  -> calls deterministic ROS workflow/action
-  -> workflow launches lidar + SLAM + manual mapping helpers
-  -> map files are saved, verified, and reported
-
-User: “map the room and identify all objects”
-  -> AI parses intent: semantic_map_room
-  -> checks lidar, camera, detector, tf, SLAM, and safety gates
-  -> workflow launches lidar + SLAM + camera + object detector
-  -> operator manually drives the mapping route
-  -> occupancy map + semantic object layer are saved and verified
-```
-
-Detailed planning lives in [STATUS.md](STATUS.md#lidar-slam-and-autonomy-roadmap), [STATUS.md](STATUS.md#camera-object-recognition-and-semantic-mapping-roadmap), and [STATUS.md](STATUS.md#ai-command-layer-roadmap).
+See [docs/product_direction.md](docs/product_direction.md) for the product contract. `STATUS.md` retains hardware history and the current implementation handoff.
 
 ## Safe ROS operational surface notes
 
@@ -196,8 +183,8 @@ The ROS adapter deliberately exposes only the safe subset selected in `docs/rvr_
 ROS-free validation on development hosts:
 
 ```bash
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests/test_ros_safe_surfaces.py tests/test_ros_node_config.py tests/test_diagnostics.py -q
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests -q
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_ros_safe_surfaces.py tests/test_ros_node_config.py tests/test_diagnostics.py
+python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv
 PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m compileall -q src
 ```
 
@@ -227,18 +214,18 @@ These commands are safe on development hosts because they use fake transports an
 python3 -m venv /tmp/sphero-rvr-ros-test
 /tmp/sphero-rvr-ros-test/bin/python -m pip install -e '.[dev]'
 
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest \
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
   tests/test_missing_command_builders.py \
   tests/test_response_parsers.py \
   tests/test_dispatcher.py \
-  tests/test_driver_capability_coverage.py -q
+  tests/test_driver_capability_coverage.py
 
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest \
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
   tests/test_ros_safe_surfaces.py \
   tests/test_ros_node_config.py \
-  tests/test_diagnostics.py -q
+  tests/test_diagnostics.py
 
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests -q
+python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv
 PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m compileall -q src
 git diff --check
 ```
@@ -759,7 +746,7 @@ For core-driver development on a non-ROS machine:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
-python -m pytest -q
+python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv
 ```
 
 ## Troubleshooting

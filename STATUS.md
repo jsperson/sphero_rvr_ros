@@ -1,30 +1,18 @@
 # Sphero RVR ROS Project Status
 
-Updated: 2026-07-16T16:49:16Z
+Updated: 2026-07-21
 
 ## Current repo state
 
-- Branch: `main`
-- Local and `origin/main` baseline before the camera/install follow-up: `4b094bb chore: add Pi install helper`.
-- Latest confirmed Pi source baseline on `sphero-pi-2`: `b4a083b Isolate rvr-console managed launch logs` in `/home/jsperson/ros2_ws/src/sphero_rvr_ros`. The Pi checkout also contains the previously validated camera/install follow-up files pending reconciliation with the reviewed local change set.
-- PR #6/#7/#8/#11 are merged on `main`:
-  - PR #6: fixed TUI service executor/spin behavior used by STOP/ESTOP/clear flows.
-  - PR #7: fixed TUI mapping map-save smoke path.
-  - PR #8: retries SLAM lifecycle activation while the lifecycle node registers.
-  - PR #11: isolates rvr-console managed launch logs from TUI rendering.
-- Follow-up install cleanup is staged for review: package the `install-rvr-pi` helper, document it as the preferred Pi install path, and keep the manual RPLIDAR/SLAM build commands as fallback.
-- Hardware-smoked on a Raspberry Pi 5: no-motion deploy/import gate, lidar-only safe mapping scaffold, restrained live STOP/ESTOP/TUI nudge, and full TUI mapping/map-save smoke all passed with the safety gates below.
-- Floor-motion odometry calibration was rechecked on 2026-07-16 with the lightweight rack. A 2.0-second duty-128 forward pulse traveled 2 inches straight with encoder deltas left=228/right=232 (mean=230), yielding 4527.559 counts/m. This is within 4.38% of the existing 4337.768 counts/m derived from longer runs, so the deployed/configured value remains unchanged.
-- Local API parity validation handoff remains `227 passed`; the latest milestone evidence is the Pi hardware-validation matrix below, not the older pending Pi/ROS validation wording.
-- Driver capability coverage has sentinel tests for every public async `RVRDriver` method, every public `RVRCommands` builder, explicit capability-matrix test-state tokens, parser/omission classification for response/event payloads, ROS-exposure test coverage for `ros-exposed` matrix rows, and the README validation checklist.
-- Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros`
-- Target Pi install: pulled/rebuilt with `colcon build --symlink-install --packages-select sphero_rvr_driver`
-- Background driver running through `ros2 launch sphero_rvr_driver rvr.launch.py`.
-- Convenience wrapper installed: `/home/jsperson/.local/bin/rvr-console`
-- Startup/install procedure installs camera capture tools, builds pinned Raspberry Pi PiSP-capable `libcamera` under `~/.local/rpi-libcamera`, and builds pinned `camera_ros` 0.6.0 source against that exact library to avoid substituting an unstable libcamera ABI under an independently updated binary. On `sphero-pi-2`, Ubuntu's generic libcamera did not enumerate the Pi Camera 3, but the Raspberry Pi build did: `cam --list` reported `imx708_wide_noir`, and `rvr-camera-node` publishes `/camera_node/image_raw` through the `camera_ros` node namespace.
-- Camera calibration has measured 800x600 defaults for the current payload. The robot-local CameraInfo file `/home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml` must be installed/restored on the Pi, backed up, checksum-verified, and validated through `/camera_node/camera_info` before semantic localization.
-- Lidar/camera mount TF defaults are measured for the current one-level rack payload: `base_link -> laser` uses `[-0.0074295,-0.009525,0.1905]` and yaw `3.1239668018215028`; `base_link -> camera_link` uses `[0.0587375,-0.0301625,0.1143]` and zero rpy.
-- Mechanical rack issue resolved: the previous three-level rack put too much weight/high center of gravity on the RVR and caused weak floor behavior. The working hardware layout is now a one-level rack with a narrow lidar tower: Pi 5, Pi battery, lidar, and Pi Camera 3 only on the robot. With that redesigned rack installed, `rvr-console` ran normally, confirming the weight/CG issue is resolved.
+- `main` and `origin/main`: `a1675335f5e2e998dd8a455d8833adec7fb1f43f` (`merge: persistent mission service slice 1`).
+- Main checkout is clean.
+- Active implementation draft: local branch `wip/m1-persistent-no-motion-service` at `d7dece7`.
+- The WIP branch adds the live read-only mission-service seam and passed `tests/test_mission_service.py`: 18 tests in 0.96 seconds using the bounded runner.
+- Current objective: deploy one persistent no-motion mission owner with truthful live status. Route submission and physical motion authority remain disabled in this package.
+- Product direction: map-driven web UI plus text-based LLM interaction for mapping, semantic search, adaptive exploration, and obstacle-avoiding navigation. See `docs/product_direction.md`.
+- Repository cleanup reduced task worktrees from 58 to one active in-repo WIP worktree. Historical dirty drafts and evidence are preserved under local `archive/kanban/*` branches.
+- Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros` on Ubuntu Server 24.04 / ROS 2 Jazzy.
+- The latest confirmed physical calibration and hardware-smoke history remains below; it predates the current SHA and is not evidence that M1 is deployed.
 
 ## Hardware-validation milestone closeout
 
@@ -99,9 +87,9 @@ Current no-hardware validation gates:
 python3 -m venv /tmp/sphero-rvr-ros-test
 /tmp/sphero-rvr-ros-test/bin/python -m pip install -e '.[dev]'
 
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests/test_missing_command_builders.py tests/test_response_parsers.py tests/test_dispatcher.py tests/test_driver_capability_coverage.py -q
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests/test_ros_safe_surfaces.py tests/test_ros_node_config.py tests/test_diagnostics.py -q
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests -q
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_missing_command_builders.py tests/test_response_parsers.py tests/test_dispatcher.py tests/test_driver_capability_coverage.py
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_ros_safe_surfaces.py tests/test_ros_node_config.py tests/test_diagnostics.py
+python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv
 PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m compileall -q src
 git diff --check
 ```
