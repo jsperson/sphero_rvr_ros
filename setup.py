@@ -37,6 +37,7 @@ setup(
             "share/sphero_rvr_driver/scripts",
             [
                 "scripts/install-rvr-pi",
+                "scripts/install-rvr-prompt-drive",
                 "scripts/rvr-camera-node",
                 "scripts/rvr-console",
                 "scripts/rvr-shoe-detector-eval",

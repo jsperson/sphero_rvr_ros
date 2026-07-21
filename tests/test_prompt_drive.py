@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -11,6 +13,7 @@ import pytest
 
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.prompt_drive import (
+    CodexOAuthPromptDriveProvider,
     OpenAIPromptDriveProvider,
     PromptDriveDecision,
     PromptDriveLimits,
@@ -238,8 +241,83 @@ def test_openai_provider_posts_first_party_response_and_does_not_expose_key(monk
     assert b"super-secret-test-key" not in request.data
 
 
+def test_codex_oauth_provider_requires_chatgpt_login_and_never_uses_api_key_overrides(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda command: "/opt/codex/bin/codex")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-propagate")
+    monkeypatch.setenv("CODEX_API_KEY", "must-not-propagate")
+    calls = []
+
+    def _run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 1, stdout="Not logged in", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+    provider = CodexOAuthPromptDriveProvider(model="gpt-5.6", reasoning_effort="high")
+
+    with pytest.raises(MissionValidationError, match="codex login --device-auth"):
+        provider.propose("Move forward 10 centimeters.", PromptDriveLimits())
+
+    command, kwargs = calls[0]
+    assert command == ["/opt/codex/bin/codex", "login", "status"]
+    assert "OPENAI_API_KEY" not in kwargs["env"]
+    assert "CODEX_API_KEY" not in kwargs["env"]
+
+
+def test_codex_oauth_provider_runs_toolless_ephemeral_structured_planner(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda command: "/opt/codex/bin/codex")
+    calls = []
+
+    def _run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[1:3] == ["login", "status"]:
+            return subprocess.CompletedProcess(command, 0, stdout="Logged in using ChatGPT\n", stderr="")
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "decision": "propose",
+                    "summary": "Move forward 10 cm and turn right 45 degrees.",
+                    "segments": [
+                        {"tool_name": "move_distance", "value": 0.1},
+                        {"tool_name": "turn_angle", "value": -45.0},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+    provider = CodexOAuthPromptDriveProvider(model="gpt-5.6", reasoning_effort="high")
+
+    response = provider.propose("Move forward 10 centimeters, then turn right 45 degrees.", PromptDriveLimits())
+
+    assert response.decision is PromptDriveDecision.PROPOSE
+    assert response.segments[1] == {"tool_name": "turn_angle", "value": -45.0}
+    command, kwargs = calls[1]
+    assert command[:2] == ["/opt/codex/bin/codex", "exec"]
+    assert "--ignore-user-config" in command
+    assert "--ignore-rules" in command
+    assert "--ephemeral" in command
+    assert [command[index + 1] for index, value in enumerate(command) if value == "--disable"] == [
+        "shell_tool",
+        "unified_exec",
+        "apps",
+        "multi_agent",
+        "web_search_request",
+    ]
+    assert 'web_search="disabled"' in command
+    assert 'model_reasoning_effort="high"' in command
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["input"]
+    assert "operator_prompt" in kwargs["input"]
+    assert "OPENAI_API_KEY" not in kwargs["env"]
+    assert "CODEX_API_KEY" not in kwargs["env"]
+    assert not os.path.exists(kwargs["cwd"])
+
+
 def test_proposal_only_cli_never_imports_ros_and_writes_safe_manifest(monkeypatch, tmp_path, capsys) -> None:
-    monkeypatch.setattr(prompt_drive_cli, "OpenAIPromptDriveProvider", lambda **kwargs: _FakeProvider(_provider_response()))
+    monkeypatch.setattr(prompt_drive_cli, "CodexOAuthPromptDriveProvider", lambda **kwargs: _FakeProvider(_provider_response()))
     sys.modules.pop("sphero_rvr_driver.prompt_drive_ros", None)
 
     result = prompt_drive_cli.main(
@@ -257,7 +335,7 @@ def test_proposal_only_cli_never_imports_ros_and_writes_safe_manifest(monkeypatc
 
 
 def test_execute_cli_requires_interactive_terminal_before_ros_import(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(prompt_drive_cli, "OpenAIPromptDriveProvider", lambda **kwargs: _FakeProvider(_provider_response()))
+    monkeypatch.setattr(prompt_drive_cli, "CodexOAuthPromptDriveProvider", lambda **kwargs: _FakeProvider(_provider_response()))
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     sys.modules.pop("sphero_rvr_driver.prompt_drive_ros", None)
 
@@ -275,6 +353,7 @@ def test_ros_executor_source_owns_only_route_request_and_never_velocity_or_motor
     setup = (REPO_ROOT / "setup.py").read_text()
 
     assert "rvr_prompt_drive = sphero_rvr_driver.prompt_drive_cli:main" in setup
+    assert "scripts/install-rvr-prompt-drive" in setup
     assert 'request_topic: str = "/mission_api/v2/live_route/request"' in source
     assert "create_publisher(String, self.request_topic, 10)" in source
     assert "from geometry_msgs" not in source

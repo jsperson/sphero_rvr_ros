@@ -11,7 +11,7 @@ from typing import Any, Mapping, Optional, Sequence
 from .mission_api import MissionValidationError
 from .prompt_drive import (
     ALLOWED_REASONING_EFFORTS,
-    OpenAIPromptDriveProvider,
+    CodexOAuthPromptDriveProvider,
     PromptDrivePlanner,
     PromptDriveProposal,
     approval_phrase,
@@ -24,15 +24,15 @@ from .prompt_drive import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rvr_prompt_drive",
-        description="Use a real OpenAI model to propose a bounded rover route. Default: proposal only, no ROS or motion.",
+        description="Use Pi-local Codex with ChatGPT OAuth to propose a bounded rover route. Default: proposal only, no ROS or motion.",
     )
     parser.add_argument("prompt", help="Quoted natural-language driving request")
-    parser.add_argument("--model", default=None, help="First-party OpenAI model (default: OPENAI_MODEL or project default)")
+    parser.add_argument("--model", default=None, help="Codex OpenAI model (default: OPENAI_MODEL or project default)")
     parser.add_argument(
         "--reasoning-effort",
         choices=ALLOWED_REASONING_EFFORTS,
         default="high",
-        help="OpenAI reasoning effort for route interpretation (default: high)",
+        help="Codex reasoning effort for route interpretation (default: high)",
     )
     parser.add_argument(
         "--execute",
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    provider = OpenAIPromptDriveProvider(model=args.model, reasoning_effort=args.reasoning_effort)
+    provider = CodexOAuthPromptDriveProvider(model=args.model, reasoning_effort=args.reasoning_effort)
     planner = PromptDrivePlanner(provider)
     try:
         proposal = planner.propose(args.prompt)
