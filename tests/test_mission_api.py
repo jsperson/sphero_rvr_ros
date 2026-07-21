@@ -1789,6 +1789,7 @@ def test_architecture_has_one_canonical_mission_api_module_and_registry() -> Non
         if (
             path.is_dir()
             or ".git" in path.parts
+            or ".worktrees" in path.parts
             or ".pytest_cache" in path.parts
             or "build" in path.parts
             or "dist" in path.parts
