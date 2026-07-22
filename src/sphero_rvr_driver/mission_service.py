@@ -862,6 +862,14 @@ class MissionService:
                 "events": self.events(row["mission_id"]),
             }
 
+    def latest_prompt_status(self, session_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT mission_id FROM prompt_missions WHERE session_id=? ORDER BY created_at_s DESC LIMIT 1",
+                (str(session_id),),
+            ).fetchone()
+            return None if row is None else self.prompt_status(row["mission_id"])
+
     def _prompt_row(self, mission_id: str) -> sqlite3.Row:
         row = self._connection.execute(
             "SELECT * FROM prompt_missions WHERE mission_id=?",
@@ -1533,6 +1541,8 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
             )
         if operation == "prompt_status":
             return self.prompt_controller.status(str(request.get("mission_id", "")))
+        if operation == "prompt_latest":
+            return self.service.latest_prompt_status(str(request.get("session_id", "")))
         if operation == "prompt_approve":
             return self.prompt_controller.approve(
                 str(request.get("mission_id", "")),

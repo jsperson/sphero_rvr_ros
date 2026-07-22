@@ -9,6 +9,7 @@ import pytest
 
 from sphero_rvr_driver.mission_web import (
     WEB_API_VERSION,
+    LiveMissionWebAdapter,
     MissionWebError,
     MockReplayMissionAdapter,
     WebMissionState,
@@ -16,9 +17,85 @@ from sphero_rvr_driver.mission_web import (
     handle_mission_web_request,
     make_server,
 )
+from sphero_rvr_driver.mission_api import MissionValidationError
 
 
 PROMPT = "Move forward 20 centimeters, turn left 45 degrees, then move forward 15 centimeters."
+
+
+class FakeLiveMissionClient:
+    def __init__(self) -> None:
+        self.proposal = _proposal(MockReplayMissionAdapter(source_sha="live-source"))["proposal"]
+        self.mission = None
+        self.submissions = []
+
+    def service_snapshot(self):
+        return {
+            "api_version": "mission_api.v2",
+            "mode": "live",
+            "source_sha": "live-source",
+            "deployed_sha": "live-deployed",
+            "planning_enabled": True,
+            "live_execution_enabled": False,
+            "capabilities": {
+                "query_status_telemetry@1.0": {
+                    "evidence": {
+                        "safety": {
+                            "collision_state": "UNKNOWN",
+                            "stop_active": False,
+                            "estop_latched": False,
+                        },
+                        "odom": {"fresh": False, "value": {"x_m": 0.2, "y_m": 0.3, "heading_deg": 4.0}},
+                        "collision": {"fresh": False, "value": {}},
+                        "route_progress": {"fresh": False, "value": {}},
+                        "semantic_map": {"fresh": False, "valid": False, "value": {}},
+                    }
+                }
+            },
+        }
+
+    def latest_prompt_status(self, session_id):
+        del session_id
+        return self.mission
+
+    def submit_prompt(self, prompt, *, session_id, source, mission_id=None):
+        del mission_id
+        self.submissions.append((prompt, session_id, source))
+        self.mission = self._snapshot("planning", proposal={})
+        return self.mission
+
+    def prompt_status(self, mission_id):
+        assert mission_id == "live-mission"
+        self.mission = self._snapshot("proposed", proposal=self.proposal)
+        return self.mission
+
+    def approve_prompt(self, mission_id, *, approval_phrase, operator):
+        del mission_id, approval_phrase, operator
+        raise MissionValidationError("live execution is disabled by reviewed service configuration")
+
+    def cancel_prompt(self, mission_id, *, reason):
+        del mission_id, reason
+        self.mission = self._snapshot("cancelled", proposal=self.proposal)
+        return self.mission
+
+    @staticmethod
+    def _snapshot(status, *, proposal):
+        return {
+            "mission_id": "live-mission",
+            "session_id": "web-session",
+            "status": status,
+            "proposal": proposal,
+            "approval": {},
+            "result": {},
+            "terminal_reason": "cancelled" if status == "cancelled" else "",
+            "events": [
+                {
+                    "event_id": 1,
+                    "kind": "planning" if status == "planning" else status,
+                    "payload": {"status": status},
+                }
+            ],
+        }
 
 
 def _proposal(adapter: MockReplayMissionAdapter, scenario: str = "success") -> dict:
@@ -183,7 +260,7 @@ def test_router_exposes_only_bounded_mock_routes_and_rejects_direct_command_path
         handle_mission_web_request("GET", "/api/mission/start", "", adapter)
 
 
-def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence_or_live_adapter() -> None:
+def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence() -> None:
     bundle = build_mission_web_bundle(app_name="RVR Test Console")
     page = bundle["index_html"]
 
@@ -229,6 +306,79 @@ def test_http_wrapper_serves_complete_mock_flow_with_security_headers() -> None:
             urllib.request.urlopen(forbidden, timeout=2.0)
         assert error.value.code == 400
         assert "not exposed" in json.loads(error.value.read())["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+    assert not thread.is_alive()
+
+
+def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_state() -> None:
+    client = FakeLiveMissionClient()
+    adapter = LiveMissionWebAdapter(client, session_id="web-session", operator="scott@example.com")
+
+    ready = adapter.snapshot()
+    assert ready["adapter"] == {
+        "mode": "live/proposal-only",
+        "fixture_only": False,
+        "live_execution_enabled": False,
+        "direct_ros_commands_allowed": False,
+        "credentials_accepted": False,
+        "service_source_sha": "live-source",
+        "service_deployed_sha": "live-deployed",
+        "boundary": "Pi-local MissionService Unix socket",
+    }
+    assert ready["mission"]["state"] == "READY"
+    assert ready["map"]["available"] is False
+    assert ready["map"]["fixture_only"] is False
+    assert ready["safety"]["telemetry_fresh"] is False
+
+    planning = adapter.propose(PROMPT, "live")
+    assert planning["mission"]["state"] == "PLANNING"
+    assert client.submissions == [(PROMPT, "web-session", "web")]
+    proposed = adapter.snapshot()
+    assert proposed["mission"]["state"] == "PROPOSED"
+    assert proposed["proposal"]["provider_id"] == "mock-replay"
+    assert proposed["approval"]["required"] is True
+    assert proposed["approval"]["enabled"] is False
+    assert proposed["approval"]["required_phrase"].startswith("APPROVE ")
+    with pytest.raises(MissionWebError, match="execution is disabled"):
+        adapter.approve(proposed["approval"]["required_phrase"])
+    assert adapter.cancel()["mission"]["state"] == "CANCELLED"
+
+
+def test_live_http_requires_exact_same_origin_for_state_changes() -> None:
+    adapter = LiveMissionWebAdapter(FakeLiveMissionClient(), session_id="web-session", operator="scott")
+    allowed_origin = "https://sphero-pi-2.example.ts.net"
+    server = make_server(port=0, adapter=adapter, allowed_origin=allowed_origin)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        payload = json.dumps({"prompt": PROMPT, "scenario": "live"}).encode()
+        missing_origin = urllib.request.Request(
+            f"{base}/api/web/mission/propose",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as missing_error:
+            urllib.request.urlopen(missing_origin, timeout=2.0)
+        assert missing_error.value.code == 403
+
+        authorized = urllib.request.Request(
+            f"{base}/api/web/mission/propose",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": allowed_origin,
+                "Sec-Fetch-Site": "same-origin",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(authorized, timeout=2.0) as response:
+            planning = json.loads(response.read())
+        assert planning["mission"]["state"] == "PLANNING"
     finally:
         server.shutdown()
         server.server_close()

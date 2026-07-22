@@ -80,6 +80,10 @@ class MissionServiceClient:
     def prompt_status(self, mission_id: str) -> Mapping[str, Any]:
         return self.call("prompt_status", mission_id=mission_id)
 
+    def latest_prompt_status(self, session_id: str) -> Optional[Mapping[str, Any]]:
+        result = self.call("prompt_latest", session_id=session_id)
+        return None if result is None else result
+
     def approve_prompt(
         self,
         mission_id: str,

@@ -1,4 +1,4 @@
-"""Mock/replay-only mission web console over typed rover contracts.
+"""Mission web console over typed mock/replay or Pi-local service contracts.
 
 The browser-facing router in this module has no ROS, serial, motor, OAuth, or
 live-execution adapter. Natural-language prompts are turned into deterministic
@@ -21,6 +21,7 @@ from typing import Any, Mapping, Optional, Protocol, Sequence
 from urllib.parse import urlsplit
 
 from .mission_api import MissionApiVersion, MissionValidationError
+from .mission_service_client import MissionServiceClient
 from .prompt_drive import (
     PROMPT_DRIVE_API_VERSION,
     PromptDriveDecision,
@@ -30,6 +31,7 @@ from .prompt_drive import (
     PromptDriveProviderResponse,
     approval_phrase,
     approved_live_route,
+    prompt_drive_proposal_from_json,
 )
 
 WEB_API_VERSION = "rvr_mission_web.v1"
@@ -44,7 +46,11 @@ class MissionWebError(ValueError):
 
 class WebMissionState(str, Enum):
     READY = "READY"
+    RECEIVED = "RECEIVED"
+    PLANNING = "PLANNING"
     PROPOSED = "PROPOSED"
+    APPROVED = "APPROVED"
+    QUEUED = "QUEUED"
     REJECTED = "REJECTED"
     RUNNING = "RUNNING"
     COMPLETE = "COMPLETE"
@@ -52,6 +58,8 @@ class WebMissionState(str, Enum):
     STOPPED = "STOPPED"
     ESTOPPED = "ESTOPPED"
     BLOCKED = "BLOCKED"
+    FAILED = "FAILED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
 
 
 class MockScenario(str, Enum):
@@ -64,6 +72,10 @@ class MockScenario(str, Enum):
     STALE = "stale_telemetry"
 
 
+class LiveScenario(str, Enum):
+    LIVE = "live"
+
+
 TERMINAL_STATES = {
     WebMissionState.REJECTED,
     WebMissionState.COMPLETE,
@@ -71,12 +83,14 @@ TERMINAL_STATES = {
     WebMissionState.STOPPED,
     WebMissionState.ESTOPPED,
     WebMissionState.BLOCKED,
+    WebMissionState.FAILED,
+    WebMissionState.RECOVERY_REQUIRED,
 }
 
 
 @dataclass(frozen=True)
 class ScenarioDefinition:
-    scenario: MockScenario
+    scenario: Enum
     label: str
     description: str
 
@@ -96,6 +110,14 @@ SCENARIOS: tuple[ScenarioDefinition, ...] = (
     ScenarioDefinition(MockScenario.ESTOP, "ESTOP", "The independent emergency stop latches the mock mission."),
     ScenarioDefinition(MockScenario.COLLISION, "Collision blocked", "The collision supervisor blocks progress before completion."),
     ScenarioDefinition(MockScenario.STALE, "Stale telemetry", "Old sensor evidence blocks execution fail-closed."),
+)
+
+LIVE_SCENARIOS: tuple[ScenarioDefinition, ...] = (
+    ScenarioDefinition(
+        LiveScenario.LIVE,
+        "Pi mission service",
+        "Real Pi-local OAuth planning; physical execution follows the deployed service gate.",
+    ),
 )
 
 
@@ -398,6 +420,7 @@ class MockReplayMissionAdapter:
             "proposal": proposal_payload,
             "approval": {
                 "required": bool(self._proposal and self._proposal.executable),
+                "enabled": bool(self._proposal and self._proposal.executable),
                 "approved": self._approval_granted,
                 "proposal_digest": "" if self._proposal is None else self._proposal.proposal_digest,
                 "required_phrase": phrase,
@@ -413,6 +436,280 @@ class MockReplayMissionAdapter:
             "events": [event.to_json_dict() for event in self._events],
             "map": self.map_fixture.to_json_dict(progress=self._progress),
         }
+
+
+class LiveMissionWebAdapter:
+    """Default-disabled browser adapter over the Pi-local Unix socket only."""
+
+    direct_ros_commands_allowed = False
+    credentials_accepted = False
+
+    def __init__(
+        self,
+        client: MissionServiceClient,
+        *,
+        session_id: str = "rvr-web-console",
+        operator: str = "tailscale-operator",
+    ) -> None:
+        self.client = client
+        self.session_id = str(session_id).strip()
+        self.operator = str(operator).strip()
+        if not self.session_id or not self.operator:
+            raise MissionWebError("live web session and operator identity are required")
+        self._lock = threading.RLock()
+        self._mission_id: Optional[str] = None
+        try:
+            service = dict(self.client.service_snapshot())
+        except MissionValidationError as exc:
+            raise MissionWebError(str(exc)) from exc
+        if service.get("mode") != "live":
+            raise MissionWebError("live web adapter requires a live-mode Pi mission service")
+        self._service_snapshot = service
+        self.live_execution_enabled = bool(service.get("live_execution_enabled", False))
+        self.mode = "live" if self.live_execution_enabled else "live/proposal-only"
+
+    def scenarios(self) -> Sequence[ScenarioDefinition]:
+        return LIVE_SCENARIOS
+
+    def snapshot(self) -> Mapping[str, Any]:
+        with self._lock:
+            try:
+                self._service_snapshot = dict(self.client.service_snapshot())
+                mission = (
+                    self.client.prompt_status(self._mission_id)
+                    if self._mission_id is not None
+                    else self.client.latest_prompt_status(self.session_id)
+                )
+            except MissionValidationError as exc:
+                raise MissionWebError(str(exc)) from exc
+            if mission is not None:
+                self._mission_id = str(mission["mission_id"])
+            self.live_execution_enabled = bool(
+                self._service_snapshot.get("live_execution_enabled", False)
+            )
+            self.mode = "live" if self.live_execution_enabled else "live/proposal-only"
+            return self._translate(None if mission is None else dict(mission))
+
+    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
+        if str(scenario) != LiveScenario.LIVE.value:
+            raise MissionWebError("live adapter accepts only the Pi mission-service scenario")
+        with self._lock:
+            try:
+                snapshot = self.client.submit_prompt(
+                    prompt,
+                    session_id=self.session_id,
+                    source="web",
+                )
+            except MissionValidationError as exc:
+                raise MissionWebError(str(exc)) from exc
+            self._mission_id = str(snapshot["mission_id"])
+            return self._translate(dict(snapshot))
+
+    def approve(self, supplied_approval: str) -> Mapping[str, Any]:
+        with self._lock:
+            if self._mission_id is None:
+                raise MissionWebError("a persisted live proposal is required before approval")
+            try:
+                snapshot = self.client.approve_prompt(
+                    self._mission_id,
+                    approval_phrase=supplied_approval,
+                    operator=self.operator,
+                )
+            except MissionValidationError as exc:
+                raise MissionWebError(str(exc)) from exc
+            return self._translate(dict(snapshot))
+
+    def advance(self) -> Mapping[str, Any]:
+        # Polling observes the Pi owner; it never advances or executes live state.
+        return self.snapshot()
+
+    def cancel(self) -> Mapping[str, Any]:
+        with self._lock:
+            if self._mission_id is None:
+                raise MissionWebError("a persisted live mission is required before cancellation")
+            try:
+                snapshot = self.client.cancel_prompt(
+                    self._mission_id,
+                    reason="authenticated browser operator cancelled mission",
+                )
+            except MissionValidationError as exc:
+                raise MissionWebError(str(exc)) from exc
+            return self._translate(dict(snapshot))
+
+    def _translate(self, mission: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+        capabilities = self._service_snapshot.get("capabilities", {})
+        capability = (
+            capabilities.get("query_status_telemetry@1.0", {})
+            if isinstance(capabilities, Mapping)
+            else {}
+        )
+        live_evidence = capability.get("evidence", {}) if isinstance(capability, Mapping) else {}
+        if not isinstance(live_evidence, Mapping):
+            live_evidence = {}
+        safety = live_evidence.get("safety", {})
+        if not isinstance(safety, Mapping):
+            safety = {}
+        odom = live_evidence.get("odom", {})
+        collision = live_evidence.get("collision", {})
+        route_progress = live_evidence.get("route_progress", {})
+        required_fresh = bool(
+            isinstance(odom, Mapping)
+            and isinstance(collision, Mapping)
+            and odom.get("fresh", False)
+            and collision.get("fresh", False)
+        )
+
+        if mission is None:
+            state = WebMissionState.READY.value
+            proposal: Mapping[str, Any] = {}
+            terminal_reason = ""
+            events: Sequence[Mapping[str, Any]] = ()
+            result: Mapping[str, Any] = {}
+            mission_id = ""
+            approval: Mapping[str, Any] = {}
+        else:
+            state = _web_state(str(mission.get("status", "failed")))
+            proposal = mission.get("proposal", {}) if isinstance(mission.get("proposal", {}), Mapping) else {}
+            terminal_reason = str(mission.get("terminal_reason", ""))
+            events = mission.get("events", ()) if isinstance(mission.get("events", ()), Sequence) else ()
+            result = mission.get("result", {}) if isinstance(mission.get("result", {}), Mapping) else {}
+            mission_id = str(mission.get("mission_id", ""))
+            approval = mission.get("approval", {}) if isinstance(mission.get("approval", {}), Mapping) else {}
+
+        phrase = ""
+        if proposal:
+            try:
+                phrase = approval_phrase(prompt_drive_proposal_from_json(proposal))
+            except MissionValidationError:
+                phrase = ""
+        progress_value = 0.0
+        if isinstance(route_progress, Mapping):
+            route_value = route_progress.get("value", {})
+            if isinstance(route_value, Mapping):
+                try:
+                    progress_value = max(0.0, min(1.0, float(route_value.get("progress", 0.0))))
+                except (TypeError, ValueError):
+                    progress_value = 0.0
+        if state == WebMissionState.COMPLETE.value:
+            progress_value = 1.0
+
+        translated_events = []
+        for index, event in enumerate(events, start=1):
+            if not isinstance(event, Mapping):
+                continue
+            payload = event.get("payload", {})
+            if not isinstance(payload, Mapping):
+                payload = {}
+            translated_events.append(
+                {
+                    "sequence": int(event.get("event_id", index)),
+                    "event_type": str(event.get("kind", "event")),
+                    "message": str(
+                        payload.get("reason")
+                        or payload.get("status")
+                        or payload.get("source")
+                        or event.get("kind", "mission event")
+                    ),
+                }
+            )
+
+        return {
+            "web_api_version": WEB_API_VERSION,
+            "mission_api_version": MissionApiVersion.V2.value,
+            "prompt_drive_api_version": PROMPT_DRIVE_API_VERSION,
+            "adapter": {
+                "mode": self.mode,
+                "fixture_only": False,
+                "live_execution_enabled": self.live_execution_enabled,
+                "direct_ros_commands_allowed": False,
+                "credentials_accepted": False,
+                "service_source_sha": self._service_snapshot.get("source_sha", ""),
+                "service_deployed_sha": self._service_snapshot.get("deployed_sha", ""),
+                "boundary": "Pi-local MissionService Unix socket",
+            },
+            "scenario": LiveScenario.LIVE.value,
+            "proposal": dict(proposal) if proposal else None,
+            "approval": {
+                "required": bool(proposal) and state == WebMissionState.PROPOSED.value,
+                "enabled": self.live_execution_enabled and state == WebMissionState.PROPOSED.value,
+                "approved": bool(approval.get("approved", False)),
+                "proposal_digest": str(proposal.get("proposal_digest", "")) if proposal else "",
+                "required_phrase": phrase,
+                "simulation_only": False,
+            },
+            "mission": {
+                "mission_id": mission_id,
+                "state": state,
+                "progress": progress_value,
+                "terminal": state in {item.value for item in TERMINAL_STATES},
+                "terminal_reason": terminal_reason,
+                "result": dict(result),
+            },
+            "safety": {
+                "stop_active": bool(safety.get("stop_active", False)),
+                "estop_latched": bool(safety.get("estop_latched", False)),
+                "collision_state": str(safety.get("collision_state", "UNKNOWN")),
+                "telemetry_fresh": required_fresh,
+                "independent_robot_safety": True,
+                "browser_is_sole_safety_mechanism": False,
+            },
+            "events": translated_events,
+            "map": _authoritative_live_map(live_evidence),
+        }
+
+
+def _web_state(status: str) -> str:
+    normalized = str(status).strip().lower()
+    mapping = {
+        "received": WebMissionState.RECEIVED,
+        "planning": WebMissionState.PLANNING,
+        "proposed": WebMissionState.PROPOSED,
+        "approved": WebMissionState.APPROVED,
+        "queued": WebMissionState.QUEUED,
+        "running": WebMissionState.RUNNING,
+        "cancel_requested": WebMissionState.RUNNING,
+        "complete": WebMissionState.COMPLETE,
+        "cancelled": WebMissionState.CANCELLED,
+        "stopped": WebMissionState.STOPPED,
+        "estopped": WebMissionState.ESTOPPED,
+        "blocked": WebMissionState.BLOCKED,
+        "rejected": WebMissionState.REJECTED,
+        "failed": WebMissionState.FAILED,
+        "recovery_required": WebMissionState.RECOVERY_REQUIRED,
+    }
+    return mapping.get(normalized, WebMissionState.FAILED).value
+
+
+def _authoritative_live_map(live_evidence: Mapping[str, Any]) -> dict[str, Any]:
+    semantic = live_evidence.get("semantic_map", {})
+    if isinstance(semantic, Mapping) and semantic.get("fresh") and semantic.get("valid"):
+        value = semantic.get("value", {})
+        if isinstance(value, Mapping):
+            candidate = value.get("map", value)
+            required = {"bounds", "rover", "proposed_route", "traveled_path", "obstacles", "objects"}
+            if isinstance(candidate, Mapping) and required <= set(candidate):
+                result = json.loads(json.dumps(dict(candidate), allow_nan=False))
+                result.update({"available": True, "fixture_only": False, "source": "Pi mission service"})
+                return result
+    odom = live_evidence.get("odom", {})
+    odom_value = odom.get("value", {}) if isinstance(odom, Mapping) else {}
+    rover = {
+        "x_m": float(odom_value.get("x_m", 0.0)) if isinstance(odom_value, Mapping) else 0.0,
+        "y_m": float(odom_value.get("y_m", 0.0)) if isinstance(odom_value, Mapping) else 0.0,
+        "yaw_deg": float(odom_value.get("heading_deg", 0.0)) if isinstance(odom_value, Mapping) else 0.0,
+    }
+    return {
+        "available": False,
+        "unavailable_reason": "authoritative semantic map is missing, invalid, or stale",
+        "frame": "unavailable",
+        "bounds": {"origin": {"x_m": 0.0, "y_m": 0.0}, "width_m": 1.0, "height_m": 1.0},
+        "rover": rover,
+        "proposed_route": [],
+        "traveled_path": [],
+        "obstacles": [],
+        "objects": [],
+        "fixture_only": False,
+    }
 
 
 def build_mission_web_bundle(*, app_name: str = "RVR Mission Console") -> Mapping[str, Any]:
@@ -493,12 +790,29 @@ def _json_response(status: int, payload: Mapping[str, Any], *, content_type: str
 
 
 class _MissionWebHttpHandler(BaseHTTPRequestHandler):
-    server_version = "RvrMockMissionWeb/1.0"
+    server_version = "RvrMissionWeb/1.0"
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         self._dispatch("")
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        normalized_path = urlsplit(self.path).path.rstrip("/") or "/"
+        if normalized_path in {"/api/motor", "/api/ros", "/api/write", "/cmd_vel", "/cmd_vel_motor"}:
+            self._send_error(400, f"live or direct command route is not exposed: {normalized_path}")
+            return
+        if bool(getattr(self.server, "enforce_same_origin", False)):
+            expected_origin = str(getattr(self.server, "allowed_origin", ""))
+            if self.headers.get("Origin", "") != expected_origin:
+                self._send_error(403, "state-changing request origin is not authorized")
+                return
+            fetch_site = self.headers.get("Sec-Fetch-Site", "same-origin")
+            if fetch_site not in {"same-origin", "none"}:
+                self._send_error(403, "cross-site state-changing request is not authorized")
+                return
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self._send_error(415, "state-changing requests require application/json")
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -550,21 +864,52 @@ def make_server(
     port: int = DEFAULT_PORT,
     *,
     adapter: Optional[MissionWebAdapter] = None,
+    allowed_origin: Optional[str] = None,
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, int(port)), _MissionWebHttpHandler)
     setattr(server, "mission_web_adapter", adapter or MockReplayMissionAdapter())
+    setattr(server, "enforce_same_origin", allowed_origin is not None)
+    setattr(server, "allowed_origin", "" if allowed_origin is None else str(allowed_origin).rstrip("/"))
     return server
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Serve the local mock/replay-only RVR mission web console.")
+    parser = argparse.ArgumentParser(description="Serve the loopback-only RVR mission web console.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--mode", choices=("mock", "live"), default="mock")
+    parser.add_argument(
+        "--mission-socket",
+        default="~/.local/state/sphero_rvr/mission-service.sock",
+        help="Pi-local MissionService Unix socket used only in live mode",
+    )
+    parser.add_argument("--session-id", default="rvr-web-console")
+    parser.add_argument("--operator", default="tailscale-operator")
+    parser.add_argument(
+        "--public-origin",
+        default=None,
+        help="Exact authenticated HTTPS origin required for live POST requests",
+    )
     args = parser.parse_args(argv)
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
-        parser.error("the mock web slice may bind only to a loopback host")
-    server = make_server(args.host, args.port)
-    print(f"RVR mock/replay web console: http://{args.host}:{server.server_address[1]}")
+        parser.error("the mission web service may bind only to a loopback host")
+    if args.mode == "live":
+        if not args.public_origin:
+            parser.error("live mode requires --public-origin for same-origin enforcement")
+        adapter: MissionWebAdapter = LiveMissionWebAdapter(
+            MissionServiceClient(args.mission_socket),
+            session_id=args.session_id,
+            operator=args.operator,
+        )
+        allowed_origin = args.public_origin
+    else:
+        adapter = MockReplayMissionAdapter()
+        allowed_origin = None
+    server = make_server(args.host, args.port, adapter=adapter, allowed_origin=allowed_origin)
+    print(
+        f"RVR {args.mode} web console on loopback: http://{args.host}:{server.server_address[1]} "
+        f"(live execution enabled: {adapter.live_execution_enabled})"
+    )
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
@@ -595,6 +940,10 @@ _INDEX_HTML = r'''<!doctype html>
     p { line-height:1.55; }
     .mode-badge { display:inline-flex; align-items:center; gap:.45rem; padding:.48rem .75rem; border:1px solid #2a7c72; border-radius:99px; color:var(--teal); background:#0b292b; font-size:.78rem; font-weight:800; letter-spacing:.08em; }
     .mode-badge::before { content:""; width:.52rem; height:.52rem; border-radius:50%; background:var(--teal); box-shadow:0 0 .8rem var(--teal); }
+    .mode-badge.live { color:var(--amber); border-color:#8f6729; background:#30220d; }
+    .mode-badge.live::before { background:var(--amber); box-shadow:0 0 .8rem var(--amber); }
+    .mode-badge.execution { color:var(--red); border-color:#8f3d43; background:#32161b; }
+    .mode-badge.execution::before { background:var(--red); box-shadow:0 0 .8rem var(--red); }
     .shell { width:min(1500px,100%); max-width:100%; margin:auto; padding:clamp(.8rem,2vw,1.5rem); overflow:hidden; }
     .safety-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:.65rem; margin-bottom:1rem; }
     .safety-cell { padding:.7rem .85rem; border:1px solid var(--line); border-radius:.75rem; background:rgba(14,27,43,.92); }
@@ -660,19 +1009,19 @@ _INDEX_HTML = r'''<!doctype html>
           <h2 id="mission-heading">Mission prompt</h2>
           <label class="field-label" for="mission-prompt">Tell the rover what to do</label>
           <textarea id="mission-prompt" data-testid="mission-prompt">Move forward 20 centimeters, turn left 45 degrees, then move forward 15 centimeters.</textarea>
-          <label class="field-label" for="scenario">Replay outcome</label>
+          <label class="field-label" for="scenario" id="scenario-label">Replay outcome</label>
           <select id="scenario" data-testid="scenario"></select>
           <div class="actions"><button class="primary" id="propose" data-testid="propose">Generate proposal</button></div>
           <div class="error" id="request-error" role="alert"></div>
         </section>
         <section class="panel" aria-labelledby="approval-heading">
           <h2 id="approval-heading">Simulation approval</h2>
-          <p class="hint">Approval is digest-bound and authorizes only the mock adapter.</p>
+          <p class="hint" id="approval-hint">Approval is digest-bound and authorizes only the mock adapter.</p>
           <label class="field-label" for="approval-input">Type the exact phrase shown with the proposal</label>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
           <div class="actions">
             <button class="primary" id="approve" data-testid="approve" disabled>Approve simulation</button>
-            <button class="danger" id="cancel" data-testid="cancel" disabled>Cancel simulation</button>
+            <button class="danger" id="cancel" data-testid="cancel" disabled>Cancel mission</button>
           </div>
         </section>
       </div>
@@ -724,6 +1073,15 @@ _INDEX_HTML = r'''<!doctype html>
     function render(snapshot) {
       current = snapshot;
       const proposal = snapshot.proposal;
+      const live = !snapshot.adapter.fixture_only;
+      const execution = live && snapshot.adapter.live_execution_enabled;
+      const badge = document.querySelector('[data-testid="mode-badge"]');
+      badge.className = `mode-badge${live ? ' live' : ''}${execution ? ' execution' : ''}`;
+      badge.textContent = live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      $('scenario-label').textContent = live ? 'Service target' : 'Replay outcome';
+      $('approval-heading').textContent = live ? 'Physical approval' : 'Simulation approval';
+      $('approval-hint').textContent = live ? (execution ? 'A fresh exact digest approval is required; the Pi remains the execution authority.' : 'Physical approval is locked by the deployed Pi configuration.') : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('approve').textContent = live ? 'Approve physical mission' : 'Approve simulation';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -732,9 +1090,9 @@ _INDEX_HTML = r'''<!doctype html>
       $('safety-telemetry').textContent = snapshot.safety.telemetry_fresh ? 'FRESH' : 'STALE — BLOCKED';
       $('safety-stop').textContent = snapshot.safety.stop_active ? 'ACTIVE' : 'READY';
       $('safety-estop').textContent = snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR';
-      $('approve').disabled = snapshot.mission.state !== 'PROPOSED';
-      $('approval-input').disabled = snapshot.mission.state !== 'PROPOSED';
-      $('cancel').disabled = !['PROPOSED','RUNNING'].includes(snapshot.mission.state);
+      $('approve').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
+      $('approval-input').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
+      $('cancel').disabled = !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       if (proposal) {
         const segments = proposal.segments.map((segment, index) => `<div class="segment"><span>${index + 1}. <code>${escapeHtml(segment.tool_id)}</code></span><strong>${escapeHtml(JSON.stringify(segment.arguments))}</strong></div>`).join('');
         const limits = Object.entries(proposal.limits).map(([key,value]) => `<span class="chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join('');
@@ -761,7 +1119,8 @@ _INDEX_HTML = r'''<!doctype html>
       const obstacles = map.obstacles.map((o) => `<g><rect x="${sx(o.x_m)}" y="${sy(o.y_m + o.height_m)}" width="${o.width_m/map.bounds.width_m*(W-pad*2)}" height="${o.height_m/map.bounds.height_m*(H-pad*2)}" rx="8" fill="#42576b" stroke="#6f8497"/><text x="${sx(o.x_m)+8}" y="${sy(o.y_m + o.height_m)+20}" fill="#b8c8d4" font-size="14">${escapeHtml(o.label)}</text></g>`).join('');
       const objects = map.objects.map((o) => `<g><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="10" fill="#ffca6b"/><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="18" fill="none" stroke="#ffca6b" opacity=".45"/><text x="${sx(o.x_m)+15}" y="${sy(o.y_m)-10}" fill="#ffdf9d" font-size="15">${escapeHtml(o.label)} ${Math.round(o.confidence*100)}%</text></g>`).join('');
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      svg.innerHTML = `${grid}<rect x="${pad}" y="${pad}" width="${W-pad*2}" height="${H-pad*2}" fill="none" stroke="#385168" stroke-width="3"/>${obstacles}<polyline points="${points(map.proposed_route)}" fill="none" stroke="#78a9ff" stroke-width="5" stroke-dasharray="10 10"/>${map.traveled_path.length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#5de4c7" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(map.rover.x_m)} ${sy(map.rover.y_m)}) rotate(${map.rover.yaw_deg})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#5de4c7" stroke="#d4fff7" stroke-width="2"/></g>`;
+      const unavailable = map.available === false ? `<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#91a9aa" font-size="20">${escapeHtml(map.unavailable_reason || 'Authoritative map unavailable')}</text>` : '';
+      svg.innerHTML = `${grid}<rect x="${pad}" y="${pad}" width="${W-pad*2}" height="${H-pad*2}" fill="none" stroke="#385168" stroke-width="3"/>${obstacles}<polyline points="${points(map.proposed_route)}" fill="none" stroke="#78a9ff" stroke-width="5" stroke-dasharray="10 10"/>${map.traveled_path.length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#5de4c7" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}${unavailable}<g transform="translate(${sx(map.rover.x_m)} ${sy(map.rover.y_m)}) rotate(${map.rover.yaw_deg})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#5de4c7" stroke="#d4fff7" stroke-width="2"/></g>`;
     }
 
     async function loadScenarios() {
@@ -776,6 +1135,7 @@ _INDEX_HTML = r'''<!doctype html>
         const snapshot = await api('/api/web/mission/propose', {method:'POST', body:JSON.stringify({prompt:$('mission-prompt').value, scenario:$('scenario').value})});
         $('approval-input').value = '';
         render(snapshot);
+        if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();
       } catch (error) { $('request-error').textContent = error.message; }
     }
 
@@ -797,7 +1157,7 @@ _INDEX_HTML = r'''<!doctype html>
     function startTimer() {
       stopTimer();
       timer = setInterval(async () => {
-        try { render(await api('/api/web/mission/advance', {method:'POST', body:'{}'})); }
+        try { render(current && current.adapter.fixture_only ? await api('/api/web/mission/advance', {method:'POST', body:'{}'}) : await api('/api/web/state')); }
         catch (error) { stopTimer(); $('request-error').textContent = error.message; }
       }, 650);
     }
