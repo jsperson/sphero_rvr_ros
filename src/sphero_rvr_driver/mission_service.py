@@ -7,9 +7,10 @@ restarts.  Motion is never resumed from persisted state.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -21,6 +22,7 @@ import stat
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .mission_api import (
+    CapabilityAvailability,
     CapabilityRegistry,
     ApprovalGrant,
     CriterionKind,
@@ -52,6 +54,73 @@ _TERMINAL_STATUSES = {
 }
 
 
+@dataclass(frozen=True)
+class ExecutorBinding:
+    """Process-local authority binding for one declared capability."""
+
+    executor: Any
+    mode: str
+    credential_namespace: str
+    heartbeat_at_s: float
+    max_age_s: float
+    evidence: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"replay", "live"}:
+            raise MissionValidationError("executor binding mode must be replay or live")
+        if not str(self.credential_namespace).strip():
+            raise MissionValidationError("executor binding credential namespace is required")
+        if not isinstance(self.heartbeat_at_s, (int, float)) or not math.isfinite(
+            float(self.heartbeat_at_s)
+        ):
+            raise MissionValidationError("executor binding heartbeat must be finite")
+        if (
+            not isinstance(self.max_age_s, (int, float))
+            or not math.isfinite(float(self.max_age_s))
+            or float(self.max_age_s) <= 0.0
+        ):
+            raise MissionValidationError(
+                "executor binding max age must be positive and finite"
+            )
+        if not isinstance(self.evidence, Mapping) or not self.evidence:
+            raise MissionValidationError("executor binding evidence is required")
+        try:
+            evidence = json.loads(_json_dump(dict(self.evidence)))
+        except (TypeError, ValueError) as exc:
+            raise MissionValidationError(
+                "executor binding evidence must be bounded JSON data"
+            ) from exc
+        object.__setattr__(self, "heartbeat_at_s", float(self.heartbeat_at_s))
+        object.__setattr__(self, "max_age_s", float(self.max_age_s))
+        object.__setattr__(self, "evidence", evidence)
+
+
+class _ExecutorRouter:
+    """Dispatch replay invocations to the executor bound for each tool id."""
+
+    cooperative_execution = True
+    execution_mode = "replay"
+    authority_kind = "replay"
+    healthy = True
+    evidence_level = "mission_service_binding"
+
+    def __init__(self, service: "MissionService", tool_ids: Sequence[str]) -> None:
+        self._service = service
+        self.supported_tool_ids = tuple(tool_ids)
+        preconditions: set[str] = set()
+        for tool_id in tool_ids:
+            binding = service._require_healthy_binding(tool_id)
+            preconditions.update(
+                str(item)
+                for item in (getattr(binding.executor, "satisfied_preconditions", ()) or ())
+            )
+        self.satisfied_preconditions = tuple(sorted(preconditions))
+
+    def begin_execution(self, invocation: ToolInvocation, definition: Any, **kwargs: Any) -> Any:
+        binding = self._service._require_healthy_binding(invocation.tool_id)
+        return binding.executor.begin_execution(invocation, definition, **kwargs)
+
+
 class MissionService:
     """Own persistent session authority and bind one execution mode."""
 
@@ -64,6 +133,7 @@ class MissionService:
         registry: Optional[CapabilityRegistry] = None,
         adapters: Any = None,
         mode: str = "replay",
+        executor_bindings: Optional[Mapping[str, ExecutorBinding]] = None,
         session_budgets: MissionBudgets = MissionBudgets(
             max_steps=8,
             max_runtime_s=120.0,
@@ -107,6 +177,32 @@ class MissionService:
         self.session_budgets = session_budgets
         self._clock_s = clock_s or time.time
         self._lock = threading.RLock()
+        self._executor_bindings: dict[str, ExecutorBinding] = {}
+        try:
+            if executor_bindings is None and self.mode == "replay":
+                now = self._now()
+                evidence = {
+                    "executor": self.adapters.__class__.__name__,
+                    "evidence_level": str(getattr(self.adapters, "evidence_level", "unspecified")),
+                    "deployed_sha": str(getattr(self.adapters, "deployed_sha", self.deployed_sha)),
+                }
+                executor_bindings = {
+                    definition.tool_id: ExecutorBinding(
+                        executor=self.adapters,
+                        mode="replay",
+                        credential_namespace="replay",
+                        heartbeat_at_s=now,
+                        max_age_s=60.0,
+                        evidence=evidence,
+                    )
+                    for definition in self.registry.definitions()
+                    if definition.availability is CapabilityAvailability.AVAILABLE
+                }
+            for tool_id, binding in (executor_bindings or {}).items():
+                self._bind_executor(str(tool_id), binding)
+        except Exception:
+            self._release_database_owner()
+            raise
         try:
             self._connection = sqlite3.connect(database_target, check_same_thread=False)
             self._connection.row_factory = sqlite3.Row
@@ -135,6 +231,177 @@ class MissionService:
         if self._database_owner_lock is not None and not self._database_owner_lock.closed:
             fcntl.flock(self._database_owner_lock.fileno(), fcntl.LOCK_UN)
             self._database_owner_lock.close()
+
+    def bind_executor(self, tool_id: str, binding: ExecutorBinding) -> None:
+        """Bind one declared tool to a live process-local executor authority."""
+
+        with self._lock:
+            self._bind_executor(tool_id, binding)
+
+    def heartbeat_executor(
+        self,
+        tool_id: str,
+        *,
+        evidence: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Refresh one binding without changing its authority or credentials."""
+
+        with self._lock:
+            try:
+                binding = self._executor_bindings[tool_id]
+            except KeyError as exc:
+                raise MissionValidationError(
+                    f"executor binding is missing for {tool_id}"
+                ) from exc
+            refreshed_evidence = binding.evidence if evidence is None else evidence
+            refreshed = replace(
+                binding,
+                heartbeat_at_s=self._now(),
+                evidence=dict(refreshed_evidence),
+            )
+            self._bind_executor(tool_id, refreshed)
+
+    def capabilities(self) -> dict[str, dict[str, Any]]:
+        """Return declared and currently usable capabilities with fresh evidence."""
+
+        with self._lock:
+            return {
+                f"{definition.tool_id}@{definition.version}": self._capability_state(
+                    definition.tool_id,
+                    definition.availability,
+                )
+                for definition in self.registry.definitions()
+            }
+
+    def _bind_executor(self, tool_id: str, binding: ExecutorBinding) -> None:
+        definitions = [
+            definition
+            for definition in self.registry.definitions()
+            if definition.tool_id == tool_id
+        ]
+        if not definitions:
+            raise MissionValidationError(f"cannot bind undeclared capability: {tool_id}")
+        expected_namespace = "physical" if self.mode == "live" else "replay"
+        if binding.mode != self.mode or binding.credential_namespace != expected_namespace:
+            raise MissionValidationError(
+                "executor binding mode/credential namespace cannot cross service authority"
+            )
+        expected_executor_mode = "physical" if self.mode == "live" else "replay"
+        executor_mode = str(getattr(binding.executor, "execution_mode", "unknown"))
+        if executor_mode != expected_executor_mode:
+            raise MissionValidationError(
+                "executor mode does not match mission service authority"
+            )
+        if float(binding.heartbeat_at_s) > self._now():
+            raise MissionValidationError("executor binding heartbeat cannot be in the future")
+        self._executor_bindings[tool_id] = binding
+
+    def _capability_state(
+        self,
+        tool_id: str,
+        availability: CapabilityAvailability,
+    ) -> dict[str, Any]:
+        binding = self._executor_bindings.get(tool_id)
+        if binding is None:
+            return {
+                "declared": True,
+                "bound": False,
+                "healthy": False,
+                "mode": self.mode,
+                "credential_namespace": "physical" if self.mode == "live" else "replay",
+                "availability": availability.value,
+                "fresh": False,
+                "heartbeat_at_s": None,
+                "age_s": None,
+                "max_age_s": None,
+                "evidence": {},
+                "health_reason": "executor binding is missing",
+            }
+        age_s = max(0.0, self._now() - float(binding.heartbeat_at_s))
+        fresh = age_s <= float(binding.max_age_s)
+        protocol_ready = bool(getattr(binding.executor, "cooperative_execution", False)) and callable(
+            getattr(binding.executor, "begin_execution", None)
+        )
+        bound = availability is CapabilityAvailability.AVAILABLE and protocol_ready
+        executor_healthy = bool(getattr(binding.executor, "healthy", False))
+        healthy = bound and fresh and executor_healthy
+        if availability is not CapabilityAvailability.AVAILABLE:
+            reason = f"capability is declared {availability.value}"
+        elif not protocol_ready:
+            reason = "executor lacks cooperative execution contract"
+        elif not fresh:
+            reason = "executor binding evidence is stale"
+        elif not executor_healthy:
+            reason = str(
+                getattr(binding.executor, "health_reason", "executor reported unhealthy")
+            )
+        else:
+            reason = "healthy"
+        return {
+            "declared": True,
+            "bound": bound,
+            "healthy": healthy,
+            "mode": binding.mode,
+            "credential_namespace": binding.credential_namespace,
+            "availability": availability.value,
+            "fresh": fresh,
+            "heartbeat_at_s": float(binding.heartbeat_at_s),
+            "age_s": age_s,
+            "max_age_s": float(binding.max_age_s),
+            "evidence": dict(binding.evidence),
+            "health_reason": reason,
+        }
+
+    def _require_healthy_binding(self, tool_id: str) -> ExecutorBinding:
+        definition = next(
+            (
+                item
+                for item in self.registry.definitions()
+                if item.tool_id == tool_id
+            ),
+            None,
+        )
+        if definition is None:
+            raise MissionValidationError(f"unknown tool: {tool_id}")
+        state = self._capability_state(tool_id, definition.availability)
+        if not state["healthy"]:
+            raise MissionValidationError(
+                f"tool {tool_id} executor {state['health_reason']}"
+            )
+        return self._executor_bindings[tool_id]
+
+    def _validate_executor_bindings(self, plan: MissionPlan) -> None:
+        for invocation in plan.invocations:
+            binding = self._require_healthy_binding(invocation.tool_id)
+            definition = self.registry.require(
+                invocation.tool_id,
+                invocation.tool_version,
+            )
+            satisfied = {
+                str(item)
+                for item in (
+                    getattr(binding.executor, "satisfied_preconditions", ()) or ()
+                )
+            }
+            missing = [item for item in definition.preconditions if item not in satisfied]
+            if missing:
+                raise MissionValidationError(
+                    f"tool {invocation.tool_id} precondition not attested by bound executor: {missing[0]}"
+                )
+
+    def _execution_adapters(self, plan: MissionPlan) -> Any:
+        bindings = [
+            self._require_healthy_binding(invocation.tool_id)
+            for invocation in plan.invocations
+        ]
+        executors = {id(binding.executor): binding.executor for binding in bindings}
+        if len(executors) == 1:
+            return next(iter(executors.values()))
+        if self.mode == "live":
+            raise MissionValidationError(
+                "live capability bindings require one reviewed physical adapter authority"
+            )
+        return _ExecutorRouter(self, tuple(invocation.tool_id for invocation in plan.invocations))
 
     def submit_plan(
         self,
@@ -170,11 +437,13 @@ class MissionService:
                 )
                 self._validate_authority(plan, namespace)
                 self._validate_session_latch(session_id)
+                self._validate_executor_bindings(plan)
                 ledger = self._session_ledger(session_id)
                 self._validate_cumulative_budget(plan, ledger)
+                execution_adapters = self._execution_adapters(plan)
                 runtime = DeterministicMissionRuntime(
                     self.registry,
-                    self.adapters,
+                    execution_adapters,
                     now_s=self._now(),
                     budget_ceilings=self.session_budgets,
                 )
@@ -861,6 +1130,8 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
             return self.service.session_status(str(request.get("session_id", "")))
         if operation == "cancel":
             return self.service.cancel(str(request.get("session_id", "")), reason=str(request.get("reason", "operator cancel")))
+        if operation == "capabilities":
+            return self.service.capabilities()
         if operation == "events":
             mission_id = request.get("mission_id")
             return self.service.events(None if mission_id is None else str(mission_id))

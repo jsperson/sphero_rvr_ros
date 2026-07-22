@@ -18,7 +18,11 @@ from sphero_rvr_driver.mission_api import (
     ToolInvocation,
     build_default_registry,
 )
-from sphero_rvr_driver.mission_service import MissionService, MissionServiceServer
+from sphero_rvr_driver.mission_service import (
+    ExecutorBinding,
+    MissionService,
+    MissionServiceServer,
+)
 
 
 def _service(database: Path, **kwargs):
@@ -262,6 +266,9 @@ def test_local_socket_service_owns_status_cancel_and_events(tmp_path: Path) -> N
         )
         assert submitted["status"] == "complete"
         assert server.dispatch({"operation": "status", "mission_id": "socket-mission"})["ledger"]["steps"] == 1
+        assert server.dispatch({"operation": "capabilities"})[
+            "query_status_telemetry@1.0"
+        ]["healthy"] is True
         assert server.dispatch({"operation": "events", "mission_id": "socket-mission"})[-1]["kind"] == "terminal"
         assert server.dispatch({"operation": "cancel", "session_id": "socket", "reason": "socket cancel"})["cancel_latched"] is True
     finally:
@@ -359,3 +366,265 @@ def test_injected_provenance_is_independent_of_unrelated_git_checkout(
     assert status["deployed_sha"] == "deployed-build-sha"
     assert all(event["source_sha"] == "reviewed-source-sha" for event in events)
     assert all(event["deployed_sha"] == "deployed-build-sha" for event in events)
+
+
+def _executor_binding(
+    executor: FakeCapabilityAdapters,
+    *,
+    heartbeat_at_s: float = 100.0,
+    max_age_s: float = 5.0,
+    mode: str = "replay",
+    credential_namespace: str = "replay",
+) -> ExecutorBinding:
+    return ExecutorBinding(
+        executor=executor,
+        mode=mode,
+        credential_namespace=credential_namespace,
+        heartbeat_at_s=heartbeat_at_s,
+        max_age_s=max_age_s,
+        evidence={"executor": "fake-status", "probe": "deterministic"},
+    )
+
+
+def test_healthy_executor_binding_reports_fresh_evidence_and_executes(tmp_path: Path) -> None:
+    now = [102.0]
+    executor = FakeCapabilityAdapters(deployed_sha="executor-sha")
+    service = _service(
+        tmp_path / "healthy.sqlite3",
+        adapters=executor,
+        executor_bindings={"query_status_telemetry": _executor_binding(executor)},
+        clock_s=lambda: now[0],
+    )
+
+    capability = service.capabilities()["query_status_telemetry@1.0"]
+    assert capability == {
+        "declared": True,
+        "bound": True,
+        "healthy": True,
+        "mode": "replay",
+        "credential_namespace": "replay",
+        "availability": "available",
+        "fresh": True,
+        "heartbeat_at_s": 100.0,
+        "age_s": 2.0,
+        "max_age_s": 5.0,
+        "evidence": {"executor": "fake-status", "probe": "deterministic"},
+        "health_reason": "healthy",
+    }
+    assert service.submit_plan(
+        _status_plan("bound-status", "status"), session_id="bound", source="api"
+    )["status"] == "complete"
+
+
+def test_missing_executor_binding_fails_closed_before_execution(tmp_path: Path) -> None:
+    service = _service(
+        tmp_path / "missing.sqlite3",
+        executor_bindings={},
+        clock_s=lambda: 100.0,
+    )
+
+    capability = service.capabilities()["query_status_telemetry@1.0"]
+    assert capability["declared"] is True
+    assert capability["bound"] is False
+    assert capability["healthy"] is False
+    assert capability["fresh"] is False
+    assert capability["health_reason"] == "executor binding is missing"
+    with pytest.raises(MissionValidationError, match="binding is missing"):
+        service.submit_plan(
+            _status_plan("missing-status", "status"), session_id="missing", source="api"
+        )
+    assert service.status("missing-status")["status"] == "rejected"
+
+
+def test_stale_crashed_and_recovered_executor_bindings_fail_closed(tmp_path: Path) -> None:
+    now = [106.0]
+    executor = FakeCapabilityAdapters(deployed_sha="executor-sha")
+    service = _service(
+        tmp_path / "recovery.sqlite3",
+        adapters=executor,
+        executor_bindings={"query_status_telemetry": _executor_binding(executor)},
+        clock_s=lambda: now[0],
+    )
+
+    stale = service.capabilities()["query_status_telemetry@1.0"]
+    assert stale["bound"] is True
+    assert stale["healthy"] is False
+    assert stale["fresh"] is False
+    assert stale["health_reason"] == "executor binding evidence is stale"
+    with pytest.raises(MissionValidationError, match="evidence is stale"):
+        service.submit_plan(
+            _status_plan("stale-status", "status-stale"),
+            session_id="stale",
+            source="api",
+        )
+
+    service.heartbeat_executor(
+        "query_status_telemetry",
+        evidence={"executor": "fake-status", "probe": "recovered"},
+    )
+    executor.healthy = False
+    crashed = service.capabilities()["query_status_telemetry@1.0"]
+    assert crashed["fresh"] is True
+    assert crashed["healthy"] is False
+    assert crashed["health_reason"] == "executor reported unhealthy"
+    with pytest.raises(MissionValidationError, match="reported unhealthy"):
+        service.submit_plan(
+            _status_plan("crashed-status", "status-crashed"),
+            session_id="crashed",
+            source="api",
+        )
+
+    executor.healthy = True
+    now[0] = 107.0
+    service.heartbeat_executor(
+        "query_status_telemetry",
+        evidence={"executor": "fake-status", "probe": "recovered"},
+    )
+    recovered = service.capabilities()["query_status_telemetry@1.0"]
+    assert recovered["healthy"] is True
+    assert recovered["evidence"]["probe"] == "recovered"
+    assert service.submit_plan(
+        _status_plan("recovered-status", "status-recovered"),
+        session_id="recovered",
+        source="api",
+    )["status"] == "complete"
+
+
+def test_restart_drops_live_bindings_and_never_restores_physical_authority(tmp_path: Path) -> None:
+    database = tmp_path / "live.sqlite3"
+    executor = FakeCapabilityAdapters(
+        execution_mode="physical",
+        authority_kind="physical",
+        deployed_sha="physical-executor-sha",
+    )
+    service = _service(
+        database,
+        adapters=executor,
+        mode="live",
+        executor_bindings={
+            "query_status_telemetry": _executor_binding(
+                executor,
+                mode="live",
+                credential_namespace="physical",
+            )
+        },
+        clock_s=lambda: 101.0,
+    )
+    assert service.capabilities()["query_status_telemetry@1.0"]["healthy"] is True
+    service.close()
+
+    restarted = _service(
+        database,
+        adapters=executor,
+        mode="live",
+        clock_s=lambda: 101.0,
+    )
+    capability = restarted.capabilities()["query_status_telemetry@1.0"]
+    assert capability["bound"] is False
+    assert capability["healthy"] is False
+    assert capability["health_reason"] == "executor binding is missing"
+    assert restarted.events() == []
+
+
+def test_binding_rejects_replay_physical_namespace_or_executor_mode_crossing(tmp_path: Path) -> None:
+    replay = FakeCapabilityAdapters(execution_mode="replay", authority_kind="replay")
+    service = _service(
+        tmp_path / "binding-cross.sqlite3",
+        adapters=replay,
+        executor_bindings={},
+        mode="replay",
+        clock_s=lambda: 100.0,
+    )
+
+    with pytest.raises(MissionValidationError, match="mode/credential namespace cannot cross"):
+        service.bind_executor(
+            "query_status_telemetry",
+            _executor_binding(replay, mode="live", credential_namespace="physical"),
+        )
+    physical = FakeCapabilityAdapters(execution_mode="physical", authority_kind="physical")
+    with pytest.raises(MissionValidationError, match="executor mode does not match"):
+        service.bind_executor(
+            "query_status_telemetry",
+            _executor_binding(physical),
+        )
+
+
+def test_distinct_status_and_observation_bindings_dispatch_to_their_executors(
+    tmp_path: Path,
+) -> None:
+    class RecordingExecutor(FakeCapabilityAdapters):
+        def __init__(self) -> None:
+            super().__init__(deployed_sha="recording-executor-sha")
+            self.calls: list[str] = []
+
+        def begin_execution(self, invocation, definition, **kwargs):
+            self.calls.append(invocation.tool_id)
+            return super().begin_execution(invocation, definition, **kwargs)
+
+    status_executor = RecordingExecutor()
+    observation_executor = RecordingExecutor()
+    plan = MissionPlan(
+        goal=MissionGoal(
+            goal_id="routed-bindings",
+            objective="Use separately bound status and observation executors.",
+            success_criteria=(
+                SuccessCriterion(
+                    "status-complete",
+                    "status completes",
+                    CriterionKind.TOOL_COMPLETE,
+                    tool_id="query_status_telemetry",
+                ),
+                SuccessCriterion(
+                    "observation-complete",
+                    "observation completes",
+                    CriterionKind.TOOL_COMPLETE,
+                    tool_id="capture_observation",
+                ),
+            ),
+            budgets=MissionBudgets(max_steps=2, max_runtime_s=10.0),
+        ),
+        invocations=(
+            ToolInvocation("routed-status", "query_status_telemetry", "1.0", {}),
+            ToolInvocation("routed-observation", "capture_observation", "1.0", {}),
+        ),
+    )
+    service = _service(
+        tmp_path / "routed.sqlite3",
+        executor_bindings={
+            "query_status_telemetry": _executor_binding(status_executor),
+            "capture_observation": _executor_binding(observation_executor),
+        },
+        clock_s=lambda: 101.0,
+    )
+
+    result = service.submit_plan(plan, session_id="routed", source="api")
+
+    assert result["status"] == "complete"
+    assert status_executor.calls == ["query_status_telemetry"]
+    assert observation_executor.calls == ["capture_observation"]
+
+
+def test_binding_metadata_rejects_nonfinite_freshness_values() -> None:
+    executor = FakeCapabilityAdapters()
+
+    with pytest.raises(MissionValidationError, match="heartbeat must be finite"):
+        _executor_binding(executor, heartbeat_at_s=float("nan"))
+    with pytest.raises(MissionValidationError, match="max age must be positive and finite"):
+        _executor_binding(executor, max_age_s=float("inf"))
+
+
+def test_invalid_initial_binding_releases_database_owner_lock(tmp_path: Path) -> None:
+    database = tmp_path / "invalid-binding.sqlite3"
+    physical = FakeCapabilityAdapters(execution_mode="physical", authority_kind="physical")
+
+    with pytest.raises(MissionValidationError, match="executor mode does not match"):
+        _service(
+            database,
+            adapters=physical,
+            executor_bindings={
+                "query_status_telemetry": _executor_binding(physical),
+            },
+        )
+
+    replacement = _service(database, adapters=FakeCapabilityAdapters())
+    replacement.close()
