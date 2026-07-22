@@ -72,6 +72,11 @@ class RecordingRouteExecutor:
         return True
 
 
+class NotReadyRouteExecutor(RecordingRouteExecutor):
+    def assert_ready(self):
+        raise MissionValidationError("live route approval requires STOP state READY")
+
+
 def _service(path: Path, *, execution_enabled: bool = False) -> MissionService:
     return MissionService(
         path,
@@ -198,6 +203,31 @@ def test_digest_mismatch_and_default_disabled_execution_fail_without_route(tmp_p
     finally:
         enabled_controller.close()
         enabled.close()
+
+
+def test_server_side_safety_readiness_blocks_approval_before_authority_is_persisted(tmp_path: Path) -> None:
+    service = _service(tmp_path / "not-ready.sqlite3", execution_enabled=True)
+    executor = NotReadyRouteExecutor()
+    controller = _controller(service, executor=executor)
+    try:
+        controller.submit("Move 10 cm", session_id="not-ready", mission_id="not-ready")
+        proposed = _wait_status(controller, "not-ready", {"proposed"})
+        proposal = prompt_drive_proposal_from_json(proposed["proposal"])
+
+        with pytest.raises(MissionValidationError, match="STOP state READY"):
+            controller.approve(
+                "not-ready",
+                supplied_approval=approval_phrase(proposal),
+                operator="scott",
+            )
+
+        unchanged = controller.status("not-ready")
+        assert unchanged["status"] == "proposed"
+        assert unchanged["approval"] == {}
+        assert executor.requests == []
+    finally:
+        controller.close()
+        service.close()
 
 
 def test_running_cancel_waits_for_executor_acknowledgement_and_terminal_result(tmp_path: Path) -> None:

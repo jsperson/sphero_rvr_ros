@@ -65,11 +65,14 @@ injecting authenticated tailnet identity when proxying to localhost. Do not plac
 another untrusted proxy between Serve and this listener, do not expose the port on
 the LAN, and do not use Tailscale Funnel.
 
-The current Pi owner reports `live_execution_enabled=false`; therefore the page is
+The normal Pi configuration reports `live_execution_enabled=false`; therefore the page is
 marked `LIVE - PROPOSAL ONLY / EXECUTION LOCKED`, proposal-only OAuth planning is
-available, and approval is disabled. Neither the web command nor its systemd unit
-can enable motion. A later reviewed executor binding and Pi configuration gate are
-both required before approval can queue a live route.
+available, and approval is disabled. The web command cannot enable motion. An
+attended operator may use the separately reviewed Pi configuration gate described
+in `docs/pi_mission_stack.md`; the service then installs the deterministic route
+executor only when the reviewed, source, and deployed SHAs match. Even in that mode,
+the UI and server keep approval disabled until authoritative odometry and safety
+evidence are fresh and clear. Missing STOP/ESTOP evidence renders `UNKNOWN`.
 
 ## HTTP routes
 
@@ -98,11 +101,11 @@ only a visualization and does no browser-side inference or planning.
 
 The package installs:
 
-- `rvr-mission-service.service`, the persistent no-motion owner;
+- `rvr-mission-service.service`, the persistent owner with execution default off;
 - `rvr-mission-web.service`, the loopback live/proposal-only UI;
 - `mission-stack.env.example`, which contains SHAs, port, and public origin only;
 - `install-rvr-mission-stack-services`, which installs but does not enable or
-  start the units.
+  start the units. Its execution variables default to `false` and blank.
 
 No OAuth token belongs in the environment file. The planner uses the Pi-local
 Codex CLI session, and `codex login status` must report `Logged in using ChatGPT`.

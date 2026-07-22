@@ -18,8 +18,8 @@ browser
 Planning credentials, proposal persistence, approval identity, and the exact
 digest gate stay on the Pi. The browser does not receive OAuth material and has
 no ROS, serial, motor, or OpenAI route. The deployed owner is intentionally
-proposal-only: `live_execution_enabled=false`, no route executor is installed,
-and the two systemd units start no motor-capable process.
+proposal-only: `live_execution_enabled=false`, so no route executor is
+instantiated, and the two systemd units start no motor-capable process.
 
 ## Deployment layout
 
@@ -82,6 +82,8 @@ Edit `~/.config/sphero_rvr/mission-stack.env`, keep it mode `0600`, and set:
 RVR_ROS_WORKSPACE=/home/jsperson/ros2_ws_mission_stack
 RVR_SOURCE_SHA=<exact-reviewed-sha>
 RVR_DEPLOYED_SHA=<same-exact-sha>
+RVR_LIVE_EXECUTION_ENABLED=false
+RVR_LIVE_EXECUTION_REVIEWED_SHA=
 RVR_WEB_PORT=8765
 RVR_WEB_ORIGIN=https://sphero-pi-2.tailab4000.ts.net
 ```
@@ -144,6 +146,10 @@ owner, database access, and absence of nonzero motion commands. Missing live map
 pose, collision, and sensor sources must display as unavailable or stale—not as
 fixtures.
 
+STOP and ESTOP must display `UNKNOWN` when neither the collision supervisor nor
+the dedicated control-state source supplies fresh authoritative evidence. Do not
+treat an absent source as READY/CLEAR.
+
 ## Rollback
 
 Because this deployment uses an isolated workspace, rollback does not change the
@@ -160,14 +166,33 @@ left. Preserve the SQLite database and service logs as evidence; do not delete
 them during rollback. Re-enabling requires revalidating the exact deployed SHA
 and environment file.
 
-## Physical execution remains a separate gate
+## Attended physical execution gate
 
 This runbook does not start or validate physical execution. The route runner now
 records route-local progress, absolute start/final pose, final heading, encoder
 timestamps, and per-track measurements, but those fields have not yet been
-validated on hardware. A later reviewed Pi configuration must bind the
-deterministic route executor without bypassing the collision supervisor. Each
-restrained 10 cm translation, 45-degree turn, and multi-step prompt requires
-fresh operator approval of its exact proposal digest while the operator is
-present; follow `docs/motion_calibration.md` and stop on missing, stale, or
-inconsistent evidence.
+validated on hardware. The reviewed configuration path is present but remains
+off. It binds only the existing deterministic route executor; the route runner
+still publishes exclusively through the collision supervisor.
+
+While Scott is present, prepare the supervised ROS graph and verify fresh odom,
+collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, route-runner request/status graph
+edges, and zero command. Then stop the mission service, set these two values in
+`~/.config/sphero_rvr/mission-stack.env`, and restart it:
+
+```text
+RVR_LIVE_EXECUTION_ENABLED=true
+RVR_LIVE_EXECUTION_REVIEWED_SHA=<exact RVR_DEPLOYED_SHA>
+```
+
+Startup must fail unless the reviewed, source, and deployed SHAs all match. A LIVE/execution-enabled banner
+only means proposals may become approvable; it is not physical approval. Generate
+one prepared stage, show Scott the complete unchanged digest and physical effect,
+and wait for his fresh explicit approval phrase. The server rechecks safety before
+recording approval and before route submission.
+
+After that one stage or any failed check, immediately restore `false` and blank,
+restart the mission service, stop the supervised ROS graph, issue/verify zero, and
+repeat the process/device cleanup audit. Each restrained 10 cm translation,
+45-degree turn, and multi-step prompt is a separate authorization. Follow
+`docs/motion_calibration.md` and stop on missing, stale, or inconsistent evidence.

@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import pytest
 
+from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.live_mission_service import (
     LiveRouteProgressExecutor,
     LiveStateCache,
     LiveStatusExecutor,
+    SafetyGatedPromptRouteExecutor,
     live_executor_bindings,
     snapshot_evidence,
 )
 from sphero_rvr_driver.live_mission_service_node import (
     _collision_mapping,
+    _control_mapping,
     _json_mapping,
     _odom_mapping,
+    _validated_execution_gate,
 )
 
 
@@ -101,9 +106,36 @@ def test_read_only_status_surfaces_provenance_pose_route_safety_and_no_authority
     assert evidence["odom"]["value"]["heading_deg"] == 12.5
     assert evidence["route_progress"]["value"]["progress"] == 0.4
     assert evidence["safety"]["collision_state"] == "CLEAR"
+    assert evidence["safety"]["stop_state"] == "READY"
+    assert evidence["safety"]["estop_state"] == "CLEAR"
     assert evidence["motion_authority"] is False
     assert evidence["route_submission_enabled"] is False
     assert evidence["safety"]["browser_is_safety_authority"] is False
+
+
+def test_missing_or_stale_stop_estop_evidence_is_unknown_not_ready() -> None:
+    cache = LiveStateCache()
+    missing = _status_executor(cache).evidence(now_s=10.0)["safety"]
+    assert missing["stop_state"] == "UNKNOWN"
+    assert missing["estop_state"] == "UNKNOWN"
+
+    cache.update("control", {"state": "READY"}, received_at_s=1.0)
+    stale = _status_executor(cache).evidence(now_s=10.0)["safety"]
+    assert stale["stop_state"] == "UNKNOWN"
+    assert stale["estop_state"] == "UNKNOWN"
+
+
+def test_control_source_reports_stop_and_estop_truthfully() -> None:
+    cache = LiveStateCache()
+    cache.update("control", {"stop_active": True}, received_at_s=10.0)
+    stopped = _status_executor(cache).evidence(now_s=10.1)
+    assert stopped["status_state"] == "STOPPED"
+    assert stopped["safety"]["stop_state"] == "ACTIVE"
+
+    cache.update("control", {"estop_latched": True}, received_at_s=11.0)
+    estopped = _status_executor(cache).evidence(now_s=11.1)
+    assert estopped["status_state"] == "ESTOPPED"
+    assert estopped["safety"]["estop_state"] == "LATCHED"
 
 
 @pytest.mark.parametrize(
@@ -142,6 +174,85 @@ def test_route_bindings_are_present_but_unhealthy_and_cannot_gain_authority() ->
         assert binding.evidence["route_submission_enabled"] is False
 
 
+class _RecordingPromptRouteExecutor:
+    def __init__(self) -> None:
+        self.requests = []
+        self.cancelled = False
+
+    def execute(self, request):
+        self.requests.append(request)
+        return {"status": "complete"}
+
+    def cancel(self):
+        self.cancelled = True
+        return True
+
+
+def test_safety_gated_prompt_executor_requires_fresh_clear_authority() -> None:
+    cache = LiveStateCache()
+    status = _status_executor(cache)
+    delegate = _RecordingPromptRouteExecutor()
+    executor = SafetyGatedPromptRouteExecutor(status, delegate)
+
+    with pytest.raises(MissionValidationError, match="fresh authoritative odom"):
+        executor.assert_ready()
+
+    now = time.time()
+    cache.update("odom", {"x_m": 0.0, "y_m": 0.0}, received_at_s=now)
+    cache.update("collision", {"state": "STOPPED"}, received_at_s=now)
+    with pytest.raises(MissionValidationError, match="collision state CLEAR"):
+        executor.assert_ready()
+
+    cache.update("collision", {"state": "CLEAR"}, received_at_s=now)
+    evidence = executor.assert_ready()
+    assert evidence["safety"]["stop_state"] == "READY"
+    assert executor.execute("route") == {"status": "complete"}
+    assert delegate.requests == ["route"]
+    assert executor.cancel() is True
+    assert delegate.cancelled is True
+
+
+def test_live_execution_gate_requires_planner_and_exact_deployed_sha() -> None:
+    assert _validated_execution_gate(
+        enabled=False,
+        reviewed_sha="",
+        source_sha="source",
+        deployed_sha="deployed",
+        planning_enabled=True,
+    ) is False
+    assert _validated_execution_gate(
+        enabled=True,
+        reviewed_sha="deployed",
+        source_sha="deployed",
+        deployed_sha="deployed",
+        planning_enabled=True,
+    ) is True
+    with pytest.raises(ValueError, match="requires the prompt planner"):
+        _validated_execution_gate(
+            enabled=True,
+            reviewed_sha="deployed",
+            source_sha="deployed",
+            deployed_sha="deployed",
+            planning_enabled=False,
+        )
+    with pytest.raises(ValueError, match="exactly match"):
+        _validated_execution_gate(
+            enabled=True,
+            reviewed_sha="other",
+            source_sha="deployed",
+            deployed_sha="deployed",
+            planning_enabled=True,
+        )
+    with pytest.raises(ValueError, match="source and deployed"):
+        _validated_execution_gate(
+            enabled=True,
+            reviewed_sha="deployed",
+            source_sha="source",
+            deployed_sha="deployed",
+            planning_enabled=True,
+        )
+
+
 def test_ros_payload_parsers_accept_canonical_collision_text_and_reject_malformed_json() -> None:
     assert _collision_mapping("CLEAR reason=idle scan_age=0.1") == {
         "state": "CLEAR",
@@ -156,6 +267,22 @@ def test_ros_payload_parsers_accept_canonical_collision_text_and_reject_malforme
         _json_mapping("not-json")
     with pytest.raises(ValueError, match="JSON object"):
         _json_mapping("[]")
+
+
+def test_control_parser_accepts_canonical_text_and_typed_json_but_rejects_ambiguous_state() -> None:
+    assert _control_mapping("STOP reason=operator") == {
+        "state": "STOP",
+        "raw": "STOP reason=operator",
+    }
+    assert _control_mapping('{"state":"estopped"}') == {"state": "ESTOPPED"}
+    assert _control_mapping('{"stop_active":false,"estop_latched":false}') == {
+        "stop_active": False,
+        "estop_latched": False,
+    }
+    with pytest.raises(ValueError, match="unsupported state"):
+        _control_mapping("unknown")
+    with pytest.raises(ValueError, match="lacks an authoritative state"):
+        _control_mapping("{}")
 
 
 def test_odom_parser_exposes_heading_and_rejects_nonfinite_measurements() -> None:
@@ -229,6 +356,11 @@ def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> No
     assert "OPENAI_API_KEY" not in environment
     assert "CODEX_API_KEY" not in environment
     assert "RVR_ROS_WORKSPACE=replace-with-absolute-mission-stack-workspace" in environment
+    assert "RVR_LIVE_EXECUTION_ENABLED=false" in environment
+    assert "RVR_LIVE_EXECUTION_REVIEWED_SHA=" in environment
+    assert '${RVR_LIVE_EXECUTION_ENABLED:-false}' in mission_unit
+    assert '${RVR_LIVE_EXECUTION_REVIEWED_SHA:-disabled}' in mission_unit
+    assert "live_execution_enabled: false" in (REPO_ROOT / "config/mission_service.yaml").read_text()
     assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in mission_unit
     assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in web_unit
     assert "replace-with-reviewed-source-sha" in environment

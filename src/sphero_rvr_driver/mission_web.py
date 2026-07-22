@@ -568,6 +568,15 @@ class LiveMissionWebAdapter:
             and odom.get("fresh", False)
             and collision.get("fresh", False)
         )
+        stop_state = str(safety.get("stop_state", "UNKNOWN")).upper()
+        estop_state = str(safety.get("estop_state", "UNKNOWN")).upper()
+        execution_ready = bool(
+            self.live_execution_enabled
+            and required_fresh
+            and str(safety.get("collision_state", "UNKNOWN")).upper() == "CLEAR"
+            and stop_state == "READY"
+            and estop_state == "CLEAR"
+        )
 
         if mission is None:
             state = WebMissionState.READY.value
@@ -641,7 +650,7 @@ class LiveMissionWebAdapter:
             "proposal": dict(proposal) if proposal else None,
             "approval": {
                 "required": bool(proposal) and state == WebMissionState.PROPOSED.value,
-                "enabled": self.live_execution_enabled and state == WebMissionState.PROPOSED.value,
+                "enabled": execution_ready and state == WebMissionState.PROPOSED.value,
                 "approved": bool(approval.get("approved", False)),
                 "proposal_digest": str(proposal.get("proposal_digest", "")) if proposal else "",
                 "required_phrase": phrase,
@@ -658,6 +667,8 @@ class LiveMissionWebAdapter:
             "safety": {
                 "stop_active": bool(safety.get("stop_active", False)),
                 "estop_latched": bool(safety.get("estop_latched", False)),
+                "stop_state": stop_state,
+                "estop_state": estop_state,
                 "collision_state": str(safety.get("collision_state", "UNKNOWN")),
                 "telemetry_fresh": required_fresh,
                 "independent_robot_safety": True,
@@ -1119,8 +1130,8 @@ _INDEX_HTML = r'''<!doctype html>
       $('progress-label').textContent = `${Math.round(snapshot.mission.progress * 100)}% complete`;
       $('safety-collision').textContent = snapshot.safety.collision_state;
       $('safety-telemetry').textContent = snapshot.safety.telemetry_fresh ? 'FRESH' : 'STALE — BLOCKED';
-      $('safety-stop').textContent = snapshot.safety.stop_active ? 'ACTIVE' : 'READY';
-      $('safety-estop').textContent = snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR';
+      $('safety-stop').textContent = snapshot.safety.stop_state || (snapshot.safety.stop_active ? 'ACTIVE' : 'READY');
+      $('safety-estop').textContent = snapshot.safety.estop_state || (snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR');
       $('approve').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
       $('approval-input').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
       $('cancel').disabled = !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);

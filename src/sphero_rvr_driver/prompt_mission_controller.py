@@ -91,6 +91,9 @@ class PromptMissionController:
                 raise MissionValidationError(
                     "live execution is disabled by reviewed service configuration"
                 )
+            readiness = getattr(self.route_executor, "assert_ready", None)
+            if callable(readiness):
+                readiness()
             snapshot = self.service.approve_prompt_mission(
                 mission_id,
                 supplied_approval=supplied_approval,

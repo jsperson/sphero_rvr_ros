@@ -1,9 +1,8 @@
 """ROS-free live-state boundary for the persistent Mission Service.
 
-This module is intentionally incapable of motion.  ROS callbacks feed a truthful
-receipt-time cache; the persistent service can query that evidence while the route
-bindings remain unhealthy until a separately reviewed physical-authority slice is
-installed.
+ROS callbacks feed a truthful receipt-time cache.  Read-only bindings are always
+available; physical route bindings remain unhealthy unless a separately reviewed
+configuration explicitly installs authority.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from typing import Any, Mapping, Optional
 
 from .mission_api import (
     CompletedExecutionHandle,
+    MissionValidationError,
     ToolDefinition,
     ToolInvocation,
     ToolResult,
@@ -27,6 +27,7 @@ from .mission_service import ExecutorBinding
 LIVE_SOURCE_NAMES = (
     "odom",
     "collision",
+    "control",
     "route_progress",
     "camera",
     "lidar",
@@ -247,29 +248,70 @@ class LiveStatusExecutor:
     @staticmethod
     def _state(snapshot: LiveStateSnapshot) -> str:
         collision = snapshot.source("collision").value
+        control = snapshot.source("control").value
         route = snapshot.source("route_progress").value
         collision_state = str(collision.get("state", "")).upper()
+        control_state = str(control.get("state", "")).upper()
         route_status = str(route.get("status", "")).lower()
-        if collision_state in {"ESTOP", "ESTOPPED", "LATCHED"} or route_status == "estopped":
+        if (
+            collision_state in {"ESTOP", "ESTOPPED", "LATCHED"}
+            or control_state in {"ESTOP", "ESTOPPED", "LATCHED"}
+            or bool(control.get("estop_latched", False))
+            or route_status == "estopped"
+        ):
             return "ESTOPPED"
-        if collision_state in {"STOP", "STOPPED"} or route_status == "stopped":
+        if (
+            collision_state in {"STOP", "STOPPED"}
+            or control_state in {"STOP", "STOPPED"}
+            or bool(control.get("stop_active", False))
+            or route_status == "stopped"
+        ):
             return "STOPPED"
-        if route_status == "cancelled":
+        if control_state in {"CANCEL", "CANCELLED"} or route_status == "cancelled":
             return "CANCELLED"
         if not any(record.received_at_s is not None for record in snapshot.sources.values()):
             return "NO_MOTION_OFFLINE"
         return "NO_MOTION_MONITORING"
 
-    @staticmethod
-    def _safety(snapshot: LiveStateSnapshot) -> dict[str, Any]:
+    def _safety(self, snapshot: LiveStateSnapshot) -> dict[str, Any]:
         collision = snapshot.source("collision")
+        control = snapshot.source("control")
         route = snapshot.source("route_progress")
         collision_state = str(collision.value.get("state", "UNKNOWN")).upper()
+        control_state = str(control.value.get("state", "UNKNOWN")).upper()
         route_status = str(route.value.get("status", "unknown")).lower()
+        stop_active = (
+            collision_state in {"STOP", "STOPPED"}
+            or control_state in {"STOP", "STOPPED"}
+            or bool(control.value.get("stop_active", False))
+            or route_status == "stopped"
+        )
+        estop_latched = (
+            collision_state in {"ESTOP", "ESTOPPED", "LATCHED"}
+            or control_state in {"ESTOP", "ESTOPPED", "LATCHED"}
+            or bool(control.value.get("estop_latched", False))
+            or route_status == "estopped"
+        )
+        control_known = bool(
+            control.received_at_s is not None
+            and control.valid
+            and snapshot.observed_at_s - float(control.received_at_s) <= self.max_source_age_s
+        )
+        collision_known = bool(
+            collision.received_at_s is not None
+            and collision.valid
+            and snapshot.observed_at_s - float(collision.received_at_s) <= self.max_source_age_s
+        )
+        safety_known = control_known or collision_known
         return {
             "collision_state": collision_state,
-            "stop_active": collision_state in {"STOP", "STOPPED"} or route_status == "stopped",
-            "estop_latched": collision_state in {"ESTOP", "ESTOPPED", "LATCHED"} or route_status == "estopped",
+            "control_state": control_state,
+            "control_present": control.received_at_s is not None,
+            "control_valid": control.valid,
+            "stop_active": stop_active,
+            "estop_latched": estop_latched,
+            "stop_state": "ACTIVE" if stop_active else ("READY" if safety_known else "UNKNOWN"),
+            "estop_state": "LATCHED" if estop_latched else ("CLEAR" if safety_known else "UNKNOWN"),
             "route_status": route_status,
             "independent_robot_safety": True,
             "browser_is_safety_authority": False,
@@ -313,6 +355,40 @@ class LiveRouteProgressExecutor:
     ) -> CompletedExecutionHandle:
         del definition, index
         return CompletedExecutionHandle(_blocked_result(invocation, started_at_s, self.health_reason))
+
+
+class SafetyGatedPromptRouteExecutor:
+    """Delegate an approved route only while authoritative safety evidence is ready."""
+
+    def __init__(self, status_executor: LiveStatusExecutor, route_executor: Any) -> None:
+        self.status_executor = status_executor
+        self.route_executor = route_executor
+
+    def assert_ready(self) -> Mapping[str, Any]:
+        evidence = self.status_executor.evidence()
+        for source in ("odom", "collision"):
+            source_evidence = evidence.get(source, {})
+            if not isinstance(source_evidence, Mapping) or not bool(source_evidence.get("fresh", False)):
+                raise MissionValidationError(
+                    f"live route approval requires fresh authoritative {source} evidence"
+                )
+        safety = evidence.get("safety", {})
+        if not isinstance(safety, Mapping):
+            raise MissionValidationError("live route approval requires authoritative safety evidence")
+        if str(safety.get("collision_state", "UNKNOWN")).upper() != "CLEAR":
+            raise MissionValidationError("live route approval requires collision state CLEAR")
+        if safety.get("stop_state") != "READY":
+            raise MissionValidationError("live route approval requires STOP state READY")
+        if safety.get("estop_state") != "CLEAR":
+            raise MissionValidationError("live route approval requires ESTOP state CLEAR")
+        return evidence
+
+    def execute(self, request: Any) -> Mapping[str, Any]:
+        self.assert_ready()
+        return self.route_executor.execute(request)
+
+    def cancel(self) -> bool:
+        return bool(self.route_executor.cancel())
 
 
 def live_executor_bindings(

@@ -46,6 +46,8 @@ class FakeLiveMissionClient:
                             "collision_state": "UNKNOWN",
                             "stop_active": False,
                             "estop_latched": False,
+                            "stop_state": "UNKNOWN",
+                            "estop_state": "UNKNOWN",
                         },
                         "odom": {"fresh": False, "value": {"x_m": 0.2, "y_m": 0.3, "heading_deg": 4.0}},
                         "collision": {"fresh": False, "value": {}},
@@ -133,6 +135,14 @@ def test_mock_adapter_exposes_typed_contract_without_live_authority_or_credentia
     assert snapshot["map"]["proposed_route"]
     assert snapshot["map"]["obstacles"]
     assert {item["label"] for item in snapshot["map"]["objects"]} == {"shoe"}
+
+
+def test_live_adapter_does_not_render_missing_stop_estop_as_ready() -> None:
+    snapshot = LiveMissionWebAdapter(FakeLiveMissionClient()).snapshot()
+
+    assert snapshot["safety"]["stop_state"] == "UNKNOWN"
+    assert snapshot["safety"]["estop_state"] == "UNKNOWN"
+    assert snapshot["approval"]["enabled"] is False
 
 
 def test_proposal_reuses_prompt_drive_validation_and_requires_exact_digest_approval() -> None:

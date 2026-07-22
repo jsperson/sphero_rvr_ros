@@ -1,7 +1,8 @@
-"""Production ROS 2 owner for the persistent no-motion Mission Service seam.
+"""Production ROS 2 owner for the persistent Mission Service seam.
 
-This node observes existing safety-path topics. It does not publish Twist, route
-requests, sensor commands, or any hardware command surface.
+This node observes existing safety-path topics. It never publishes Twist, sensor
+commands, or a hardware command surface. A route-request publisher exists only
+behind the explicit reviewed-SHA execution gate.
 """
 
 from __future__ import annotations
@@ -18,11 +19,13 @@ from .live_mission_service import (
     LiveRouteProgressExecutor,
     LiveStateCache,
     LiveStatusExecutor,
+    SafetyGatedPromptRouteExecutor,
     live_executor_bindings,
 )
 from .mission_api import build_default_registry
 from .mission_service import MissionService, MissionServiceServer
 from .prompt_drive import CodexOAuthPromptDriveProvider, PromptDrivePlanner
+from .prompt_drive_ros import RosLiveRouteExecutor
 from .prompt_mission_controller import PromptMissionController
 
 
@@ -44,6 +47,52 @@ def _collision_mapping(value: Any) -> dict[str, Any]:
         return _json_mapping(raw)
     except ValueError:
         return {"state": raw.split(maxsplit=1)[0].upper(), "raw": raw}
+
+
+def _control_mapping(value: Any) -> dict[str, Any]:
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError("control status payload is empty")
+    try:
+        parsed = _json_mapping(raw)
+    except ValueError:
+        state = raw.split(maxsplit=1)[0].upper()
+        if state not in {
+            "READY",
+            "CLEAR",
+            "RUNNING",
+            "STOP",
+            "STOPPED",
+            "ESTOP",
+            "ESTOPPED",
+            "LATCHED",
+            "CANCEL",
+            "CANCELLED",
+        }:
+            raise ValueError("control status payload has an unsupported state")
+        return {"state": state, "raw": raw}
+    state = str(parsed.get("state", "")).strip().upper()
+    has_boolean_state = isinstance(parsed.get("stop_active"), bool) or isinstance(
+        parsed.get("estop_latched"), bool
+    )
+    if state:
+        if state not in {
+            "READY",
+            "CLEAR",
+            "RUNNING",
+            "STOP",
+            "STOPPED",
+            "ESTOP",
+            "ESTOPPED",
+            "LATCHED",
+            "CANCEL",
+            "CANCELLED",
+        }:
+            raise ValueError("control status payload has an unsupported state")
+        parsed["state"] = state
+    elif not has_boolean_state:
+        raise ValueError("control status payload lacks an authoritative state")
+    return parsed
 
 
 def _odom_mapping(msg: Any) -> Optional[dict[str, Any]]:
@@ -78,6 +127,30 @@ def _odom_mapping(msg: Any) -> Optional[dict[str, Any]]:
         }
     except (AttributeError, TypeError, ValueError):
         return None
+
+
+def _validated_execution_gate(
+    *,
+    enabled: bool,
+    reviewed_sha: str,
+    source_sha: str,
+    deployed_sha: str,
+    planning_enabled: bool,
+) -> bool:
+    """Require an explicit exact-SHA review before installing route authority."""
+
+    if not bool(enabled):
+        return False
+    if not bool(planning_enabled):
+        raise ValueError("live execution requires the prompt planner")
+    reviewed = str(reviewed_sha).strip()
+    source = str(source_sha).strip()
+    deployed = str(deployed_sha).strip()
+    if not reviewed or reviewed != source or reviewed != deployed:
+        raise ValueError(
+            "live execution reviewed SHA must exactly match the source and deployed SHAs"
+        )
+    return True
 
 
 def main(args=None):
@@ -116,8 +189,31 @@ def main(args=None):
             socket_path = Path(str(self.get_parameter("socket_path").value)).expanduser()
             registry = build_default_registry(detector_classes=("shoe", "backpack"))
             planning_enabled = bool(self.get_parameter("planning_enabled").value)
+            live_execution_enabled = _validated_execution_gate(
+                enabled=bool(self.get_parameter("live_execution_enabled").value),
+                reviewed_sha=str(self.get_parameter("live_execution_reviewed_sha").value),
+                source_sha=source_sha,
+                deployed_sha=deployed_sha,
+                planning_enabled=planning_enabled,
+            )
             model_id = str(self.get_parameter("planning_model").value).strip() or None
             reasoning_effort = str(self.get_parameter("planning_reasoning_effort").value)
+            ros_route_executor = (
+                RosLiveRouteExecutor(
+                    request_topic=str(self.get_parameter("route_request_topic").value),
+                    status_topic=str(self.get_parameter("route_status_topic").value),
+                    cancel_service=str(self.get_parameter("route_cancel_service").value),
+                    graph_timeout_s=float(self.get_parameter("route_graph_timeout_s").value),
+                    cleanup_timeout_s=float(self.get_parameter("route_cleanup_timeout_s").value),
+                )
+                if live_execution_enabled
+                else None
+            )
+            prompt_route_executor = (
+                SafetyGatedPromptRouteExecutor(self._status_executor, ros_route_executor)
+                if ros_route_executor is not None
+                else None
+            )
 
             def service_factory() -> MissionService:
                 return MissionService(
@@ -128,7 +224,7 @@ def main(args=None):
                     adapters=self._status_executor,
                     mode="live",
                     executor_bindings=bindings,
-                    live_execution_enabled=False,
+                    live_execution_enabled=live_execution_enabled,
                 )
 
             controller_factory = None
@@ -141,7 +237,9 @@ def main(args=None):
                     return PromptMissionController(
                         service,
                         PromptDrivePlanner(provider, source_sha=source_sha),
-                        execution_enabled=False,
+                        route_executor=prompt_route_executor,
+                        execution_enabled=live_execution_enabled,
+                        approval_ttl_s=float(self.get_parameter("approval_ttl_s").value),
                     )
 
             self._server = MissionServiceServer(
@@ -170,6 +268,12 @@ def main(args=None):
                 String,
                 str(self.get_parameter("collision_state_topic").value),
                 self._on_collision,
+                10,
+            )
+            self.create_subscription(
+                String,
+                str(self.get_parameter("control_state_topic").value),
+                self._on_control,
                 10,
             )
             self.create_subscription(
@@ -208,7 +312,10 @@ def main(args=None):
             self.declare_parameter("deployed_sha", "")
             self.declare_parameter("odom_topic", "/odom")
             self.declare_parameter("collision_state_topic", "/collision_stop/state")
+            self.declare_parameter("control_state_topic", "/mission_api/v2/control_state")
+            self.declare_parameter("route_request_topic", "/mission_api/v2/live_route/request")
             self.declare_parameter("route_status_topic", "/mission_api/v2/live_route/status")
+            self.declare_parameter("route_cancel_service", "live_route/cancel")
             self.declare_parameter("camera_status_topic", "/mission_api/v2/camera/status")
             self.declare_parameter("lidar_status_topic", "/mission_api/v2/lidar/status")
             self.declare_parameter("localization_status_topic", "/mission_api/v2/localization/status")
@@ -221,6 +328,11 @@ def main(args=None):
             self.declare_parameter("planning_enabled", True)
             self.declare_parameter("planning_model", "gpt-5.6-sol")
             self.declare_parameter("planning_reasoning_effort", "high")
+            self.declare_parameter("live_execution_enabled", False)
+            self.declare_parameter("live_execution_reviewed_sha", "")
+            self.declare_parameter("approval_ttl_s", 60.0)
+            self.declare_parameter("route_graph_timeout_s", 5.0)
+            self.declare_parameter("route_cleanup_timeout_s", 3.0)
 
         def _required_provenance(self, parameter: str, environment: str) -> str:
             value = str(self.get_parameter(parameter).value).strip() or os.environ.get(environment, "").strip()
@@ -254,6 +366,14 @@ def main(args=None):
         def _on_route(self, msg) -> None:
             self._on_json_source("route_progress", msg)
 
+        def _on_control(self, msg) -> None:
+            now = time.time()
+            try:
+                value = _control_mapping(getattr(msg, "data", ""))
+                self._cache.update("control", value, received_at_s=now)
+            except ValueError as exc:
+                self._cache.mark_invalid("control", str(exc), received_at_s=now)
+
         def _on_json_source(self, name: str, msg) -> None:
             now = time.time()
             try:
@@ -286,7 +406,7 @@ def main(args=None):
                 "api_version": "mission_api.v2",
                 "node": self.get_name(),
                 "mode": "live",
-                "motion_authority": False,
+                "motion_authority": self._server.service.live_execution_enabled,
                 "status": self._status_executor.evidence(now_s=now_s),
                 "capabilities": self._server.service.capabilities(),
             }

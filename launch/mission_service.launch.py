@@ -22,6 +22,8 @@ def generate_launch_description():
             {
                 "source_sha": LaunchConfiguration("source_sha"),
                 "deployed_sha": LaunchConfiguration("deployed_sha"),
+                "live_execution_enabled": LaunchConfiguration("live_execution_enabled"),
+                "live_execution_reviewed_sha": LaunchConfiguration("live_execution_reviewed_sha"),
             },
         ],
         condition=IfCondition(LaunchConfiguration("start_service")),
@@ -43,6 +45,16 @@ def generate_launch_description():
                 "deployed_sha",
                 default_value=EnvironmentVariable("RVR_DEPLOYED_SHA", default_value=""),
                 description="Installed source commit; startup fails when absent.",
+            ),
+            DeclareLaunchArgument(
+                "live_execution_enabled",
+                default_value="false",
+                description="Explicit reviewed physical route-authority gate; default false.",
+            ),
+            DeclareLaunchArgument(
+                "live_execution_reviewed_sha",
+                default_value="disabled",
+                description="Must exactly match source_sha and deployed_sha when execution is enabled.",
             ),
             service,
         ]

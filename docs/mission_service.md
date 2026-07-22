@@ -21,16 +21,19 @@ reviewed physical adapter authority.
 
 `live_mission_service` is the first installed production owner. It constructs the
 persistent service in live mode, binds a read-only status executor and a
-route/progress executor, and consumes `/odom`, `/collision_stop/state`, and
-`/mission_api/v2/live_route/status`. It publishes truthful capability evidence on
+route/progress executor, and consumes `/odom`, `/collision_stop/state`,
+`/mission_api/v2/control_state`, and `/mission_api/v2/live_route/status`. It publishes truthful capability evidence on
 `/mission_api/v2/service/status` and exposes the same payload through the Trigger
 service `/mission_api/v2/service/read_status`. The node never publishes Twist,
-route requests, sensor commands, or direct hardware commands.
+sensor commands, or direct hardware commands. It instantiates a route-request
+publisher only when the exact-SHA configuration gate enables the deterministic
+route executor.
 
-The route/progress executor is deliberately bound but unhealthy with
+The generic route/progress executor is deliberately bound but unhealthy with
 `motion_authority=false` and `route_submission_enabled=false`. The status executor
 reports `NO_MOTION_OFFLINE`, `NO_MOTION_MONITORING`, or a live STOP/ESTOP/cancel
-state. Missing and stale ROS inputs stay visible in evidence and never become
+state. Missing or stale STOP/ESTOP evidence is `UNKNOWN`, never `READY` or
+`CLEAR`. Missing and stale ROS inputs stay visible in evidence and never become
 physical authority. `source_sha` and `deployed_sha` must be injected as ROS
 parameters or `RVR_SOURCE_SHA`/`RVR_DEPLOYED_SHA`; startup fails if either is
 missing.
@@ -47,8 +50,13 @@ separate worker threads so status and cancellation remain available.
 The packaged user-service units start this owner and the loopback web adapter, but
 they do not start a rover driver, route runner, collision node, or sensor. The
 installed helper deliberately does not enable either unit. Physical route
-execution remains default-disabled and requires a separately reviewed executor
-binding and configuration change.
+execution remains default-disabled. Setting `RVR_LIVE_EXECUTION_ENABLED=true`
+installs only the existing `RosLiveRouteExecutor`, and startup rejects that
+setting unless `RVR_LIVE_EXECUTION_REVIEWED_SHA` exactly matches the deployed
+and running source SHA. This configuration gate does not approve a mission: the server still
+requires fresh odometry, collision CLEAR, STOP READY, ESTOP CLEAR, and the
+authenticated operator's exact proposal-digest phrase. Readiness is checked
+before approval is persisted and again before the route is submitted.
 
 The canonical database target is resolved and its owner lock acquired before the
 database is opened or recovery runs, so symlink aliases cannot create a second
