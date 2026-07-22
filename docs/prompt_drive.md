@@ -38,7 +38,7 @@ On the authenticated Pi, source the ROS workspace and run:
 rvr_prompt_drive "Move forward 20 centimeters, turn left 90 degrees, then stop."
 ```
 
-The default model is `gpt-5.6`, and the default reasoning effort is `high`.
+The default Codex OAuth model is `gpt-5.6-sol`, and the default reasoning effort is `high`.
 Use `--model` or `--reasoning-effort` to select another Codex-accessible model.
 Each proposal invocation is ephemeral and disables shell, unified exec, apps,
 MCP, multi-agent, and web-search tools. The generated manifest is written under

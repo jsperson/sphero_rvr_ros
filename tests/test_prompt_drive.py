@@ -263,6 +263,13 @@ def test_codex_oauth_provider_requires_chatgpt_login_and_never_uses_api_key_over
     assert "CODEX_API_KEY" not in kwargs["env"]
 
 
+def test_codex_oauth_provider_defaults_to_an_oauth_catalog_model() -> None:
+    provider = CodexOAuthPromptDriveProvider()
+
+    assert provider.model_id == "gpt-5.6-sol"
+    assert provider.reasoning_effort == "high"
+
+
 def test_codex_oauth_provider_runs_toolless_ephemeral_structured_planner(monkeypatch) -> None:
     monkeypatch.setattr("shutil.which", lambda command: "/opt/codex/bin/codex")
     calls = []

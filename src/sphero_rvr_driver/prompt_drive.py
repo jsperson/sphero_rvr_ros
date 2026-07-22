@@ -31,6 +31,7 @@ from .mission_planner import DEFAULT_OPENAI_MODEL_ID
 
 PROMPT_DRIVE_API_VERSION = "prompt_drive.v1"
 ALLOWED_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
+DEFAULT_CODEX_MODEL_ID = "gpt-5.6-sol"
 
 
 class PromptDriveDecision(str, Enum):
@@ -125,7 +126,7 @@ class CodexOAuthPromptDriveProvider:
     ):
         if reasoning_effort not in ALLOWED_REASONING_EFFORTS:
             raise MissionValidationError(f"unsupported reasoning effort: {reasoning_effort}")
-        self.model_id = model or os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL_ID)
+        self.model_id = model or os.environ.get("OPENAI_MODEL", DEFAULT_CODEX_MODEL_ID)
         self.reasoning_effort = reasoning_effort
         self.codex_command = codex_command
         self.timeout_s = float(timeout_s)
