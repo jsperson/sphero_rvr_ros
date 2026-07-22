@@ -1051,6 +1051,7 @@ _INDEX_HTML = r'''<!doctype html>
   <style>
     :root { color-scheme: dark; --ink:#ecf5f4; --muted:#91a9aa; --panel:#0e1b2b; --line:#21364a; --teal:#5de4c7; --amber:#ffca6b; --red:#ff7b72; --blue:#78a9ff; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#07111f; color:var(--ink); }
     * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
     body { margin:0; min-height:100vh; background:radial-gradient(circle at 15% -10%, #123952 0, transparent 34rem), #07111f; }
     button, textarea, select, input { font:inherit; }
     button { cursor:pointer; }

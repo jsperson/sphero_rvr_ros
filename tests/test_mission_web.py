@@ -318,6 +318,7 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "RVR Test Console" in page
     assert "@media (max-width:760px)" in page
     assert "grid-template-columns:minmax(0,1fr)" in page
+    assert "[hidden] { display:none !important; }" in page
     assert ".map-frame { min-height:0; }" in page
     assert ".segment { flex-direction:column" in page
     assert 'data-testid="mission-prompt"' in page
