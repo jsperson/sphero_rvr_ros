@@ -75,6 +75,7 @@ setup(
                 "docs/shoe_map_projection.md",
                 "docs/system_validation.md",
                 "docs/mission_service.md",
+                "docs/pi_mission_stack.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),

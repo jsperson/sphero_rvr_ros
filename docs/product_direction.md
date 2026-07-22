@@ -45,9 +45,18 @@ Shoe mapping is the first acceptance slice, not a hard-coded product boundary. O
 
 ## Current implementation focus
 
-The current MVP is prompt-driven physical control. The repository has a real OpenAI planner, typed `move_distance` and `turn_angle` tools, physical capability adapters, a live route runner, measured odometry, and collision supervision, but these pieces have not been accepted as one real-model-to-physical-rover chain.
+The repository now integrates the real Pi-local ChatGPT OAuth planner, typed
+`move_distance` and `turn_angle` proposals, durable mission lifecycle, exact
+digest-bound approval records, truthful live status, and a map-driven browser
+adapter. The Pi deployment is intentionally proposal-only: it has no physical
+executor authority and does not substitute replay fixtures for missing live map
+or sensor evidence.
 
-The first implementation must add a proposal-first CLI and production bridge from real model tool decisions to live route requests. Physical execution remains separately approved by the operator and bounded to a small staged proof. The persistent no-motion service draft remains preserved on local branch `wip/m1-persistent-no-motion-service` for the following milestone.
+The current acceptance step is the exact-SHA no-motion Pi deployment and real
+browser-to-OAuth proposal path. The next separately gated step is measured
+physical validation: resolve route-local versus absolute-odometry evidence, then
+perform restrained 10 cm, 45-degree, and multi-step stages with fresh operator
+approval for each exact proposal digest.
 
 ## Delivery discipline
 
