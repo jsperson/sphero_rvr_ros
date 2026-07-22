@@ -1,0 +1,16 @@
+live_mission_service:
+  ros__parameters:
+    database_path: ~/.local/state/sphero_rvr/missions.sqlite3
+    socket_path: ~/.local/state/sphero_rvr/mission-service.sock
+    odom_topic: /odom
+    collision_state_topic: /collision_stop/state
+    route_status_topic: /mission_api/v2/live_route/status
+    camera_status_topic: /mission_api/v2/camera/status
+    lidar_status_topic: /mission_api/v2/lidar/status
+    localization_status_topic: /mission_api/v2/localization/status
+    semantic_map_status_topic: /mission_api/v2/map/status
+    capability_status_topic: /mission_api/v2/service/status
+    status_service: /mission_api/v2/service/read_status
+    publish_period_s: 0.5
+    max_source_age_s: 1.0
+    max_binding_age_s: 2.0

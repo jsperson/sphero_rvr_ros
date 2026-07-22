@@ -19,6 +19,7 @@ EXPECTED_DATA_FILES = {
         "launch/lidar.launch.py",
         "launch/mapping.launch.py",
         "launch/camera.launch.py",
+        "launch/mission_service.launch.py",
     },
     "share/sphero_rvr_driver/config": {
         "config/rvr.yaml",
@@ -26,6 +27,7 @@ EXPECTED_DATA_FILES = {
         "config/lidar.yaml",
         "config/slam_toolbox.yaml",
         "config/camera.yaml",
+        "config/mission_service.yaml",
     },
     "share/sphero_rvr_driver/scripts": {
         "scripts/install-rvr-pi",
@@ -225,6 +227,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
         "rvr_mcp_server = sphero_rvr_driver.rvr_mcp_server:main",
         "rvr_mission_web = sphero_rvr_driver.mission_web:main",
+        "live_mission_service = sphero_rvr_driver.live_mission_service_node:main",
     } <= console_scripts
 
 

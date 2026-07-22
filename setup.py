@@ -18,6 +18,7 @@ setup(
                 "launch/lidar.launch.py",
                 "launch/mapping.launch.py",
                 "launch/camera.launch.py",
+                "launch/mission_service.launch.py",
             ],
         ),
         (
@@ -31,6 +32,7 @@ setup(
                 "config/camera.yaml",
                 "config/mission_planner.yaml",
                 "config/live_route_runner.yaml",
+                "config/mission_service.yaml",
             ],
         ),
         (
@@ -70,6 +72,7 @@ setup(
                 "docs/shoe_detector_replay.md",
                 "docs/shoe_map_projection.md",
                 "docs/system_validation.md",
+                "docs/mission_service.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -95,6 +98,7 @@ setup(
             "range_motion_controller = sphero_rvr_driver.range_motion_node:main",
             "live_route_runner = sphero_rvr_driver.live_route_runner_node:main",
             "rvr_prompt_drive = sphero_rvr_driver.prompt_drive_cli:main",
+            "live_mission_service = sphero_rvr_driver.live_mission_service_node:main",
             "rvr_rosbag_capture = sphero_rvr_driver.rosbag_workflow:capture_main",
             "rvr_rosbag_replay = sphero_rvr_driver.rosbag_workflow:replay_main",
             "rvr_rosbag_inspect = sphero_rvr_driver.rosbag_workflow:inspect_main",
