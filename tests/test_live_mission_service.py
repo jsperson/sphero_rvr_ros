@@ -212,6 +212,8 @@ def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> No
 
     assert "live_mission_service" in mission_unit
     assert "rvr_mission_web --mode live --host 127.0.0.1" in web_unit
+    assert "ExecStartPre=" in web_unit
+    assert '[[ -S "$HOME/.local/state/sphero_rvr/mission-service.sock" ]]' in web_unit
     assert '--public-origin "$RVR_WEB_ORIGIN"' in web_unit
     assert "UMask=0077" in mission_unit and "UMask=0077" in web_unit
     for source in (mission_unit, web_unit):
