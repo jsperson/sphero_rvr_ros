@@ -457,6 +457,7 @@ class LiveMissionWebAdapter:
         if not self.session_id or not self.operator:
             raise MissionWebError("live web session and operator identity are required")
         self._lock = threading.RLock()
+        self._request_context = threading.local()
         self._mission_id: Optional[str] = None
         try:
             service = dict(self.client.service_snapshot())
@@ -467,6 +468,15 @@ class LiveMissionWebAdapter:
         self._service_snapshot = service
         self.live_execution_enabled = bool(service.get("live_execution_enabled", False))
         self.mode = "live" if self.live_execution_enabled else "live/proposal-only"
+
+    def set_request_identity(self, identity: str) -> None:
+        self._request_context.operator = str(identity).strip()
+
+    def clear_request_identity(self) -> None:
+        self._request_context.operator = ""
+
+    def _operator_identity(self) -> str:
+        return str(getattr(self._request_context, "operator", "")).strip() or self.operator
 
     def scenarios(self) -> Sequence[ScenarioDefinition]:
         return LIVE_SCENARIOS
@@ -513,7 +523,7 @@ class LiveMissionWebAdapter:
                 snapshot = self.client.approve_prompt(
                     self._mission_id,
                     approval_phrase=supplied_approval,
-                    operator=self.operator,
+                    operator=self._operator_identity(),
                 )
             except MissionValidationError as exc:
                 raise MissionWebError(str(exc)) from exc
@@ -530,7 +540,7 @@ class LiveMissionWebAdapter:
             try:
                 snapshot = self.client.cancel_prompt(
                     self._mission_id,
-                    reason="authenticated browser operator cancelled mission",
+                    reason=f"authenticated operator {self._operator_identity()} cancelled mission",
                 )
             except MissionValidationError as exc:
                 raise MissionWebError(str(exc)) from exc
@@ -809,6 +819,11 @@ class _MissionWebHttpHandler(BaseHTTPRequestHandler):
             if fetch_site not in {"same-origin", "none"}:
                 self._send_error(403, "cross-site state-changing request is not authorized")
                 return
+        identity = self.headers.get("Tailscale-User-Login", "").strip()
+        if bool(getattr(self.server, "require_tailscale_identity", False)) and not identity:
+            self._send_error(401, "an authenticated Tailscale user identity is required")
+            return
+        self._request_identity = identity
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
             self._send_error(415, "state-changing requests require application/json")
@@ -830,11 +845,18 @@ class _MissionWebHttpHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, body: str) -> None:
         adapter = getattr(self.server, "mission_web_adapter")
+        set_identity = getattr(adapter, "set_request_identity", None)
+        clear_identity = getattr(adapter, "clear_request_identity", None)
+        if callable(set_identity) and self.command == "POST":
+            set_identity(str(getattr(self, "_request_identity", "")))
         try:
             response = handle_mission_web_request(self.command, self.path, body, adapter)
         except (MissionWebError, UnicodeDecodeError) as exc:
             self._send_error(400, str(exc))
             return
+        finally:
+            if callable(clear_identity) and self.command == "POST":
+                clear_identity()
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
         self.send_header("Cache-Control", "no-store")
@@ -865,11 +887,13 @@ def make_server(
     *,
     adapter: Optional[MissionWebAdapter] = None,
     allowed_origin: Optional[str] = None,
+    require_tailscale_identity: bool = False,
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, int(port)), _MissionWebHttpHandler)
     setattr(server, "mission_web_adapter", adapter or MockReplayMissionAdapter())
     setattr(server, "enforce_same_origin", allowed_origin is not None)
     setattr(server, "allowed_origin", "" if allowed_origin is None else str(allowed_origin).rstrip("/"))
+    setattr(server, "require_tailscale_identity", bool(require_tailscale_identity))
     return server
 
 
@@ -905,7 +929,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         adapter = MockReplayMissionAdapter()
         allowed_origin = None
-    server = make_server(args.host, args.port, adapter=adapter, allowed_origin=allowed_origin)
+    server = make_server(
+        args.host,
+        args.port,
+        adapter=adapter,
+        allowed_origin=allowed_origin,
+        require_tailscale_identity=args.mode == "live",
+    )
     print(
         f"RVR {args.mode} web console on loopback: http://{args.host}:{server.server_address[1]} "
         f"(live execution enabled: {adapter.live_execution_enabled})"

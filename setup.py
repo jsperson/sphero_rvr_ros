@@ -33,6 +33,7 @@ setup(
                 "config/mission_planner.yaml",
                 "config/live_route_runner.yaml",
                 "config/mission_service.yaml",
+                "config/mission-stack.env.example",
             ],
         ),
         (
@@ -40,6 +41,7 @@ setup(
             [
                 "scripts/install-rvr-pi",
                 "scripts/install-rvr-prompt-drive",
+                "scripts/install-rvr-mission-stack-services",
                 "scripts/rvr-camera-node",
                 "scripts/rvr-console",
                 "scripts/rvr-shoe-detector-eval",
@@ -76,6 +78,13 @@ setup(
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
+        (
+            "share/sphero_rvr_driver/systemd/user",
+            [
+                "systemd/user/rvr-mission-service.service",
+                "systemd/user/rvr-mission-web.service",
+            ],
+        ),
     ],
     install_requires=["setuptools", "pyserial"],
     extras_require={

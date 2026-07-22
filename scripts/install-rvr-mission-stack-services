@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+package_share="${1:-$HOME/ros2_ws/install/sphero_rvr_driver/share/sphero_rvr_driver}"
+unit_source="$package_share/systemd/user"
+config_root="$HOME/.config/sphero_rvr"
+unit_root="$HOME/.config/systemd/user"
+
+if [[ ! -f "$unit_source/rvr-mission-service.service" || ! -f "$unit_source/rvr-mission-web.service" ]]; then
+  echo "Mission stack unit files are not installed under: $unit_source" >&2
+  exit 2
+fi
+
+install -d -m 0700 "$config_root" "$unit_root"
+install -m 0644 "$unit_source/rvr-mission-service.service" "$unit_root/rvr-mission-service.service"
+install -m 0644 "$unit_source/rvr-mission-web.service" "$unit_root/rvr-mission-web.service"
+
+if [[ ! -f "$config_root/mission-stack.env" ]]; then
+  install -m 0600 "$package_share/config/mission-stack.env.example" "$config_root/mission-stack.env"
+  echo "Created $config_root/mission-stack.env; replace every placeholder before starting services."
+fi
+
+systemctl --user daemon-reload
+echo "Installed user services without enabling or starting them."
+echo "Validate $config_root/mission-stack.env, then use:"
+echo "  systemctl --user enable --now rvr-mission-service.service rvr-mission-web.service"

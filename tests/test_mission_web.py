@@ -24,10 +24,12 @@ PROMPT = "Move forward 20 centimeters, turn left 45 degrees, then move forward 1
 
 
 class FakeLiveMissionClient:
-    def __init__(self) -> None:
+    def __init__(self, *, execution_enabled: bool = False) -> None:
         self.proposal = _proposal(MockReplayMissionAdapter(source_sha="live-source"))["proposal"]
         self.mission = None
         self.submissions = []
+        self.execution_enabled = execution_enabled
+        self.approvals = []
 
     def service_snapshot(self):
         return {
@@ -36,7 +38,7 @@ class FakeLiveMissionClient:
             "source_sha": "live-source",
             "deployed_sha": "live-deployed",
             "planning_enabled": True,
-            "live_execution_enabled": False,
+            "live_execution_enabled": self.execution_enabled,
             "capabilities": {
                 "query_status_telemetry@1.0": {
                     "evidence": {
@@ -70,8 +72,12 @@ class FakeLiveMissionClient:
         return self.mission
 
     def approve_prompt(self, mission_id, *, approval_phrase, operator):
-        del mission_id, approval_phrase, operator
-        raise MissionValidationError("live execution is disabled by reviewed service configuration")
+        if not self.execution_enabled:
+            raise MissionValidationError("live execution is disabled by reviewed service configuration")
+        self.approvals.append((mission_id, approval_phrase, operator))
+        self.mission = self._snapshot("approved", proposal=self.proposal)
+        self.mission["approval"] = {"approved": True, "operator": operator}
+        return self.mission
 
     def cancel_prompt(self, mission_id, *, reason):
         del mission_id, reason
@@ -350,7 +356,12 @@ def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_
 def test_live_http_requires_exact_same_origin_for_state_changes() -> None:
     adapter = LiveMissionWebAdapter(FakeLiveMissionClient(), session_id="web-session", operator="scott")
     allowed_origin = "https://sphero-pi-2.example.ts.net"
-    server = make_server(port=0, adapter=adapter, allowed_origin=allowed_origin)
+    server = make_server(
+        port=0,
+        adapter=adapter,
+        allowed_origin=allowed_origin,
+        require_tailscale_identity=True,
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
@@ -366,6 +377,20 @@ def test_live_http_requires_exact_same_origin_for_state_changes() -> None:
             urllib.request.urlopen(missing_origin, timeout=2.0)
         assert missing_error.value.code == 403
 
+        missing_identity = urllib.request.Request(
+            f"{base}/api/web/mission/propose",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": allowed_origin,
+                "Sec-Fetch-Site": "same-origin",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as identity_error:
+            urllib.request.urlopen(missing_identity, timeout=2.0)
+        assert identity_error.value.code == 401
+
         authorized = urllib.request.Request(
             f"{base}/api/web/mission/propose",
             data=payload,
@@ -373,6 +398,7 @@ def test_live_http_requires_exact_same_origin_for_state_changes() -> None:
                 "Content-Type": "application/json",
                 "Origin": allowed_origin,
                 "Sec-Fetch-Site": "same-origin",
+                "Tailscale-User-Login": "scott@example.com",
             },
             method="POST",
         )
@@ -384,3 +410,48 @@ def test_live_http_requires_exact_same_origin_for_state_changes() -> None:
         server.server_close()
         thread.join(timeout=2.0)
     assert not thread.is_alive()
+
+
+def test_tailscale_identity_header_becomes_server_owned_approval_identity() -> None:
+    client = FakeLiveMissionClient(execution_enabled=True)
+    adapter = LiveMissionWebAdapter(client, session_id="web-session", operator="untrusted-fallback")
+    allowed_origin = "https://sphero-pi-2.example.ts.net"
+    server = make_server(
+        port=0,
+        adapter=adapter,
+        allowed_origin=allowed_origin,
+        require_tailscale_identity=True,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": allowed_origin,
+        "Sec-Fetch-Site": "same-origin",
+        "Tailscale-User-Login": "scott@example.com",
+    }
+    try:
+        propose = urllib.request.Request(
+            f"{base}/api/web/mission/propose",
+            data=json.dumps({"prompt": PROMPT, "scenario": "live"}).encode(),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(propose, timeout=2.0):
+            pass
+        proposed = adapter.snapshot()
+        approve = urllib.request.Request(
+            f"{base}/api/web/mission/approve",
+            data=json.dumps({"approval_phrase": proposed["approval"]["required_phrase"]}).encode(),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(approve, timeout=2.0):
+            pass
+        assert client.approvals[0][2] == "scott@example.com"
+        assert client.approvals[0][1].startswith("APPROVE ")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)

@@ -28,6 +28,7 @@ EXPECTED_DATA_FILES = {
         "config/slam_toolbox.yaml",
         "config/camera.yaml",
         "config/mission_service.yaml",
+        "config/mission-stack.env.example",
     },
     "share/sphero_rvr_driver/scripts": {
         "scripts/install-rvr-pi",
@@ -36,6 +37,7 @@ EXPECTED_DATA_FILES = {
         "scripts/rvr-shoe-detector-eval",
         "scripts/rvr-slam-replay-plan",
         "scripts/rvr_motion_calibration.py",
+        "scripts/install-rvr-mission-stack-services",
     },
     "share/sphero_rvr_driver/docs": {
         "docs/mapping.md",
@@ -61,6 +63,10 @@ EXPECTED_DATA_FILES = {
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
+    },
+    "share/sphero_rvr_driver/systemd/user": {
+        "systemd/user/rvr-mission-service.service",
+        "systemd/user/rvr-mission-web.service",
     },
 }
 

@@ -1,101 +1,123 @@
-# Mock/replay mission web console
+# Mission web console
 
-`src/sphero_rvr_driver/mission_web.py` is the first integrated map-driven browser slice for the rover product. It combines natural-language mission entry, typed prompt-drive proposal review, explicit digest-bound simulation approval, mission and safety state, event history, and a fixture-backed room map in one responsive page.
+`src/sphero_rvr_driver/mission_web.py` provides the map-driven browser slice for
+the rover product. It combines natural-language mission entry, typed proposal
+review, explicit digest-bound approval, mission and safety state, event history,
+and a responsive map in one page.
 
-This slice is intentionally local and mock/replay-only. It does not connect to ROS, serial devices, the rover, OpenAI, Codex OAuth, or a live mission executor.
+The browser never talks to ROS, serial devices, motor controls, or OpenAI. Its only
+boundary is `MissionWebAdapter`.
 
-## Run locally
+## Mock/replay mode
 
-From an editable development install:
+Run locally from an editable development install:
 
 ```bash
 python -m sphero_rvr_driver.mission_web --host 127.0.0.1 --port 8765
 ```
 
-Or use the installed console command:
+Or use the installed command:
 
 ```bash
 rvr_mission_web --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8765/`. The server rejects non-loopback bind addresses in this slice.
+Open `http://127.0.0.1:8765/`. The page is unmistakably marked `MOCK / REPLAY`.
+The deterministic fixtures cover success, model rejection, cancellation, STOP,
+ESTOP, collision blocking, and stale telemetry. An executable proposal remains
+`PROPOSED` until the exact `APPROVE <digest>` phrase is entered. The approved route
+is discarded because the mock adapter has no physical executor.
 
-## Demonstrated flow
+## Pi live/proposal-only mode
 
-1. Enter a natural-language mission and choose a deterministic replay outcome.
-2. The server uses the existing `PromptDrivePlanner` to validate a typed proposal or rejection.
-3. The page shows provider/model identity, summary, bounded segments, trusted motion limits, and the full proposal digest.
-4. An executable proposal remains in `PROPOSED` until the operator types the exact `APPROVE <digest>` phrase.
-5. The existing `approved_live_route()` contract verifies the unchanged digest. The resulting route is discarded: the mock adapter has no executor.
-6. The server-owned fixture advances through progress and a truthful terminal state while the map, safety strip, and event history update.
-
-The seven fixture outcomes are:
-
-- successful completion;
-- model rejection;
-- cancellation;
-- STOP;
-- ESTOP;
-- collision blocked;
-- stale telemetry blocked.
-
-## Typed service boundary
-
-The browser talks to `MissionWebAdapter`, not to ROS or motor endpoints:
+`LiveMissionWebAdapter` connects only to the user-only Pi mission-service Unix
+socket. It submits planning requests, polls durable service state, forwards exact
+approval and cancellation requests, and renders only authoritative evidence. It
+does not contain planning or safety logic.
 
 ```text
 browser
-  -> GET/POST /api/web/*
-  -> MissionWebAdapter
-  -> MockReplayMissionAdapter (this slice)
-  -> PromptDrivePlanner + mission_api.v2 state vocabulary
+  -> authenticated Tailscale HTTPS
+  -> loopback rvr_mission_web
+  -> LiveMissionWebAdapter
+  -> MissionServiceClient (Unix socket)
+  -> persistent MissionService
 ```
 
-Routes:
+Start live mode only behind a reviewed HTTPS origin:
+
+```bash
+rvr_mission_web \
+  --mode live \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --mission-socket "$HOME/.local/state/sphero_rvr/mission-service.sock" \
+  --session-id rvr-web-console \
+  --operator tailscale-serve \
+  --public-origin https://sphero-pi-2.example-tailnet.ts.net
+```
+
+Live mode remains loopback-only and requires an exact `Origin` plus same-origin
+fetch metadata on state-changing requests. It also requires the
+`Tailscale-User-Login` header injected by Tailscale Serve, and records that identity
+as the approval operator. Tailscale Serve strips spoofed identity headers before
+injecting authenticated tailnet identity when proxying to localhost. Do not place
+another untrusted proxy between Serve and this listener, do not expose the port on
+the LAN, and do not use Tailscale Funnel.
+
+The current Pi owner reports `live_execution_enabled=false`; therefore the page is
+marked `LIVE - PROPOSAL ONLY / EXECUTION LOCKED`, proposal-only OAuth planning is
+available, and approval is disabled. Neither the web command nor its systemd unit
+can enable motion. A later reviewed executor binding and Pi configuration gate are
+both required before approval can queue a live route.
+
+## HTTP routes
 
 ```text
 GET  /api/web/state
 GET  /api/web/scenarios
 POST /api/web/mission/propose
 POST /api/web/mission/approve
-POST /api/web/mission/advance
+POST /api/web/mission/advance   # mock/replay only
 POST /api/web/mission/cancel
 ```
 
-The adapter reports all of these properties in every snapshot:
+Direct motor, arbitrary write, ROS, `/cmd_vel`, and `/cmd_vel_motor` routes are
+rejected. Responses use `Cache-Control: no-store`, the page uses no local or
+session storage, and credentials are never accepted by the adapter.
 
-- `mode: mock/replay`;
-- `fixture_only: true`;
-- `live_execution_enabled: false`;
-- `direct_ros_commands_allowed: false`;
-- `credentials_accepted: false`.
+## Map truthfulness
 
-Direct motor, generic write, arbitrary ROS, `/cmd_vel`, and `/cmd_vel_motor` routes are not exposed. The browser stores no credentials or mission state in local or session storage.
+Mock mode renders fixture-backed pose, route, path, obstacles, and semantic
+objects. Live mode renders each layer only when it is supplied by fresh,
+authoritative mission-service data. Missing or stale semantic-map evidence is
+shown as unavailable; fixtures are never substituted into a live view. The map is
+only a visualization and does no browser-side inference or planning.
 
-## Map contract
+## Installed Pi services
 
-The snapshot includes a typed `map` payload with:
+The package installs:
 
-- map-frame bounds and rover pose;
-- proposed route;
-- traveled path derived from replay progress;
-- obstacle fixtures;
-- evidence-linked semantic object markers.
+- `rvr-mission-service.service`, the persistent no-motion owner;
+- `rvr-mission-web.service`, the loopback live/proposal-only UI;
+- `mission-stack.env.example`, which contains SHAs, port, and public origin only;
+- `install-rvr-mission-stack-services`, which installs but does not enable or
+  start the units.
 
-The responsive page renders these layers as an inline SVG. The map is a visualization of server-provided state; it does not infer rover state or perform planning in JavaScript.
-
-## Future Pi adapter
-
-A future live adapter belongs behind a Pi-hosted, authenticated mission service. It must preserve the same browser-facing contract while binding proposals, approvals, durable mission state, and observability snapshots to the canonical service. It must not place model credentials in the browser or expose ROS/motor routes.
-
-That future integration requires a separate reviewed slice. This module deliberately provides no live adapter, no physical execution flag, and no remote bind mode.
+No OAuth token belongs in the environment file. The planner uses the Pi-local
+Codex CLI session, and `codex login status` must report `Logged in using ChatGPT`.
 
 ## Validation
 
-Focused validation:
+Run focused tests only through the bounded runner:
 
 ```bash
-python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_mission_web.py tests/test_package_metadata.py
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
+  tests/test_mission_web.py tests/test_prompt_mission_controller.py \
+  tests/test_live_mission_service.py tests/test_package_metadata.py
 ```
 
-The tests cover proposal and rejection contracts, exact approval, every fixture outcome, map layers, responsive/static safety properties, forbidden routes, and a complete loopback HTTP flow.
+The suite covers the typed adapter boundary, every replay outcome, exact approval,
+live proposal-only state, authoritative Tailscale approval identity, origin and
+cross-site rejection, unavailable live maps, forbidden routes, persistence, and
+restart recovery.

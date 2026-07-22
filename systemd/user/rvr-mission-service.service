@@ -1,0 +1,17 @@
+[Unit]
+Description=Sphero RVR persistent no-motion mission service
+After=default.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/sphero_rvr/mission-stack.env
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source "$HOME/ros2_ws/install/setup.bash" && exec ros2 run sphero_rvr_driver live_mission_service --ros-args --params-file "$HOME/ros2_ws/install/sphero_rvr_driver/share/sphero_rvr_driver/config/mission_service.yaml" -p source_sha:="$RVR_SOURCE_SHA" -p deployed_sha:="$RVR_DEPLOYED_SHA"'
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=135
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

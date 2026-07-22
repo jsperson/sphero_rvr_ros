@@ -202,3 +202,28 @@ def test_mission_service_launch_is_default_off_and_contains_no_motor_process() -
     assert 'executable="rvr_node"' not in source
     assert 'executable="live_route_runner"' not in source
     assert 'executable="lidar_collision_stop_supervisor"' not in source
+
+
+def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> None:
+    mission_unit = (REPO_ROOT / "systemd/user/rvr-mission-service.service").read_text()
+    web_unit = (REPO_ROOT / "systemd/user/rvr-mission-web.service").read_text()
+    installer = (REPO_ROOT / "scripts/install-rvr-mission-stack-services").read_text()
+    environment = (REPO_ROOT / "config/mission-stack.env.example").read_text()
+
+    assert "live_mission_service" in mission_unit
+    assert "rvr_mission_web --mode live --host 127.0.0.1" in web_unit
+    assert '--public-origin "$RVR_WEB_ORIGIN"' in web_unit
+    assert "UMask=0077" in mission_unit and "UMask=0077" in web_unit
+    for source in (mission_unit, web_unit):
+        assert "rvr_node" not in source
+        assert "live_route_runner" not in source
+        assert "lidar_collision_stop_supervisor" not in source
+        assert "/cmd_vel" not in source
+        assert "/dev/tty" not in source
+    assert "enable --now" in installer
+    assert "systemctl --user enable --now" not in "\n".join(
+        line for line in installer.splitlines() if not line.startswith('echo ')
+    )
+    assert "OPENAI_API_KEY" not in environment
+    assert "CODEX_API_KEY" not in environment
+    assert "replace-with-reviewed-source-sha" in environment
