@@ -79,5 +79,11 @@ If terminal status times out, the client requests `live_route/cancel`. If the
 cancel acknowledgement cannot be confirmed, the command reports that physical
 STOP/ESTOP must be used rather than claiming cleanup succeeded.
 
+Terminal manifests distinguish segment-local projected motion from absolute
+odometry. They include route and segment start/final poses, final heading,
+left/right encoder deltas, and per-track distances from the driver's read-only
+`/encoder_counts` evidence. Missing measurement fields are unavailable evidence,
+not zeros. See `docs/motion_calibration.md` before the next physical stage.
+
 Do not use `--execute` until the rover environment, collision supervisor,
 odometry, STOP, and ESTOP have been checked under the staged MVP0 procedure.

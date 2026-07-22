@@ -7,6 +7,7 @@ can run on machines without ROS 2 installed. Run it inside a ROS 2 environment.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import threading
 from dataclasses import dataclass
@@ -111,7 +112,7 @@ def main(args=None):
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from sensor_msgs.msg import BatteryState, Illuminance, Temperature
-    from std_msgs.msg import ColorRGBA
+    from std_msgs.msg import ColorRGBA, String
     from std_srvs.srv import Trigger
     from tf2_ros import TransformBroadcaster
 
@@ -146,6 +147,7 @@ def main(args=None):
             self._right_motor_temperature_pub = self.create_publisher(Temperature, "right_motor_temperature", 10)
             self._ambient_light_pub = self.create_publisher(Illuminance, "ambient_light", 10)
             self._odom_pub = self.create_publisher(Odometry, "odom", 10)
+            self._encoder_counts_pub = self.create_publisher(String, "encoder_counts", 10)
             self._tf_broadcaster = TransformBroadcaster(self)
             self._diagnostics_pub = self.create_publisher(DiagnosticArray, "diagnostics", 10)
 
@@ -401,7 +403,22 @@ def main(args=None):
                 return
             if not self._context_ok():
                 return
-            sample = self._odom_tracker.update(counts, stamp=self.get_clock().now().nanoseconds / 1_000_000_000.0)
+            stamp_seconds = self.get_clock().now().nanoseconds / 1_000_000_000.0
+            encoder_msg = String()
+            encoder_msg.data = json.dumps(
+                {
+                    "schema": "sphero_rvr.encoder_counts.v1",
+                    "stamp": stamp_seconds,
+                    "left_count": int(counts.left),
+                    "right_count": int(counts.right),
+                    "counts_per_meter": self._config.odom_counts_per_meter,
+                    "frame_id": self._config.odom_frame_id,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            self._encoder_counts_pub.publish(encoder_msg)
+            sample = self._odom_tracker.update(counts, stamp=stamp_seconds)
             if sample is None:
                 return
             self._publish_odom_sample(sample)

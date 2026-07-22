@@ -6,6 +6,7 @@ live_route_runner:
     cmd_vel_topic: /cmd_vel
     scan_topic: /scan
     odom_topic: /odom
+    encoder_counts_topic: /encoder_counts
     collision_state_topic: /collision_stop/state
     stop_state_topic: /mission_api/v2/control_state
     control_period_s: 0.05
@@ -22,6 +23,7 @@ live_route_runner:
     min_translation_cap_m: 0.01
     max_translation_segment_m: 0.75
     collision_state_max_age_s: 0.30
+    track_counts_per_meter: 4337.768
     distance_tolerance_m: 0.01
     angle_tolerance_rad: 0.034906585
     heading_kp: 1.5

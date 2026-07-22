@@ -24,8 +24,11 @@ from .odometry import (
     MotionPrimitiveStopReason,
     MotionPrimitiveTelemetry,
     OdomMotionState,
+    encoder_delta,
     normalize_angle,
 )
+
+DEFAULT_TRACK_COUNTS_PER_METER = 4337.768
 
 
 class RouteTerminalReason(str, Enum):
@@ -134,12 +137,27 @@ class LiveRouteConfig:
     min_translation_cap_m: float = 0.01
     max_translation_segment_m: float = 0.75
     collision_state_max_age_s: float = 0.30
+    track_counts_per_meter: float = DEFAULT_TRACK_COUNTS_PER_METER
 
     def __post_init__(self) -> None:
-        for name in ("clearance_margin_m", "min_translation_cap_m", "max_translation_segment_m", "collision_state_max_age_s"):
+        for name in (
+            "clearance_margin_m",
+            "min_translation_cap_m",
+            "max_translation_segment_m",
+            "collision_state_max_age_s",
+            "track_counts_per_meter",
+        ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
+
+
+@dataclass(frozen=True)
+class TrackEncoderState:
+    stamp: float
+    left_count: int
+    right_count: int
+    counts_per_meter: float = DEFAULT_TRACK_COUNTS_PER_METER
 
 
 @dataclass(frozen=True)
@@ -152,6 +170,7 @@ class LiveRouteState:
     stop: bool = False
     estop: bool = False
     cancel: bool = False
+    encoder_counts: Optional[TrackEncoderState] = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +184,15 @@ class ExecutedRouteSegment:
     measured_angle_deg: float = 0.0
     terminal_reason: str = RouteTerminalReason.RUNNING.value
     collision_state: str = CollisionState.CLEAR.value
+    start_pose: Optional[Mapping[str, float]] = None
+    final_pose: Optional[Mapping[str, float]] = None
+    heading_change_deg: Optional[float] = None
+    encoder_start_stamp: Optional[float] = None
+    encoder_final_stamp: Optional[float] = None
+    left_encoder_delta_counts: Optional[int] = None
+    right_encoder_delta_counts: Optional[int] = None
+    left_track_distance_m: Optional[float] = None
+    right_track_distance_m: Optional[float] = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -177,6 +205,15 @@ class ExecutedRouteSegment:
             "measured_angle_deg": self.measured_angle_deg,
             "terminal_reason": self.terminal_reason,
             "collision_state": self.collision_state,
+            "start_pose": None if self.start_pose is None else dict(self.start_pose),
+            "final_pose": None if self.final_pose is None else dict(self.final_pose),
+            "heading_change_deg": self.heading_change_deg,
+            "encoder_start_stamp": self.encoder_start_stamp,
+            "encoder_final_stamp": self.encoder_final_stamp,
+            "left_encoder_delta_counts": self.left_encoder_delta_counts,
+            "right_encoder_delta_counts": self.right_encoder_delta_counts,
+            "left_track_distance_m": self.left_track_distance_m,
+            "right_track_distance_m": self.right_track_distance_m,
         }
 
 
@@ -191,6 +228,19 @@ class LiveRouteManifest:
     measured_angle_deg: float
     collision_state: str
     source_sha: str
+    route_start_pose: Optional[Mapping[str, float]] = None
+    route_final_pose: Optional[Mapping[str, float]] = None
+    route_delta_x_m: Optional[float] = None
+    route_delta_y_m: Optional[float] = None
+    route_displacement_m: Optional[float] = None
+    route_heading_change_deg: Optional[float] = None
+    final_heading_deg: Optional[float] = None
+    encoder_start_stamp: Optional[float] = None
+    encoder_final_stamp: Optional[float] = None
+    left_encoder_delta_counts: Optional[int] = None
+    right_encoder_delta_counts: Optional[int] = None
+    left_track_distance_m: Optional[float] = None
+    right_track_distance_m: Optional[float] = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -204,6 +254,19 @@ class LiveRouteManifest:
             "measured_angle_deg": self.measured_angle_deg,
             "collision_state": self.collision_state,
             "source_sha": self.source_sha,
+            "route_start_pose": None if self.route_start_pose is None else dict(self.route_start_pose),
+            "route_final_pose": None if self.route_final_pose is None else dict(self.route_final_pose),
+            "route_delta_x_m": self.route_delta_x_m,
+            "route_delta_y_m": self.route_delta_y_m,
+            "route_displacement_m": self.route_displacement_m,
+            "route_heading_change_deg": self.route_heading_change_deg,
+            "final_heading_deg": self.final_heading_deg,
+            "encoder_start_stamp": self.encoder_start_stamp,
+            "encoder_final_stamp": self.encoder_final_stamp,
+            "left_encoder_delta_counts": self.left_encoder_delta_counts,
+            "right_encoder_delta_counts": self.right_encoder_delta_counts,
+            "left_track_distance_m": self.left_track_distance_m,
+            "right_track_distance_m": self.right_track_distance_m,
         }
 
     def to_json(self) -> str:
@@ -217,6 +280,8 @@ class _ActiveSegment:
     executed_arguments: Mapping[str, Any]
     controller: MotionPrimitiveController
     telemetry: MotionPrimitiveTelemetry
+    start_odom: OdomMotionState
+    start_encoder_counts: Optional[TrackEncoderState]
 
 
 class LiveRouteRunner:
@@ -231,6 +296,10 @@ class LiveRouteRunner:
         self._executed: list[ExecutedRouteSegment] = []
         self._terminal_reason = RouteTerminalReason.IDLE.value
         self._last_collision_state = "MISSING"
+        self._route_start_odom: Optional[OdomMotionState] = None
+        self._route_final_odom: Optional[OdomMotionState] = None
+        self._route_start_encoder_counts: Optional[TrackEncoderState] = None
+        self._route_final_encoder_counts: Optional[TrackEncoderState] = None
 
     @property
     def active(self) -> bool:
@@ -244,6 +313,10 @@ class LiveRouteRunner:
         self._executed = []
         self._terminal_reason = RouteTerminalReason.RUNNING.value
         self._last_collision_state = str(state.collision_state)
+        self._route_start_odom = state.odom
+        self._route_final_odom = state.odom
+        self._route_start_encoder_counts = state.encoder_counts
+        self._route_final_encoder_counts = state.encoder_counts
         return self.update(state)
 
     def abort(self, reason: str, state: LiveRouteState) -> None:
@@ -297,6 +370,15 @@ class LiveRouteRunner:
     def manifest(self) -> LiveRouteManifest:
         request = self._require_request()
         status = self._status_for_terminal(self._terminal_reason)
+        pose_measurement = _pose_measurement(self._route_start_odom, self._route_final_odom)
+        track_measurement = _track_measurement(
+            self._route_start_encoder_counts,
+            self._route_final_encoder_counts,
+            counts_per_meter=self.config.track_counts_per_meter,
+            expected_start_stamp=None if self._route_start_odom is None else self._route_start_odom.stamp,
+            expected_final_stamp=None if self._route_final_odom is None else self._route_final_odom.stamp,
+            max_sample_age_s=self.config.odom.max_sample_age_s,
+        )
         return LiveRouteManifest(
             route_id=request.route_id,
             status=status,
@@ -307,6 +389,8 @@ class LiveRouteRunner:
             measured_angle_deg=sum(segment.measured_angle_deg for segment in self._executed),
             collision_state=self._last_collision_state,
             source_sha=request.source_sha,
+            **pose_measurement,
+            **track_measurement,
         )
 
     def _start_segment(self, segment: RouteSegmentRequest, state: LiveRouteState) -> _ActiveSegment:
@@ -317,7 +401,15 @@ class LiveRouteRunner:
             goal, executed_arguments = self._turn_goal(segment)
         controller = MotionPrimitiveController(self.config.odom)
         telemetry = controller.start(goal, state.odom)
-        return _ActiveSegment(segment, goal, executed_arguments, controller, telemetry)
+        return _ActiveSegment(
+            segment,
+            goal,
+            executed_arguments,
+            controller,
+            telemetry,
+            state.odom,
+            state.encoder_counts,
+        )
 
     def _move_goal(self, segment: RouteSegmentRequest, state: LiveRouteState) -> tuple[MotionPrimitiveGoal, Mapping[str, Any]]:
         requested_distance = float(segment.arguments["distance_m"])
@@ -419,6 +511,15 @@ class LiveRouteRunner:
             if telemetry.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED
             else self._status_for_terminal(_terminal_for_odom_stop(telemetry.stop_reason, kind=active.goal.kind))
         )
+        pose_measurement = _segment_pose_measurement(active.start_odom, state.odom)
+        track_measurement = _track_measurement(
+            active.start_encoder_counts,
+            state.encoder_counts,
+            counts_per_meter=self.config.track_counts_per_meter,
+            expected_start_stamp=active.start_odom.stamp,
+            expected_final_stamp=None if state.odom is None else state.odom.stamp,
+            max_sample_age_s=self.config.odom.max_sample_age_s,
+        )
         self._executed.append(
             ExecutedRouteSegment(
                 correlation_id=active.request.correlation_id,
@@ -430,6 +531,8 @@ class LiveRouteRunner:
                 measured_angle_deg=measured_angle,
                 terminal_reason=telemetry.stop_reason.value,
                 collision_state=str(state.collision_state),
+                **pose_measurement,
+                **track_measurement,
             )
         )
 
@@ -457,6 +560,8 @@ class LiveRouteRunner:
     def _finish(self, reason: str, state: LiveRouteState) -> None:
         self._terminal_reason = reason
         self._last_collision_state = str(state.collision_state or "MISSING")
+        self._route_final_odom = state.odom
+        self._route_final_encoder_counts = state.encoder_counts
 
     @staticmethod
     def _status_for_terminal(reason: str) -> ToolResultStatus:
@@ -487,6 +592,104 @@ class LiveRouteRunner:
         if self._request is None:
             raise RuntimeError("live route runner has not been started")
         return self._request
+
+
+def _pose_dict(state: OdomMotionState) -> dict[str, float]:
+    return {
+        "stamp": float(state.stamp),
+        "x_m": float(state.x_m),
+        "y_m": float(state.y_m),
+        "heading_deg": math.degrees(float(state.yaw_rad)),
+    }
+
+
+def _pose_measurement(
+    start: Optional[OdomMotionState],
+    final: Optional[OdomMotionState],
+) -> dict[str, Any]:
+    if start is None or final is None:
+        return {
+            "route_start_pose": None,
+            "route_final_pose": None,
+            "route_delta_x_m": None,
+            "route_delta_y_m": None,
+            "route_displacement_m": None,
+            "route_heading_change_deg": None,
+            "final_heading_deg": None,
+        }
+    delta_x = float(final.x_m) - float(start.x_m)
+    delta_y = float(final.y_m) - float(start.y_m)
+    return {
+        "route_start_pose": _pose_dict(start),
+        "route_final_pose": _pose_dict(final),
+        "route_delta_x_m": delta_x,
+        "route_delta_y_m": delta_y,
+        "route_displacement_m": math.hypot(delta_x, delta_y),
+        "route_heading_change_deg": math.degrees(
+            normalize_angle(float(final.yaw_rad) - float(start.yaw_rad))
+        ),
+        "final_heading_deg": math.degrees(float(final.yaw_rad)),
+    }
+
+
+def _segment_pose_measurement(
+    start: OdomMotionState,
+    final: Optional[OdomMotionState],
+) -> dict[str, Any]:
+    if final is None:
+        return {"start_pose": _pose_dict(start), "final_pose": None, "heading_change_deg": None}
+    return {
+        "start_pose": _pose_dict(start),
+        "final_pose": _pose_dict(final),
+        "heading_change_deg": math.degrees(
+            normalize_angle(float(final.yaw_rad) - float(start.yaw_rad))
+        ),
+    }
+
+
+def _track_measurement(
+    start: Optional[TrackEncoderState],
+    final: Optional[TrackEncoderState],
+    *,
+    counts_per_meter: float,
+    expected_start_stamp: Optional[float],
+    expected_final_stamp: Optional[float],
+    max_sample_age_s: float,
+) -> dict[str, Any]:
+    empty = {
+        "encoder_start_stamp": None,
+        "encoder_final_stamp": None,
+        "left_encoder_delta_counts": None,
+        "right_encoder_delta_counts": None,
+        "left_track_distance_m": None,
+        "right_track_distance_m": None,
+    }
+    if start is None or final is None:
+        return empty
+    if final.stamp <= start.stamp:
+        return empty
+    if expected_start_stamp is None or expected_final_stamp is None:
+        return empty
+    if (
+        abs(float(start.stamp) - float(expected_start_stamp)) > float(max_sample_age_s)
+        or abs(float(final.stamp) - float(expected_final_stamp)) > float(max_sample_age_s)
+    ):
+        return empty
+    if not (
+        math.isclose(float(start.counts_per_meter), float(counts_per_meter), rel_tol=1e-9)
+        and math.isclose(float(final.counts_per_meter), float(counts_per_meter), rel_tol=1e-9)
+    ):
+        return empty
+    left_delta = encoder_delta(final.left_count, start.left_count)
+    right_delta = encoder_delta(final.right_count, start.right_count)
+    return {
+        "encoder_start_stamp": float(start.stamp),
+        "encoder_final_stamp": float(final.stamp),
+        "left_encoder_delta_counts": left_delta,
+        "right_encoder_delta_counts": right_delta,
+        "left_track_distance_m": left_delta / float(counts_per_meter),
+        "right_track_distance_m": right_delta / float(counts_per_meter),
+    }
 
 
 def route_request_from_json(payload: str, *, source_sha: str = "unknown") -> LiveRouteRequest:

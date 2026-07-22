@@ -13,10 +13,11 @@ from sphero_rvr_driver.live_route_runner import (
     LiveRouteRunner,
     LiveRouteState,
     RouteSegmentRequest,
+    TrackEncoderState,
     route_request_from_json,
     run_route_replay,
 )
-from sphero_rvr_driver.live_route_runner_node import _collision_state_value
+from sphero_rvr_driver.live_route_runner_node import _collision_state_value, _encoder_state
 from sphero_rvr_driver.mission_api import ToolResultStatus
 from sphero_rvr_driver.odometry import MotionPrimitiveConfig, OdomMotionState
 
@@ -49,6 +50,7 @@ def _state(
     estop: bool = False,
     cancel: bool = False,
     collision_received_at: float | None = None,
+    encoder_counts: tuple[int, int] | None = None,
 ) -> LiveRouteState:
     return LiveRouteState(
         stamp=stamp,
@@ -59,6 +61,11 @@ def _state(
         stop=stop,
         estop=estop,
         cancel=cancel,
+        encoder_counts=(
+            None
+            if encoder_counts is None
+            else TrackEncoderState(stamp, encoder_counts[0], encoder_counts[1])
+        ),
     )
 
 
@@ -175,6 +182,135 @@ def test_live_route_replay_completes_72_inches_with_three_translations_two_signe
     payload = manifest.to_json_dict()
     assert payload["source_sha"] == "test-sha"
     assert "/cmd_vel_motor" not in str(payload)
+
+
+def test_manifest_distinguishes_route_local_progress_from_absolute_pose_and_track_counts() -> None:
+    request = LiveRouteRequest(
+        route_id="measured-route",
+        segments=(
+            RouteSegmentRequest(
+                "move-1",
+                "move_distance",
+                {"distance_m": 0.10, "speed_mps": 0.08, "timeout_s": 4.0},
+            ),
+        ),
+        max_runtime_s=10.0,
+        max_travel_m=0.10,
+        source_sha="measurement-sha",
+    )
+    start_yaw = math.radians(10.0)
+    final_yaw = math.radians(12.0)
+    states = (
+        _state(1.0, 0.40, -0.20, start_yaw, encoder_counts=(1_000, 2_000)),
+        _state(
+            2.0,
+            0.40 + 0.10 * math.cos(start_yaw),
+            -0.20 + 0.10 * math.sin(start_yaw),
+            final_yaw,
+            encoder_counts=(1_430, 2_450),
+        ),
+    )
+
+    manifest = run_route_replay(request, states)
+    payload = manifest.to_json_dict()
+
+    assert manifest.status is ToolResultStatus.COMPLETE
+    assert manifest.measured_distance_m == pytest.approx(0.10)
+    assert payload["route_start_pose"]["x_m"] == pytest.approx(0.40)
+    assert payload["route_final_pose"]["heading_deg"] == pytest.approx(12.0)
+    assert payload["route_delta_x_m"] == pytest.approx(0.10 * math.cos(start_yaw))
+    assert payload["route_delta_y_m"] == pytest.approx(0.10 * math.sin(start_yaw))
+    assert payload["route_displacement_m"] == pytest.approx(0.10)
+    assert payload["route_heading_change_deg"] == pytest.approx(2.0)
+    assert payload["final_heading_deg"] == pytest.approx(12.0)
+    assert payload["encoder_start_stamp"] == pytest.approx(1.0)
+    assert payload["encoder_final_stamp"] == pytest.approx(2.0)
+    assert payload["left_encoder_delta_counts"] == 430
+    assert payload["right_encoder_delta_counts"] == 450
+    assert payload["left_track_distance_m"] == pytest.approx(430 / 4337.768)
+    assert payload["right_track_distance_m"] == pytest.approx(450 / 4337.768)
+    segment = payload["executed_segments"][0]
+    assert segment["start_pose"]["heading_deg"] == pytest.approx(10.0)
+    assert segment["final_pose"]["heading_deg"] == pytest.approx(12.0)
+    assert segment["heading_change_deg"] == pytest.approx(2.0)
+    assert segment["encoder_start_stamp"] == pytest.approx(1.0)
+    assert segment["encoder_final_stamp"] == pytest.approx(2.0)
+    assert segment["left_encoder_delta_counts"] == 430
+    assert segment["right_encoder_delta_counts"] == 450
+
+
+def test_manifest_marks_unchanged_or_stale_track_samples_unavailable() -> None:
+    request = LiveRouteRequest(
+        route_id="stale-track-evidence",
+        segments=(
+            RouteSegmentRequest(
+                "move-1",
+                "move_distance",
+                {"distance_m": 0.10, "speed_mps": 0.08, "timeout_s": 4.0},
+            ),
+        ),
+        max_runtime_s=10.0,
+        max_travel_m=0.10,
+    )
+    states = (
+        _state(1.0, 0.0, 0.0, 0.0, encoder_counts=(100, 100)),
+        LiveRouteState(
+            stamp=2.0,
+            odom=OdomMotionState(2.0, 0.10, 0.0, 0.0),
+            scan=_full_scan(2.0),
+            collision_state="CLEAR",
+            collision_received_at=2.0,
+            encoder_counts=TrackEncoderState(1.0, 100, 100),
+        ),
+    )
+
+    payload = run_route_replay(request, states).to_json_dict()
+
+    assert payload["encoder_start_stamp"] is None
+    assert payload["encoder_final_stamp"] is None
+    assert payload["left_encoder_delta_counts"] is None
+    assert payload["right_encoder_delta_counts"] is None
+    assert payload["left_track_distance_m"] is None
+    assert payload["right_track_distance_m"] is None
+
+
+def test_encoder_state_parser_is_typed_and_rejects_malformed_or_nonfinite_input() -> None:
+    valid = _encoder_state(
+        json.dumps(
+            {
+                "schema": "sphero_rvr.encoder_counts.v1",
+                "stamp": 12.5,
+                "left_count": -2_147_483_640,
+                "right_count": 42,
+                "counts_per_meter": 4337.768,
+            }
+        )
+    )
+    assert valid == TrackEncoderState(12.5, -2_147_483_640, 42, 4337.768)
+    assert _encoder_state("not-json") is None
+    assert _encoder_state(json.dumps({"schema": "wrong"})) is None
+    assert _encoder_state(
+        json.dumps(
+            {
+                "schema": "sphero_rvr.encoder_counts.v1",
+                "stamp": float("nan"),
+                "left_count": 1,
+                "right_count": 2,
+                "counts_per_meter": 4337.768,
+            }
+        )
+    ) is None
+    assert _encoder_state(
+        json.dumps(
+            {
+                "schema": "sphero_rvr.encoder_counts.v1",
+                "stamp": 1.0,
+                "left_count": True,
+                "right_count": 2,
+                "counts_per_meter": 4337.768,
+            }
+        )
+    ) is None
 
 
 @pytest.mark.parametrize(
@@ -389,6 +525,7 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     launch_text = (REPO_ROOT / "launch" / "supervised_rvr.launch.py").read_text()
     config_text = (REPO_ROOT / "config" / "live_route_runner.yaml").read_text()
     node_source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "live_route_runner_node.py").read_text()
+    driver_source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "rvr_node.py").read_text()
 
     assert "live_route_runner = sphero_rvr_driver.live_route_runner_node:main" in setup_text
     assert "config/live_route_runner.yaml" in setup_text
@@ -396,6 +533,8 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert 'default_value="false"' in launch_text
     assert "cmd_vel_topic: /cmd_vel" in config_text
     assert "collision_state_max_age_s: 0.30" in config_text
+    assert "encoder_counts_topic: /encoder_counts" in config_text
+    assert "track_counts_per_meter: 4337.768" in config_text
     assert "/cmd_vel_motor" not in config_text
     assert "Serial" not in node_source
     assert "cmd_vel_motor" not in node_source
@@ -410,5 +549,8 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert "self._collision_state: Optional[str] = None" in node_source
     assert "self._collision_received_at: Optional[float] = None" in node_source
     assert "collision_received_at=self._collision_received_at" in node_source
+    assert "encoder_counts=self._latest_encoder_counts" in node_source
+    assert 'create_publisher(String, "encoder_counts", 10)' in driver_source
+    assert "sphero_rvr.encoder_counts.v1" in driver_source
     assert "_collision_state_value(getattr(msg, \"data\", None))" in node_source
     assert setup_text.count("config/live_route_runner.yaml") == 1

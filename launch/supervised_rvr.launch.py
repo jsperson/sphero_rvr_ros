@@ -76,6 +76,7 @@ def generate_launch_description():
             ("cmd_vel", "/cmd_vel"),
             ("scan", "/scan"),
             ("odom", "/odom"),
+            ("encoder_counts", "/encoder_counts"),
         ],
         condition=IfCondition(
             PythonExpression(["'", start_supervisor, "' == 'true' and '", start_live_route_runner, "' == 'true'"])

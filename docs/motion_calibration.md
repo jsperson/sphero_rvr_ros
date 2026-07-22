@@ -151,3 +151,47 @@ combined: 4337.768 counts/m
 ```yaml
 odom_counts_per_meter: 4337.768
 ```
+
+## Route-local versus absolute odometry evidence
+
+The live route runner's historical `measured_distance_m` is the sum of each
+translation projected from that segment's start pose along its start heading. It
+is intentionally route-local. A later raw `/odom` position is absolute relative
+to the driver odometry origin, so the two values cannot be compared unless the
+route's start pose, final pose, and sampling time are retained. This missing
+baseline—not a proven calibration factor—explains why the earlier 0.3234 m route
+measurement could not be reconciled with a later `(0.6091, -0.2820)` snapshot.
+
+The driver now publishes read-only `/encoder_counts` evidence beside `/odom`.
+Each terminal route manifest records:
+
+- absolute route start and final poses and their timestamps;
+- route-frame `delta_x`, `delta_y`, displacement, heading change, and final
+  absolute heading;
+- raw left/right encoder count deltas and per-track distances;
+- encoder start/final timestamps, with stale or unchanged samples rejected;
+- the same start/final pose, heading, and track evidence for each completed
+  segment;
+- the existing segment-local projected distance and signed turn measurement.
+
+Null track fields mean the evidence was unavailable or its scale disagreed with
+the reviewed runner configuration. Do not infer zeros and do not advance a
+physical stage when any required field is null, the two track distances are
+inconsistent, heading drift is unexplained, or the final pose continues changing
+after the terminal result.
+
+## Prepared prompt-drive stages
+
+These are procedures, not authorization. Keep live execution locked off until
+Scott is present and explicitly approves the exact digest printed for that stage.
+Run one stage at a time, with the rover restrained for the first two:
+
+1. `Move forward 10 centimeters, then stop.`
+2. `Turn left 45 degrees, then stop.`
+3. `Move forward 10 centimeters, turn left 45 degrees, then move forward 10 centimeters, then stop.`
+
+For every stage, capture the proposal, full digest, source/deployed SHAs, route
+start/final pose, final heading, left/right deltas, per-track distances, collision
+state, terminal reason, and stationary post-terminal samples. Stop after any
+STOP/ESTOP/collision activity, stale or missing evidence, inconsistent
+measurement, executor error, or incomplete process/device cleanup.
