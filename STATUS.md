@@ -4,15 +4,16 @@ Updated: 2026-07-21
 
 ## Current repo state
 
-- `main` and `origin/main`: `a1675335f5e2e998dd8a455d8833adec7fb1f43f` (`merge: persistent mission service slice 1`).
-- Main checkout is clean.
-- Current MVP: prove that a real first-party LLM prompt can produce operator-approved typed `move_distance` / `turn_angle` calls that drive the physical rover through the live route runner and collision supervisor with measured results.
-- Existing evidence covers the real planner with fake adapters and the physical route components separately; it is not accepted evidence of LLM-selected physical driving.
-- Preserved supporting draft: local branch `wip/m1-persistent-no-motion-service` at `e1905b8`. It passed `tests/test_mission_service.py` (18 tests in 1.01 seconds) but is paused until the prompt-driving MVP is proven.
-- Product direction: map-driven web UI plus text-based LLM interaction for mapping, semantic search, adaptive exploration, and obstacle-avoiding navigation. See `docs/product_direction.md`.
-- Repository cleanup reduced task worktrees from 58 to one active in-repo WIP worktree. Historical dirty drafts and evidence are preserved under local `archive/kanban/*` branches.
-- Target Pi workspace: `/home/jsperson/ros2_ws/src/sphero_rvr_ros` on Ubuntu Server 24.04 / ROS 2 Jazzy.
-- The latest confirmed physical calibration and hardware-smoke history remains below; it predates the current SHA and is not evidence that M1 is deployed.
+- `main` and `origin/main` remain untouched at `076ae0f` while integration gates run.
+- Active branch: `integration/pi-web-mission-stack`, clean and pushed. It merges the cumulative web/prompt work and selectively ports the useful persistent-service WIP without merging archived Kanban branches.
+- The integrated stack now owns durable prompt planning, proposal/rejection, exact digest approval records, asynchronous status/cancellation, restart recovery, truthful live evidence, and a live/proposal-only browser adapter behind a Pi-local Unix socket.
+- The Pi deployment is intentionally no-motion: `live_execution_enabled=false`, no route executor authority, no rover/lidar/collision process, and no browser ROS/OpenAI boundary.
+- Tailscale Serve exposes only the loopback web listener to the existing tailnet at `https://sphero-pi-2.tailab4000.ts.net`; Funnel and ACL changes are not used.
+- Dedicated deployed workspace: `/home/jsperson/ros2_ws_mission_stack`. The older checkout at `/home/jsperson/ros2_ws/src/sphero_rvr_ros` remains preserved with its untracked physical evidence.
+- Local full validation on the integration source: 717 passed in 20.35 seconds through the bounded runner. Pi focused no-hardware/service validation: 89 passed in 4.48 seconds.
+- Real browser evidence proves tailnet HTTPS, Pi-local ChatGPT OAuth planning with `gpt-5.6-sol`/`high`, exact proposal persistence across owner restart, authenticated cancellation, mobile layout, and unavailable live map truthfulness. Approval remained locked and no motion occurred.
+- Physical acceptance remains incomplete: route-local versus absolute odometry and per-track/final-heading evidence must be resolved before separately approved 10 cm, 45-degree, or multi-step stages.
+- Current cross-session handoff is maintained in the Obsidian project's `Current Status.md` and `Implementation Log.md`.
 
 ## Hardware-validation milestone closeout
 

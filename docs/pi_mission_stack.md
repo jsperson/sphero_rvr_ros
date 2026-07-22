@@ -106,8 +106,8 @@ The application listens only on `127.0.0.1:8765`. Publish it with Tailscale
 Serve, not Funnel, and preserve tailnet ACLs:
 
 ```bash
-tailscale serve --bg 8765
-tailscale serve status
+sudo tailscale serve --bg --yes 8765
+sudo tailscale serve status
 ```
 
 The expected URL is `https://sphero-pi-2.tailab4000.ts.net`. Tailscale Serve is
@@ -148,7 +148,7 @@ older rover checkout:
 
 ```bash
 systemctl --user disable --now rvr-mission-web.service rvr-mission-service.service
-tailscale serve off
+sudo tailscale serve --https=443 off
 ```
 
 Confirm both units are inactive, `tailscale serve status` has no application
