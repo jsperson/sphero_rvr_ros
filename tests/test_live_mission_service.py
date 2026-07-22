@@ -226,4 +226,7 @@ def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> No
     )
     assert "OPENAI_API_KEY" not in environment
     assert "CODEX_API_KEY" not in environment
+    assert "RVR_ROS_WORKSPACE=replace-with-absolute-mission-stack-workspace" in environment
+    assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in mission_unit
+    assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in web_unit
     assert "replace-with-reviewed-source-sha" in environment
