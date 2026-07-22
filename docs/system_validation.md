@@ -1,26 +1,32 @@
 # System validation and current-SHA corpus
 
-This package has two validation layers:
+This package has two validation layers, both run explicitly by an operator or development agent:
 
 1. ROS-free unit/system gates that run on any Python host.
-2. ROS 2/colcon gates that run in a Jazzy container and verify package install, entry points, launch-description construction, and deterministic process cleanup.
+2. ROS 2/colcon checks that run in the Pi's Jazzy workspace and verify package install, entry points, launch-description construction, and deterministic process cleanup.
 
 No gate on this page authorizes physical motion. Hardware-in-loop remains a separate evidence suite with an explicit operator gate.
 
-## CI gates
+## Validation commands
 
-`.github/workflows/ci.yml` defines:
-
-- `python-unit-system-gates`: installs the package, runs the full pytest suite, runs `tests/test_system_validation.py`, and runs the system validation module.
-- `ros2-colcon-system-gates`: builds `sphero_rvr_driver` with `colcon`, checks installed console scripts, renders `supervised_rvr.launch.py --show-args`, and fails if rover/route/supervisor launch processes remain afterward.
-
-The ROS-free command is:
+This repository does not use a hosted GitHub Actions workflow. Run the ROS-free checks locally with the bounded test runner:
 
 ```bash
+python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_system_validation.py
 python -m sphero_rvr_driver.system_validation --repo-root .
 ```
 
-It exercises the fake route/collision corpus and latency gate without ROS, serial ports, sensors, or motors.
+After deployment, run the ROS package checks on the Pi from its workspace:
+
+```bash
+colcon build --symlink-install --packages-select sphero_rvr_driver
+source install/setup.bash
+ros2 pkg executables sphero_rvr_driver
+ros2 launch sphero_rvr_driver supervised_rvr.launch.py --show-args
+```
+
+The system validation module exercises the fake route/collision corpus and latency gate without ROS, serial ports, sensors, or motors. The Pi checks above inspect the package and launch description but do not launch the rover.
 
 ## Bag-driven integration corpus
 

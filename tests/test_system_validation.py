@@ -8,10 +8,9 @@ import pytest
 from sphero_rvr_driver.live_route_runner import LiveRouteConfig
 from sphero_rvr_driver.system_validation import (
     REQUIRED_CURRENT_SHA_TOPICS,
-    REQUIRED_SYSTEM_CI_JOBS,
     CorpusManifestError,
-    assert_ci_workflow_covers_system_gates,
     build_current_sha_corpus_manifest,
+    main,
     parse_rosbag2_metadata,
     validate_current_sha_corpus_manifest,
     validate_emergency_dispatch_latency,
@@ -21,15 +20,9 @@ from sphero_rvr_driver.system_validation import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_ci_workflow_declares_ros_build_import_launch_cleanup_and_latency_gates() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
-
-    result = assert_ci_workflow_covers_system_gates(workflow)
-
-    assert result == REQUIRED_SYSTEM_CI_JOBS
-    assert "colcon build" in workflow
-    assert "python -m sphero_rvr_driver.system_validation" in workflow
-    assert "scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_system_validation.py" in workflow
+def test_system_validation_runs_without_a_hosted_workflow(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--repo-root", str(tmp_path)]) == 0
+    assert capsys.readouterr().out == "system validation checks passed\n"
 
 
 def test_current_sha_corpus_manifest_requires_all_no_motion_topics_and_exact_sha(tmp_path: Path) -> None:
@@ -134,7 +127,7 @@ def test_fake_route_execution_corpus_catches_false_terminal_success_and_latency_
 def test_system_validation_entry_point_is_installed() -> None:
     setup_text = (REPO_ROOT / "setup.py").read_text()
 
-    assert "rvr_system_ci_check = sphero_rvr_driver.system_validation:main" in setup_text
+    assert "rvr_system_check = sphero_rvr_driver.system_validation:main" in setup_text
     assert "docs/system_validation.md" in setup_text
 
 

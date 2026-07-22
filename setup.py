@@ -102,7 +102,7 @@ setup(
             "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
             "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
             "rvr_mcp_server = sphero_rvr_driver.rvr_mcp_server:main",
-            "rvr_system_ci_check = sphero_rvr_driver.system_validation:main",
+            "rvr_system_check = sphero_rvr_driver.system_validation:main",
         ],
     },
 )
