@@ -369,11 +369,20 @@ def test_ros_executor_source_owns_only_route_request_and_never_velocity_or_motor
     assert "Serial" not in source
 
 
-def test_ros_executor_waits_for_both_route_topics_and_returns_correlated_terminal_status(monkeypatch) -> None:
+@pytest.mark.parametrize("already_initialized", (False, True))
+def test_ros_executor_uses_private_executor_and_returns_correlated_terminal_status(
+    monkeypatch, already_initialized
+) -> None:
     proposal = _proposal()
     route = approved_live_route(proposal, approval_phrase(proposal))
     published = []
-    state = {"ok": False}
+    state = {
+        "ok": already_initialized,
+        "private_spin_count": 0,
+        "executor_added": False,
+        "executor_removed": False,
+        "executor_shutdown": False,
+    }
 
     class _String:
         def __init__(self):
@@ -405,7 +414,7 @@ def test_ros_executor_waits_for_both_route_topics_and_returns_correlated_termina
                     "measured_distance_m": 0.2,
                 }
             )
-            self.node.callback(status)
+            self.node.pending_status = status
 
     class _Client:
         def service_is_ready(self):
@@ -417,6 +426,8 @@ def test_ros_executor_waits_for_both_route_topics_and_returns_correlated_termina
     class _Node:
         def __init__(self, name):
             self.callback = None
+            self.context = object()
+            self.pending_status = None
 
         def create_publisher(self, message_type, topic, depth):
             return _Publisher(self)
@@ -431,11 +442,40 @@ def test_ros_executor_waits_for_both_route_topics_and_returns_correlated_termina
         def destroy_node(self):
             pass
 
+    class _SingleThreadedExecutor:
+        def __init__(self, *, context):
+            self.context = context
+            self.node = None
+
+        def add_node(self, node):
+            self.node = node
+            state["executor_added"] = True
+
+        def spin_once(self, *, timeout_sec=0.1):
+            del timeout_sec
+            state["private_spin_count"] += 1
+            if self.node is not None and self.node.pending_status is not None:
+                status = self.node.pending_status
+                self.node.pending_status = None
+                self.node.callback(status)
+
+        def remove_node(self, node):
+            assert node is self.node
+            state["executor_removed"] = True
+
+        def shutdown(self, *, timeout_sec):
+            assert timeout_sec == pytest.approx(3.0)
+            state["executor_shutdown"] = True
+
     rclpy = ModuleType("rclpy")
     rclpy.ok = lambda: state["ok"]
     rclpy.init = lambda args=None: state.update(ok=True)
-    rclpy.spin_once = lambda node, timeout_sec=0.1: None
+    rclpy.spin_once = lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("process-global executor must not be used")
+    )
     rclpy.try_shutdown = lambda: state.update(ok=False)
+    executors_module = ModuleType("rclpy.executors")
+    executors_module.SingleThreadedExecutor = _SingleThreadedExecutor
     node_module = ModuleType("rclpy.node")
     node_module.Node = _Node
     std_msgs = ModuleType("std_msgs")
@@ -446,6 +486,7 @@ def test_ros_executor_waits_for_both_route_topics_and_returns_correlated_termina
     std_srvs_srv.Trigger = _Trigger
     for name, module in {
         "rclpy": rclpy,
+        "rclpy.executors": executors_module,
         "rclpy.node": node_module,
         "std_msgs": std_msgs,
         "std_msgs.msg": std_msgs_msg,
@@ -459,7 +500,11 @@ def test_ros_executor_waits_for_both_route_topics_and_returns_correlated_termina
     assert result["status"] == "complete"
     assert result["measured_distance_m"] == 0.2
     assert published == [route.to_json_dict()]
-    assert state["ok"] is False
+    assert state["ok"] is already_initialized
+    assert state["private_spin_count"] >= 1
+    assert state["executor_added"] is True
+    assert state["executor_removed"] is True
+    assert state["executor_shutdown"] is True
 
 
 def test_safe_manifest_records_approval_binding_without_credentials() -> None:

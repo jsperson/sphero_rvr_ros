@@ -221,11 +221,19 @@ area is clear, and the operator can use physical power/ESTOP immediately.
 
    ```bash
    source /opt/ros/jazzy/setup.bash
+   source /home/jsperson/ros2_ws/install/rplidar_ros/share/rplidar_ros/local_setup.bash
    source /home/jsperson/ros2_ws_mission_stack/install/setup.bash
    ros2 launch sphero_rvr_driver lidar.launch.py
    ```
 
-   In terminal B, after repeating the two `source` commands, start only the
+   The isolated mission workspace intentionally contains the reviewed rover
+   package only. The single `rplidar_ros` local setup line supplies the Pi's
+   existing lidar executable without overlaying the older rover package; the
+   final source line must still resolve `sphero_rvr_driver` from the isolated
+   exact candidate.
+
+   In terminal B, after sourcing `/opt/ros/jazzy/setup.bash` and the isolated
+   mission workspace setup, start only the
    supervised driver, collision supervisor, and deterministic route runner:
 
    ```bash
@@ -238,8 +246,8 @@ area is clear, and the operator can use physical power/ESTOP immediately.
    This second command is motor-capable. The driver is remapped to
    `/cmd_vel_motor`; only the collision supervisor may publish there.
 
-3. In terminal C, repeat the two `source` commands and capture readiness without
-   submitting a route:
+3. In terminal C, source `/opt/ros/jazzy/setup.bash` and the isolated mission
+   workspace setup, then capture readiness without submitting a route:
 
    ```bash
    ros2 node list

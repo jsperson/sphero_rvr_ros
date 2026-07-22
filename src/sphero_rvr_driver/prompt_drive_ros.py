@@ -57,6 +57,7 @@ class RosLiveRouteExecutor:
 
         try:
             import rclpy
+            from rclpy.executors import SingleThreadedExecutor
             from rclpy.node import Node
             from std_msgs.msg import String
             from std_srvs.srv import Trigger
@@ -67,11 +68,19 @@ class RosLiveRouteExecutor:
             raise
 
         initialized_here = not rclpy.ok()
+        node = None
+        executor = None
         try:
             if initialized_here:
                 rclpy.init(args=None)
             node = Node("prompt_drive_client")
+            executor = SingleThreadedExecutor(context=node.context)
+            executor.add_node(node)
         except BaseException:
+            if executor is not None:
+                executor.shutdown(timeout_sec=self.cleanup_timeout_s)
+            if node is not None:
+                node.destroy_node()
             if initialized_here:
                 rclpy.try_shutdown()
             with self._state_lock:
@@ -101,7 +110,7 @@ class RosLiveRouteExecutor:
             while (
                 publisher.get_subscription_count() < 1 or subscription.get_publisher_count() < 1
             ) and time.monotonic() < graph_deadline:
-                rclpy.spin_once(node, timeout_sec=0.1)
+                executor.spin_once(timeout_sec=0.1)
             if publisher.get_subscription_count() < 1:
                 raise MissionValidationError("live route runner is not subscribed; no route was published")
             if subscription.get_publisher_count() < 1:
@@ -115,14 +124,14 @@ class RosLiveRouteExecutor:
             while terminal is None and time.monotonic() < deadline:
                 if self._cancel_requested.is_set() and not cancellation_attempted:
                     cancellation_attempted = True
-                    if not self._request_cancel(rclpy, node, cancel_client, Trigger):
+                    if not self._request_cancel(executor, cancel_client, Trigger):
                         raise MissionValidationError(
                             "live route cancellation could not be confirmed; use physical STOP/ESTOP"
                         )
-                rclpy.spin_once(node, timeout_sec=0.1)
+                executor.spin_once(timeout_sec=0.1)
             if terminal is None:
                 cancellation_attempted = True
-                cancelled = self._request_cancel(rclpy, node, cancel_client, Trigger)
+                cancelled = self._request_cancel(executor, cancel_client, Trigger)
                 if cancelled:
                     raise MissionValidationError("live route status timed out; cancellation was acknowledged")
                 raise MissionValidationError(
@@ -131,9 +140,11 @@ class RosLiveRouteExecutor:
             return terminal
         except BaseException:
             if route_published and terminal is None and not cancellation_attempted:
-                self._request_cancel(rclpy, node, cancel_client, Trigger)
+                self._request_cancel(executor, cancel_client, Trigger)
             raise
         finally:
+            executor.remove_node(node)
+            executor.shutdown(timeout_sec=self.cleanup_timeout_s)
             node.destroy_node()
             if initialized_here:
                 rclpy.try_shutdown()
@@ -141,15 +152,15 @@ class RosLiveRouteExecutor:
                 self._active = False
                 self._cancel_requested.clear()
 
-    def _request_cancel(self, rclpy, node, client, trigger_type) -> bool:
+    def _request_cancel(self, executor, client, trigger_type) -> bool:
         deadline = time.monotonic() + self.cleanup_timeout_s
         while not client.service_is_ready() and time.monotonic() < deadline:
-            rclpy.spin_once(node, timeout_sec=0.1)
+            executor.spin_once(timeout_sec=0.1)
         if not client.service_is_ready():
             return False
         future = client.call_async(trigger_type.Request())
         while not future.done() and time.monotonic() < deadline:
-            rclpy.spin_once(node, timeout_sec=0.1)
+            executor.spin_once(timeout_sec=0.1)
         if not future.done():
             return False
         try:
