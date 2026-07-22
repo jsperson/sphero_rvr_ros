@@ -285,10 +285,13 @@ area is clear, and the operator can use physical power/ESTOP immediately.
    start.
 
 5. Open the tailnet HTTPS page. Confirm the LIVE physical-execution banner and
-   fresh safety state. Enter only the current stage prompt. Read the complete
-   typed proposal, physical effect, limits, model identity, and digest to Scott.
-   Scott must type the fresh exact `APPROVE <full-digest>` phrase himself. Never
-   reuse a digest from proposal-only evidence or a prior stage.
+   fresh safety state. Enter only the current stage prompt. Scott reviews the
+   complete typed proposal, physical effect, limits, model identity, and digest,
+   then clicks **Approve and run** once. The Pi reloads that current persisted
+   proposal and supplies its exact digest to the mission service; the browser
+   does not manufacture approval authority and Scott does not copy a hash. Never
+   treat approval of a proposal-only, changed, terminal, or prior-stage mission
+   as approval of a new motion.
 
 6. At terminal state, use the page's Terminal evidence panel and Terminal result
    JSON link. Record start/final pose and timestamps, final heading, route-local

@@ -69,6 +69,12 @@ requires an interactive terminal and the exact phrase `APPROVE <full-digest>`.
 Any proposal change invalidates approval. There is intentionally no noninteractive
 approval flag.
 
+That typed phrase is the direct CLI contract. The authenticated live web console
+uses a single **Approve and run** action instead: the Pi reloads the current
+persisted proposal and generates the same exact phrase inside the service
+boundary. Both paths bind approval to the complete unchanged proposal digest;
+the web path merely removes manual hash transcription.
+
 After approval, the client waits for both live-route request and status graph
 connections, publishes only to `/mission_api/v2/live_route/request`, and waits
 for a correlated terminal manifest. It never publishes `Twist`, raw motor data,

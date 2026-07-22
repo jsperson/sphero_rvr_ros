@@ -31,9 +31,14 @@ is discarded because the mock adapter has no physical executor.
 ## Pi live/proposal-only mode
 
 `LiveMissionWebAdapter` connects only to the user-only Pi mission-service Unix
-socket. It submits planning requests, polls durable service state, forwards exact
-approval and cancellation requests, and renders only authoritative evidence. It
-does not contain planning or safety logic.
+socket. It submits planning requests, polls durable service state, forwards an
+authenticated approval confirmation and cancellation requests, and renders only
+authoritative evidence. It does not contain planning or safety logic. For live
+missions the operator reviews the route and clicks **Approve and run** once; the
+Pi then reloads the persisted proposal, recomputes the exact full-digest approval
+phrase, and sends it through the existing mission-service approval boundary.
+The digest binding and approval audit remain server-owned, but the operator no
+longer copies a hash.
 
 ```text
 browser
@@ -127,7 +132,7 @@ python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
   tests/test_live_mission_service.py tests/test_package_metadata.py
 ```
 
-The suite covers the typed adapter boundary, every replay outcome, exact approval,
-live proposal-only state, authoritative Tailscale approval identity, origin and
-cross-site rejection, unavailable live maps, forbidden routes, persistence, and
-restart recovery.
+The suite covers the typed adapter boundary, every replay outcome, mock exact
+approval, live server-owned digest binding, proposal-only state, authoritative
+Tailscale approval identity, origin and cross-site rejection, unavailable live
+maps, forbidden routes, persistence, and restart recovery.

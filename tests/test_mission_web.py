@@ -403,9 +403,13 @@ def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_
     assert proposed["proposal"]["provider_id"] == "mock-replay"
     assert proposed["approval"]["required"] is True
     assert proposed["approval"]["enabled"] is False
-    assert proposed["approval"]["required_phrase"].startswith("APPROVE ")
+    assert proposed["approval"]["required_phrase"] == ""
+    assert proposed["approval"]["method"] == "authenticated_one_click"
+    assert proposed["approval"]["server_digest_bound"] is True
+    with pytest.raises(MissionWebError, match="explicit confirmation"):
+        adapter.approve("")
     with pytest.raises(MissionWebError, match="execution is disabled"):
-        adapter.approve(proposed["approval"]["required_phrase"])
+        adapter.approve("", confirm_current_proposal=True)
     assert adapter.cancel()["mission"]["state"] == "CANCELLED"
 
 
@@ -538,7 +542,7 @@ def test_tailscale_identity_header_becomes_server_owned_approval_identity() -> N
         proposed = adapter.snapshot()
         approve = urllib.request.Request(
             f"{base}/api/web/mission/approve",
-            data=json.dumps({"approval_phrase": proposed["approval"]["required_phrase"]}).encode(),
+            data=json.dumps({"confirm_current_proposal": True}).encode(),
             headers=headers,
             method="POST",
         )
@@ -546,6 +550,7 @@ def test_tailscale_identity_header_becomes_server_owned_approval_identity() -> N
             pass
         assert client.approvals[0][2] == "scott@example.com"
         assert client.approvals[0][1].startswith("APPROVE ")
+        assert proposed["approval"]["proposal_digest"] in client.approvals[0][1]
     finally:
         server.shutdown()
         server.server_close()

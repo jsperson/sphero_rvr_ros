@@ -234,7 +234,12 @@ class MissionWebAdapter(Protocol):
 
     def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]: ...
 
-    def approve(self, supplied_approval: str) -> Mapping[str, Any]: ...
+    def approve(
+        self,
+        supplied_approval: str,
+        *,
+        confirm_current_proposal: bool = False,
+    ) -> Mapping[str, Any]: ...
 
     def advance(self) -> Mapping[str, Any]: ...
 
@@ -323,7 +328,13 @@ class MockReplayMissionAdapter:
                 self._record("mission_rejected", proposal.summary)
             return self._snapshot_unlocked()
 
-    def approve(self, supplied_approval: str) -> Mapping[str, Any]:
+    def approve(
+        self,
+        supplied_approval: str,
+        *,
+        confirm_current_proposal: bool = False,
+    ) -> Mapping[str, Any]:
+        del confirm_current_proposal
         with self._lock:
             if self._proposal is None or self._state is not WebMissionState.PROPOSED:
                 raise MissionWebError("an executable proposal is required before approval")
@@ -527,14 +538,35 @@ class LiveMissionWebAdapter:
             self._mission_id = str(snapshot["mission_id"])
             return self._translate(dict(snapshot))
 
-    def approve(self, supplied_approval: str) -> Mapping[str, Any]:
+    def approve(
+        self,
+        supplied_approval: str,
+        *,
+        confirm_current_proposal: bool = False,
+    ) -> Mapping[str, Any]:
+        del supplied_approval
         with self._lock:
             if self._mission_id is None:
                 raise MissionWebError("a persisted live proposal is required before approval")
+            if not confirm_current_proposal:
+                raise MissionWebError("explicit confirmation of the current proposal is required")
             try:
+                current = self.client.prompt_status(self._mission_id)
+                if not isinstance(current, Mapping) or str(current.get("status", "")).lower() != "proposed":
+                    raise MissionWebError("the current live mission is not awaiting approval")
+                proposal_payload = current.get("proposal", {})
+                if not isinstance(proposal_payload, Mapping):
+                    raise MissionWebError("the current live proposal is unavailable")
+                # The browser confirms the proposal it is displaying. The Pi
+                # recomputes the exact full-digest phrase from freshly read
+                # persisted state, so a user no longer copies a hash and the
+                # unchanged-proposal binding remains server-owned and audited.
+                server_approval = approval_phrase(
+                    prompt_drive_proposal_from_json(proposal_payload)
+                )
                 snapshot = self.client.approve_prompt(
                     self._mission_id,
-                    approval_phrase=supplied_approval,
+                    approval_phrase=server_approval,
                     operator=self._operator_identity(),
                 )
             except MissionValidationError as exc:
@@ -607,12 +639,6 @@ class LiveMissionWebAdapter:
             mission_id = str(mission.get("mission_id", ""))
             approval = mission.get("approval", {}) if isinstance(mission.get("approval", {}), Mapping) else {}
 
-        phrase = ""
-        if proposal:
-            try:
-                phrase = approval_phrase(prompt_drive_proposal_from_json(proposal))
-            except MissionValidationError:
-                phrase = ""
         progress_value = 0.0
         if isinstance(route_progress, Mapping):
             route_value = route_progress.get("value", {})
@@ -665,7 +691,9 @@ class LiveMissionWebAdapter:
                 "enabled": execution_ready and state == WebMissionState.PROPOSED.value,
                 "approved": bool(approval.get("approved", False)),
                 "proposal_digest": str(proposal.get("proposal_digest", "")) if proposal else "",
-                "required_phrase": phrase,
+                "required_phrase": "",
+                "method": "authenticated_one_click",
+                "server_digest_bound": True,
                 "simulation_only": False,
             },
             "mission": {
@@ -835,7 +863,10 @@ def handle_mission_web_request(
     if normalized_path == "/api/web/mission/propose":
         result = adapter.propose(str(payload.get("prompt", "")), str(payload.get("scenario", "success")))
     elif normalized_path == "/api/web/mission/approve":
-        result = adapter.approve(str(payload.get("approval_phrase", "")))
+        result = adapter.approve(
+            str(payload.get("approval_phrase", "")),
+            confirm_current_proposal=bool(payload.get("confirm_current_proposal", False)),
+        )
     elif normalized_path == "/api/web/mission/advance":
         result = adapter.advance()
     elif normalized_path == "/api/web/mission/cancel":
@@ -1110,7 +1141,7 @@ _INDEX_HTML = r'''<!doctype html>
         <section class="panel" aria-labelledby="approval-heading">
           <h2 id="approval-heading">Simulation approval</h2>
           <p class="hint" id="approval-hint">Approval is digest-bound and authorizes only the mock adapter.</p>
-          <label class="field-label" for="approval-input">Type the exact phrase shown with the proposal</label>
+          <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
           <div class="actions">
             <button class="primary" id="approve" data-testid="approve" disabled>Approve simulation</button>
@@ -1178,9 +1209,9 @@ _INDEX_HTML = r'''<!doctype html>
       badge.textContent = live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
       $('scenario-label').textContent = live ? 'Service target' : 'Replay outcome';
       $('approval-heading').textContent = live ? 'Physical approval' : 'Simulation approval';
-      $('approval-hint').textContent = live ? (execution ? 'A fresh exact digest approval is required; the Pi remains the execution authority.' : 'Physical approval is locked by the deployed Pi configuration.') : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('approval-hint').textContent = live ? (execution ? 'Review the current route, then approve once. The Pi binds the unchanged proposal digest automatically.' : 'Physical approval is locked by the deployed Pi configuration.') : 'Approval is digest-bound and authorizes only the mock adapter.';
       $('authority-copy').textContent = live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
-      $('approve').textContent = live ? 'Approve physical mission' : 'Approve simulation';
+      $('approve').textContent = live ? 'Approve and run' : 'Approve simulation';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -1190,14 +1221,17 @@ _INDEX_HTML = r'''<!doctype html>
       $('safety-stop').textContent = snapshot.safety.stop_state || (snapshot.safety.stop_active ? 'ACTIVE' : 'READY');
       $('safety-estop').textContent = snapshot.safety.estop_state || (snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR');
       $('approve').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
-      $('approval-input').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
+      $('approval-input').hidden = live;
+      $('approval-input-label').hidden = live;
+      $('approval-input').disabled = live || snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
       $('cancel').disabled = !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       if (proposal) {
         const segments = proposal.segments.map((segment, index) => `<div class="segment"><span>${index + 1}. <code>${escapeHtml(segment.tool_id)}</code></span><strong>${escapeHtml(JSON.stringify(segment.arguments))}</strong></div>`).join('');
         const limits = Object.entries(proposal.limits).map(([key,value]) => `<span class="chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join('');
         const decisionClass = proposal.decision === 'reject' ? ' rejected' : '';
         $('proposal-view').className = decisionClass;
-        $('proposal-view').innerHTML = `<div class="plan-meta"><div class="meta"><span>Decision</span><strong>${escapeHtml(proposal.decision)}</strong></div><div class="meta"><span>Model</span><strong>${escapeHtml(proposal.provider_id)}/${escapeHtml(proposal.model_id)}</strong></div></div><p>${escapeHtml(proposal.summary)}</p>${segments}<div class="limits">${limits}</div><p class="field-label">Approval digest</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code><p class="field-label">Required phrase</p><code class="digest">${escapeHtml(snapshot.approval.required_phrase || 'Not approvable')}</code>`;
+        const approvalAudit = live ? `<p class="field-label">Server approval binding</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code>` : `<p class="field-label">Approval digest</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code><p class="field-label">Required phrase</p><code class="digest">${escapeHtml(snapshot.approval.required_phrase || 'Not approvable')}</code>`;
+        $('proposal-view').innerHTML = `<div class="plan-meta"><div class="meta"><span>Decision</span><strong>${escapeHtml(proposal.decision)}</strong></div><div class="meta"><span>Model</span><strong>${escapeHtml(proposal.provider_id)}/${escapeHtml(proposal.model_id)}</strong></div></div><p>${escapeHtml(proposal.summary)}</p>${segments}<div class="limits">${limits}</div>${approvalAudit}`;
       } else {
         $('proposal-view').className = 'empty';
         $('proposal-view').textContent = 'Submit a mission to see a typed route proposal or rejection.';
@@ -1257,7 +1291,10 @@ _INDEX_HTML = r'''<!doctype html>
     async function approve() {
       $('request-error').textContent = '';
       try {
-        const snapshot = await api('/api/web/mission/approve', {method:'POST', body:JSON.stringify({approval_phrase:$('approval-input').value})});
+        const body = current && !current.adapter.fixture_only
+          ? {confirm_current_proposal:true}
+          : {approval_phrase:$('approval-input').value};
+        const snapshot = await api('/api/web/mission/approve', {method:'POST', body:JSON.stringify(body)});
         render(snapshot);
         startTimer();
       } catch (error) { $('request-error').textContent = error.message; }
