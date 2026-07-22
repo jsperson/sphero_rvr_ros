@@ -124,11 +124,22 @@ class RVRDriver:
         self._raise_if_emergency_stopped()
         if self._fail_safe_active:
             raise RuntimeError("fail-safe fault active; clear safe stop before driving")
-        self._desired_velocity = clamp_velocity(
+        velocity = clamp_velocity(
             VelocityCommand(linear_mps, angular_rad_s),
             max_linear_mps=self._max_linear_mps,
             max_angular_rad_s=self._max_angular_rad_s,
         )
+        if velocity.linear_mps == 0.0 and velocity.angular_rad_s == 0.0:
+            # A zero Twist is the terminal command used by every supervised
+            # motion controller.  Do not translate it into a slew-enabled RC
+            # command: that can leave unloaded tracks coasting after the route
+            # has already reported completion.  Transition once through the
+            # validated immediate stop path, which also invalidates queued
+            # motor packets; repeated idle zeros remain transport-silent.
+            if self._desired_velocity is not None:
+                await self.stop()
+            return
+        self._desired_velocity = velocity
         self._last_velocity_update = now_seconds()
 
     async def stop(self) -> None:
@@ -492,6 +503,7 @@ class RVRDriver:
                 continue
             stop_sent_for_stale = False
             velocity = self._desired_velocity
+            motion_generation = self._motion_generation
             linear_fraction = velocity.linear_mps / self._max_linear_mps if self._max_linear_mps else 0.0
             angular_fraction = velocity.angular_rad_s / self._max_angular_rad_s if self._max_angular_rad_s else 0.0
             if abs(angular_fraction) > 0.0:
@@ -499,7 +511,8 @@ class RVRDriver:
                     # Explicit skid-steer pivot: one tread reverse, the other forward.
                     tank = 127 if angular_fraction > 0 else -127
                     await self._send_from_control_loop(
-                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank)
+                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
+                        motion_generation=motion_generation,
                     )
                     continue
 
@@ -519,7 +532,8 @@ class RVRDriver:
                 left_i = int(round(left * 127))
                 right_i = int(round(right * 127))
                 await self._send_from_control_loop(
-                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i)
+                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i),
+                    motion_generation=motion_generation,
                 )
                 continue
             await self._send_from_control_loop(
@@ -528,12 +542,18 @@ class RVRDriver:
                     yaw_angular_velocity=velocity.angular_rad_s,
                     linear_velocity=velocity.linear_mps,
                     flags=1,  # RC slew linear velocity for smoother straight teleop.
-                )
+                ),
+                motion_generation=motion_generation,
             )
 
-    async def _send_from_control_loop(self, packet_factory) -> None:
+    async def _send_from_control_loop(self, packet_factory, *, motion_generation: int) -> None:
         try:
-            await self._send(packet_factory, CommandPriority.NORMAL, motor_capable=True)
+            await self._send(
+                packet_factory,
+                CommandPriority.NORMAL,
+                motor_capable=True,
+                expected_motion_generation=motion_generation,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -569,11 +589,24 @@ class RVRDriver:
             self._fail_safe_active = True
             self._fail_safe_reason = f"{reason}: {last_exc}"
 
-    async def _send(self, packet_factory, priority: CommandPriority, *, motor_capable: bool = False):
+    async def _send(
+        self,
+        packet_factory,
+        priority: CommandPriority,
+        *,
+        motor_capable: bool = False,
+        expected_motion_generation: Optional[int] = None,
+    ):
         sequence_id = self._next_sequence_id()
         packet = packet_factory(sequence_id)
         motor_capable = motor_capable or self._is_motor_capable_packet(packet)
-        generation = self._motion_generation if motor_capable else None
+        generation = None
+        if motor_capable:
+            generation = (
+                self._motion_generation
+                if expected_motion_generation is None
+                else int(expected_motion_generation)
+            )
         if motor_capable:
             self._raise_if_emergency_stopped()
         expects_response = packet.flags & (FLAG_REQUEST_RESPONSE | FLAG_REQUEST_ERROR_ONLY)

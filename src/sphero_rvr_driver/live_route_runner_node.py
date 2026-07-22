@@ -172,6 +172,13 @@ def main(args=None):
                 "max_translation_segment_m": 0.75,
                 "collision_state_max_age_s": scan_defaults.max_scan_age_s,
                 "track_counts_per_meter": 4337.768,
+                "terminal_settle_time_s": 0.50,
+                "terminal_settle_timeout_s": 2.0,
+                "terminal_settle_distance_m": 0.005,
+                "terminal_settle_angle_rad": math.radians(1.0),
+                "terminal_settle_encoder_counts": 8,
+                "max_terminal_distance_error_m": 0.03,
+                "max_terminal_angle_error_rad": math.radians(5.0),
                 "distance_tolerance_m": odom_defaults.distance_tolerance_m,
                 "angle_tolerance_rad": odom_defaults.angle_tolerance_rad,
                 "heading_kp": odom_defaults.heading_kp,
@@ -215,6 +222,13 @@ def main(args=None):
                 max_translation_segment_m=float(self.get_parameter("max_translation_segment_m").value),
                 collision_state_max_age_s=float(self.get_parameter("collision_state_max_age_s").value),
                 track_counts_per_meter=float(self.get_parameter("track_counts_per_meter").value),
+                terminal_settle_time_s=float(self.get_parameter("terminal_settle_time_s").value),
+                terminal_settle_timeout_s=float(self.get_parameter("terminal_settle_timeout_s").value),
+                terminal_settle_distance_m=float(self.get_parameter("terminal_settle_distance_m").value),
+                terminal_settle_angle_rad=float(self.get_parameter("terminal_settle_angle_rad").value),
+                terminal_settle_encoder_counts=int(self.get_parameter("terminal_settle_encoder_counts").value),
+                max_terminal_distance_error_m=float(self.get_parameter("max_terminal_distance_error_m").value),
+                max_terminal_angle_error_rad=float(self.get_parameter("max_terminal_angle_error_rad").value),
             )
 
         def _supervisor_cmd_topic(self) -> str:
@@ -395,6 +409,8 @@ def main(args=None):
                 KeyValue(key="right_encoder_delta_counts", value=str(manifest.right_encoder_delta_counts)),
                 KeyValue(key="left_track_distance_m", value=str(manifest.left_track_distance_m)),
                 KeyValue(key="right_track_distance_m", value=str(manifest.right_track_distance_m)),
+                KeyValue(key="terminal_settled", value=str(manifest.terminal_settled).lower()),
+                KeyValue(key="terminal_settle_duration_s", value=str(manifest.terminal_settle_duration_s)),
                 KeyValue(key="collision_state", value=manifest.collision_state),
                 KeyValue(key="source_sha", value=manifest.source_sha),
             ]

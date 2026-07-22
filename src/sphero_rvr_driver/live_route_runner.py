@@ -7,7 +7,7 @@ and durable audit manifest assembly so it can be tested without ROS or hardware.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import json
 import math
@@ -49,6 +49,8 @@ class RouteTerminalReason(str, Enum):
     TIMEOUT = "timeout"
     STALL = "stall"
     WRONG_DIRECTION = "wrong_direction"
+    MOTION_NOT_SETTLED = "motion_not_settled"
+    TARGET_ERROR = "target_error"
     INVALID_ROUTE = "invalid_route"
 
 
@@ -138,6 +140,13 @@ class LiveRouteConfig:
     max_translation_segment_m: float = 0.75
     collision_state_max_age_s: float = 0.30
     track_counts_per_meter: float = DEFAULT_TRACK_COUNTS_PER_METER
+    terminal_settle_time_s: float = 0.50
+    terminal_settle_timeout_s: float = 2.0
+    terminal_settle_distance_m: float = 0.005
+    terminal_settle_angle_rad: float = math.radians(1.0)
+    terminal_settle_encoder_counts: int = 8
+    max_terminal_distance_error_m: float = 0.03
+    max_terminal_angle_error_rad: float = math.radians(5.0)
 
     def __post_init__(self) -> None:
         for name in (
@@ -146,10 +155,24 @@ class LiveRouteConfig:
             "max_translation_segment_m",
             "collision_state_max_age_s",
             "track_counts_per_meter",
+            "terminal_settle_time_s",
+            "terminal_settle_timeout_s",
+            "terminal_settle_distance_m",
+            "terminal_settle_angle_rad",
+            "max_terminal_distance_error_m",
+            "max_terminal_angle_error_rad",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
+        if self.terminal_settle_timeout_s <= self.terminal_settle_time_s:
+            raise ValueError("terminal_settle_timeout_s must exceed terminal_settle_time_s")
+        if (
+            isinstance(self.terminal_settle_encoder_counts, bool)
+            or int(self.terminal_settle_encoder_counts) != self.terminal_settle_encoder_counts
+            or int(self.terminal_settle_encoder_counts) < 0
+        ):
+            raise ValueError("terminal_settle_encoder_counts must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -193,6 +216,10 @@ class ExecutedRouteSegment:
     right_encoder_delta_counts: Optional[int] = None
     left_track_distance_m: Optional[float] = None
     right_track_distance_m: Optional[float] = None
+    terminal_settled: bool = False
+    terminal_settle_duration_s: Optional[float] = None
+    terminal_distance_error_m: Optional[float] = None
+    terminal_angle_error_deg: Optional[float] = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -214,6 +241,10 @@ class ExecutedRouteSegment:
             "right_encoder_delta_counts": self.right_encoder_delta_counts,
             "left_track_distance_m": self.left_track_distance_m,
             "right_track_distance_m": self.right_track_distance_m,
+            "terminal_settled": self.terminal_settled,
+            "terminal_settle_duration_s": self.terminal_settle_duration_s,
+            "terminal_distance_error_m": self.terminal_distance_error_m,
+            "terminal_angle_error_deg": self.terminal_angle_error_deg,
         }
 
 
@@ -241,6 +272,8 @@ class LiveRouteManifest:
     right_encoder_delta_counts: Optional[int] = None
     left_track_distance_m: Optional[float] = None
     right_track_distance_m: Optional[float] = None
+    terminal_settled: bool = False
+    terminal_settle_duration_s: Optional[float] = None
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -267,6 +300,8 @@ class LiveRouteManifest:
             "right_encoder_delta_counts": self.right_encoder_delta_counts,
             "left_track_distance_m": self.left_track_distance_m,
             "right_track_distance_m": self.right_track_distance_m,
+            "terminal_settled": self.terminal_settled,
+            "terminal_settle_duration_s": self.terminal_settle_duration_s,
         }
 
     def to_json(self) -> str:
@@ -282,6 +317,14 @@ class _ActiveSegment:
     telemetry: MotionPrimitiveTelemetry
     start_odom: OdomMotionState
     start_encoder_counts: Optional[TrackEncoderState]
+
+
+@dataclass
+class _SettlingState:
+    started_at: float
+    stable_since: float
+    reference_odom: OdomMotionState
+    reference_encoder_counts: Optional[TrackEncoderState]
 
 
 class LiveRouteRunner:
@@ -300,6 +343,7 @@ class LiveRouteRunner:
         self._route_final_odom: Optional[OdomMotionState] = None
         self._route_start_encoder_counts: Optional[TrackEncoderState] = None
         self._route_final_encoder_counts: Optional[TrackEncoderState] = None
+        self._settling: Optional[_SettlingState] = None
 
     @property
     def active(self) -> bool:
@@ -317,6 +361,7 @@ class LiveRouteRunner:
         self._route_final_odom = state.odom
         self._route_start_encoder_counts = state.encoder_counts
         self._route_final_encoder_counts = state.encoder_counts
+        self._settling = None
         return self.update(state)
 
     def abort(self, reason: str, state: LiveRouteState) -> None:
@@ -344,6 +389,8 @@ class LiveRouteRunner:
                 return TwistCommand()
             return self._active.telemetry.command
         assert state.odom is not None
+        if self._settling is not None:
+            return self._update_settling(state)
         telemetry = self._active.controller.update(
             state.odom,
             now=float(state.stamp),
@@ -355,14 +402,15 @@ class LiveRouteRunner:
         self._active.telemetry = telemetry
         if telemetry.stop_reason is MotionPrimitiveStopReason.RUNNING:
             return telemetry.command
-        self._record_active(telemetry, state)
         if telemetry.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED:
-            if self._active and self._active.request.tool_id == "move_distance" and self._active_is_partial_translation():
-                self._finish(RouteTerminalReason.UNSAFE_CLEARANCE.value, state)
-                return TwistCommand()
-            self._segment_index += 1
-            self._active = None
-            return self.update(state)
+            self._settling = _SettlingState(
+                started_at=float(state.stamp),
+                stable_since=float(state.stamp),
+                reference_odom=state.odom,
+                reference_encoder_counts=state.encoder_counts,
+            )
+            return TwistCommand()
+        self._record_active(telemetry, state)
         terminal = self._terminal_for_active_stop(telemetry.stop_reason, state)
         self._finish(terminal, state)
         return TwistCommand()
@@ -370,6 +418,7 @@ class LiveRouteRunner:
     def manifest(self) -> LiveRouteManifest:
         request = self._require_request()
         status = self._status_for_terminal(self._terminal_reason)
+        final_segment = self._executed[-1] if self._executed else None
         pose_measurement = _pose_measurement(self._route_start_odom, self._route_final_odom)
         track_measurement = _track_measurement(
             self._route_start_encoder_counts,
@@ -389,6 +438,10 @@ class LiveRouteRunner:
             measured_angle_deg=sum(segment.measured_angle_deg for segment in self._executed),
             collision_state=self._last_collision_state,
             source_sha=request.source_sha,
+            terminal_settled=bool(final_segment and final_segment.terminal_settled),
+            terminal_settle_duration_s=(
+                None if final_segment is None else final_segment.terminal_settle_duration_s
+            ),
             **pose_measurement,
             **track_measurement,
         )
@@ -501,12 +554,21 @@ class LiveRouteRunner:
             return RouteTerminalReason.COLLISION_VETO.value
         return None
 
-    def _record_active(self, telemetry: MotionPrimitiveTelemetry, state: LiveRouteState) -> None:
+    def _record_active(
+        self,
+        telemetry: MotionPrimitiveTelemetry,
+        state: LiveRouteState,
+        *,
+        status_override: Optional[ToolResultStatus] = None,
+        terminal_reason_override: Optional[str] = None,
+        terminal_settled: bool = False,
+        terminal_settle_duration_s: Optional[float] = None,
+    ) -> None:
         active = self._active
         if active is None:
             return
         measured_angle = math.degrees(telemetry.measured_angle_rad)
-        status = (
+        status = status_override or (
             ToolResultStatus.COMPLETE
             if telemetry.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED
             else self._status_for_terminal(_terminal_for_odom_stop(telemetry.stop_reason, kind=active.goal.kind))
@@ -529,12 +591,110 @@ class LiveRouteRunner:
                 executed=dict(active.executed_arguments),
                 measured_distance_m=telemetry.measured_distance_m,
                 measured_angle_deg=measured_angle,
-                terminal_reason=telemetry.stop_reason.value,
+                terminal_reason=terminal_reason_override or telemetry.stop_reason.value,
                 collision_state=str(state.collision_state),
+                terminal_settled=terminal_settled,
+                terminal_settle_duration_s=terminal_settle_duration_s,
+                terminal_distance_error_m=(
+                    abs(telemetry.measured_distance_m - abs(active.goal.target))
+                    if active.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE
+                    else None
+                ),
+                terminal_angle_error_deg=(
+                    math.degrees(abs(abs(telemetry.measured_angle_rad) - abs(active.goal.target)))
+                    if active.goal.kind is MotionPrimitiveKind.TURN_ANGLE
+                    else None
+                ),
                 **pose_measurement,
                 **track_measurement,
             )
         )
+
+    def _update_settling(self, state: LiveRouteState) -> TwistCommand:
+        active = self._active
+        settling = self._settling
+        assert active is not None and settling is not None and state.odom is not None
+        telemetry = active.controller.update(state.odom, now=float(state.stamp))
+        active.telemetry = telemetry
+        elapsed = float(state.stamp) - settling.started_at
+        if elapsed > self.config.terminal_settle_timeout_s:
+            self._record_active(
+                telemetry,
+                state,
+                status_override=ToolResultStatus.FAILED,
+                terminal_reason_override=RouteTerminalReason.MOTION_NOT_SETTLED.value,
+                terminal_settle_duration_s=elapsed,
+            )
+            self._finish(RouteTerminalReason.MOTION_NOT_SETTLED.value, state)
+            return TwistCommand()
+        if self._settling_sample_moved(settling, state):
+            settling.stable_since = float(state.stamp)
+            settling.reference_odom = state.odom
+            settling.reference_encoder_counts = state.encoder_counts
+            return TwistCommand()
+        if float(state.stamp) - settling.stable_since < self.config.terminal_settle_time_s:
+            return TwistCommand()
+
+        settled_duration = float(state.stamp) - settling.started_at
+        if self._terminal_target_error_exceeded(active, telemetry):
+            self._record_active(
+                telemetry,
+                state,
+                status_override=ToolResultStatus.FAILED,
+                terminal_reason_override=RouteTerminalReason.TARGET_ERROR.value,
+                terminal_settled=True,
+                terminal_settle_duration_s=settled_duration,
+            )
+            self._finish(RouteTerminalReason.TARGET_ERROR.value, state)
+            return TwistCommand()
+        self._record_active(
+            telemetry,
+            state,
+            terminal_settled=True,
+            terminal_settle_duration_s=settled_duration,
+        )
+        if active.request.tool_id == "move_distance" and self._active_is_partial_translation():
+            self._finish(RouteTerminalReason.UNSAFE_CLEARANCE.value, state)
+            return TwistCommand()
+        self._segment_index += 1
+        self._active = None
+        self._settling = None
+        return self.update(state)
+
+    def _settling_sample_moved(self, settling: _SettlingState, state: LiveRouteState) -> bool:
+        assert state.odom is not None
+        dx = float(state.odom.x_m) - float(settling.reference_odom.x_m)
+        dy = float(state.odom.y_m) - float(settling.reference_odom.y_m)
+        if math.hypot(dx, dy) > self.config.terminal_settle_distance_m:
+            return True
+        angle_delta = abs(normalize_angle(float(state.odom.yaw_rad) - float(settling.reference_odom.yaw_rad)))
+        if angle_delta > self.config.terminal_settle_angle_rad:
+            return True
+        previous_encoder = settling.reference_encoder_counts
+        current_encoder = state.encoder_counts
+        if previous_encoder is not None and current_encoder is not None:
+            if (
+                abs(encoder_delta(current_encoder.left_count, previous_encoder.left_count))
+                > self.config.terminal_settle_encoder_counts
+            ):
+                return True
+            if (
+                abs(encoder_delta(current_encoder.right_count, previous_encoder.right_count))
+                > self.config.terminal_settle_encoder_counts
+            ):
+                return True
+        return False
+
+    def _terminal_target_error_exceeded(
+        self,
+        active: _ActiveSegment,
+        telemetry: MotionPrimitiveTelemetry,
+    ) -> bool:
+        if active.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE:
+            error = abs(telemetry.measured_distance_m - abs(active.goal.target))
+            return error > self.config.max_terminal_distance_error_m
+        error = abs(abs(telemetry.measured_angle_rad) - abs(active.goal.target))
+        return error > self.config.max_terminal_angle_error_rad
 
     def _active_is_partial_translation(self) -> bool:
         active = self._active
@@ -562,6 +722,7 @@ class LiveRouteRunner:
         self._last_collision_state = str(state.collision_state or "MISSING")
         self._route_final_odom = state.odom
         self._route_final_encoder_counts = state.encoder_counts
+        self._settling = None
 
     @staticmethod
     def _status_for_terminal(reason: str) -> ToolResultStatus:
@@ -586,6 +747,11 @@ class LiveRouteRunner:
             RouteTerminalReason.UNSAFE_CLEARANCE.value,
         }:
             return ToolResultStatus.BLOCKED
+        if reason in {
+            RouteTerminalReason.MOTION_NOT_SETTLED.value,
+            RouteTerminalReason.TARGET_ERROR.value,
+        }:
+            return ToolResultStatus.FAILED
         return ToolResultStatus.FAILED
 
     def _require_request(self) -> LiveRouteRequest:
@@ -744,6 +910,7 @@ def run_route_replay(request: LiveRouteRequest, states: Sequence[LiveRouteState]
         runner.start(request, states[0])
         for state in states[1:]:
             runner.update(state)
+            _settle_replay_target(runner, state)
             if not runner.active:
                 break
     except MissionValidationError as exc:
@@ -751,6 +918,40 @@ def run_route_replay(request: LiveRouteRequest, states: Sequence[LiveRouteState]
             runner._request = request
         runner.abort(_normalize_exception_terminal(exc), states[0])
     return runner.manifest()
+
+
+def _settle_replay_target(runner: LiveRouteRunner, state: LiveRouteState) -> None:
+    """Advance a replay's final stationary sample through the settle window.
+
+    Real ROS execution must receive fresh samples for the complete settle window.
+    Replay fixtures conventionally provide one state per reached target, so this
+    helper repeats that target as a fresh stationary observation before the next
+    fixture state is consumed.
+    """
+
+    if not runner.active or runner._settling is None or state.odom is None:
+        return
+    stamp = float(state.stamp) + runner.config.terminal_settle_time_s + 1e-6
+    odom = replace(state.odom, stamp=stamp)
+    scan = state.scan
+    if scan is not None:
+        scan = replace(scan, stamp=stamp, received_at=stamp)
+    encoder_counts = state.encoder_counts
+    if (
+        encoder_counts is not None
+        and abs(float(encoder_counts.stamp) - float(state.odom.stamp)) <= runner.config.odom.max_sample_age_s
+    ):
+        encoder_counts = replace(encoder_counts, stamp=stamp)
+    runner.update(
+        replace(
+            state,
+            stamp=stamp,
+            odom=odom,
+            scan=scan,
+            collision_received_at=stamp,
+            encoder_counts=encoder_counts,
+        )
+    )
 
 
 def _normalize_exception_terminal(exc: Exception) -> str:

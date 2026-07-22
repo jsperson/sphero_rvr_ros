@@ -24,6 +24,13 @@ live_route_runner:
     max_translation_segment_m: 0.75
     collision_state_max_age_s: 0.30
     track_counts_per_meter: 4337.768
+    terminal_settle_time_s: 0.50
+    terminal_settle_timeout_s: 2.0
+    terminal_settle_distance_m: 0.005
+    terminal_settle_angle_rad: 0.017453292519943295
+    terminal_settle_encoder_counts: 8
+    max_terminal_distance_error_m: 0.03
+    max_terminal_angle_error_rad: 0.08726646259971647
     distance_tolerance_m: 0.01
     angle_tolerance_rad: 0.034906585
     heading_kp: 1.5

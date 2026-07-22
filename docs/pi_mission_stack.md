@@ -168,12 +168,14 @@ and environment file.
 
 ## Attended physical execution gate
 
-This runbook does not start or validate physical execution. The route runner now
-records route-local progress, absolute start/final pose, final heading, encoder
-timestamps, and per-track measurements, but those fields have not yet been
-validated on hardware. The reviewed configuration path is present but remains
-off. It binds only the existing deterministic route executor; the route runner
-still publishes exclusively through the collision supervisor.
+The integrated browser-to-track path has been proven once with the rover
+suspended. That run also exposed an unacceptable terminal-stop discrepancy, so
+it is motion-path evidence rather than calibrated-distance acceptance. The
+runner now keeps a reached segment nonterminal until fresh odometry/encoder
+samples are stable, reports settle duration and final target error, and fails
+closed on continued motion or excessive final error. A zero command now takes
+the driver's validated immediate-stop path. This software still requires a new
+operator-attended 10 cm revalidation before the turn stage.
 
 While Scott is present, prepare the supervised ROS graph and verify fresh odom,
 collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, route-runner request/status graph
@@ -291,9 +293,11 @@ area is clear, and the operator can use physical power/ESTOP immediately.
 6. At terminal state, use the page's Terminal evidence panel and Terminal result
    JSON link. Record start/final pose and timestamps, final heading, route-local
    measurements, left/right encoder deltas, per-track distances, collision state,
-   terminal reason, and stationary post-terminal samples. Do not advance if a
-   required field is null, the tracks disagree unexpectedly, heading drift is
-   unexplained, the pose continues changing, or any safety/error state occurred.
+   terminal reason, `terminal_settled`, settle duration, final target error, and
+   independent stationary post-terminal samples. Require `terminal_settled=true`
+   and a bounded target error. Do not advance if a required field is null, the
+   tracks disagree unexpectedly, heading drift is unexplained, the pose continues
+   changing, or any safety/error state occurred.
 
 7. Relock after every stage—success or failure—before considering another:
 

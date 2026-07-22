@@ -224,7 +224,7 @@ def test_manifest_distinguishes_route_local_progress_from_absolute_pose_and_trac
     assert payload["route_heading_change_deg"] == pytest.approx(2.0)
     assert payload["final_heading_deg"] == pytest.approx(12.0)
     assert payload["encoder_start_stamp"] == pytest.approx(1.0)
-    assert payload["encoder_final_stamp"] == pytest.approx(2.0)
+    assert payload["encoder_final_stamp"] == pytest.approx(2.500001)
     assert payload["left_encoder_delta_counts"] == 430
     assert payload["right_encoder_delta_counts"] == 450
     assert payload["left_track_distance_m"] == pytest.approx(430 / 4337.768)
@@ -234,9 +234,12 @@ def test_manifest_distinguishes_route_local_progress_from_absolute_pose_and_trac
     assert segment["final_pose"]["heading_deg"] == pytest.approx(12.0)
     assert segment["heading_change_deg"] == pytest.approx(2.0)
     assert segment["encoder_start_stamp"] == pytest.approx(1.0)
-    assert segment["encoder_final_stamp"] == pytest.approx(2.0)
+    assert segment["encoder_final_stamp"] == pytest.approx(2.500001)
     assert segment["left_encoder_delta_counts"] == 430
     assert segment["right_encoder_delta_counts"] == 450
+    assert segment["terminal_settled"] is True
+    assert segment["terminal_settle_duration_s"] == pytest.approx(0.500001)
+    assert payload["terminal_settled"] is True
 
 
 def test_manifest_marks_unchanged_or_stale_track_samples_unavailable() -> None:
@@ -424,6 +427,97 @@ def test_live_route_runner_blocks_wrong_direction_progress_as_truthful_terminal_
     assert manifest.status is ToolResultStatus.FAILED
 
 
+def test_live_route_runner_waits_for_stationary_evidence_before_complete() -> None:
+    request = LiveRouteRequest(
+        route_id="settled-target",
+        max_runtime_s=10.0,
+        max_travel_m=0.1,
+        segments=(
+            RouteSegmentRequest(
+                "move",
+                "move_distance",
+                {"distance_m": 0.1, "speed_mps": 0.08, "timeout_s": 5.0},
+            ),
+        ),
+    )
+    runner = LiveRouteRunner()
+    runner.start(request, _state(1.0, 0.0, 0.0, 0.0, encoder_counts=(100, 100)))
+    assert runner.update(_state(1.1, 0.0, 0.0, 0.0, encoder_counts=(100, 100))).linear_x > 0.0
+
+    target_zero = runner.update(_state(2.0, 0.1, 0.0, 0.0, encoder_counts=(530, 540)))
+
+    assert target_zero.linear_x == 0.0
+    assert runner.active
+    assert runner.manifest().executed_segments == ()
+
+    runner.update(_state(2.2, 0.105, 0.0, 0.0, encoder_counts=(550, 560)))
+    assert runner.active
+    runner.update(_state(2.71, 0.105, 0.0, 0.0, encoder_counts=(550, 560)))
+
+    manifest = runner.manifest()
+    assert not runner.active
+    assert manifest.status is ToolResultStatus.COMPLETE
+    assert manifest.terminal_reason == "complete"
+    assert manifest.terminal_settled is True
+    assert manifest.route_final_pose["x_m"] == pytest.approx(0.105)
+    assert manifest.executed_segments[0].terminal_settled is True
+    assert manifest.executed_segments[0].terminal_settle_duration_s == pytest.approx(0.71)
+
+
+def test_live_route_runner_fails_when_motion_never_settles() -> None:
+    request = LiveRouteRequest(
+        route_id="unsettled-target",
+        max_runtime_s=10.0,
+        max_travel_m=0.1,
+        segments=(
+            RouteSegmentRequest(
+                "move",
+                "move_distance",
+                {"distance_m": 0.1, "speed_mps": 0.08, "timeout_s": 5.0},
+            ),
+        ),
+    )
+    runner = LiveRouteRunner(LiveRouteConfig(terminal_settle_time_s=0.3, terminal_settle_timeout_s=0.8))
+    runner.start(request, _state(1.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(_state(1.1, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(_state(2.0, 0.1, 0.0, 0.0, encoder_counts=(430, 430)))
+    runner.update(_state(2.4, 0.12, 0.0, 0.0, encoder_counts=(520, 520)))
+    runner.update(_state(2.81, 0.14, 0.0, 0.0, encoder_counts=(610, 610)))
+
+    manifest = runner.manifest()
+    assert not runner.active
+    assert manifest.status is ToolResultStatus.FAILED
+    assert manifest.terminal_reason == "motion_not_settled"
+    assert manifest.terminal_settled is False
+    assert manifest.executed_segments[0].terminal_reason == "motion_not_settled"
+
+
+def test_live_route_runner_fails_when_settled_target_error_exceeds_bound() -> None:
+    request = LiveRouteRequest(
+        route_id="overshot-target",
+        max_runtime_s=10.0,
+        max_travel_m=0.1,
+        segments=(
+            RouteSegmentRequest(
+                "move",
+                "move_distance",
+                {"distance_m": 0.1, "speed_mps": 0.08, "timeout_s": 5.0},
+            ),
+        ),
+    )
+    runner = LiveRouteRunner()
+    runner.start(request, _state(1.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(_state(1.1, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(_state(2.0, 0.17, 0.0, 0.0, encoder_counts=(730, 770)))
+    runner.update(_state(2.51, 0.17, 0.0, 0.0, encoder_counts=(730, 770)))
+
+    manifest = runner.manifest()
+    assert manifest.status is ToolResultStatus.FAILED
+    assert manifest.terminal_reason == "target_error"
+    assert manifest.terminal_settled is True
+    assert manifest.executed_segments[0].terminal_distance_error_m == pytest.approx(0.07)
+
+
 def test_live_route_runner_reports_no_progress_turn_as_stall_not_wrong_direction() -> None:
     request = LiveRouteRequest(
         route_id="turn-stall",
@@ -535,6 +629,9 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert "collision_state_max_age_s: 0.30" in config_text
     assert "encoder_counts_topic: /encoder_counts" in config_text
     assert "track_counts_per_meter: 4337.768" in config_text
+    assert "terminal_settle_time_s: 0.50" in config_text
+    assert "terminal_settle_timeout_s: 2.0" in config_text
+    assert "max_terminal_distance_error_m: 0.03" in config_text
     assert "/cmd_vel_motor" not in config_text
     assert "Serial" not in node_source
     assert "cmd_vel_motor" not in node_source

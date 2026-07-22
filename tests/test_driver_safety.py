@@ -330,6 +330,62 @@ async def test_stale_velocity_command_causes_validated_raw_motor_off_packet():
 
 
 @pytest.mark.asyncio
+async def test_zero_velocity_transition_uses_immediate_stop_once_without_rc_coast_command():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
+    await driver.connect()
+
+    await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
+    await asyncio.sleep(0.03)
+    assert _rc_drive_packets(transport, driver)
+    before_zero = len(transport.writes)
+
+    await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.0)
+    after_first_zero = len(transport.writes)
+    await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.0)
+    await asyncio.sleep(0.03)
+
+    packets_after_motion = [Packet.decode(raw) for raw in transport.writes[before_zero:]]
+    assert after_first_zero == before_zero + 1
+    assert len(packets_after_motion) == 1
+    assert packets_after_motion[0].command_id == driver.commands.CID_RAW_MOTORS
+    assert packets_after_motion[0].payload == RAW_OFF
+    assert driver.get_state().latest_velocity is None
+
+    await driver.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_control_loop_velocity_cached_before_dispatch():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
+    await driver.connect()
+    dispatch_entered = asyncio.Event()
+    release_dispatch = asyncio.Event()
+    original = driver._send_from_control_loop
+
+    async def delayed_send(packet_factory, *, motion_generation):
+        dispatch_entered.set()
+        await release_dispatch.wait()
+        await original(packet_factory, motion_generation=motion_generation)
+
+    driver._send_from_control_loop = delayed_send
+    await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
+    await asyncio.wait_for(dispatch_entered.wait(), timeout=0.2)
+    await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.0)
+    stop_index = len(transport.writes) - 1
+    release_dispatch.set()
+    await asyncio.sleep(0.04)
+
+    packets_after_stop = _packets(transport)[stop_index + 1 :]
+    assert all(packet.command_id != driver.commands.CID_DRIVE_RC_SI_UNITS for packet in packets_after_stop)
+    assert _packets(transport)[stop_index].command_id == driver.commands.CID_RAW_MOTORS
+    assert _packets(transport)[stop_index].payload == RAW_OFF
+
+    await driver.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_emergency_stop_preempts_velocity_with_raw_motor_off_and_blocks_drive_until_cleared():
     transport = FakeTransport(auto_ack=True)
     driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)

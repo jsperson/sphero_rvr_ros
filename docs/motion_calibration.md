@@ -173,6 +173,18 @@ Each terminal route manifest records:
 - the same start/final pose, heading, and track evidence for each completed
   segment;
 - the existing segment-local projected distance and signed turn measurement.
+- whether fresh pose/encoder evidence remained settled for the configured
+  terminal window, how long settling took, and the final target error.
+
+A reached target is no longer a terminal result by itself. The runner first
+publishes zero, and the core driver converts the nonzero-to-zero transition into
+the validated immediate raw-motor stop rather than a slew-enabled RC zero. The
+runner then requires 0.50 seconds of stable fresh evidence, permits at most 2.0
+seconds to settle, and fails with `motion_not_settled` if motion continues. A
+settled translation more than 0.03 m from its target or a settled turn more than
+5 degrees from its target fails with `target_error`. These are acceptance
+bounds, not calibration corrections; do not change them merely to make a
+physical test pass.
 
 Null track fields mean the evidence was unavailable or its scale disagreed with
 the reviewed runner configuration. Do not infer zeros and do not advance a
