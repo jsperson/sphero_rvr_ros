@@ -1,8 +1,24 @@
 # RVR motion and odometry calibration
 
-The RVR motion path is not calibrated yet. A nominal command of `0.20 m/s` for
-`3s` moved roughly 6 ft, so do not use duration-based distance assumptions for
-mapping until the scale is measured.
+The straight-line encoder scale has a two-run first estimate, but the complete
+motion path is not calibrated yet. Do not use duration-based distance assumptions
+for mapping until the scale is repeated on the current floor and payload.
+
+## Why the suspended 10 cm test overshot
+
+The June 24 floor measurements used explicit raw-motor duty packets. A later
+driver change routed straight ROS velocity commands through the RVR's native
+RC-SI command while leaving the raw-duty caps and calibration values in config.
+That made `max_linear_raw_motor_duty` ineffective. In the suspended June 26 test,
+a requested 0.10 m produced 1,213/1,187 encoder counts and a measured 0.2766 m
+before the corrected terminal validator failed closed with `target_error`.
+
+ROS missions now explicitly use `velocity_control_mode: raw_motor`. At the
+current limits, the normal 0.08 m/s prompt speed maps to duty 51 on each track.
+The native RC-SI backend remains opt-in for isolated diagnostics and its pivot
+path now respects angular magnitude instead of jumping to full normalized duty.
+The June 24 scale applies only to the restored raw-duty path; it still needs
+fresh ground confirmation.
 
 ## Safety baseline
 
@@ -13,7 +29,9 @@ Before any armed calibration run:
 3. Be ready to pick up or power off the robot.
 4. Never run the TUI/teleop for calibration; use the gated script.
 
-The calibration script defaults to no motion. It only moves with `--armed`.
+The calibration script defaults to no motion. It only moves with `--armed`, and
+defaults to the same `raw_motor` packet backend used by ROS missions. Use
+`--control-mode native_rc_si` only for an explicitly separate diagnostic.
 
 ## Verify no-motion telemetry
 
@@ -152,6 +170,43 @@ combined: 4337.768 counts/m
 odom_counts_per_meter: 4337.768
 ```
 
+## Attended ground-distance procedure
+
+Do this only with Scott present. It is a measured calibration series, not a
+request to make the success tolerance wider.
+
+1. Use a flat, clear lane at least 1 m long with the normal Pi/lidar/camera
+   payload installed. Mark one repeatable body reference at the start and keep a
+   tape measure aligned with the intended path.
+2. Confirm the deployed SHA matches the validated SHA, config reports
+   `velocity_control_mode: raw_motor`, collision is `CLEAR`, STOP is `READY`,
+   ESTOP is `CLEAR`, odom/encoders are fresh, and `/cmd_vel_motor` is zero.
+3. Submit `Move forward 25 centimeters, then stop.` in the live web console.
+   Review the complete proposal and use the single **Approve and run** action.
+4. At terminal state, relock execution and call STOP before measuring. Measure
+   actual travel from the same body reference; do not use odometry as the tape
+   measurement.
+5. Download the page's Terminal result JSON and analyze it, for example:
+
+   ```bash
+   python3 scripts/analyze_ground_calibration.py terminal-result.json \
+     --actual-distance-in 9.5 --output ground-sample-01.json
+   ```
+
+6. Repeat the 0.25 m stage three times from the same setup. Retain only samples
+   that the analyzer marks `eligible_for_calibration_set=true`, then use the
+   median counts-per-meter. The analyzer intentionally never changes config.
+7. If the three samples are consistent, repeat at 0.50 m before adopting a new
+   scale. Rebuild and revalidate after a reviewed config change.
+
+Stop the series after any collision/STOP/ESTOP/cancel activity, stale or missing
+evidence, failure to settle, more than 10% left/right count mismatch, unexplained
+heading drift, incomplete cleanup, or movement beyond the clear lane. A settled
+`target_error` result remains valid calibration evidence because its error is
+what the tape measurement is correcting. Turn calibration remains a later,
+separate stage; do not use the current full angular-duty ceiling on the ground
+until straight translation and STOP behavior are confirmed.
+
 ## Route-local versus absolute odometry evidence
 
 The live route runner's historical `measured_distance_m` is the sum of each
@@ -195,8 +250,9 @@ after the terminal result.
 ## Prepared prompt-drive stages
 
 These are procedures, not authorization. Keep live execution locked off until
-Scott is present and explicitly approves the exact digest printed for that stage.
-Run one stage at a time, with the rover restrained for the first two:
+Scott is present, reviews the exact current proposal, and uses the authenticated
+**Approve and run** action for that stage. Run one stage at a time, with the rover
+restrained for the first two:
 
 1. `Move forward 10 centimeters, then stop.`
 2. `Turn left 45 degrees, then stop.`

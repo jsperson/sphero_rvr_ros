@@ -41,6 +41,7 @@ class RVRNodeConfig:
     max_raw_motor_duty: int = 160
     max_linear_raw_motor_duty: int = 64
     max_angular_raw_motor_duty: int = 255
+    velocity_control_mode: str = RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     battery_publish_period: float = 5.0
     temperature_publish_period: float = 2.0
     diagnostics_publish_period: float = 1.0
@@ -74,6 +75,7 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         max_raw_motor_duty=config.max_raw_motor_duty,
         max_linear_raw_motor_duty=config.max_linear_raw_motor_duty,
         max_angular_raw_motor_duty=config.max_angular_raw_motor_duty,
+        velocity_control_mode=config.velocity_control_mode,
     )
 
 
@@ -178,6 +180,7 @@ def main(args=None):
             self.declare_parameter("max_raw_motor_duty", defaults.max_raw_motor_duty)
             self.declare_parameter("max_linear_raw_motor_duty", defaults.max_linear_raw_motor_duty)
             self.declare_parameter("max_angular_raw_motor_duty", defaults.max_angular_raw_motor_duty)
+            self.declare_parameter("velocity_control_mode", defaults.velocity_control_mode)
             self.declare_parameter("battery_publish_period", defaults.battery_publish_period)
             self.declare_parameter("temperature_publish_period", defaults.temperature_publish_period)
             self.declare_parameter("diagnostics_publish_period", defaults.diagnostics_publish_period)
@@ -205,6 +208,7 @@ def main(args=None):
                 max_raw_motor_duty=int(self.get_parameter("max_raw_motor_duty").value),
                 max_linear_raw_motor_duty=int(self.get_parameter("max_linear_raw_motor_duty").value),
                 max_angular_raw_motor_duty=int(self.get_parameter("max_angular_raw_motor_duty").value),
+                velocity_control_mode=str(self.get_parameter("velocity_control_mode").value),
                 battery_publish_period=float(self.get_parameter("battery_publish_period").value),
                 temperature_publish_period=float(self.get_parameter("temperature_publish_period").value),
                 diagnostics_publish_period=float(self.get_parameter("diagnostics_publish_period").value),

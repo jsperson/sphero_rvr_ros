@@ -9,6 +9,9 @@ sphero_rvr_driver:
     max_raw_motor_duty: 160
     max_linear_raw_motor_duty: 64
     max_angular_raw_motor_duty: 255
+    # ROS missions use the physically measured raw-duty backend. The optional
+    # native_rc_si backend remains available for isolated diagnostics only.
+    velocity_control_mode: raw_motor
     battery_publish_period: 5.0
     temperature_publish_period: 2.0
     diagnostics_publish_period: 1.0

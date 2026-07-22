@@ -29,6 +29,11 @@ class _StaleMotionCommand(RuntimeError):
 
 
 class RVRDriver:
+    VELOCITY_CONTROL_RAW_MOTOR = "raw_motor"
+    VELOCITY_CONTROL_NATIVE_RC_SI = "native_rc_si"
+    _VELOCITY_CONTROL_MODES = frozenset(
+        {VELOCITY_CONTROL_RAW_MOTOR, VELOCITY_CONTROL_NATIVE_RC_SI}
+    )
     _MOTOR_CAPABLE_COMMAND_IDS = frozenset(
         {
             RVRCommands.CID_RAW_MOTORS,
@@ -57,6 +62,7 @@ class RVRDriver:
         max_raw_motor_duty: int = 64,
         max_linear_raw_motor_duty: Optional[int] = None,
         max_angular_raw_motor_duty: Optional[int] = None,
+        velocity_control_mode: str = VELOCITY_CONTROL_NATIVE_RC_SI,
         safe_stop_attempts: int = 2,
         safe_stop_retry_delay: float = 0.02,
         safety_dispatch_timeout_s: float = 0.10,
@@ -86,6 +92,13 @@ class RVRDriver:
                 int(max_angular_raw_motor_duty if max_angular_raw_motor_duty is not None else self._max_raw_motor_duty),
             ),
         )
+        normalized_control_mode = str(velocity_control_mode).strip().lower()
+        if normalized_control_mode not in self._VELOCITY_CONTROL_MODES:
+            raise ValueError(
+                "velocity_control_mode must be one of: "
+                + ", ".join(sorted(self._VELOCITY_CONTROL_MODES))
+            )
+        self._velocity_control_mode = normalized_control_mode
         self._desired_velocity: Optional[VelocityCommand] = None
         self._last_velocity_update: Optional[float] = None
         self._connected = False
@@ -506,10 +519,29 @@ class RVRDriver:
             motion_generation = self._motion_generation
             linear_fraction = velocity.linear_mps / self._max_linear_mps if self._max_linear_mps else 0.0
             angular_fraction = velocity.angular_rad_s / self._max_angular_rad_s if self._max_angular_rad_s else 0.0
+            if self._velocity_control_mode == self.VELOCITY_CONTROL_RAW_MOTOR:
+                # This is the physically measured ROS mission backend.  Both
+                # requested components are normalized against their configured
+                # maxima and then mapped through independently bounded raw-duty
+                # caps.  Unlike native RC-SI, these caps were present during the
+                # June 24 floor calibration and make short-run calibration
+                # packets explicit and reproducible.
+                await self._send_from_control_loop(
+                    lambda seq: self.commands.drive_rc(
+                        seq,
+                        linear_fraction,
+                        angular_fraction,
+                        max_speed=self._max_raw_motor_duty,
+                        max_linear_speed=self._max_linear_raw_motor_duty,
+                        max_angular_speed=self._max_angular_raw_motor_duty,
+                    ),
+                    motion_generation=motion_generation,
+                )
+                continue
             if abs(angular_fraction) > 0.0:
                 if abs(linear_fraction) <= 0.05:
                     # Explicit skid-steer pivot: one tread reverse, the other forward.
-                    tank = 127 if angular_fraction > 0 else -127
+                    tank = int(round(max(-1.0, min(1.0, angular_fraction)) * 127))
                     await self._send_from_control_loop(
                         lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
                         motion_generation=motion_generation,

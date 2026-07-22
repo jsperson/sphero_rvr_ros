@@ -438,6 +438,7 @@ async def test_driver_uses_native_rc_drive_for_velocity_control():
         max_linear_mps=1.0,
         max_angular_rad_s=1.0,
         max_raw_motor_duty=64,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_RC_SI,
     )
     await driver.connect()
 
@@ -451,6 +452,60 @@ async def test_driver_uses_native_rc_drive_for_velocity_control():
     assert yaw == pytest.approx(0.0)
     assert linear == pytest.approx(1.0)
     assert flags == 1
+
+
+@pytest.mark.asyncio
+async def test_native_rc_pivot_respects_requested_angular_fraction():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=1.0,
+        max_linear_mps=1.0,
+        max_angular_rad_s=1.0,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_RC_SI,
+    )
+    await driver.connect()
+
+    await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.5)
+    await asyncio.sleep(0.03)
+    await driver.disconnect()
+
+    moving = _tank_drive_packets(transport, driver)
+    assert moving
+    assert moving[0].payload == struct.pack(">bb", -64, 64)
+
+
+@pytest.mark.asyncio
+async def test_raw_motor_velocity_control_honors_linear_calibration_cap():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=1.0,
+        max_linear_mps=0.10,
+        max_angular_rad_s=0.4,
+        max_raw_motor_duty=160,
+        max_linear_raw_motor_duty=64,
+        max_angular_raw_motor_duty=255,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_RAW_MOTOR,
+    )
+    await driver.connect()
+
+    await driver.set_velocity(linear_mps=0.08, angular_rad_s=0.0)
+    await asyncio.sleep(0.03)
+    await driver.disconnect()
+
+    moving = [packet for packet in _raw_motor_packets(transport, driver) if packet.payload != RAW_OFF]
+    assert moving
+    assert moving[0].payload == bytes([1, 51, 1, 51])
+    assert not _rc_drive_packets(transport, driver)
+    assert not _tank_drive_packets(transport, driver)
+
+
+def test_driver_rejects_unknown_velocity_control_mode():
+    with pytest.raises(ValueError, match="velocity_control_mode"):
+        RVRDriver(FakeTransport(), velocity_control_mode="magic")
 
 
 @pytest.mark.asyncio
