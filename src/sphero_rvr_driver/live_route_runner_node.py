@@ -49,6 +49,26 @@ def _odom_state(msg: Any) -> Optional[OdomMotionState]:
         return None
 
 
+def _collision_state_value(raw: Any) -> Optional[str]:
+    """Parse the supervisor's state token from JSON or its diagnostic text."""
+
+    state = raw
+    try:
+        payload = json.loads(str(raw))
+        if isinstance(payload, dict):
+            state = payload.get("state", payload.get("collision_state"))
+        else:
+            state = payload
+    except Exception:
+        pass
+    tokens = str(state).strip().split(maxsplit=1) if state is not None else []
+    token = tokens[0] if tokens else ""
+    try:
+        return CollisionState(token.upper()).value
+    except Exception:
+        return None
+
+
 def _source_sha() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
@@ -235,20 +255,10 @@ def main(args=None):
             self._latest_odom = _odom_state(msg)
 
         def _on_collision_state(self, msg) -> None:
-            state = None
-            try:
-                payload = json.loads(str(msg.data))
-                if isinstance(payload, dict):
-                    state = payload.get("state", payload.get("collision_state"))
-                else:
-                    state = payload
-            except Exception:
-                state = getattr(msg, "data", None)
-            try:
-                self._collision_state = CollisionState(str(state).upper()).value
+            self._collision_state = _collision_state_value(getattr(msg, "data", None))
+            if self._collision_state is not None:
                 self._collision_received_at = self._now_seconds()
-            except Exception:
-                self._collision_state = None
+            else:
                 self._collision_received_at = None
 
         def _on_stop_state(self, msg) -> None:

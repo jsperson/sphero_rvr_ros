@@ -16,6 +16,7 @@ from sphero_rvr_driver.live_route_runner import (
     route_request_from_json,
     run_route_replay,
 )
+from sphero_rvr_driver.live_route_runner_node import _collision_state_value
 from sphero_rvr_driver.mission_api import ToolResultStatus
 from sphero_rvr_driver.odometry import MotionPrimitiveConfig, OdomMotionState
 
@@ -75,6 +76,22 @@ def _route() -> LiveRouteRequest:
             RouteSegmentRequest("move-3", "move_distance", {"distance_m": 0.6096, "speed_mps": 0.10, "timeout_s": 10.0}),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("CLEAR reason=tick scan_age=0.1", "CLEAR"),
+        ("SLOW reason=clearance", "SLOW"),
+        ('{"state":"STOPPED","reason":"obstacle"}', "STOPPED"),
+        ('{"collision_state":"ESTOPPED"}', "ESTOPPED"),
+        ("unknown reason=bad", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_live_route_node_parses_collision_supervisor_state_token(raw, expected) -> None:
+    assert _collision_state_value(raw) == expected
 
 
 def test_live_route_request_parses_canonical_mission_api_invocations_with_budgets() -> None:
@@ -393,5 +410,5 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert "self._collision_state: Optional[str] = None" in node_source
     assert "self._collision_received_at: Optional[float] = None" in node_source
     assert "collision_received_at=self._collision_received_at" in node_source
-    assert "CollisionState(str(state).upper()).value" in node_source
+    assert "_collision_state_value(getattr(msg, \"data\", None))" in node_source
     assert setup_text.count("config/live_route_runner.yaml") == 1
