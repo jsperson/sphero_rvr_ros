@@ -58,7 +58,10 @@ cd ~/ros2_ws_mission_stack/src/sphero_rvr_ros
 python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
   tests/test_mission_service.py tests/test_prompt_mission_controller.py \
   tests/test_live_mission_service.py tests/test_mission_web.py \
-  tests/test_prompt_drive.py tests/test_package_metadata.py
+  tests/test_prompt_drive.py tests/test_live_route_runner.py \
+  tests/test_odometry.py tests/test_ros_node_config.py \
+  tests/test_ros_safe_surfaces.py tests/test_system_validation.py \
+  tests/test_package_metadata.py
 ```
 
 These commands do not start the rover driver, route runner, collision supervisor,
@@ -159,9 +162,12 @@ and environment file.
 
 ## Physical execution remains a separate gate
 
-This runbook does not start or validate physical execution. A later reviewed
-change must bind the deterministic route executor without bypassing the collision
-supervisor and must first resolve route-local versus absolute-odometry reporting.
-Each restrained 10 cm translation, 45-degree turn, and multi-step prompt requires
+This runbook does not start or validate physical execution. The route runner now
+records route-local progress, absolute start/final pose, final heading, encoder
+timestamps, and per-track measurements, but those fields have not yet been
+validated on hardware. A later reviewed Pi configuration must bind the
+deterministic route executor without bypassing the collision supervisor. Each
+restrained 10 cm translation, 45-degree turn, and multi-step prompt requires
 fresh operator approval of its exact proposal digest while the operator is
-present.
+present; follow `docs/motion_calibration.md` and stop on missing, stale, or
+inconsistent evidence.
