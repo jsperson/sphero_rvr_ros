@@ -38,6 +38,7 @@ EXPECTED_DATA_FILES = {
         "scripts/rvr-slam-replay-plan",
         "scripts/rvr_motion_calibration.py",
         "scripts/analyze_ground_calibration.py",
+        "scripts/aggregate_ground_calibration.py",
         "scripts/install-rvr-mission-stack-services",
     },
     "share/sphero_rvr_driver/docs": {

@@ -193,11 +193,24 @@ request to make the success tolerance wider.
      --actual-distance-in 9.5 --output ground-sample-01.json
    ```
 
-6. Repeat the 0.25 m stage three times from the same setup. Retain only samples
-   that the analyzer marks `eligible_for_calibration_set=true`, then use the
-   median counts-per-meter. The analyzer intentionally never changes config.
-7. If the three samples are consistent, repeat at 0.50 m before adopting a new
-   scale. Rebuild and revalidate after a reviewed config change.
+6. Repeat the 0.25 m stage three times from the same setup. Preserve every raw
+   terminal artifact and its analyzed sample, including rejected runs. Aggregate
+   the three samples:
+
+   ```bash
+   python3 scripts/aggregate_ground_calibration.py \
+     ground-sample-01.json ground-sample-02.json ground-sample-03.json \
+     --output ground-set-025m.json
+   ```
+
+   Exit 0 and `eligible_for_config_review=true` require three distinct routes
+   from one exact source SHA, every individual safety/evidence gate to pass, and
+   each counts-per-meter value to be within 5% of the median. Exit 2 means the
+   set was analyzed but rejected. Neither analyzer changes config.
+7. If the 0.25 m set is eligible, repeat the complete three-sample procedure at
+   0.50 m. Compare both sets, floor, payload, battery, heading drift, and visible
+   slip before human review of any config change. Rebuild and revalidate after a
+   reviewed change; never copy a suggested value automatically.
 
 Stop the series after any collision/STOP/ESTOP/cancel activity, stale or missing
 evidence, failure to settle, more than 10% left/right count mismatch, unexplained

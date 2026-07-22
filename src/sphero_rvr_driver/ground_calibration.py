@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+import statistics
+from typing import Any, Mapping, Sequence
+
+
+GROUND_SAMPLE_SCHEMA = "sphero_rvr.ground_calibration_sample.v1"
+GROUND_SET_SCHEMA = "sphero_rvr.ground_calibration_set.v1"
+MINIMUM_GROUND_SAMPLES = 3
+MAX_SET_DEVIATION_PCT = 5.0
 
 
 class GroundCalibrationError(ValueError):
@@ -67,7 +74,7 @@ def analyze_ground_sample(
         and terminal_reason in {"complete", "target_error"}
     )
     return {
-        "schema": "sphero_rvr.ground_calibration_sample.v1",
+        "schema": GROUND_SAMPLE_SCHEMA,
         "source_sha": str(result.get("source_sha", "unknown")),
         "route_id": str(result.get("route_id", "")),
         "terminal_reason": terminal_reason,
@@ -85,4 +92,108 @@ def analyze_ground_sample(
         "track_mismatch_pct": track_mismatch_pct,
         "eligible_for_calibration_set": eligible,
         "adoption_note": "Use the median of repeated eligible ground samples; never adopt one run.",
+    }
+
+
+def aggregate_ground_samples(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Produce a fail-closed repeatability report from analyzed ground samples.
+
+    A set becomes eligible for human config review only when it contains at
+    least three distinct, individually eligible routes from one exact source
+    SHA and every mean counts-per-meter value is within five percent of the
+    median. No config file is read or changed here.
+    """
+
+    if len(samples) < MINIMUM_GROUND_SAMPLES:
+        raise GroundCalibrationError(
+            f"at least {MINIMUM_GROUND_SAMPLES} analyzed ground samples are required"
+        )
+
+    normalized: list[dict[str, Any]] = []
+    for index, sample in enumerate(samples, start=1):
+        if not isinstance(sample, Mapping) or sample.get("schema") != GROUND_SAMPLE_SCHEMA:
+            raise GroundCalibrationError(f"sample {index} has an unsupported schema")
+        source_sha = str(sample.get("source_sha", "")).strip()
+        route_id = str(sample.get("route_id", "")).strip()
+        if not source_sha or source_sha == "unknown":
+            raise GroundCalibrationError(f"sample {index} is missing an exact source SHA")
+        if not route_id:
+            raise GroundCalibrationError(f"sample {index} is missing a route_id")
+        numeric: dict[str, float] = {}
+        for field in (
+            "actual_distance_m",
+            "left_counts_per_meter",
+            "right_counts_per_meter",
+            "mean_counts_per_meter",
+            "track_mismatch_pct",
+            "odom_error_pct",
+        ):
+            try:
+                value = float(sample[field])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise GroundCalibrationError(f"sample {index} has invalid {field}") from exc
+            if not math.isfinite(value):
+                raise GroundCalibrationError(f"sample {index} has invalid {field}")
+            numeric[field] = value
+        if numeric["actual_distance_m"] <= 0.0 or any(
+            numeric[field] <= 0.0
+            for field in ("left_counts_per_meter", "right_counts_per_meter", "mean_counts_per_meter")
+        ):
+            raise GroundCalibrationError(f"sample {index} contains non-positive calibration evidence")
+        normalized.append(
+            {
+                "source_sha": source_sha,
+                "route_id": route_id,
+                "eligible": sample.get("eligible_for_calibration_set") is True,
+                **numeric,
+            }
+        )
+
+    source_shas = sorted({sample["source_sha"] for sample in normalized})
+    route_ids = [sample["route_id"] for sample in normalized]
+    means = [sample["mean_counts_per_meter"] for sample in normalized]
+    median_mean = statistics.median(means)
+    deviations = [100.0 * abs(value - median_mean) / median_mean for value in means]
+    max_deviation_pct = max(deviations)
+    rejection_reasons = []
+    if len(source_shas) != 1:
+        rejection_reasons.append("samples do not share one exact source SHA")
+    if len(set(route_ids)) != len(route_ids):
+        rejection_reasons.append("route_id values are not unique")
+    if not all(sample["eligible"] for sample in normalized):
+        rejection_reasons.append("one or more samples failed the individual safety/evidence gate")
+    if max_deviation_pct > MAX_SET_DEVIATION_PCT:
+        rejection_reasons.append(
+            f"counts-per-meter deviation exceeds {MAX_SET_DEVIATION_PCT:.1f}%"
+        )
+    eligible = not rejection_reasons
+    return {
+        "schema": GROUND_SET_SCHEMA,
+        "sample_count": len(normalized),
+        "source_sha": source_shas[0] if len(source_shas) == 1 else None,
+        "route_ids": route_ids,
+        "actual_distance_m": [sample["actual_distance_m"] for sample in normalized],
+        "median_left_counts_per_meter": statistics.median(
+            sample["left_counts_per_meter"] for sample in normalized
+        ),
+        "median_right_counts_per_meter": statistics.median(
+            sample["right_counts_per_meter"] for sample in normalized
+        ),
+        "median_mean_counts_per_meter": median_mean,
+        "minimum_mean_counts_per_meter": min(means),
+        "maximum_mean_counts_per_meter": max(means),
+        "maximum_median_deviation_pct": max_deviation_pct,
+        "maximum_track_mismatch_pct": max(
+            sample["track_mismatch_pct"] for sample in normalized
+        ),
+        "maximum_absolute_odom_error_pct": max(
+            abs(sample["odom_error_pct"]) for sample in normalized
+        ),
+        "eligible_for_config_review": eligible,
+        "suggested_odom_counts_per_meter": median_mean if eligible else None,
+        "rejection_reasons": rejection_reasons,
+        "adoption_note": (
+            "Human review is still required; compare floor, payload, battery, heading drift, "
+            "and the longer-distance validation before editing config."
+        ),
     }

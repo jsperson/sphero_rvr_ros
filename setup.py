@@ -49,6 +49,7 @@ setup(
                 "scripts/rvr_openai_planner_smoke.py",
                 "scripts/rvr_motion_calibration.py",
                 "scripts/analyze_ground_calibration.py",
+                "scripts/aggregate_ground_calibration.py",
             ],
         ),
         (
