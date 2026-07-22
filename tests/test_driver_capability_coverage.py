@@ -265,7 +265,7 @@ def test_validation_checklist_documents_fake_ros_and_live_hardware_gates():
         "API parity validation checklist",
         "Hardware-smoked on a Raspberry Pi 5",
         "pending Pi/ROS validation",
-        "PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests -q",
+        "python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv",
         "colcon build --symlink-install --packages-select sphero_rvr_driver",
         "WARNING: this can start the RVR motors",
         "ros2 topic pub --once /cmd_vel",

@@ -31,7 +31,7 @@ The immediate MVP is narrower: enter a driving prompt, have a real model propose
 - [docs/semantic_map_artifacts.md](docs/semantic_map_artifacts.md) documents the VS06 final semantic map artifact generator: structured JSON, GeoJSON, annotated map image, coverage/uncertainty report, and mission summary.
 - [docs/supervised_coordinator.md](docs/supervised_coordinator.md) documents the deterministic supervised mapping/navigation coordinator contract above `range_motion`, including Mission API/read-only UI telemetry and fail-closed cancellation semantics.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
-- [docs/system_validation.md](docs/system_validation.md) defines the ROS/system CI gates, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
+- [docs/system_validation.md](docs/system_validation.md) defines the local/Pi ROS system checks, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 

@@ -1,9 +1,9 @@
-"""System-level validation helpers for ROS CI and no-motion corpora.
+"""System-level validation helpers for local/Pi checks and no-motion corpora.
 
-This module stays ROS-free so development hosts can validate the gates that the
-real ROS/colcon CI job will exercise on GitHub and on the Pi.  It intentionally
-models bag manifests, fake route/collision replay, and latency gates without
-launching hardware or owning serial devices.
+This module stays ROS-free so development hosts can validate route semantics
+before the ROS/colcon checks are run on the Pi. It intentionally models bag
+manifests, fake route/collision replay, and latency gates without launching
+hardware or owning serial devices.
 """
 
 from __future__ import annotations
@@ -27,11 +27,6 @@ from .live_route_runner import (
 )
 from .mission_api import ToolResultStatus
 from .odometry import MotionPrimitiveConfig, OdomMotionState
-
-REQUIRED_SYSTEM_CI_JOBS = (
-    "python-unit-system-gates",
-    "ros2-colcon-system-gates",
-)
 
 REQUIRED_CURRENT_SHA_TOPICS = (
     "/scan",
@@ -278,7 +273,7 @@ def _manifest_summary(manifest: Any) -> dict[str, Any]:
 
 
 def validate_fake_route_execution_corpus(config: LiveRouteConfig | None = None) -> dict[str, dict[str, Any]]:
-    """Run deterministic ROS-free route/collision scenarios used by CI.
+    """Run deterministic ROS-free route/collision scenarios.
 
     These cases cover the system semantics the unit suite historically missed:
     truthful terminal status, route execution, STOP/ESTOP/cancel, stale collision
@@ -346,36 +341,15 @@ def validate_emergency_dispatch_latency(samples_seconds: Sequence[float], *, max
     return {"samples": float(len(samples)), "p95_seconds": p95, "max_p95_seconds": float(max_p95_seconds)}
 
 
-def assert_ci_workflow_covers_system_gates(workflow_text: str) -> tuple[str, ...]:
-    missing: list[str] = []
-    for job in REQUIRED_SYSTEM_CI_JOBS:
-        if job not in workflow_text:
-            missing.append(job)
-    for token in (
-        "colcon build",
-        "ros2 pkg executables sphero_rvr_driver",
-        "ros2 launch sphero_rvr_driver supervised_rvr.launch.py --show-args",
-        "python -m sphero_rvr_driver.system_validation",
-        "scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_system_validation.py",
-    ):
-        if token not in workflow_text:
-            missing.append(token)
-    if missing:
-        raise AssertionError("CI workflow is missing system gate(s): " + ", ".join(missing))
-    return REQUIRED_SYSTEM_CI_JOBS
-
-
-def _check_repo(repo_root: Path) -> int:
-    workflow = repo_root / ".github" / "workflows" / "ci.yml"
-    assert_ci_workflow_covers_system_gates(workflow.read_text())
+def _check_repo(_repo_root: Path) -> int:
     validate_fake_route_execution_corpus()
     validate_emergency_dispatch_latency([0.001, 0.002, 0.003], max_p95_seconds=0.010)
-    print("system validation gates passed")
+    print("system validation checks passed")
     return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run ROS-free system CI gates for the RVR package.")
+    parser = argparse.ArgumentParser(description="Run ROS-free system validation for the RVR package.")
     parser.add_argument("--repo-root", default=Path.cwd(), type=Path)
     args = parser.parse_args(argv)
     try:
