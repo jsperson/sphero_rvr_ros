@@ -22,6 +22,8 @@ from .live_mission_service import (
 )
 from .mission_api import build_default_registry
 from .mission_service import MissionService, MissionServiceServer
+from .prompt_drive import CodexOAuthPromptDriveProvider, PromptDrivePlanner
+from .prompt_mission_controller import PromptMissionController
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:
@@ -113,6 +115,9 @@ def main(args=None):
             database = Path(str(self.get_parameter("database_path").value)).expanduser()
             socket_path = Path(str(self.get_parameter("socket_path").value)).expanduser()
             registry = build_default_registry(detector_classes=("shoe", "backpack"))
+            planning_enabled = bool(self.get_parameter("planning_enabled").value)
+            model_id = str(self.get_parameter("planning_model").value).strip() or None
+            reasoning_effort = str(self.get_parameter("planning_reasoning_effort").value)
 
             def service_factory() -> MissionService:
                 return MissionService(
@@ -123,9 +128,27 @@ def main(args=None):
                     adapters=self._status_executor,
                     mode="live",
                     executor_bindings=bindings,
+                    live_execution_enabled=False,
                 )
 
-            self._server = MissionServiceServer(socket_path, service_factory)
+            controller_factory = None
+            if planning_enabled:
+                def controller_factory(service: MissionService) -> PromptMissionController:
+                    provider = CodexOAuthPromptDriveProvider(
+                        model=model_id,
+                        reasoning_effort=reasoning_effort,
+                    )
+                    return PromptMissionController(
+                        service,
+                        PromptDrivePlanner(provider, source_sha=source_sha),
+                        execution_enabled=False,
+                    )
+
+            self._server = MissionServiceServer(
+                socket_path,
+                service_factory,
+                prompt_controller_factory=controller_factory,
+            )
             self._server_thread = threading.Thread(
                 target=self._server.serve_forever,
                 name="live-mission-service-socket",
@@ -195,6 +218,9 @@ def main(args=None):
             self.declare_parameter("publish_period_s", 0.5)
             self.declare_parameter("max_source_age_s", 1.0)
             self.declare_parameter("max_binding_age_s", 2.0)
+            self.declare_parameter("planning_enabled", True)
+            self.declare_parameter("planning_model", "gpt-5.6-sol")
+            self.declare_parameter("planning_reasoning_effort", "high")
 
         def _required_provenance(self, parameter: str, environment: str) -> str:
             value = str(self.get_parameter(parameter).value).strip() or os.environ.get(environment, "").strip()

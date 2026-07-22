@@ -9,6 +9,7 @@ runner remains the sole owner of ``/cmd_vel`` above the collision supervisor.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any, Mapping, Optional
 
@@ -31,20 +32,52 @@ class RosLiveRouteExecutor:
         self.cancel_service = cancel_service
         self.graph_timeout_s = float(graph_timeout_s)
         self.cleanup_timeout_s = float(cleanup_timeout_s)
+        self._cancel_requested = threading.Event()
+        self._state_lock = threading.RLock()
+        self._active = False
+
+    def cancel(self) -> bool:
+        """Request cancellation; execute() confirms it through the ROS service."""
+
+        with self._state_lock:
+            if not self._active:
+                return False
+            self._cancel_requested.set()
+            return True
 
     def execute(self, request: LiveRouteRequest) -> Mapping[str, Any]:
         if not request.approval_id:
             raise MissionValidationError("live prompt-drive route requires a bound operator approval_id")
 
-        import rclpy
-        from rclpy.node import Node
-        from std_msgs.msg import String
-        from std_srvs.srv import Trigger
+        with self._state_lock:
+            if self._active:
+                raise MissionValidationError("prompt-drive route executor already owns an active route")
+            self._active = True
+            self._cancel_requested.clear()
+
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from std_msgs.msg import String
+            from std_srvs.srv import Trigger
+        except BaseException:
+            with self._state_lock:
+                self._active = False
+                self._cancel_requested.clear()
+            raise
 
         initialized_here = not rclpy.ok()
-        if initialized_here:
-            rclpy.init(args=None)
-        node = Node("prompt_drive_client")
+        try:
+            if initialized_here:
+                rclpy.init(args=None)
+            node = Node("prompt_drive_client")
+        except BaseException:
+            if initialized_here:
+                rclpy.try_shutdown()
+            with self._state_lock:
+                self._active = False
+                self._cancel_requested.clear()
+            raise
         publisher = node.create_publisher(String, self.request_topic, 10)
         cancel_client = node.create_client(Trigger, self.cancel_service)
         terminal: Optional[Mapping[str, Any]] = None
@@ -80,6 +113,12 @@ class RosLiveRouteExecutor:
             route_published = True
             deadline = time.monotonic() + float(request.max_runtime_s) + self.cleanup_timeout_s
             while terminal is None and time.monotonic() < deadline:
+                if self._cancel_requested.is_set() and not cancellation_attempted:
+                    cancellation_attempted = True
+                    if not self._request_cancel(rclpy, node, cancel_client, Trigger):
+                        raise MissionValidationError(
+                            "live route cancellation could not be confirmed; use physical STOP/ESTOP"
+                        )
                 rclpy.spin_once(node, timeout_sec=0.1)
             if terminal is None:
                 cancellation_attempted = True
@@ -98,6 +137,9 @@ class RosLiveRouteExecutor:
             node.destroy_node()
             if initialized_here:
                 rclpy.try_shutdown()
+            with self._state_lock:
+                self._active = False
+                self._cancel_requested.clear()
 
     def _request_cancel(self, rclpy, node, client, trigger_type) -> bool:
         deadline = time.monotonic() + self.cleanup_timeout_s

@@ -280,6 +280,71 @@ class PromptDriveProposal:
         }
 
 
+def prompt_drive_proposal_from_json(payload: Mapping[str, Any]) -> PromptDriveProposal:
+    """Reconstruct persisted proposal data for independent digest verification."""
+
+    if not isinstance(payload, Mapping):
+        raise MissionValidationError("persisted prompt-drive proposal must be an object")
+    if str(payload.get("api_version", "")) != PROMPT_DRIVE_API_VERSION:
+        raise MissionValidationError("persisted prompt-drive proposal has an unsupported version")
+    try:
+        decision = PromptDriveDecision(str(payload.get("decision", "")))
+        raw_limits = payload.get("limits")
+        raw_segments = payload.get("segments")
+        if not isinstance(raw_limits, Mapping):
+            raise MissionValidationError("persisted prompt-drive limits must be an object")
+        if not isinstance(raw_segments, Sequence) or isinstance(raw_segments, (str, bytes)):
+            raise MissionValidationError("persisted prompt-drive segments must be an array")
+        limits = PromptDriveLimits(
+            max_motion_calls=int(raw_limits.get("max_motion_calls", 0)),
+            max_translation_m=float(raw_limits.get("max_translation_m", 0.0)),
+            max_abs_turn_deg=float(raw_limits.get("max_abs_turn_deg", 0.0)),
+            max_runtime_s=float(raw_limits.get("max_runtime_s", 0.0)),
+            linear_speed_mps=float(raw_limits.get("linear_speed_mps", 0.0)),
+            angular_speed_deg_s=float(raw_limits.get("angular_speed_deg_s", 0.0)),
+        )
+        segments = tuple(
+            PromptDriveSegment(
+                correlation_id=str(segment.get("correlation_id", "")),
+                tool_id=str(segment.get("tool_id", "")),
+                tool_version=str(segment.get("tool_version", "")),
+                arguments=dict(segment.get("arguments", {})),
+            )
+            for segment in raw_segments
+            if isinstance(segment, Mapping)
+        )
+    except (TypeError, ValueError) as exc:
+        raise MissionValidationError("persisted prompt-drive proposal is malformed") from exc
+    if len(segments) != len(raw_segments):
+        raise MissionValidationError("persisted prompt-drive segments must contain only objects")
+    required_text = {
+        name: str(payload.get(name, "")).strip()
+        for name in (
+            "prompt",
+            "summary",
+            "provider_id",
+            "model_id",
+            "reasoning_effort",
+            "source_sha",
+            "proposal_digest",
+        )
+    }
+    if any(not value for value in required_text.values()):
+        raise MissionValidationError("persisted prompt-drive proposal is missing required evidence")
+    return PromptDriveProposal(
+        prompt=required_text["prompt"],
+        decision=decision,
+        summary=required_text["summary"],
+        segments=segments,
+        limits=limits,
+        provider_id=required_text["provider_id"],
+        model_id=required_text["model_id"],
+        reasoning_effort=required_text["reasoning_effort"],
+        source_sha=required_text["source_sha"],
+        proposal_digest=required_text["proposal_digest"],
+    )
+
+
 class OpenAIPromptDriveProvider:
     """First-party OpenAI Responses adapter for a single bounded route proposal."""
 

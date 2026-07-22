@@ -53,6 +53,17 @@ _TERMINAL_STATUSES = {
     "recovery_required",
 }
 
+_PROMPT_TERMINAL_STATUSES = {
+    "complete",
+    "failed",
+    "blocked",
+    "cancelled",
+    "stopped",
+    "estopped",
+    "rejected",
+    "recovery_required",
+}
+
 
 @dataclass(frozen=True)
 class ExecutorBinding:
@@ -134,6 +145,7 @@ class MissionService:
         adapters: Any = None,
         mode: str = "replay",
         executor_bindings: Optional[Mapping[str, ExecutorBinding]] = None,
+        live_execution_enabled: bool = False,
         session_budgets: MissionBudgets = MissionBudgets(
             max_steps=8,
             max_runtime_s=120.0,
@@ -175,6 +187,7 @@ class MissionService:
         self.source_sha = source_provenance
         self.deployed_sha = deployed_provenance
         self.session_budgets = session_budgets
+        self.live_execution_enabled = bool(live_execution_enabled)
         self._clock_s = clock_s or time.time
         self._lock = threading.RLock()
         self._executor_bindings: dict[str, ExecutorBinding] = {}
@@ -416,6 +429,10 @@ class MissionService:
             raise MissionValidationError("session_id is required")
         if source not in {"mcp", "planner", "cli", "api"}:
             raise MissionValidationError("mission source must be mcp, planner, cli, or api")
+        if self.mode == "live" and not self.live_execution_enabled:
+            raise MissionValidationError(
+                "live execution is disabled by reviewed service configuration"
+            )
         namespace = credential_namespace or ("physical" if self.mode == "live" else "replay")
         mission_id = submission_id or plan.goal.goal_id
         with self._lock:
@@ -566,6 +583,294 @@ class MissionService:
                 for row in rows
             ]
 
+    def begin_prompt_mission(
+        self,
+        *,
+        mission_id: str,
+        session_id: str,
+        prompt: str,
+        source: str = "api",
+    ) -> dict[str, Any]:
+        """Persist receipt and planning before any provider call begins."""
+
+        mission = str(mission_id).strip()
+        session = str(session_id).strip()
+        objective = str(prompt).strip()
+        if not mission or not session or not objective:
+            raise MissionValidationError("mission_id, session_id, and prompt are required")
+        if source not in {"api", "web", "cli", "mcp"}:
+            raise MissionValidationError("prompt mission source must be api, web, cli, or mcp")
+        namespace = "physical" if self.mode == "live" else "replay"
+        with self._lock:
+            self._ensure_session(session)
+            now = self._now()
+            try:
+                with self._connection:
+                    self._connection.execute(
+                        "INSERT INTO prompt_missions("
+                        "mission_id,session_id,status,mode,source,credential_namespace,prompt,"
+                        "source_sha,deployed_sha,created_at_s,updated_at_s"
+                        ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            mission,
+                            session,
+                            "received",
+                            self.mode,
+                            source,
+                            namespace,
+                            objective,
+                            self.source_sha,
+                            self.deployed_sha,
+                            now,
+                            now,
+                        ),
+                    )
+                    self._append_event(mission, session, "received", {"prompt": objective, "source": source})
+                    self._connection.execute(
+                        "UPDATE prompt_missions SET status='planning', updated_at_s=? WHERE mission_id=?",
+                        (self._now(), mission),
+                    )
+                    self._append_event(mission, session, "planning", {"provider_call_started": True})
+            except sqlite3.IntegrityError as exc:
+                raise MissionValidationError(f"mission id already exists: {mission}") from exc
+            return self.prompt_status(mission)
+
+    def record_prompt_proposal(
+        self,
+        mission_id: str,
+        proposal: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one typed proposal or rejection after independent validation."""
+
+        payload = json.loads(_json_dump(dict(proposal)))
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "planning":
+                raise MissionValidationError("prompt mission is not awaiting a provider decision")
+            if str(payload.get("prompt", "")).strip() != row["prompt"]:
+                raise MissionValidationError("proposal prompt does not match the persisted mission prompt")
+            if str(payload.get("source_sha", "")).strip() != self.source_sha:
+                raise MissionValidationError("proposal source SHA does not match the service source SHA")
+            digest = str(payload.get("proposal_digest", "")).strip().lower()
+            if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+                raise MissionValidationError("proposal digest must be a full SHA-256 hex value")
+            decision = str(payload.get("decision", ""))
+            segments = payload.get("segments", ())
+            executable = decision == "propose" and isinstance(segments, list) and bool(segments)
+            if decision not in {"propose", "reject"}:
+                raise MissionValidationError("proposal decision must be propose or reject")
+            if decision == "reject" and segments:
+                raise MissionValidationError("a rejected proposal cannot contain motion segments")
+            status = "proposed" if executable else "rejected"
+            reason = "" if executable else str(payload.get("summary", "model rejected mission"))
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status=?, proposal_json=?, proposal_digest=?, "
+                    "terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (status, _json_dump(payload), digest, reason, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "proposal" if executable else "proposal_rejected",
+                    {"proposal": payload, "executable": executable},
+                )
+                if not executable:
+                    self._append_event(
+                        mission_id,
+                        row["session_id"],
+                        "terminal",
+                        {"status": "rejected", "reason": reason},
+                    )
+            return self.prompt_status(mission_id)
+
+    def reject_prompt_planning(self, mission_id: str, reason: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] not in {"received", "planning"}:
+                raise MissionValidationError("prompt mission planning is no longer active")
+            message = str(reason).strip() or "prompt planning failed"
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='rejected', terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (message, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "terminal",
+                    {"status": "rejected", "reason": message},
+                )
+            return self.prompt_status(mission_id)
+
+    def approve_prompt_mission(
+        self,
+        mission_id: str,
+        *,
+        supplied_approval: str,
+        operator: str,
+        expires_at_s: float,
+    ) -> dict[str, Any]:
+        """Verify the persisted proposal and record server-owned approval authority."""
+
+        from .prompt_drive import approved_live_route, prompt_drive_proposal_from_json
+
+        with self._lock:
+            if not self.live_execution_enabled:
+                raise MissionValidationError("live execution is disabled by reviewed service configuration")
+            row = self._prompt_row(mission_id)
+            if row["status"] != "proposed":
+                raise MissionValidationError("only a proposed prompt mission can be approved")
+            approved_by = str(operator).strip()
+            if not approved_by:
+                raise MissionValidationError("approval operator identity is required")
+            expires = float(expires_at_s)
+            now = self._now()
+            if not math.isfinite(expires) or expires <= now or expires > now + 300.0:
+                raise MissionValidationError("approval expiry must be within the next 300 seconds")
+            proposal = prompt_drive_proposal_from_json(_json_load(row["proposal_json"], {}))
+            route = approved_live_route(proposal, supplied_approval, operator=approved_by)
+            approval = {
+                "approved": True,
+                "operator": approved_by,
+                "proposal_digest": proposal.proposal_digest,
+                "approval_id": route.approval_id,
+                "approved_at_s": now,
+                "expires_at_s": expires,
+            }
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='approved', approval_json=?, route_json=?, "
+                    "approval_expires_at_s=?, updated_at_s=? WHERE mission_id=?",
+                    (_json_dump(approval), _json_dump(route.to_json_dict()), expires, now, mission_id),
+                )
+                self._append_event(mission_id, row["session_id"], "approval", approval)
+            return self.prompt_status(mission_id)
+
+    def transition_prompt_mission(
+        self,
+        mission_id: str,
+        status: str,
+        *,
+        reason: str = "",
+        result: Optional[Mapping[str, Any]] = None,
+    ) -> dict[str, Any]:
+        transitions = {
+            "approved": {"queued", "cancelled"},
+            "queued": {"running", "cancelled", "recovery_required"},
+            "running": _PROMPT_TERMINAL_STATUSES | {"cancel_requested"},
+            "cancel_requested": _PROMPT_TERMINAL_STATUSES,
+        }
+        destination = str(status).strip().lower()
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if destination not in transitions.get(row["status"], set()):
+                raise MissionValidationError(
+                    f"invalid prompt mission transition: {row['status']} -> {destination}"
+                )
+            payload = {} if result is None else json.loads(_json_dump(dict(result)))
+            terminal_reason = str(reason).strip()
+            recovery = destination == "recovery_required"
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status=?, result_json=?, terminal_reason=?, "
+                    "recovery_required=?, updated_at_s=? WHERE mission_id=?",
+                    (
+                        destination,
+                        _json_dump(payload),
+                        terminal_reason,
+                        int(recovery),
+                        self._now(),
+                        mission_id,
+                    ),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "terminal" if destination in _PROMPT_TERMINAL_STATUSES else destination,
+                    {"status": destination, "reason": terminal_reason, "result": payload},
+                )
+                if recovery:
+                    self._latch_session_recovery(row["session_id"], terminal_reason)
+            return self.prompt_status(mission_id)
+
+    def request_prompt_cancel(self, mission_id: str, *, reason: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "running":
+                raise MissionValidationError("cancel request requires a running prompt mission")
+            message = str(reason).strip() or "operator requested cancellation"
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='cancel_requested', terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (message, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "cancel_requested",
+                    {"reason": message},
+                )
+            return self.prompt_status(mission_id)
+
+    def cancel_prompt_mission(self, mission_id: str, *, reason: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] in _PROMPT_TERMINAL_STATUSES:
+                return self.prompt_status(mission_id)
+            message = str(reason).strip() or "operator cancelled mission"
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='cancelled', terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (message, self._now(), mission_id),
+                )
+                self._connection.execute(
+                    "UPDATE sessions SET cancel_latched=1, terminal_reason=?, updated_at_s=? WHERE session_id=?",
+                    (message, self._now(), row["session_id"]),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "terminal",
+                    {"status": "cancelled", "reason": message},
+                )
+            return self.prompt_status(mission_id)
+
+    def prompt_status(self, mission_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            return {
+                "api_version": "mission_api.v2",
+                "mission_id": row["mission_id"],
+                "session_id": row["session_id"],
+                "status": row["status"],
+                "mode": row["mode"],
+                "source": row["source"],
+                "prompt": row["prompt"],
+                "proposal": _json_load(row["proposal_json"], {}),
+                "proposal_digest": row["proposal_digest"],
+                "approval": _json_load(row["approval_json"], {}),
+                "approval_expires_at_s": row["approval_expires_at_s"],
+                "route": _json_load(row["route_json"], {}),
+                "result": _json_load(row["result_json"], {}),
+                "terminal_reason": row["terminal_reason"],
+                "recovery_required": bool(row["recovery_required"]),
+                "source_sha": row["source_sha"],
+                "deployed_sha": row["deployed_sha"],
+                "live_execution_enabled": self.live_execution_enabled,
+                "auto_resume": False,
+                "events": self.events(row["mission_id"]),
+            }
+
+    def _prompt_row(self, mission_id: str) -> sqlite3.Row:
+        row = self._connection.execute(
+            "SELECT * FROM prompt_missions WHERE mission_id=?",
+            (str(mission_id),),
+        ).fetchone()
+        if row is None:
+            raise MissionValidationError(f"unknown prompt mission: {mission_id}")
+        return row
+
     def _create_schema(self) -> None:
         with self._connection:
             self._connection.executescript(
@@ -610,6 +915,27 @@ class MissionService:
                     deployed_sha TEXT NOT NULL,
                     created_at_s REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS prompt_missions (
+                    mission_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                    status TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    credential_namespace TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    proposal_json TEXT NOT NULL DEFAULT '{}',
+                    proposal_digest TEXT NOT NULL DEFAULT '',
+                    approval_json TEXT NOT NULL DEFAULT '{}',
+                    approval_expires_at_s REAL,
+                    route_json TEXT NOT NULL DEFAULT '{}',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    terminal_reason TEXT NOT NULL DEFAULT '',
+                    recovery_required INTEGER NOT NULL DEFAULT 0,
+                    source_sha TEXT NOT NULL,
+                    deployed_sha TEXT NOT NULL,
+                    created_at_s REAL NOT NULL,
+                    updated_at_s REAL NOT NULL
+                );
                 CREATE TRIGGER IF NOT EXISTS events_no_update
                 BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
                 CREATE TRIGGER IF NOT EXISTS events_no_delete
@@ -634,6 +960,38 @@ class MissionService:
                     (reason, self._now(), row["session_id"]),
                 )
                 self._append_event(row["mission_id"], row["session_id"], "recovery_required", {"reason": reason, "auto_resume": False})
+            planning_rows = self._connection.execute(
+                "SELECT mission_id,session_id FROM prompt_missions WHERE status IN ('received','planning')"
+            ).fetchall()
+            for row in planning_rows:
+                reason = "mission service restarted before planning completed; no approval or motion exists"
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='rejected', terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (reason, self._now(), row["mission_id"]),
+                )
+                self._append_event(
+                    row["mission_id"], row["session_id"], "terminal", {"status": "rejected", "reason": reason}
+                )
+            active_rows = self._connection.execute(
+                "SELECT mission_id,session_id FROM prompt_missions WHERE status IN ('approved','queued','running','cancel_requested')"
+            ).fetchall()
+            for row in active_rows:
+                reason = "mission service restarted after approval; execution is not resumed"
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='recovery_required', recovery_required=1, "
+                    "terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (reason, self._now(), row["mission_id"]),
+                )
+                self._latch_session_recovery(row["session_id"], reason)
+                self._append_event(
+                    row["mission_id"], row["session_id"], "recovery_required", {"reason": reason, "auto_resume": False}
+                )
+
+    def _latch_session_recovery(self, session_id: str, reason: str) -> None:
+        self._connection.execute(
+            "UPDATE sessions SET cancel_latched=1, terminal_reason=?, updated_at_s=? WHERE session_id=?",
+            (str(reason), self._now(), session_id),
+        )
 
     def _ensure_session(self, session_id: str) -> None:
         row = self._connection.execute(
@@ -1073,10 +1431,12 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
         self,
         socket_path: str | Path,
         service_factory: Callable[[], MissionService],
+        prompt_controller_factory: Optional[Callable[[MissionService], Any]] = None,
     ) -> None:
         self.socket_path = Path(socket_path)
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
         self._owner_lock = open(f"{self.socket_path}.lock", "a+b")
+        self._server_resources_closed = False
         try:
             fcntl.flock(self._owner_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -1092,17 +1452,32 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
                     )
                 self.socket_path.unlink()
             self.service = service_factory()
+            self.prompt_controller = (
+                None
+                if prompt_controller_factory is None
+                else prompt_controller_factory(self.service)
+            )
             super().__init__(str(self.socket_path), _MissionRequestHandler)
         except Exception:
-            if hasattr(self, "service"):
-                self.service.close()
-            fcntl.flock(self._owner_lock.fileno(), fcntl.LOCK_UN)
-            self._owner_lock.close()
+            if not self._server_resources_closed:
+                if getattr(self, "prompt_controller", None) is not None:
+                    self.prompt_controller.close()
+                if hasattr(self, "service"):
+                    self.service.close()
+                if not self._owner_lock.closed:
+                    fcntl.flock(self._owner_lock.fileno(), fcntl.LOCK_UN)
+                    self._owner_lock.close()
+                self._server_resources_closed = True
             raise
         os.chmod(self.socket_path, 0o600)
 
     def server_close(self) -> None:
+        if self._server_resources_closed:
+            return
+        self._server_resources_closed = True
         super().server_close()
+        if self.prompt_controller is not None:
+            self.prompt_controller.close()
         self.service.close()
         try:
             self.socket_path.unlink()
@@ -1135,4 +1510,38 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
         if operation == "events":
             mission_id = request.get("mission_id")
             return self.service.events(None if mission_id is None else str(mission_id))
+        if operation == "service_snapshot":
+            if self.prompt_controller is None:
+                return {
+                    "api_version": "mission_api.v2",
+                    "mode": self.service.mode,
+                    "source_sha": self.service.source_sha,
+                    "deployed_sha": self.service.deployed_sha,
+                    "planning_enabled": False,
+                    "live_execution_enabled": self.service.live_execution_enabled,
+                    "capabilities": self.service.capabilities(),
+                }
+            return self.prompt_controller.service_snapshot()
+        if operation.startswith("prompt_") and self.prompt_controller is None:
+            raise MissionValidationError("prompt mission controller is not configured")
+        if operation == "prompt_submit":
+            return self.prompt_controller.submit(
+                str(request.get("prompt", "")),
+                session_id=str(request.get("session_id", "")),
+                source=str(request.get("source", "web")),
+                mission_id=None if request.get("mission_id") is None else str(request["mission_id"]),
+            )
+        if operation == "prompt_status":
+            return self.prompt_controller.status(str(request.get("mission_id", "")))
+        if operation == "prompt_approve":
+            return self.prompt_controller.approve(
+                str(request.get("mission_id", "")),
+                supplied_approval=str(request.get("approval_phrase", "")),
+                operator=str(request.get("operator", "")),
+            )
+        if operation == "prompt_cancel":
+            return self.prompt_controller.cancel(
+                str(request.get("mission_id", "")),
+                reason=str(request.get("reason", "operator cancelled mission")),
+            )
         raise MissionValidationError(f"unsupported mission service operation: {operation}")
