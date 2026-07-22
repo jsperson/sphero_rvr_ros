@@ -70,7 +70,8 @@ class FakeLiveMissionClient:
 
     def prompt_status(self, mission_id):
         assert mission_id == "live-mission"
-        self.mission = self._snapshot("proposed", proposal=self.proposal)
+        if self.mission is not None and self.mission.get("status") == "planning":
+            self.mission = self._snapshot("proposed", proposal=self.proposal)
         return self.mission
 
     def approve_prompt(self, mission_id, *, approval_phrase, operator):
@@ -188,7 +189,21 @@ def test_success_scenario_advances_progress_map_path_events_and_terminal_result(
         "progress": 1.0,
         "terminal": True,
         "terminal_reason": "target_reached",
+        "result": {
+            "status": "complete",
+            "terminal_reason": "target_reached",
+            "evidence_mode": "mock/replay",
+        },
     }
+    assert complete["artifacts"] == [
+        {
+            "artifact_id": "terminal-result",
+            "label": "Terminal result (JSON)",
+            "href": "/api/web/artifacts/terminal-result",
+            "media_type": "application/json",
+            "fixture_only": True,
+        }
+    ]
     assert len(complete["map"]["traveled_path"]) == len(complete["map"]["proposed_route"])
     assert [event["event_type"] for event in complete["events"]][-2:] == ["progress", "complete"]
 
@@ -269,6 +284,25 @@ def test_router_exposes_only_bounded_mock_routes_and_rejects_direct_command_path
     assert (favicon.status, favicon.content_type, favicon.body) == (204, "image/x-icon", "")
     assert json.loads(proposed.body)["mission"]["state"] == "PROPOSED"
 
+    with pytest.raises(MissionWebError, match="terminal mission evidence is not available"):
+        handle_mission_web_request("GET", "/api/web/artifacts/terminal-result", "", adapter)
+    approved = handle_mission_web_request(
+        "POST",
+        "/api/web/mission/approve",
+        json.dumps({"approval_phrase": json.loads(proposed.body)["approval"]["required_phrase"]}),
+        adapter,
+    )
+    assert json.loads(approved.body)["mission"]["state"] == "RUNNING"
+    adapter.advance()
+    adapter.advance()
+    adapter.advance()
+    artifact = handle_mission_web_request(
+        "GET", "/api/web/artifacts/terminal-result", "", adapter
+    )
+    artifact_payload = json.loads(artifact.body)
+    assert artifact_payload["state"] == "COMPLETE"
+    assert artifact_payload["result"]["terminal_reason"] == "target_reached"
+
     for path in ("/api/motor", "/api/ros", "/api/write", "/cmd_vel", "/cmd_vel_motor"):
         with pytest.raises(MissionWebError, match="not exposed"):
             handle_mission_web_request("POST", path, "{}", adapter)
@@ -293,8 +327,17 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "Authoritative live room map unavailable" in page
     assert "The browser uses the Pi-local mission-service boundary" in page
     assert "if (map.available === false)" in page
-    for token in ("Mission prompt", "LLM proposal", "Room map", "Mission status", "Event history", "Authority boundary"):
+    for token in (
+        "Mission prompt",
+        "LLM proposal",
+        "Room map",
+        "Mission status",
+        "Event history",
+        "Terminal evidence",
+        "Authority boundary",
+    ):
         assert token in page
+    assert "artifact.href" in page
     for forbidden in ("localStorage", "sessionStorage", "OPENAI_API_KEY", "CODEX_API_KEY", "WebSocket("):
         assert forbidden not in page
 
@@ -364,6 +407,45 @@ def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_
     with pytest.raises(MissionWebError, match="execution is disabled"):
         adapter.approve(proposed["approval"]["required_phrase"])
     assert adapter.cancel()["mission"]["state"] == "CANCELLED"
+
+
+def test_live_terminal_result_is_authoritative_and_downloadable() -> None:
+    client = FakeLiveMissionClient()
+    client.mission = client._snapshot("complete", proposal=client.proposal)
+    client.mission["result"] = {
+        "status": "complete",
+        "terminal_reason": "target_reached",
+        "final_heading_deg": 44.8,
+        "left_track_distance_m": 0.101,
+        "right_track_distance_m": 0.099,
+    }
+    client.mission["terminal_reason"] = "target_reached"
+    adapter = LiveMissionWebAdapter(client, session_id="web-session", operator="scott")
+
+    snapshot = adapter.snapshot()
+    assert snapshot["mission"]["result"]["final_heading_deg"] == pytest.approx(44.8)
+    assert snapshot["artifacts"][0]["fixture_only"] is False
+    response = handle_mission_web_request(
+        "GET", "/api/web/artifacts/terminal-result", "", adapter
+    )
+    payload = json.loads(response.body)
+    assert payload["mission_id"] == "live-mission"
+    assert payload["result"]["left_track_distance_m"] == pytest.approx(0.101)
+
+
+def test_live_partial_result_is_not_linked_before_terminal_state() -> None:
+    client = FakeLiveMissionClient()
+    client.mission = client._snapshot("running", proposal=client.proposal)
+    client.mission["result"] = {"measured_distance_m": 0.02}
+    adapter = LiveMissionWebAdapter(client, session_id="web-session", operator="scott")
+
+    snapshot = adapter.snapshot()
+    assert snapshot["mission"]["result"] == {"measured_distance_m": 0.02}
+    assert snapshot["artifacts"] == []
+    with pytest.raises(MissionWebError, match="terminal mission evidence is not available"):
+        handle_mission_web_request(
+            "GET", "/api/web/artifacts/terminal-result", "", adapter
+        )
 
 
 def test_live_http_requires_exact_same_origin_for_state_changes() -> None:

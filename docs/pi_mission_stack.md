@@ -196,3 +196,116 @@ restart the mission service, stop the supervised ROS graph, issue/verify zero, a
 repeat the process/device cleanup audit. Each restrained 10 cm translation,
 45-degree turn, and multi-step prompt is a separate authorization. Follow
 `docs/motion_calibration.md` and stop on missing, stale, or inconsistent evidence.
+
+### Exact attended procedure
+
+These commands are physical-test preparation, not authorization. Do not run them
+unless Scott is present, the rover is restrained for the first two stages, the
+area is clear, and the operator can use physical power/ESTOP immediately.
+
+1. In a Pi shell, prove the candidate and config are still locked:
+
+   ```bash
+   cd /home/jsperson/ros2_ws_mission_stack/src/sphero_rvr_ros
+   candidate=$(git rev-parse HEAD)
+   test -z "$(git status --short)"
+   grep -E '^RVR_(SOURCE_SHA|DEPLOYED_SHA|LIVE_EXECUTION_ENABLED|LIVE_EXECUTION_REVIEWED_SHA)=' \
+     ~/.config/sphero_rvr/mission-stack.env
+   codex login status
+   ```
+
+   Both SHA values must equal `candidate`, execution must be `false`, the reviewed
+   SHA must be blank, and Codex must report `Logged in using ChatGPT`.
+
+2. Source the installed exact candidate. Start lidar/TF in terminal A:
+
+   ```bash
+   source /opt/ros/jazzy/setup.bash
+   source /home/jsperson/ros2_ws_mission_stack/install/setup.bash
+   ros2 launch sphero_rvr_driver lidar.launch.py
+   ```
+
+   In terminal B, after repeating the two `source` commands, start only the
+   supervised driver, collision supervisor, and deterministic route runner:
+
+   ```bash
+   ros2 launch sphero_rvr_driver supervised_rvr.launch.py \
+     start_collision_stop:=true \
+     start_live_route_runner:=true \
+     start_range_motion:=false
+   ```
+
+   This second command is motor-capable. The driver is remapped to
+   `/cmd_vel_motor`; only the collision supervisor may publish there.
+
+3. In terminal C, repeat the two `source` commands and capture readiness without
+   submitting a route:
+
+   ```bash
+   ros2 node list
+   ros2 topic info /cmd_vel --verbose
+   ros2 topic info /cmd_vel_motor --verbose
+   ros2 topic info /mission_api/v2/live_route/request --verbose
+   ros2 topic info /mission_api/v2/live_route/status --verbose
+   timeout 5 ros2 topic echo /scan --once
+   timeout 5 ros2 topic echo /odom --once
+   timeout 5 ros2 topic echo /encoder_counts --once
+   timeout 5 ros2 topic echo /collision_stop/state --once
+   timeout 5 ros2 topic echo /cmd_vel_motor --once
+   ros2 service list | grep -E '^/(stop|estop|clear_estop)$|^/live_route/cancel$'
+   curl -fsS http://127.0.0.1:8765/api/web/state | python3 -m json.tool
+   ```
+
+   Require one node per component, live route request/status graph edges, fresh
+   scan/odom/encoder samples, collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, and
+   an exactly zero motor-bound Twist. Stop immediately on any discrepancy.
+
+4. Only after Scott reviews that evidence, edit
+   `~/.config/sphero_rvr/mission-stack.env` so execution is `true` and the reviewed
+   SHA equals the complete `candidate`, then restart only the mission service:
+
+   ```bash
+   chmod 0600 ~/.config/sphero_rvr/mission-stack.env
+   systemctl --user restart rvr-mission-service.service
+   systemctl --user is-active rvr-mission-service.service rvr-mission-web.service
+   ```
+
+   A typo or SHA mismatch must make service startup fail. Do not alter the unit,
+   YAML defaults, Tailscale config, collision policy, or approval TTL to make it
+   start.
+
+5. Open the tailnet HTTPS page. Confirm the LIVE physical-execution banner and
+   fresh safety state. Enter only the current stage prompt. Read the complete
+   typed proposal, physical effect, limits, model identity, and digest to Scott.
+   Scott must type the fresh exact `APPROVE <full-digest>` phrase himself. Never
+   reuse a digest from proposal-only evidence or a prior stage.
+
+6. At terminal state, use the page's Terminal evidence panel and Terminal result
+   JSON link. Record start/final pose and timestamps, final heading, route-local
+   measurements, left/right encoder deltas, per-track distances, collision state,
+   terminal reason, and stationary post-terminal samples. Do not advance if a
+   required field is null, the tracks disagree unexpectedly, heading drift is
+   unexplained, the pose continues changing, or any safety/error state occurred.
+
+7. Relock after every stage—success or failure—before considering another:
+
+   ```bash
+   ros2 service call /stop std_srvs/srv/Trigger '{}'
+   timeout 5 ros2 topic echo /cmd_vel_motor --once
+   ```
+
+   Restore `RVR_LIVE_EXECUTION_ENABLED=false` and blank
+   `RVR_LIVE_EXECUTION_REVIEWED_SHA`, restart the mission service, verify the web
+   state reports `live/proposal-only`, then stop terminals B and A. Finish with:
+
+   ```bash
+   systemctl --user is-active rvr-mission-service.service rvr-mission-web.service
+   ss -ltnp | grep '127.0.0.1:8765'
+   ss -xlpn | grep 'mission-service.sock'
+   ros2 node list --no-daemon
+   pgrep -af '[r]vr_node|[l]ive_route_runner|[l]idar_collision_stop|[r]os2 launch' || true
+   lsof /dev/ttyAMA0 || true
+   ```
+
+   The two proposal-only services may remain active. The only ROS node may be
+   `/live_mission_service`; no hardware/launch process or serial owner may remain.

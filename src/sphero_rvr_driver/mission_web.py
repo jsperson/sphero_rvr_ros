@@ -38,6 +38,7 @@ WEB_API_VERSION = "rvr_mission_web.v1"
 MAX_REQUEST_BYTES = 64 * 1024
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+TERMINAL_ARTIFACT_PATH = "/api/web/artifacts/terminal-result"
 
 
 class MissionWebError(ValueError):
@@ -404,6 +405,15 @@ class MockReplayMissionAdapter:
         phrase = ""
         if self._proposal is not None and self._proposal.executable:
             phrase = approval_phrase(self._proposal)
+        result = (
+            {
+                "status": self._state.value.lower(),
+                "terminal_reason": self._terminal_reason,
+                "evidence_mode": "mock/replay",
+            }
+            if self._state in TERMINAL_STATES
+            else {}
+        )
         return {
             "web_api_version": WEB_API_VERSION,
             "mission_api_version": MissionApiVersion.V2.value,
@@ -431,7 +441,9 @@ class MockReplayMissionAdapter:
                 "progress": self._progress,
                 "terminal": self._state in TERMINAL_STATES,
                 "terminal_reason": self._terminal_reason,
+                "result": result,
             },
+            "artifacts": _terminal_artifacts(result, fixture_only=True),
             "safety": dict(self._safety),
             "events": [event.to_json_dict() for event in self._events],
             "map": self.map_fixture.to_json_dict(progress=self._progress),
@@ -664,6 +676,10 @@ class LiveMissionWebAdapter:
                 "terminal_reason": terminal_reason,
                 "result": dict(result),
             },
+            "artifacts": _terminal_artifacts(
+                result if state in {item.value for item in TERMINAL_STATES} else {},
+                fixture_only=False,
+            ),
             "safety": {
                 "stop_active": bool(safety.get("stop_active", False)),
                 "estop_latched": bool(safety.get("estop_latched", False)),
@@ -699,6 +715,22 @@ def _web_state(status: str) -> str:
         "recovery_required": WebMissionState.RECOVERY_REQUIRED,
     }
     return mapping.get(normalized, WebMissionState.FAILED).value
+
+
+def _terminal_artifacts(
+    result: Mapping[str, Any], *, fixture_only: bool
+) -> list[dict[str, Any]]:
+    if not result:
+        return []
+    return [
+        {
+            "artifact_id": "terminal-result",
+            "label": "Terminal result (JSON)",
+            "href": TERMINAL_ARTIFACT_PATH,
+            "media_type": "application/json",
+            "fixture_only": bool(fixture_only),
+        }
+    ]
 
 
 def _authoritative_live_map(live_evidence: Mapping[str, Any]) -> dict[str, Any]:
@@ -777,6 +809,23 @@ def handle_mission_web_request(
             return _json_response(200, adapter.snapshot())
         if normalized_path == "/api/web/scenarios":
             return _json_response(200, {"scenarios": [item.to_json_dict() for item in adapter.scenarios()]})
+        if normalized_path == TERMINAL_ARTIFACT_PATH:
+            snapshot = adapter.snapshot()
+            mission = snapshot.get("mission", {})
+            if not isinstance(mission, Mapping) or not bool(mission.get("terminal", False)):
+                raise MissionWebError("terminal mission evidence is not available")
+            result = mission.get("result", {})
+            if not isinstance(result, Mapping) or not result:
+                raise MissionWebError("terminal mission result is not available")
+            return _json_response(
+                200,
+                {
+                    "mission_id": str(mission.get("mission_id", "")),
+                    "state": str(mission.get("state", "")),
+                    "terminal_reason": str(mission.get("terminal_reason", "")),
+                    "result": dict(result),
+                },
+            )
         raise MissionWebError(f"GET route is not exposed: {normalized_path}")
     if normalized_method != "POST":
         raise MissionWebError("mission web adapter only supports GET and bounded mock POST routes")
@@ -1021,6 +1070,9 @@ _INDEX_HTML = r'''<!doctype html>
     .status-line { display:flex; justify-content:space-between; align-items:center; gap:.7rem; }
     .state { font-size:1.25rem; color:var(--teal); font-weight:900; letter-spacing:.04em; }
     .terminal { color:var(--amber); font-size:.78rem; }
+    .result-json { max-height:18rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:.65rem; border-radius:.55rem; background:#071421; color:#bdd2ff; font-size:.7rem; }
+    .artifact-list { display:grid; gap:.45rem; margin:.7rem 0 0; padding:0; list-style:none; }
+    .artifact-list a { color:var(--teal); font-weight:800; }
     progress { width:100%; height:.65rem; accent-color:var(--teal); }
     .event-list { list-style:none; margin:0; padding:0; display:grid; gap:.65rem; max-height:25rem; overflow:auto; }
     .event-list li { position:relative; padding-left:1.2rem; color:#cad7d7; font-size:.8rem; line-height:1.35; }
@@ -1088,6 +1140,11 @@ _INDEX_HTML = r'''<!doctype html>
           <h2 id="events-heading">Event history</h2>
           <ol class="event-list" id="event-list"><li class="empty">No mission events yet.</li></ol>
         </section>
+        <section class="panel" aria-labelledby="result-heading">
+          <h2 id="result-heading">Terminal evidence</h2>
+          <div id="result-view" class="empty" data-testid="result-view">No terminal evidence yet.</div>
+          <ul id="artifact-list" class="artifact-list"></ul>
+        </section>
         <section class="panel">
           <h2>Authority boundary</h2>
           <p class="hint" id="authority-copy">The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.</p>
@@ -1147,6 +1204,16 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const events = snapshot.events || [];
       $('event-list').innerHTML = events.length ? events.map((event) => `<li><small>#${event.sequence} · ${escapeHtml(event.event_type)}</small>${escapeHtml(event.message)}</li>`).join('') : '<li class="empty">No mission events yet.</li>';
+      const result = snapshot.mission.result || {};
+      const artifacts = snapshot.artifacts || [];
+      if (Object.keys(result).length) {
+        $('result-view').className = '';
+        $('result-view').innerHTML = `<pre class="result-json">${escapeHtml(JSON.stringify(result, null, 2))}</pre>`;
+      } else {
+        $('result-view').className = 'empty';
+        $('result-view').textContent = 'No terminal evidence yet.';
+      }
+      $('artifact-list').innerHTML = artifacts.map((artifact) => `<li><a href="${escapeHtml(artifact.href)}" target="_blank" rel="noopener">${escapeHtml(artifact.label)}</a> <span class="hint">${escapeHtml(artifact.media_type)}</span></li>`).join('');
       renderMap(snapshot.map);
       if (snapshot.mission.terminal && timer) { clearInterval(timer); timer = null; }
     }

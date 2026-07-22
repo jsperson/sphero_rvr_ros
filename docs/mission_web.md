@@ -79,6 +79,7 @@ evidence are fresh and clear. Missing STOP/ESTOP evidence renders `UNKNOWN`.
 ```text
 GET  /api/web/state
 GET  /api/web/scenarios
+GET  /api/web/artifacts/terminal-result   # terminal missions only
 POST /api/web/mission/propose
 POST /api/web/mission/approve
 POST /api/web/mission/advance   # mock/replay only
@@ -88,6 +89,12 @@ POST /api/web/mission/cancel
 Direct motor, arbitrary write, ROS, `/cmd_vel`, and `/cmd_vel_motor` routes are
 rejected. Responses use `Cache-Control: no-store`, the page uses no local or
 session storage, and credentials are never accepted by the adapter.
+
+The terminal artifact endpoint returns only the current mission's persisted JSON
+result through the same adapter snapshot. It accepts no path, reads no arbitrary
+file, and returns an error before terminal evidence exists. The page renders that
+result and links to the no-store JSON response so final heading, per-track
+measurements, collision state, and terminal reason remain reviewable.
 
 ## Map truthfulness
 
