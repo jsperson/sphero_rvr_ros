@@ -280,6 +280,9 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'data-testid="scenario"' in page
     assert 'data-testid="approve"' in page
     assert 'aria-label="Fixture room map showing rover, route, path, obstacles, and objects"' in page
+    assert "Authoritative live room map unavailable" in page
+    assert "The browser uses the Pi-local mission-service boundary" in page
+    assert "if (map.available === false)" in page
     for token in ("Mission prompt", "LLM proposal", "Room map", "Mission status", "Event history", "Authority boundary"):
         assert token in page
     for forbidden in ("localStorage", "sessionStorage", "OPENAI_API_KEY", "CODEX_API_KEY", "WebSocket("):

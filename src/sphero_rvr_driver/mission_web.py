@@ -1079,7 +1079,7 @@ _INDEX_HTML = r'''<!doctype html>
         </section>
         <section class="panel">
           <h2>Authority boundary</h2>
-          <p class="hint">The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.</p>
+          <p class="hint" id="authority-copy">The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.</p>
         </section>
       </div>
     </div>
@@ -1111,6 +1111,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('scenario-label').textContent = live ? 'Service target' : 'Replay outcome';
       $('approval-heading').textContent = live ? 'Physical approval' : 'Simulation approval';
       $('approval-hint').textContent = live ? (execution ? 'A fresh exact digest approval is required; the Pi remains the execution authority.' : 'Physical approval is locked by the deployed Pi configuration.') : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('approve').textContent = live ? 'Approve physical mission' : 'Approve simulation';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
@@ -1149,8 +1150,14 @@ _INDEX_HTML = r'''<!doctype html>
       const obstacles = map.obstacles.map((o) => `<g><rect x="${sx(o.x_m)}" y="${sy(o.y_m + o.height_m)}" width="${o.width_m/map.bounds.width_m*(W-pad*2)}" height="${o.height_m/map.bounds.height_m*(H-pad*2)}" rx="8" fill="#42576b" stroke="#6f8497"/><text x="${sx(o.x_m)+8}" y="${sy(o.y_m + o.height_m)+20}" fill="#b8c8d4" font-size="14">${escapeHtml(o.label)}</text></g>`).join('');
       const objects = map.objects.map((o) => `<g><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="10" fill="#ffca6b"/><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="18" fill="none" stroke="#ffca6b" opacity=".45"/><text x="${sx(o.x_m)+15}" y="${sy(o.y_m)-10}" fill="#ffdf9d" font-size="15">${escapeHtml(o.label)} ${Math.round(o.confidence*100)}%</text></g>`).join('');
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      const unavailable = map.available === false ? `<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#91a9aa" font-size="20">${escapeHtml(map.unavailable_reason || 'Authoritative map unavailable')}</text>` : '';
-      svg.innerHTML = `${grid}<rect x="${pad}" y="${pad}" width="${W-pad*2}" height="${H-pad*2}" fill="none" stroke="#385168" stroke-width="3"/>${obstacles}<polyline points="${points(map.proposed_route)}" fill="none" stroke="#78a9ff" stroke-width="5" stroke-dasharray="10 10"/>${map.traveled_path.length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#5de4c7" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}${unavailable}<g transform="translate(${sx(map.rover.x_m)} ${sy(map.rover.y_m)}) rotate(${map.rover.yaw_deg})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#5de4c7" stroke="#d4fff7" stroke-width="2"/></g>`;
+      const frame = `${grid}<rect x="${pad}" y="${pad}" width="${W-pad*2}" height="${H-pad*2}" fill="none" stroke="#385168" stroke-width="3"/>`;
+      if (map.available === false) {
+        svg.setAttribute('aria-label', 'Authoritative live room map unavailable');
+        svg.innerHTML = `${frame}<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#91a9aa" font-size="20">${escapeHtml(map.unavailable_reason || 'Authoritative map unavailable')}</text>`;
+        return;
+      }
+      svg.setAttribute('aria-label', 'Room map showing authoritative rover, route, path, obstacles, and objects');
+      svg.innerHTML = `${frame}${obstacles}<polyline points="${points(map.proposed_route)}" fill="none" stroke="#78a9ff" stroke-width="5" stroke-dasharray="10 10"/>${map.traveled_path.length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#5de4c7" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(map.rover.x_m)} ${sy(map.rover.y_m)}) rotate(${map.rover.yaw_deg})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#5de4c7" stroke="#d4fff7" stroke-width="2"/></g>`;
     }
 
     async function loadScenarios() {
