@@ -338,6 +338,7 @@ def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> No
     environment = (REPO_ROOT / "config/mission-stack.env.example").read_text()
 
     assert "live_mission_service" in mission_unit
+    assert "After=default.target" not in mission_unit
     assert "rvr_mission_web --mode live --host 127.0.0.1" in web_unit
     assert "ExecStartPre=" in web_unit
     assert '[[ -S "$HOME/.local/state/sphero_rvr/mission-service.sock" ]]' in web_unit

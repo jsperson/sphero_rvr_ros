@@ -1,6 +1,5 @@
 [Unit]
 Description=Sphero RVR persistent mission service (execution default off)
-After=default.target
 
 [Service]
 Type=simple
