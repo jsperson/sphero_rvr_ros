@@ -1205,6 +1205,8 @@ _INDEX_HTML = r'''<!doctype html>
     const $ = (id) => document.getElementById(id);
     let current = null;
     let timer = null;
+    let hydratedMissionId = null;
+    let promptDirty = false;
 
     async function api(path, options = {}) {
       const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
@@ -1220,6 +1222,11 @@ _INDEX_HTML = r'''<!doctype html>
     function render(snapshot) {
       current = snapshot;
       const proposal = snapshot.proposal;
+      const missionId = snapshot.mission.mission_id || null;
+      if (proposal && missionId !== hydratedMissionId) {
+        if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';
+        hydratedMissionId = missionId;
+      }
       const live = !snapshot.adapter.fixture_only;
       const execution = live && snapshot.adapter.live_execution_enabled;
       const badge = document.querySelector('[data-testid="mode-badge"]');
@@ -1311,6 +1318,7 @@ _INDEX_HTML = r'''<!doctype html>
       try {
         const snapshot = await api('/api/web/mission/propose', {method:'POST', body:JSON.stringify({prompt:$('mission-prompt').value, scenario:$('scenario').value})});
         $('approval-input').value = '';
+        promptDirty = false;
         render(snapshot);
         if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();
       } catch (error) { $('request-error').textContent = error.message; }
@@ -1346,6 +1354,7 @@ _INDEX_HTML = r'''<!doctype html>
     $('propose').addEventListener('click', propose);
     $('approve').addEventListener('click', approve);
     $('cancel').addEventListener('click', cancelMission);
+    $('mission-prompt').addEventListener('input', () => { promptDirty = true; });
     Promise.all([loadScenarios(), api('/api/web/state')]).then(([,snapshot]) => render(snapshot)).catch((error) => $('request-error').textContent = error.message);
   </script>
 </body>
