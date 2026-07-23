@@ -184,6 +184,7 @@ The ROS adapter deliberately exposes only the safe subset selected in `docs/rvr_
 
 - routine motion stays on ordinary `/cmd_vel`, then passes through `lidar_collision_stop_supervisor` before the final `/cmd_vel_motor` driver sink in supervised motor-capable launches;
 - read-only telemetry is published as typed topics (`battery_state`, motor temperatures, `ambient_light`, `odom`) and diagnostics key-values;
+- short physical tests expose completed UART-write counters/payloads, motor stall/fault/thermal state, and 0.5-second load-voltage samples in diagnostics; raw-motor writes are fire-and-forget, so a completed host write is not represented as a firmware acknowledgment;
 - `reset_yaw` and `reset_locator` are explicit reference-frame reset services, not hidden side effects;
 - LEDs are limited to bounded `ColorRGBA` all-LED feedback plus `release_led_requests`; raw LED masks/palettes remain core-only;
 - raw motors, firmware/admin/update/factory operations, calibration flows, opaque streaming bytes, and identifier publishing remain out of the default ROS graph.

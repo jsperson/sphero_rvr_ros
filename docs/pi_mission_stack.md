@@ -342,6 +342,24 @@ area is clear, and the operator can use physical power/ESTOP immediately.
    tracks disagree unexpectedly, heading drift is unexplained, the pose continues
    changing, or any safety/error state occurred.
 
+   Capture `/diagnostics` throughout short turn tests, not only before and after.
+   The driver reports:
+
+   - completed host transport writes and motion-capable write counts;
+   - the last motor command ID, sequence, payload, and host write timestamp;
+   - motor-stall notification count and latest motor/index state;
+   - current motor-fault state;
+   - left/right motor temperature and raw thermal-protection status; and
+   - battery voltage refreshed every 0.5 seconds.
+
+   A completed raw-motor transport write proves that the Pi finished writing the
+   packet to UART. The RVR raw-motor command is fire-and-forget, so this evidence
+   does **not** claim firmware receipt or application. Compare the write counter,
+   sequence, payload, encoder progress, protection notifications, and voltage
+   across the full attempt. If the tracks stop while motion writes continue,
+   stop the series and diagnose firmware protection, power, or traction rather
+   than increasing speed.
+
 7. Relock after the bounded repeat series, or immediately after any failed
    readiness or execution check:
 

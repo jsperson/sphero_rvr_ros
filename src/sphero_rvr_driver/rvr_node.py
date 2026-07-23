@@ -10,7 +10,7 @@ import asyncio
 import json
 import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from sphero_rvr_core.driver import RVRDriver
@@ -46,6 +46,7 @@ class RVRNodeConfig:
     temperature_publish_period: float = 2.0
     diagnostics_publish_period: float = 1.0
     diagnostics_metadata_period: float = 30.0
+    motor_diagnostics_poll_period: float = 0.5
     ambient_light_publish_period: float = 2.0
     odom_publish_period: float = 0.1
     odom_counts_per_meter: float = DEFAULT_ODOM_COUNTS_PER_METER
@@ -125,15 +126,30 @@ def main(args=None):
             super().__init__("sphero_rvr_driver")
             self._declare_parameters()
             self._config = self._read_config()
-            self._driver_thread = AsyncDriverThread(create_driver(self._config))
+            self._diagnostic_lock = threading.Lock()
+            self._diagnostic_telemetry = DiagnosticTelemetry()
+            driver = create_driver(self._config)
+            self._motor_stall_subscription = driver.on_motor_stall_notify(
+                self._on_motor_stall_notify
+            )
+            self._motor_fault_subscription = driver.on_motor_fault_notify(
+                self._on_motor_fault_notify
+            )
+            self._motor_thermal_subscription = (
+                driver.on_motor_thermal_protection_status_notify(
+                    self._on_motor_thermal_notify
+                )
+            )
+            self._driver_thread = AsyncDriverThread(driver)
             self._driver_thread.start()
+            self._enable_motor_diagnostic_notifications()
 
             self._battery_future = None
             self._temperature_future = None
             self._ambient_light_future = None
             self._odom_future = None
             self._metadata_future = None
-            self._diagnostic_telemetry = DiagnosticTelemetry()
+            self._motor_diagnostics_future = None
             self._odom_tracker = DifferentialOdomTracker(
                 DifferentialOdomConfig(
                     counts_per_meter=self._config.odom_counts_per_meter,
@@ -169,6 +185,10 @@ def main(args=None):
             self.create_timer(self._config.ambient_light_publish_period, self._poll_ambient_light)
             self.create_timer(self._config.odom_publish_period, self._poll_odom)
             self.create_timer(self._config.diagnostics_metadata_period, self._poll_diagnostic_metadata)
+            self.create_timer(
+                self._config.motor_diagnostics_poll_period,
+                self._poll_motor_diagnostics,
+            )
             self.create_timer(self._config.diagnostics_publish_period, self._publish_diagnostics)
 
         def _declare_parameters(self):
@@ -187,6 +207,10 @@ def main(args=None):
             self.declare_parameter("temperature_publish_period", defaults.temperature_publish_period)
             self.declare_parameter("diagnostics_publish_period", defaults.diagnostics_publish_period)
             self.declare_parameter("diagnostics_metadata_period", defaults.diagnostics_metadata_period)
+            self.declare_parameter(
+                "motor_diagnostics_poll_period",
+                defaults.motor_diagnostics_poll_period,
+            )
             self.declare_parameter("ambient_light_publish_period", defaults.ambient_light_publish_period)
             self.declare_parameter("odom_publish_period", defaults.odom_publish_period)
             self.declare_parameter("odom_counts_per_meter", defaults.odom_counts_per_meter)
@@ -215,6 +239,9 @@ def main(args=None):
                 temperature_publish_period=float(self.get_parameter("temperature_publish_period").value),
                 diagnostics_publish_period=float(self.get_parameter("diagnostics_publish_period").value),
                 diagnostics_metadata_period=float(self.get_parameter("diagnostics_metadata_period").value),
+                motor_diagnostics_poll_period=float(
+                    self.get_parameter("motor_diagnostics_poll_period").value
+                ),
                 ambient_light_publish_period=float(self.get_parameter("ambient_light_publish_period").value),
                 odom_publish_period=float(self.get_parameter("odom_publish_period").value),
                 odom_counts_per_meter=float(self.get_parameter("odom_counts_per_meter").value),
@@ -316,15 +343,11 @@ def main(args=None):
             if not self._context_ok():
                 return
 
-            self._diagnostic_telemetry = DiagnosticTelemetry(
-                battery=snapshot,
-                battery_voltage_state=self._diagnostic_telemetry.battery_voltage_state,
-                motor_fault=self._diagnostic_telemetry.motor_fault,
-                firmware_version=self._diagnostic_telemetry.firmware_version,
-                board_revision=self._diagnostic_telemetry.board_revision,
-                processor_name=self._diagnostic_telemetry.processor_name,
-                core_uptime_s=self._diagnostic_telemetry.core_uptime_s,
-            )
+            with self._diagnostic_lock:
+                self._diagnostic_telemetry = replace(
+                    self._diagnostic_telemetry,
+                    battery=snapshot,
+                )
             msg = BatteryState()
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.header.frame_id = "base_link"
@@ -500,8 +523,10 @@ def main(args=None):
                 core_uptime_s = await self._driver_thread.driver.get_core_uptime()
             except Exception as exc:
                 self.get_logger().warn(f"core uptime query failed: {exc}")
-            return DiagnosticTelemetry(
-                battery=self._diagnostic_telemetry.battery,
+            with self._diagnostic_lock:
+                current = self._diagnostic_telemetry
+            return replace(
+                current,
                 battery_voltage_state=voltage_state,
                 motor_fault=motor_fault,
                 firmware_version=firmware_version,
@@ -512,15 +537,170 @@ def main(args=None):
 
         def _store_diagnostic_metadata_from_future(self, future):
             try:
-                self._diagnostic_telemetry = future.result()
+                telemetry = future.result()
             except Exception as exc:
                 self.get_logger().warn(f"diagnostic metadata query failed: {exc}")
+                return
+            with self._diagnostic_lock:
+                # Preserve any notification or fast-poll fields updated while
+                # the slower metadata query was in flight.
+                self._diagnostic_telemetry = replace(
+                    self._diagnostic_telemetry,
+                    battery_voltage_state=telemetry.battery_voltage_state,
+                    motor_fault=telemetry.motor_fault,
+                    firmware_version=telemetry.firmware_version,
+                    board_revision=telemetry.board_revision,
+                    processor_name=telemetry.processor_name,
+                    core_uptime_s=telemetry.core_uptime_s,
+                )
+
+        def _enable_motor_diagnostic_notifications(self) -> None:
+            async def enable() -> None:
+                await self._driver_thread.driver.enable_motor_stall_notify()
+                await self._driver_thread.driver.enable_motor_fault_notify()
+                await (
+                    self._driver_thread.driver.enable_motor_thermal_protection_status_notify()
+                )
+
+            try:
+                self._driver_thread.run(enable()).result(timeout=5)
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"motor diagnostic notification setup failed: {exc}"
+                )
+                return
+            with self._diagnostic_lock:
+                self._diagnostic_telemetry = replace(
+                    self._diagnostic_telemetry,
+                    motor_diagnostics_notification_enabled=True,
+                )
+
+        def _on_motor_stall_notify(self, event) -> None:
+            with self._diagnostic_lock:
+                self._diagnostic_telemetry = replace(
+                    self._diagnostic_telemetry,
+                    motor_stall_event_count=(
+                        self._diagnostic_telemetry.motor_stall_event_count + 1
+                    ),
+                    last_motor_stall_index=int(event.motor_index),
+                    last_motor_stall_active=bool(event.is_triggered),
+                )
+
+        def _on_motor_fault_notify(self, event) -> None:
+            with self._diagnostic_lock:
+                self._diagnostic_telemetry = replace(
+                    self._diagnostic_telemetry,
+                    motor_fault=bool(event.is_fault),
+                )
+
+        def _on_motor_thermal_notify(self, status) -> None:
+            with self._diagnostic_lock:
+                self._diagnostic_telemetry = replace(
+                    self._diagnostic_telemetry,
+                    left_motor_temperature_c=float(status.left_temp),
+                    left_motor_thermal_status=int(status.left_status),
+                    right_motor_temperature_c=float(status.right_temp),
+                    right_motor_thermal_status=int(status.right_status),
+                )
+
+        def _poll_motor_diagnostics(self) -> None:
+            if (
+                self._motor_diagnostics_future is not None
+                and not self._motor_diagnostics_future.done()
+            ):
+                return
+            self._motor_diagnostics_future = self._driver_thread.run(
+                self._read_motor_diagnostics()
+            )
+            self._motor_diagnostics_future.add_done_callback(
+                self._store_motor_diagnostics_from_future
+            )
+
+        async def _read_motor_diagnostics(self) -> dict:
+            result = {}
+            try:
+                result["battery_voltage"] = (
+                    await self._driver_thread.driver.get_battery_voltage()
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"runtime battery voltage query failed: {exc}"
+                )
+            try:
+                state = await self._driver_thread.driver.get_battery_voltage_state()
+                result["battery_voltage_state"] = state.state_name
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"runtime battery voltage state query failed: {exc}"
+                )
+            try:
+                result["motor_fault"] = (
+                    await self._driver_thread.driver.get_motor_fault_state()
+                )
+            except Exception as exc:
+                self.get_logger().warn(f"runtime motor fault query failed: {exc}")
+            try:
+                result["thermal"] = (
+                    await self._driver_thread.driver.get_thermal_protection_status()
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"runtime thermal protection query failed: {exc}"
+                )
+            return result
+
+        def _store_motor_diagnostics_from_future(self, future) -> None:
+            try:
+                result = future.result()
+            except Exception as exc:
+                self.get_logger().warn(f"runtime motor diagnostics failed: {exc}")
+                return
+            with self._diagnostic_lock:
+                current = self._diagnostic_telemetry
+                battery = current.battery
+                if "battery_voltage" in result and battery is not None:
+                    battery = replace(
+                        battery,
+                        voltage=float(result["battery_voltage"]),
+                    )
+                thermal = result.get("thermal")
+                self._diagnostic_telemetry = replace(
+                    current,
+                    battery=battery,
+                    battery_voltage_state=result.get(
+                        "battery_voltage_state",
+                        current.battery_voltage_state,
+                    ),
+                    motor_fault=result.get("motor_fault", current.motor_fault),
+                    left_motor_temperature_c=(
+                        float(thermal.left_temp)
+                        if thermal is not None
+                        else current.left_motor_temperature_c
+                    ),
+                    left_motor_thermal_status=(
+                        int(thermal.left_status)
+                        if thermal is not None
+                        else current.left_motor_thermal_status
+                    ),
+                    right_motor_temperature_c=(
+                        float(thermal.right_temp)
+                        if thermal is not None
+                        else current.right_motor_temperature_c
+                    ),
+                    right_motor_thermal_status=(
+                        int(thermal.right_status)
+                        if thermal is not None
+                        else current.right_motor_thermal_status
+                    ),
+                )
 
         def _publish_diagnostics(self):
             if not self._context_ok():
                 return
             state = self._driver_thread.driver.get_state()
-            summary = summarize_state(state, self._diagnostic_telemetry)
+            with self._diagnostic_lock:
+                telemetry = self._diagnostic_telemetry
+            summary = summarize_state(state, telemetry)
             status = DiagnosticStatus()
             status.name = "sphero_rvr_driver"
             status.hardware_id = "sphero_rvr"
@@ -530,7 +710,7 @@ def main(args=None):
             status.message = summary.message
             status.values = [
                 KeyValue(key=key, value=value)
-                for key, value in diagnostic_key_values(state, self._diagnostic_telemetry).items()
+                for key, value in diagnostic_key_values(state, telemetry).items()
             ]
 
             msg = DiagnosticArray()

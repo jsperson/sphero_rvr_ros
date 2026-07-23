@@ -16,6 +16,9 @@ sphero_rvr_driver:
     temperature_publish_period: 2.0
     diagnostics_publish_period: 1.0
     diagnostics_metadata_period: 30.0
+    # Capture motor protection and under-load voltage quickly enough to explain
+    # a short attended pivot without changing motion authority.
+    motor_diagnostics_poll_period: 0.5
     ambient_light_publish_period: 2.0
     odom_publish_period: 0.1
     # Encoder odometry is a rough mapping/localization aid. The effective

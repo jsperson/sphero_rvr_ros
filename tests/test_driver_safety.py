@@ -356,6 +356,63 @@ async def test_zero_velocity_transition_uses_immediate_stop_once_without_rc_coas
 
 
 @pytest.mark.asyncio
+async def test_driver_state_records_completed_motor_transport_writes_truthfully():
+    transport = FakeTransport(auto_ack=False)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=10.0,
+        command_timeout=10.0,
+    )
+    await driver.connect()
+
+    await driver.raw_motors(2, 223, 1, 223)
+    moving_state = driver.get_state()
+    assert moving_state.motor_transport_write_count == 1
+    assert moving_state.motion_transport_write_count == 1
+    assert moving_state.last_motor_command_id == RVRCommands.CID_RAW_MOTORS
+    assert moving_state.last_motor_payload_hex == "02df01df"
+    assert moving_state.last_motor_transport_write_epoch_s is not None
+    assert moving_state.last_motion_transport_write_epoch_s is not None
+
+    await driver.stop()
+    stopped_state = driver.get_state()
+    assert stopped_state.motor_transport_write_count == 2
+    assert stopped_state.motion_transport_write_count == 1
+    assert stopped_state.last_motor_payload_hex == "00000000"
+    assert (
+        stopped_state.last_motion_transport_write_epoch_s
+        == moving_state.last_motion_transport_write_epoch_s
+    )
+
+    await driver.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_driver_state_does_not_count_failed_motor_transport_write():
+    transport = FailingWriteTransport(
+        failures=1,
+        command_id=RVRCommands.CID_RAW_MOTORS,
+        auto_ack=False,
+    )
+    driver = RVRDriver(
+        transport=transport,
+        control_period=10.0,
+        command_timeout=10.0,
+    )
+    await driver.connect()
+
+    with pytest.raises(RuntimeError, match="injected write failure"):
+        await driver.raw_motors(2, 64, 1, 64)
+
+    state = driver.get_state()
+    assert state.motor_transport_write_count == 0
+    assert state.motion_transport_write_count == 0
+    assert state.last_motor_payload_hex is None
+
+    await driver.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_stop_invalidates_control_loop_velocity_cached_before_dispatch():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
@@ -499,6 +556,10 @@ async def test_raw_motor_velocity_control_honors_linear_calibration_cap():
     moving = [packet for packet in _raw_motor_packets(transport, driver) if packet.payload != RAW_OFF]
     assert moving
     assert moving[0].payload == bytes([1, 51, 1, 51])
+    state = driver.get_state()
+    assert state.motion_transport_write_count == len(moving)
+    assert state.motor_transport_write_count == len(_raw_motor_packets(transport, driver))
+    assert state.last_motor_payload_hex == RAW_OFF.hex()
     assert not _rc_drive_packets(transport, driver)
     assert not _tank_drive_packets(transport, driver)
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from .command_queue import CommandPriority, PriorityCommandQueue
@@ -108,6 +109,13 @@ class RVRDriver:
         self._fail_safe_reason: Optional[str] = None
         self._control_task: Optional[asyncio.Task] = None
         self._sequence_id = 0
+        self._motor_transport_write_count = 0
+        self._motion_transport_write_count = 0
+        self._last_motor_command_id: Optional[int] = None
+        self._last_motor_sequence_id: Optional[int] = None
+        self._last_motor_payload_hex: Optional[str] = None
+        self._last_motor_transport_write_epoch_s: Optional[float] = None
+        self._last_motion_transport_write_epoch_s: Optional[float] = None
 
     async def connect(self) -> None:
         await self._dispatcher.start()
@@ -488,6 +496,13 @@ class RVRDriver:
             latest_velocity=self._desired_velocity,
             fail_safe_active=self._fail_safe_active,
             fail_safe_reason=self._fail_safe_reason,
+            motor_transport_write_count=self._motor_transport_write_count,
+            motion_transport_write_count=self._motion_transport_write_count,
+            last_motor_command_id=self._last_motor_command_id,
+            last_motor_sequence_id=self._last_motor_sequence_id,
+            last_motor_payload_hex=self._last_motor_payload_hex,
+            last_motor_transport_write_epoch_s=self._last_motor_transport_write_epoch_s,
+            last_motion_transport_write_epoch_s=self._last_motion_transport_write_epoch_s,
         )
 
     def _subscribe(
@@ -656,6 +671,7 @@ class RVRDriver:
         packet = packet_factory(sequence_id)
         try:
             await asyncio.wait_for(self._dispatcher.send(packet), timeout=self._safety_dispatch_timeout_s)
+            self._record_motor_transport_write(packet)
         except asyncio.TimeoutError as exc:
             self._fail_safe_active = True
             self._fail_safe_reason = "safety stop dispatch exceeded software budget"
@@ -670,10 +686,37 @@ class RVRDriver:
             before_write = lambda: self._raise_if_motion_dispatch_blocked(motion_generation)
         try:
             if expects_response:
-                return await self._dispatcher.request(packet, before_write=before_write)
-            return await self._dispatcher.send(packet, before_write=before_write)
+                result = await self._dispatcher.request(packet, before_write=before_write)
+            else:
+                result = await self._dispatcher.send(packet, before_write=before_write)
+            if motion_generation is not None:
+                self._record_motor_transport_write(packet)
+            return result
         except _StaleMotionCommand:
             return None
+
+    def _record_motor_transport_write(self, packet) -> None:
+        """Record successful host transport writes without implying firmware ACK.
+
+        Raw motor commands are fire-and-forget in the RVR protocol. Reaching
+        this method proves that the transport write completed; it does not
+        prove that the MCU accepted or applied the command.
+        """
+        if not self._is_motor_capable_packet(packet):
+            return
+        written_at = time.time()
+        self._motor_transport_write_count += 1
+        self._last_motor_command_id = int(packet.command_id)
+        self._last_motor_sequence_id = int(packet.sequence_id)
+        self._last_motor_payload_hex = packet.payload.hex()
+        self._last_motor_transport_write_epoch_s = written_at
+        is_motion_raw_motor = (
+            packet.command_id == RVRCommands.CID_RAW_MOTORS
+            and packet.payload != b"\x00\x00\x00\x00"
+        )
+        if packet.command_id != RVRCommands.CID_RAW_MOTORS or is_motion_raw_motor:
+            self._motion_transport_write_count += 1
+            self._last_motion_transport_write_epoch_s = written_at
 
     def _invalidate_motion_commands(self) -> None:
         self._motion_generation += 1
