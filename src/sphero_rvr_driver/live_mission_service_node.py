@@ -46,7 +46,27 @@ def _collision_mapping(value: Any) -> dict[str, Any]:
     try:
         return _json_mapping(raw)
     except ValueError:
-        return {"state": raw.split(maxsplit=1)[0].upper(), "raw": raw}
+        result: dict[str, Any] = {"state": raw.split(maxsplit=1)[0].upper(), "raw": raw}
+        numeric_fields = {
+            "front": "front_clearance_m",
+            "front_slow": "forward_corridor_clearance_m",
+            "front_slow_min_angle_deg": "forward_corridor_min_angle_deg",
+            "front_slow_max_angle_deg": "forward_corridor_max_angle_deg",
+            "stop_distance_m": "collision_stop_distance_m",
+            "slow_distance_m": "collision_slow_distance_m",
+        }
+        for token in raw.split()[1:]:
+            key, separator, token_value = token.partition("=")
+            output_key = numeric_fields.get(key)
+            if not separator or output_key is None or token_value in {"", "None"}:
+                continue
+            try:
+                parsed_value = float(token_value)
+            except ValueError:
+                continue
+            if math.isfinite(parsed_value):
+                result[output_key] = parsed_value
+        return result
 
 
 def _control_mapping(value: Any) -> dict[str, Any]:

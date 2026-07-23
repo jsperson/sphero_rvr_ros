@@ -330,6 +330,8 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "No code or hash entry is required" in page
     assert "Technical approval audit" in page
     assert "The Pi records the exact route you confirmed" in page
+    assert 'id="safety-corridor"' in page
+    assert "forward_corridor_clearance_m" in page
     assert "if (map.available === false)" in page
     for token in (
         "Mission prompt",

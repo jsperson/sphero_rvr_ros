@@ -254,9 +254,23 @@ def test_live_execution_gate_requires_planner_and_exact_deployed_sha() -> None:
 
 
 def test_ros_payload_parsers_accept_canonical_collision_text_and_reject_malformed_json() -> None:
-    assert _collision_mapping("CLEAR reason=idle scan_age=0.1") == {
+    assert _collision_mapping(
+        "CLEAR reason=idle scan_age=0.1 front=1.27 front_slow=1.26 "
+        "front_slow_min_angle_deg=-35 front_slow_max_angle_deg=35 "
+        "stop_distance_m=0.35 slow_distance_m=0.6"
+    ) == {
         "state": "CLEAR",
-        "raw": "CLEAR reason=idle scan_age=0.1",
+        "raw": (
+            "CLEAR reason=idle scan_age=0.1 front=1.27 front_slow=1.26 "
+            "front_slow_min_angle_deg=-35 front_slow_max_angle_deg=35 "
+            "stop_distance_m=0.35 slow_distance_m=0.6"
+        ),
+        "front_clearance_m": 1.27,
+        "forward_corridor_clearance_m": 1.26,
+        "forward_corridor_min_angle_deg": -35.0,
+        "forward_corridor_max_angle_deg": 35.0,
+        "collision_stop_distance_m": 0.35,
+        "collision_slow_distance_m": 0.6,
     }
     assert _collision_mapping('{"state":"STOPPED"}') == {"state": "STOPPED"}
     assert _json_mapping('{"status":"running","progress":0.5}') == {

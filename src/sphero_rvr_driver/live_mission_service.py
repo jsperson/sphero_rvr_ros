@@ -305,6 +305,22 @@ class LiveStatusExecutor:
         safety_known = control_known or collision_known
         return {
             "collision_state": collision_state,
+            "front_clearance_m": collision.value.get("front_clearance_m"),
+            "forward_corridor_clearance_m": collision.value.get(
+                "forward_corridor_clearance_m"
+            ),
+            "forward_corridor_min_angle_deg": collision.value.get(
+                "forward_corridor_min_angle_deg"
+            ),
+            "forward_corridor_max_angle_deg": collision.value.get(
+                "forward_corridor_max_angle_deg"
+            ),
+            "collision_stop_distance_m": collision.value.get(
+                "collision_stop_distance_m"
+            ),
+            "collision_slow_distance_m": collision.value.get(
+                "collision_slow_distance_m"
+            ),
             "control_state": control_state,
             "control_present": control.received_at_s is not None,
             "control_valid": control.valid,

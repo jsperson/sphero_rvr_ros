@@ -77,6 +77,10 @@ def test_supervised_launch_remaps_driver_away_from_public_cmd_vel_and_private_se
     assert "lidar_collision_stop_supervisor" in source
     assert "collision_stop.yaml" in source
     assert "condition=IfCondition(start_supervisor)" in source
+    assert '"front_slow_min_angle_deg"' in source
+    assert '"front_slow_max_angle_deg"' in source
+    assert "ParameterValue" in source
+    assert "Startup-only forward slow-corridor" in source
 
 
 def test_mapping_motor_capable_launch_uses_supervised_graph_by_default():
@@ -129,6 +133,9 @@ def test_collision_stop_node_uses_real_tf_lookup_and_truthful_diagnostics():
     assert "tf_reason" in source
     assert "base_frame" in source
     assert "tf_timeout_s" in source
+    assert "nearest_front_slow_m" in source
+    assert "front_slow_min_angle_deg" in source
+    assert "front_slow_max_angle_deg" in source
 
 
 def test_collision_stop_node_exposes_all_side_sector_boundaries_as_ros_parameters():

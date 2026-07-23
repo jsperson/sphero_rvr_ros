@@ -251,6 +251,26 @@ area is clear, and the operator can use physical power/ESTOP immediately.
 
    This second command is motor-capable. The driver is remapped to
    `/cmd_vel_motor`; only the collision supervisor may publish there.
+   The normal forward slow corridor remains `-45` to `+45` degrees. When Scott
+   has physically identified a stable return as safely off the measured
+   straight lane, an attended calibration session may start the supervisor with
+   an explicitly reviewed narrower corridor, for example:
+
+   ```bash
+   ros2 launch sphero_rvr_driver supervised_rvr.launch.py \
+     start_collision_stop:=true \
+     start_live_route_runner:=true \
+     start_range_motion:=false \
+     front_slow_min_angle_deg:=-35.0 \
+     front_slow_max_angle_deg:=35.0
+   ```
+
+   These are startup-only launch inputs loaded into the supervisor's immutable
+   arbitration configuration. A successful `ros2 param set` after startup is
+   not an override and must never be treated as one. Record the selected
+   corridor and the excluded return's measured bearing in the session evidence.
+   Do not alter the inner stop sector, stop/slow distances, side-turn sectors,
+   stale-data policy, or TF requirements.
 
 3. In terminal C, source `/opt/ros/jazzy/setup.bash` and the isolated mission
    workspace setup, then capture readiness without submitting a route:
@@ -272,7 +292,9 @@ area is clear, and the operator can use physical power/ESTOP immediately.
 
    Require one node per component, live route request/status graph edges, fresh
    scan/odom/encoder samples, collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, and
-   an exactly zero motor-bound Twist. Stop immediately on any discrepancy.
+   an exactly zero motor-bound Twist. The collision state and web safety strip
+   must show the authoritative forward-corridor clearance and the startup
+   corridor bearings. Stop immediately on any discrepancy.
 
 4. Only after Scott reviews that evidence, edit
    `~/.config/sphero_rvr/mission-stack.env` so execution is `true` and the reviewed

@@ -714,6 +714,22 @@ class LiveMissionWebAdapter:
                 "stop_state": stop_state,
                 "estop_state": estop_state,
                 "collision_state": str(safety.get("collision_state", "UNKNOWN")),
+                "front_clearance_m": safety.get("front_clearance_m"),
+                "forward_corridor_clearance_m": safety.get(
+                    "forward_corridor_clearance_m"
+                ),
+                "forward_corridor_min_angle_deg": safety.get(
+                    "forward_corridor_min_angle_deg"
+                ),
+                "forward_corridor_max_angle_deg": safety.get(
+                    "forward_corridor_max_angle_deg"
+                ),
+                "collision_stop_distance_m": safety.get(
+                    "collision_stop_distance_m"
+                ),
+                "collision_slow_distance_m": safety.get(
+                    "collision_slow_distance_m"
+                ),
                 "telemetry_fresh": required_fresh,
                 "independent_robot_safety": True,
                 "browser_is_sole_safety_mechanism": False,
@@ -1067,7 +1083,7 @@ _INDEX_HTML = r'''<!doctype html>
     .mode-badge.execution { color:var(--red); border-color:#8f3d43; background:#32161b; }
     .mode-badge.execution::before { background:var(--red); box-shadow:0 0 .8rem var(--red); }
     .shell { width:min(1500px,100%); max-width:100%; margin:auto; padding:clamp(.8rem,2vw,1.5rem); overflow:hidden; }
-    .safety-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:.65rem; margin-bottom:1rem; }
+    .safety-strip { display:grid; grid-template-columns:repeat(5,1fr); gap:.65rem; margin-bottom:1rem; }
     .safety-cell { padding:.7rem .85rem; border:1px solid var(--line); border-radius:.75rem; background:rgba(14,27,43,.92); }
     .safety-cell span { display:block; color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; }
     .safety-cell strong { display:block; margin-top:.28rem; font-size:.92rem; }
@@ -1124,6 +1140,7 @@ _INDEX_HTML = r'''<!doctype html>
   <main class="shell">
     <section class="safety-strip" aria-label="Safety state">
       <div class="safety-cell"><span>Collision</span><strong id="safety-collision">CLEAR</strong></div>
+      <div class="safety-cell"><span>Forward corridor</span><strong id="safety-corridor">UNAVAILABLE</strong></div>
       <div class="safety-cell"><span>Telemetry</span><strong id="safety-telemetry">FRESH</strong></div>
       <div class="safety-cell"><span>STOP</span><strong id="safety-stop">READY</strong></div>
       <div class="safety-cell"><span>ESTOP</span><strong id="safety-estop">CLEAR</strong></div>
@@ -1218,6 +1235,16 @@ _INDEX_HTML = r'''<!doctype html>
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
       $('progress-label').textContent = `${Math.round(snapshot.mission.progress * 100)}% complete`;
       $('safety-collision').textContent = snapshot.safety.collision_state;
+      const corridorClearance = snapshot.safety.forward_corridor_clearance_m == null
+        ? Number.NaN : Number(snapshot.safety.forward_corridor_clearance_m);
+      const corridorMin = snapshot.safety.forward_corridor_min_angle_deg == null
+        ? Number.NaN : Number(snapshot.safety.forward_corridor_min_angle_deg);
+      const corridorMax = snapshot.safety.forward_corridor_max_angle_deg == null
+        ? Number.NaN : Number(snapshot.safety.forward_corridor_max_angle_deg);
+      $('safety-corridor').textContent = Number.isFinite(corridorClearance)
+        && Number.isFinite(corridorMin) && Number.isFinite(corridorMax)
+        ? `${corridorClearance.toFixed(2)} m (${corridorMin.toFixed(0)}°…${corridorMax.toFixed(0)}°)`
+        : 'UNAVAILABLE';
       $('safety-telemetry').textContent = snapshot.safety.telemetry_fresh ? 'FRESH' : 'STALE — BLOCKED';
       $('safety-stop').textContent = snapshot.safety.stop_state || (snapshot.safety.stop_active ? 'ACTIVE' : 'READY');
       $('safety-estop').textContent = snapshot.safety.estop_state || (snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR');

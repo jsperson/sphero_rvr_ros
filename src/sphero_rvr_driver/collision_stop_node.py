@@ -436,6 +436,11 @@ def main(args=None):
             state.data = (
                 f"{decision.state.value} reason={decision.reason} "
                 f"scan_age={decision.scan_health.age_s} front={decision.nearest.get('front')} "
+                f"front_slow={decision.nearest.get('front_slow')} "
+                f"front_slow_min_angle_deg={self._config.front_slow_min_angle_deg} "
+                f"front_slow_max_angle_deg={self._config.front_slow_max_angle_deg} "
+                f"stop_distance_m={self._config.stop_distance_m} "
+                f"slow_distance_m={self._config.slow_distance_m} "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f})"
             )
             self._state_pub.publish(state)
@@ -469,6 +474,11 @@ def main(args=None):
                 "valid_ranges": str(decision.scan_health.valid_count),
                 "considered_ranges": str(decision.scan_health.considered_count),
                 "nearest_front_m": _fmt_optional(decision.nearest.get("front")),
+                "nearest_front_slow_m": _fmt_optional(decision.nearest.get("front_slow")),
+                "front_slow_min_angle_deg": f"{self._config.front_slow_min_angle_deg:.3f}",
+                "front_slow_max_angle_deg": f"{self._config.front_slow_max_angle_deg:.3f}",
+                "stop_distance_m": f"{self._config.stop_distance_m:.3f}",
+                "slow_distance_m": f"{self._config.slow_distance_m:.3f}",
                 "nearest_rear_m": _fmt_optional(decision.nearest.get("rear")),
                 "nearest_left_m": _fmt_optional(decision.nearest.get("left")),
                 "nearest_right_m": _fmt_optional(decision.nearest.get("right")),
