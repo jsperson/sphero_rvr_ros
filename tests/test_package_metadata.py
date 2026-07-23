@@ -58,6 +58,7 @@ EXPECTED_DATA_FILES = {
         "docs/mission_web.md",
         "docs/mission_service.md",
         "docs/pi_mission_stack.md",
+        "docs/lidar_motion_validation.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
@@ -180,6 +181,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/mission_observability.md",
         "docs/mission_web.md",
         "docs/pi_mission_stack.md",
+        "docs/lidar_motion_validation.md",
         "docs/mission_api.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
@@ -199,7 +201,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
         "config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
         "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`",
-        "console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, `rvr_mcp_server`, and `rvr_mission_web`",
+        "console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, `rvr_mcp_server`, `rvr_mission_web`, and `rvr_lidar_motion_validation`",
         "LLM planner over allowlisted `mission_api.v2` rover tools",
     ]:
         assert token in readme
@@ -239,6 +241,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_mcp_server = sphero_rvr_driver.rvr_mcp_server:main",
         "rvr_mission_web = sphero_rvr_driver.mission_web:main",
         "live_mission_service = sphero_rvr_driver.live_mission_service_node:main",
+        "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
     } <= console_scripts
 
 
