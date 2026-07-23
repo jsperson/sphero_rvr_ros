@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 import time
@@ -20,6 +21,7 @@ from sphero_rvr_driver.live_mission_service_node import (
     _collision_mapping,
     _control_mapping,
     _json_mapping,
+    _localization_mapping,
     _odom_mapping,
     _validated_execution_gate,
 )
@@ -308,6 +310,54 @@ def test_control_parser_accepts_canonical_text_and_typed_json_but_rejects_ambigu
         _control_mapping("unknown")
     with pytest.raises(ValueError, match="lacks an authoritative state"):
         _control_mapping("{}")
+
+
+def test_localization_parser_enforces_lidar_authority_and_no_motion_navigation_status() -> None:
+    localization = {
+        "state": "valid",
+        "source": "lidar_scan_match",
+        "quality": 0.9,
+        "covariance_xy_m2": 0.0025,
+        "covariance_yaw_rad2": 0.001,
+        "odom_translation_disagreement_m": 0.01,
+        "odom_heading_disagreement_rad": 0.02,
+        "pose": {
+            "stamp_s": 12.5,
+            "frame_id": "map",
+            "x_m": 0.2,
+            "y_m": -0.1,
+            "yaw_rad": 0.3,
+        },
+    }
+    parsed = _localization_mapping(json.dumps(localization))
+    assert parsed["authoritative"] is True
+    assert parsed["pose"]["heading_deg"] == pytest.approx(math.degrees(0.3))
+    assert parsed["odom_translation_disagreement_m"] == pytest.approx(0.01)
+
+    navigation = {
+        "schema": "sphero_rvr.perception_navigation_result.v1",
+        "localization": localization,
+        "goal": {
+            "frame_id": "map",
+            "x_m": 0.5,
+            "y_m": 0.0,
+            "radius_m": 0.1,
+            "minimum_clearance_m": 0.2,
+            "max_runtime_s": 20.0,
+            "max_cumulative_translation_m": 1.0,
+            "heading_min_rad": None,
+            "heading_max_rad": None,
+        },
+        "motion_authority": False,
+        "physical_execution_enabled": False,
+    }
+    parsed_navigation = _localization_mapping(json.dumps(navigation))
+    assert parsed_navigation["localization"]["authoritative"] is True
+    assert parsed_navigation["goal"]["radius_m"] == pytest.approx(0.1)
+
+    navigation["physical_execution_enabled"] = True
+    with pytest.raises(ValueError, match="physical execution disabled"):
+        _localization_mapping(json.dumps(navigation))
 
 
 def test_odom_parser_exposes_heading_and_rejects_nonfinite_measurements() -> None:

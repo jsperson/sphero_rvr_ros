@@ -79,6 +79,7 @@ setup(
                 "docs/mission_service.md",
                 "docs/pi_mission_stack.md",
                 "docs/lidar_motion_validation.md",
+                "docs/perception_navigation.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -123,6 +124,7 @@ setup(
             "rvr_mission_web = sphero_rvr_driver.mission_web:main",
             "rvr_system_check = sphero_rvr_driver.system_validation:main",
             "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
+            "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
         ],
     },
 )

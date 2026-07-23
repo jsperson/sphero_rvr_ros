@@ -808,6 +808,9 @@ def _authoritative_live_map(live_evidence: Mapping[str, Any]) -> dict[str, Any]:
                 result = json.loads(json.dumps(dict(candidate), allow_nan=False))
                 result.update({"available": True, "fixture_only": False, "source": "Pi mission service"})
                 return result
+    navigation_map = _authoritative_navigation_map(live_evidence)
+    if navigation_map is not None:
+        return navigation_map
     odom = live_evidence.get("odom", {})
     odom_value = odom.get("value", {}) if isinstance(odom, Mapping) else {}
     rover = {
@@ -826,6 +829,128 @@ def _authoritative_live_map(live_evidence: Mapping[str, Any]) -> dict[str, Any]:
         "obstacles": [],
         "objects": [],
         "fixture_only": False,
+    }
+
+
+def _authoritative_navigation_map(
+    live_evidence: Mapping[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Render fresh lidar-localized navigation without inventing map layers."""
+
+    source = live_evidence.get("localization", {})
+    if not (
+        isinstance(source, Mapping)
+        and source.get("fresh")
+        and source.get("valid")
+    ):
+        return None
+    value = source.get("value", {})
+    if not isinstance(value, Mapping):
+        return None
+    navigation = value if value.get("schema") == "sphero_rvr.perception_navigation_result.v1" else {}
+    localization = navigation.get("localization", value)
+    if not isinstance(localization, Mapping):
+        return None
+    pose = localization.get("pose")
+    if (
+        not isinstance(pose, Mapping)
+        or str(localization.get("state", "")).lower() not in {"valid", "degraded"}
+        or not bool(localization.get("authoritative", False))
+    ):
+        return None
+    try:
+        rover = {
+            "x_m": float(pose["x_m"]),
+            "y_m": float(pose["y_m"]),
+            "yaw_deg": float(pose.get("heading_deg", math.degrees(float(pose["yaw_rad"])))),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(number) for number in rover.values()):
+        return None
+
+    traveled_path: list[dict[str, float]] = []
+    raw_path = navigation.get("path", [])
+    if isinstance(raw_path, list):
+        for item in raw_path:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                point = {"x_m": float(item["x_m"]), "y_m": float(item["y_m"])}
+            except (KeyError, TypeError, ValueError):
+                continue
+            if all(math.isfinite(number) for number in point.values()):
+                traveled_path.append(point)
+
+    goal_region = None
+    goal = navigation.get("goal")
+    if isinstance(goal, Mapping):
+        try:
+            candidate = {
+                "x_m": float(goal["x_m"]),
+                "y_m": float(goal["y_m"]),
+                "radius_m": float(goal["radius_m"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            candidate = {}
+        if candidate and all(math.isfinite(number) for number in candidate.values()):
+            goal_region = candidate
+
+    proposed_route = [{"x_m": rover["x_m"], "y_m": rover["y_m"]}]
+    horizon = navigation.get("next_horizon")
+    if isinstance(horizon, Mapping) and str(horizon.get("kind", "")) == "translate":
+        try:
+            distance = float(horizon.get("distance_m", 0.0))
+        except (TypeError, ValueError):
+            distance = 0.0
+        if math.isfinite(distance):
+            yaw = math.radians(rover["yaw_deg"])
+            proposed_route.append(
+                {
+                    "x_m": rover["x_m"] + distance * math.cos(yaw),
+                    "y_m": rover["y_m"] + distance * math.sin(yaw),
+                }
+            )
+
+    extent_points = list(traveled_path) + list(proposed_route)
+    if goal_region is not None:
+        extent_points.append(goal_region)
+    xs = [rover["x_m"]] + [float(point["x_m"]) for point in extent_points]
+    ys = [rover["y_m"]] + [float(point["y_m"]) for point in extent_points]
+    margin = 0.5
+    minimum_x, maximum_x = min(xs) - margin, max(xs) + margin
+    minimum_y, maximum_y = min(ys) - margin, max(ys) + margin
+    return {
+        "available": True,
+        "navigation_available": True,
+        "occupancy_available": False,
+        "semantic_objects_available": False,
+        "unavailable_layers": ["occupancy", "semantic_objects"],
+        "frame": str(pose.get("frame_id", "map")),
+        "bounds": {
+            "origin": {"x_m": minimum_x, "y_m": minimum_y},
+            "width_m": max(1.0, maximum_x - minimum_x),
+            "height_m": max(1.0, maximum_y - minimum_y),
+        },
+        "rover": rover,
+        "goal_region": goal_region,
+        "proposed_route": proposed_route,
+        "traveled_path": traveled_path,
+        "obstacles": [],
+        "objects": [],
+        "localization": {
+            "state": str(localization.get("state", "unknown")),
+            "quality": localization.get("quality"),
+            "source": str(localization.get("source", "")),
+            "odom_translation_disagreement_m": localization.get(
+                "odom_translation_disagreement_m"
+            ),
+            "odom_heading_disagreement_rad": localization.get(
+                "odom_heading_disagreement_rad"
+            ),
+        },
+        "fixture_only": False,
+        "source": "Pi mission service lidar localization",
     }
 
 
@@ -1324,12 +1449,15 @@ _INDEX_HTML = r'''<!doctype html>
     function renderMap(map) {
       const svg = $('mission-map');
       const W = 900, H = 600, pad = 42;
-      const sx = (x) => pad + (x / map.bounds.width_m) * (W - pad * 2);
-      const sy = (y) => H - pad - (y / map.bounds.height_m) * (H - pad * 2);
+      const origin = map.bounds.origin || {x_m:0, y_m:0};
+      const sx = (x) => pad + ((x - origin.x_m) / map.bounds.width_m) * (W - pad * 2);
+      const sy = (y) => H - pad - ((y - origin.y_m) / map.bounds.height_m) * (H - pad * 2);
       const points = (items) => items.map((p) => `${sx(p.x_m)},${sy(p.y_m)}`).join(' ');
       const grid = Array.from({length:11}, (_,i) => `<line x1="${pad + i*(W-pad*2)/10}" y1="${pad}" x2="${pad + i*(W-pad*2)/10}" y2="${H-pad}" stroke="#14283a"/><line x1="${pad}" y1="${pad + i*(H-pad*2)/10}" x2="${W-pad}" y2="${pad + i*(H-pad*2)/10}" stroke="#14283a"/>`).join('');
       const obstacles = map.obstacles.map((o) => `<g><rect x="${sx(o.x_m)}" y="${sy(o.y_m + o.height_m)}" width="${o.width_m/map.bounds.width_m*(W-pad*2)}" height="${o.height_m/map.bounds.height_m*(H-pad*2)}" rx="8" fill="#42576b" stroke="#6f8497"/><text x="${sx(o.x_m)+8}" y="${sy(o.y_m + o.height_m)+20}" fill="#b8c8d4" font-size="14">${escapeHtml(o.label)}</text></g>`).join('');
       const objects = map.objects.map((o) => `<g><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="10" fill="#ffca6b"/><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="18" fill="none" stroke="#ffca6b" opacity=".45"/><text x="${sx(o.x_m)+15}" y="${sy(o.y_m)-10}" fill="#ffdf9d" font-size="15">${escapeHtml(o.label)} ${Math.round(o.confidence*100)}%</text></g>`).join('');
+      const goal = map.goal_region ? `<circle cx="${sx(map.goal_region.x_m)}" cy="${sy(map.goal_region.y_m)}" r="${Math.max(7, map.goal_region.radius_m/map.bounds.width_m*(W-pad*2))}" fill="rgba(120,169,255,.12)" stroke="#78a9ff" stroke-width="3"/>` : '';
+      const layerNotice = map.navigation_available && map.unavailable_layers && map.unavailable_layers.length ? `<text x="${pad+8}" y="${H-pad-10}" fill="#91a9aa" font-size="15">Unavailable layers: ${escapeHtml(map.unavailable_layers.join(', '))}</text>` : '';
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
       const frame = `${grid}<rect x="${pad}" y="${pad}" width="${W-pad*2}" height="${H-pad*2}" fill="none" stroke="#385168" stroke-width="3"/>`;
       if (map.available === false) {
@@ -1338,7 +1466,7 @@ _INDEX_HTML = r'''<!doctype html>
         return;
       }
       svg.setAttribute('aria-label', 'Room map showing authoritative rover, route, path, obstacles, and objects');
-      svg.innerHTML = `${frame}${obstacles}<polyline points="${points(map.proposed_route)}" fill="none" stroke="#78a9ff" stroke-width="5" stroke-dasharray="10 10"/>${map.traveled_path.length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#5de4c7" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(map.rover.x_m)} ${sy(map.rover.y_m)}) rotate(${map.rover.yaw_deg})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#5de4c7" stroke="#d4fff7" stroke-width="2"/></g>`;
+      svg.innerHTML = `${frame}${goal}${obstacles}<polyline points="${points(map.proposed_route)}" fill="none" stroke="#78a9ff" stroke-width="5" stroke-dasharray="10 10"/>${map.traveled_path.length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#5de4c7" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(map.rover.x_m)} ${sy(map.rover.y_m)}) rotate(${map.rover.yaw_deg})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#5de4c7" stroke="#d4fff7" stroke-width="2"/></g>${layerNotice}`;
     }
 
     async function loadScenarios() {
@@ -1389,7 +1517,10 @@ _INDEX_HTML = r'''<!doctype html>
     $('approve').addEventListener('click', approve);
     $('cancel').addEventListener('click', cancelMission);
     $('mission-prompt').addEventListener('input', () => { promptDirty = true; });
-    Promise.all([loadScenarios(), api('/api/web/state')]).then(([,snapshot]) => render(snapshot)).catch((error) => $('request-error').textContent = error.message);
+    Promise.all([loadScenarios(), api('/api/web/state')]).then(([,snapshot]) => {
+      render(snapshot);
+      if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();
+    }).catch((error) => $('request-error').textContent = error.message);
   </script>
 </body>
 </html>

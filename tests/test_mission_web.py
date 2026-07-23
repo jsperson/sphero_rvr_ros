@@ -146,6 +146,67 @@ def test_live_adapter_does_not_render_missing_stop_estop_as_ready() -> None:
     assert snapshot["approval"]["enabled"] is False
 
 
+def test_live_adapter_renders_fresh_lidar_navigation_without_fabricating_map_layers() -> None:
+    client = FakeLiveMissionClient()
+    service = client.service_snapshot()
+    evidence = service["capabilities"]["query_status_telemetry@1.0"]["evidence"]
+    evidence["localization"] = {
+        "fresh": True,
+        "valid": True,
+        "value": {
+            "schema": "sphero_rvr.perception_navigation_result.v1",
+            "outcome": "running",
+            "localization": {
+                "state": "valid",
+                "source": "lidar_scan_match",
+                "authoritative": True,
+                "quality": 0.91,
+                "odom_translation_disagreement_m": 0.02,
+                "odom_heading_disagreement_rad": 0.03,
+                "pose": {
+                    "stamp_s": 2.0,
+                    "frame_id": "map",
+                    "x_m": -0.2,
+                    "y_m": 0.1,
+                    "yaw_rad": 0.0,
+                    "heading_deg": 0.0,
+                },
+            },
+            "goal": {
+                "frame_id": "map",
+                "x_m": 0.4,
+                "y_m": 0.1,
+                "radius_m": 0.08,
+            },
+            "next_horizon": {
+                "kind": "translate",
+                "distance_m": 0.15,
+            },
+            "path": [
+                {"x_m": -0.3, "y_m": 0.1},
+                {"x_m": -0.2, "y_m": 0.1},
+            ],
+        },
+    }
+    client.service_snapshot = lambda: service
+
+    snapshot = LiveMissionWebAdapter(client).snapshot()
+    live_map = snapshot["map"]
+
+    assert live_map["available"] is True
+    assert live_map["navigation_available"] is True
+    assert live_map["occupancy_available"] is False
+    assert live_map["semantic_objects_available"] is False
+    assert live_map["unavailable_layers"] == ["occupancy", "semantic_objects"]
+    assert live_map["fixture_only"] is False
+    assert live_map["rover"] == {"x_m": -0.2, "y_m": 0.1, "yaw_deg": 0.0}
+    assert live_map["goal_region"]["x_m"] == pytest.approx(0.4)
+    assert live_map["proposed_route"][-1]["x_m"] == pytest.approx(-0.05)
+    assert live_map["traveled_path"][0]["x_m"] == pytest.approx(-0.3)
+    assert live_map["localization"]["quality"] == pytest.approx(0.91)
+    assert live_map["objects"] == []
+
+
 def test_proposal_reuses_prompt_drive_validation_and_requires_exact_digest_approval() -> None:
     adapter = MockReplayMissionAdapter(source_sha="test-web-sha")
     proposed = _proposal(adapter)
@@ -341,6 +402,9 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "right_clearance_m" in page
     assert "forward_corridor_clearance_m" in page
     assert "if (map.available === false)" in page
+    assert "Unavailable layers:" in page
+    assert "if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();" in page
+    assert "const origin = map.bounds.origin" in page
     for token in (
         "Mission prompt",
         "LLM proposal",

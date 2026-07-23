@@ -59,6 +59,7 @@ EXPECTED_DATA_FILES = {
         "docs/mission_service.md",
         "docs/pi_mission_stack.md",
         "docs/lidar_motion_validation.md",
+        "docs/perception_navigation.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
@@ -242,6 +243,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_mission_web = sphero_rvr_driver.mission_web:main",
         "live_mission_service = sphero_rvr_driver.live_mission_service_node:main",
         "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
+        "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
     } <= console_scripts
 
     lidar_validation = (

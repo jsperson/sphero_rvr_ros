@@ -24,6 +24,11 @@ from .live_mission_service import (
 )
 from .mission_api import build_default_registry
 from .mission_service import MissionService, MissionServiceServer
+from .perception_navigation import (
+    GoalRegion,
+    LocalizationEstimate,
+    RESULT_SCHEMA as NAVIGATION_RESULT_SCHEMA,
+)
 from .prompt_drive import CodexOAuthPromptDriveProvider, PromptDriveLimits, PromptDrivePlanner
 from .prompt_drive_ros import RosLiveRouteExecutor
 from .prompt_mission_controller import PromptMissionController
@@ -37,6 +42,27 @@ def _json_mapping(value: Any) -> dict[str, Any]:
     if not isinstance(parsed, Mapping):
         raise ValueError("status payload must be a JSON object")
     return dict(parsed)
+
+
+def _localization_mapping(value: Any) -> dict[str, Any]:
+    """Validate the selected lidar-localization status topic contract."""
+
+    parsed = _json_mapping(value)
+    if parsed.get("schema") == NAVIGATION_RESULT_SCHEMA:
+        localization = parsed.get("localization")
+        goal = parsed.get("goal")
+        if not isinstance(localization, Mapping) or not isinstance(goal, Mapping):
+            raise ValueError("navigation result requires localization and goal objects")
+        parsed["localization"] = LocalizationEstimate.from_mapping(
+            localization
+        ).to_json_dict()
+        parsed["goal"] = GoalRegion.from_mapping(goal).to_json_dict()
+        if bool(parsed.get("motion_authority", True)):
+            raise ValueError("navigation status must not claim motion authority")
+        if bool(parsed.get("physical_execution_enabled", True)):
+            raise ValueError("Stage 1 navigation status must keep physical execution disabled")
+        return parsed
+    return LocalizationEstimate.from_mapping(parsed).to_json_dict()
 
 
 def _collision_mapping(value: Any) -> dict[str, Any]:
@@ -427,12 +453,23 @@ def main(args=None):
         def _on_json_source(self, name: str, msg) -> None:
             now = time.time()
             try:
-                value = _json_mapping(getattr(msg, "data", ""))
+                value = (
+                    _localization_mapping(getattr(msg, "data", ""))
+                    if name == "localization"
+                    else _json_mapping(getattr(msg, "data", ""))
+                )
+                source_timestamp = value.get("stamp_s")
+                if name == "localization" and source_timestamp is None:
+                    localization = value.get("localization", value)
+                    if isinstance(localization, Mapping):
+                        pose = localization.get("pose")
+                        if isinstance(pose, Mapping):
+                            source_timestamp = pose.get("stamp_s")
                 self._cache.update(
                     name,
                     value,
                     received_at_s=now,
-                    source_timestamp_s=value.get("stamp_s"),
+                    source_timestamp_s=source_timestamp,
                 )
             except (TypeError, ValueError) as exc:
                 self._cache.mark_invalid(name, str(exc), received_at_s=now)
