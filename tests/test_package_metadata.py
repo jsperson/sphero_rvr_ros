@@ -60,6 +60,7 @@ EXPECTED_DATA_FILES = {
         "docs/pi_mission_stack.md",
         "docs/lidar_motion_validation.md",
         "docs/perception_navigation.md",
+        "docs/rolling_replay.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",

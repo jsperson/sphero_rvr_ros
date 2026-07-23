@@ -703,6 +703,216 @@ class MissionService:
                 )
             return self.prompt_status(mission_id)
 
+    def record_rolling_replay_proposal(
+        self,
+        mission_id: str,
+        proposal: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist the replay-only rolling-intent contract before it can run.
+
+        This is intentionally separate from the physical prompt-route approval
+        path.  A rolling replay proposal contains no primitive route and can
+        never authorize the live executor.
+        """
+
+        payload = json.loads(_json_dump(dict(proposal)))
+        with self._lock:
+            if self.mode != "replay":
+                raise MissionValidationError(
+                    "rolling replay proposals require replay service authority"
+                )
+            row = self._prompt_row(mission_id)
+            if row["status"] != "planning":
+                raise MissionValidationError(
+                    "prompt mission is not awaiting a rolling replay proposal"
+                )
+            if str(payload.get("schema", "")) != "sphero_rvr.rolling_replay_proposal.v1":
+                raise MissionValidationError("rolling replay proposal schema is invalid")
+            if str(payload.get("prompt", "")).strip() != row["prompt"]:
+                raise MissionValidationError(
+                    "rolling replay proposal prompt does not match the persisted mission"
+                )
+            if str(payload.get("source_sha", "")).strip() != self.source_sha:
+                raise MissionValidationError(
+                    "rolling replay proposal source SHA does not match the service"
+                )
+            if payload.get("segments") not in ([], ()):
+                raise MissionValidationError(
+                    "rolling replay proposal cannot contain a fixed primitive route"
+                )
+            digest = str(payload.get("proposal_digest", "")).strip().lower()
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise MissionValidationError(
+                    "rolling replay proposal digest must be a full SHA-256 value"
+                )
+            digest_payload = dict(payload)
+            digest_payload.pop("proposal_digest", None)
+            if _arguments_digest(digest_payload) != digest:
+                raise MissionValidationError(
+                    "rolling replay proposal digest does not bind the complete proposal"
+                )
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='proposed', proposal_json=?, "
+                    "proposal_digest=?, updated_at_s=? WHERE mission_id=?",
+                    (_json_dump(payload), digest, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "rolling_replay_proposal",
+                    {"proposal": payload, "motion_authority": False},
+                )
+            return self.prompt_status(mission_id)
+
+    def approve_rolling_replay_mission(
+        self,
+        mission_id: str,
+        *,
+        proposal_digest: str,
+        operator: str,
+    ) -> dict[str, Any]:
+        """Approve a no-authority replay without crossing the live gate."""
+
+        supplied_digest = str(proposal_digest).strip().lower()
+        approved_by = str(operator).strip()
+        with self._lock:
+            if self.mode != "replay" or self.live_execution_enabled:
+                raise MissionValidationError(
+                    "rolling replay approval requires no-authority replay mode"
+                )
+            row = self._prompt_row(mission_id)
+            if row["status"] != "proposed":
+                raise MissionValidationError(
+                    "only a proposed rolling replay mission can be approved"
+                )
+            if not approved_by:
+                raise MissionValidationError("replay approval operator is required")
+            if supplied_digest != str(row["proposal_digest"]):
+                raise MissionValidationError(
+                    "rolling replay approval does not match the persisted proposal"
+                )
+            approval = {
+                "approved": True,
+                "operator": approved_by,
+                "proposal_digest": supplied_digest,
+                "approved_at_s": self._now(),
+                "simulation_only": True,
+            }
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='running', approval_json=?, "
+                    "updated_at_s=? WHERE mission_id=?",
+                    (_json_dump(approval), self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "rolling_replay_started",
+                    {
+                        "approval": approval,
+                        "motion_authority": False,
+                        "physical_execution_enabled": False,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
+    def record_rolling_replay_checkpoint(
+        self,
+        mission_id: str,
+        *,
+        kind: str,
+        checkpoint: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Durably replace the latest replay projection and append evidence."""
+
+        event_kind = str(kind).strip()
+        if not event_kind:
+            raise MissionValidationError("rolling replay checkpoint kind is required")
+        payload = json.loads(_json_dump(dict(checkpoint)))
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "running":
+                raise MissionValidationError(
+                    "rolling replay checkpoint requires a running mission"
+                )
+            if bool(payload.get("motion_authority", True)):
+                raise MissionValidationError(
+                    "rolling replay checkpoint cannot claim motion authority"
+                )
+            if bool(payload.get("physical_execution_enabled", True)):
+                raise MissionValidationError(
+                    "rolling replay checkpoint cannot enable physical execution"
+                )
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET result_json=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (_json_dump(payload), self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    event_kind,
+                    payload,
+                )
+            return self.prompt_status(mission_id)
+
+    def finish_rolling_replay_mission(
+        self,
+        mission_id: str,
+        *,
+        status: str,
+        reason: str,
+        result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one replay terminal result after deterministic stop."""
+
+        destination = str(status).strip().lower()
+        if destination not in _PROMPT_TERMINAL_STATUSES - {"rejected"}:
+            raise MissionValidationError("rolling replay terminal status is invalid")
+        payload = json.loads(_json_dump(dict(result)))
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "running":
+                raise MissionValidationError(
+                    "rolling replay terminal result requires a running mission"
+                )
+            if bool(payload.get("motion_authority", True)):
+                raise MissionValidationError(
+                    "rolling replay terminal result cannot claim motion authority"
+                )
+            if bool(payload.get("physical_execution_enabled", True)):
+                raise MissionValidationError(
+                    "rolling replay terminal result cannot enable physical execution"
+                )
+            terminal_reason = str(reason).strip()
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status=?, result_json=?, "
+                    "terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (
+                        destination,
+                        _json_dump(payload),
+                        terminal_reason,
+                        self._now(),
+                        mission_id,
+                    ),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "terminal",
+                    {
+                        "status": destination,
+                        "reason": terminal_reason,
+                        "result": payload,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
     def approve_prompt_mission(
         self,
         mission_id: str,

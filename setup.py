@@ -80,6 +80,7 @@ setup(
                 "docs/pi_mission_stack.md",
                 "docs/lidar_motion_validation.md",
                 "docs/perception_navigation.md",
+                "docs/rolling_replay.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),

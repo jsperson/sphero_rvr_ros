@@ -4,7 +4,11 @@ Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission fram
 
 The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
 
-The immediate MVP is narrower: enter a driving prompt, have a real model propose typed bounded distance/turn actions, explicitly approve the proposal, and execute measured movement through the live route runner and collision supervisor. The project does not yet claim this real-model-to-physical-rover chain has been proven.
+The active Milestone 1 slice is replay-only: enter one mission in the browser,
+let the real authenticated model repeatedly revise one finite leased
+navigation/observation intent, and keep simulated localization, perception,
+tracking, mapping, and movement running while each model call is in flight.
+Physical execution remains unavailable.
 
 ## Documentation map for operators and maintainers
 
@@ -30,6 +34,7 @@ The immediate MVP is narrower: enter a driving prompt, have a real model propose
 - [docs/mission_controls.md](docs/mission_controls.md) documents the VS08B authenticated Mission API start/pause/cancel controls, physical start approval gate, audit log, and independent robot-side safety visibility.
 - [docs/mission_web.md](docs/mission_web.md) documents the first integrated map-driven mission console: prompt entry, typed proposal/rejection, digest-bound simulation approval, safety and event state, responsive SVG map, and seven mock/replay outcomes.
 - [docs/perception_navigation.md](docs/perception_navigation.md) defines the replay-first lidar-authoritative pose, quality, goal-region, short-horizon correction, tread-divergence, and fail-closed navigation contracts.
+- [docs/rolling_replay.md](docs/rolling_replay.md) documents the Milestone 1 rolling LLM replay loop, typed world/intent contracts, concurrency proof, browser evidence, and no-authority boundary.
 - [docs/semantic_map_artifacts.md](docs/semantic_map_artifacts.md) documents the VS06 final semantic map artifact generator: structured JSON, GeoJSON, annotated map image, coverage/uncertainty report, and mission summary.
 - [docs/supervised_coordinator.md](docs/supervised_coordinator.md) documents the deterministic supervised mapping/navigation coordinator contract above `range_motion`, including Mission API/read-only UI telemetry and fail-closed cancellation semantics.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
@@ -37,7 +42,7 @@ The immediate MVP is narrower: enter a driving prompt, have a real model propose
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
-Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`, `mission_planner.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/mission_api.md`, `docs/mission_language.md`, `docs/mission_planner.md`, `docs/rvr_mcp_server.md`, `docs/mission_observability.md`, `docs/mission_controls.md`, `docs/mission_web.md`, `docs/semantic_map_artifacts.md`, `docs/supervised_coordinator.md`, `docs/lidar_motion_validation.md`, `docs/perception_navigation.md`, and `docs/shoe_map_projection.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`; console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, `rvr_mcp_server`, `rvr_mission_web`, and `rvr_lidar_motion_validation`. The replay-only `rvr_perception_navigation_replay` command has no ROS or motor authority. The AI command layer now has an LLM planner and local-only MCP stdio adapter over allowlisted `mission_api.v2` rover tools for replay/mock supervision, not raw ROS motion.
+Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`, `mission_planner.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/mission_api.md`, `docs/mission_language.md`, `docs/mission_planner.md`, `docs/rvr_mcp_server.md`, `docs/mission_observability.md`, `docs/mission_controls.md`, `docs/mission_web.md`, `docs/rolling_replay.md`, `docs/semantic_map_artifacts.md`, `docs/supervised_coordinator.md`, `docs/lidar_motion_validation.md`, `docs/perception_navigation.md`, and `docs/shoe_map_projection.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`; console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, `rvr_mcp_server`, `rvr_mission_web`, and `rvr_lidar_motion_validation`. The replay-only `rvr_perception_navigation_replay` command has no ROS or motor authority. The AI command layer now has an LLM planner and local-only MCP stdio adapter over allowlisted `mission_api.v2` rover tools for replay/mock supervision, not raw ROS motion.
 
 ## Current base-driver status
 

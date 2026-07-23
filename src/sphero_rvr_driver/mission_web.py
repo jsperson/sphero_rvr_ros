@@ -13,7 +13,11 @@ import argparse
 import html
 import json
 import math
+import os
+from pathlib import Path
+import subprocess
 import threading
+import uuid
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,8 +25,10 @@ from typing import Any, Mapping, Optional, Protocol, Sequence
 from urllib.parse import urlsplit
 
 from .mission_api import MissionApiVersion, MissionValidationError
+from .mission_service import MissionService
 from .mission_service_client import MissionServiceClient
 from .prompt_drive import (
+    ALLOWED_REASONING_EFFORTS,
     PROMPT_DRIVE_API_VERSION,
     PromptDriveDecision,
     PromptDriveLimits,
@@ -32,6 +38,13 @@ from .prompt_drive import (
     approval_phrase,
     approved_live_route,
     prompt_drive_proposal_from_json,
+)
+from .rolling_replay import (
+    ROLLING_PROPOSAL_SCHEMA,
+    CodexOAuthRollingIntentProvider,
+    RollingIntentProvider,
+    RollingReplayEngine,
+    canonical_digest,
 )
 
 WEB_API_VERSION = "rvr_mission_web.v1"
@@ -77,6 +90,10 @@ class LiveScenario(str, Enum):
     LIVE = "live"
 
 
+class RollingReplayScenario(str, Enum):
+    LLM_DRIVING = "rolling_llm_replay"
+
+
 TERMINAL_STATES = {
     WebMissionState.REJECTED,
     WebMissionState.COMPLETE,
@@ -118,6 +135,14 @@ LIVE_SCENARIOS: tuple[ScenarioDefinition, ...] = (
         LiveScenario.LIVE,
         "Pi mission service",
         "Real Pi-local OAuth planning; physical execution follows the deployed service gate.",
+    ),
+)
+
+ROLLING_REPLAY_SCENARIOS: tuple[ScenarioDefinition, ...] = (
+    ScenarioDefinition(
+        RollingReplayScenario.LLM_DRIVING,
+        "Rolling LLM driving replay",
+        "Continuous pose, perception, tracking, and mapping while real OAuth LLM revisions run asynchronously.",
     ),
 )
 
@@ -467,6 +492,346 @@ class MockReplayMissionAdapter:
         }
 
 
+class RollingReplayMissionAdapter:
+    """Persistent replay-only web adapter for the Stage B vertical slice."""
+
+    mode = "rolling-llm-replay"
+    live_execution_enabled = False
+    direct_ros_commands_allowed = False
+    credentials_accepted = False
+
+    def __init__(
+        self,
+        provider: RollingIntentProvider,
+        *,
+        database: str | Path = ":memory:",
+        source_sha: str = "rolling-replay-local",
+        tick_s: float = 0.1,
+        session_id: str = "rolling-replay-web",
+    ) -> None:
+        self.provider = provider
+        self.source_sha = str(source_sha).strip()
+        self.tick_s = float(tick_s)
+        self.session_id = str(session_id).strip()
+        if not self.source_sha or not self.session_id:
+            raise MissionWebError(
+                "rolling replay source SHA and session ID are required"
+            )
+        self._lock = threading.RLock()
+        self._service = MissionService(
+            database,
+            source_sha=self.source_sha,
+            deployed_sha=self.source_sha,
+            mode="replay",
+            live_execution_enabled=False,
+        )
+        self._mission_id: Optional[str] = None
+        self._engine: Optional[RollingReplayEngine] = None
+        self._proposal: Optional[dict[str, Any]] = None
+
+    def close(self) -> None:
+        with self._lock:
+            if self._engine is not None:
+                self._engine.close()
+                self._engine = None
+            self._service.close()
+
+    def scenarios(self) -> Sequence[ScenarioDefinition]:
+        return ROLLING_REPLAY_SCENARIOS
+
+    def snapshot(self) -> Mapping[str, Any]:
+        with self._lock:
+            return self._snapshot_unlocked()
+
+    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
+        if str(scenario) != RollingReplayScenario.LLM_DRIVING.value:
+            raise MissionWebError("rolling replay accepts only its LLM-driving scenario")
+        objective = str(prompt).strip()
+        if not objective:
+            raise MissionWebError("mission prompt is required")
+        with self._lock:
+            if self._engine is not None:
+                self._engine.close()
+            mission_id = f"rolling-replay-{uuid.uuid4().hex}"
+            self._mission_id = mission_id
+            self._service.begin_prompt_mission(
+                mission_id=mission_id,
+                session_id=self.session_id,
+                prompt=objective,
+                source="web",
+            )
+            proposal_body = {
+                "schema": ROLLING_PROPOSAL_SCHEMA,
+                "mission_id": mission_id,
+                "prompt": objective,
+                "source_sha": self.source_sha,
+                "provider_id": self.provider.provider_id,
+                "model_id": self.provider.model_id,
+                "reasoning_effort": self.provider.reasoning_effort,
+                "contract": {
+                    "output": "one rolling finite leased intent per fresh snapshot",
+                    "fixed_route": False,
+                    "asynchronous": True,
+                    "motion_authority": False,
+                    "physical_execution_enabled": False,
+                },
+                "decision": "propose",
+                "summary": (
+                    "Run one continuous no-authority replay whose steering and "
+                    "observation intent is repeatedly revised by the authenticated LLM."
+                ),
+                "segments": [],
+                "limits": {
+                    "max_speed_mps": 0.18,
+                    "lease_s": "8–90",
+                    "max_provider_calls": 8,
+                    "physical_execution": False,
+                },
+                "prompt_drive_api_version": PROMPT_DRIVE_API_VERSION,
+            }
+            self._proposal = {
+                **proposal_body,
+                "proposal_digest": canonical_digest(proposal_body),
+            }
+            self._service.record_rolling_replay_proposal(
+                mission_id, self._proposal
+            )
+            self._engine = RollingReplayEngine(
+                mission_id,
+                objective,
+                self.provider,
+                tick_s=self.tick_s,
+                checkpoint=self._persist_checkpoint,
+            )
+            return self._snapshot_unlocked()
+
+    def approve(
+        self,
+        supplied_approval: str,
+        *,
+        confirm_current_proposal: bool = False,
+    ) -> Mapping[str, Any]:
+        del confirm_current_proposal
+        with self._lock:
+            if (
+                self._mission_id is None
+                or self._proposal is None
+                or self._engine is None
+            ):
+                raise MissionWebError(
+                    "a rolling replay proposal is required before approval"
+                )
+            expected = self._approval_phrase()
+            if str(supplied_approval).strip() != expected:
+                raise MissionWebError(
+                    "rolling replay approval phrase does not match the current proposal"
+                )
+            self._service.approve_rolling_replay_mission(
+                self._mission_id,
+                proposal_digest=str(self._proposal["proposal_digest"]),
+                operator="browser-replay-operator",
+            )
+            self._engine.start()
+            return self._snapshot_unlocked()
+
+    def advance(self) -> Mapping[str, Any]:
+        return self.snapshot()
+
+    def cancel(self) -> Mapping[str, Any]:
+        with self._lock:
+            if self._engine is None or self._mission_id is None:
+                raise MissionWebError("a rolling replay mission is required")
+            status = str(
+                self._service.prompt_status(self._mission_id).get("status", "")
+            )
+            if status == "running":
+                self._engine.cancel()
+            elif status == "proposed":
+                self._service.cancel_prompt_mission(
+                    self._mission_id, reason="browser replay operator cancelled mission"
+                )
+            else:
+                raise MissionWebError(
+                    "only a proposed or running rolling replay can be cancelled"
+                )
+            return self._snapshot_unlocked()
+
+    def _persist_checkpoint(
+        self, kind: str, projection: Mapping[str, Any]
+    ) -> None:
+        mission_id = self._mission_id
+        if mission_id is None:
+            raise MissionWebError("rolling replay mission identity is unavailable")
+        if str(kind) == "terminal":
+            result = projection.get("result", {})
+            if not isinstance(result, Mapping):
+                raise MissionWebError("rolling replay terminal result is unavailable")
+            self._service.finish_rolling_replay_mission(
+                mission_id,
+                status=str(projection.get("status", "failed")),
+                reason=str(projection.get("terminal_reason", "")),
+                result=result,
+            )
+            return
+        checkpoint = {
+            "schema": projection.get("schema"),
+            "mission_id": mission_id,
+            "status": projection.get("status"),
+            "world_snapshot": projection.get("world_snapshot"),
+            "active_intent": projection.get("active_intent"),
+            "intent_revisions": projection.get("intent_revisions"),
+            "inference": projection.get("inference"),
+            "metrics": projection.get("metrics"),
+            "motion_authority": False,
+            "physical_execution_enabled": False,
+        }
+        self._service.record_rolling_replay_checkpoint(
+            mission_id, kind=str(kind), checkpoint=checkpoint
+        )
+
+    def _approval_phrase(self) -> str:
+        if self._proposal is None:
+            return ""
+        return (
+            "APPROVE ROLLING REPLAY "
+            f"{str(self._proposal['proposal_digest'])}"
+        )
+
+    def _snapshot_unlocked(self) -> dict[str, Any]:
+        mission = (
+            None
+            if self._mission_id is None
+            else self._service.prompt_status(self._mission_id)
+        )
+        projection = None if self._engine is None else self._engine.snapshot()
+        status = "ready" if mission is None else str(mission["status"])
+        state = _web_state(status)
+        if projection is not None and projection.get("terminal"):
+            state = _web_state(str(projection.get("status", "failed")))
+        terminal = state in {item.value for item in TERMINAL_STATES}
+        result = (
+            projection.get("result", {})
+            if projection is not None and terminal
+            else {}
+        )
+        if not isinstance(result, Mapping):
+            result = {}
+        approval = {} if mission is None else mission.get("approval", {})
+        if not isinstance(approval, Mapping):
+            approval = {}
+        rolling_events = [] if projection is None else projection.get("events", [])
+        map_payload = (
+            MapFixture().to_json_dict(progress=0.0)
+            if projection is None
+            else projection["map"]
+        )
+        world = {} if projection is None else projection["world_snapshot"]
+        obstacles = world.get("obstacles", {}) if isinstance(world, Mapping) else {}
+        localization = (
+            world.get("localization", {}) if isinstance(world, Mapping) else {}
+        )
+        replay_safety = (
+            world.get("safety", {}) if isinstance(world, Mapping) else {}
+        )
+        return {
+            "web_api_version": WEB_API_VERSION,
+            "mission_api_version": MissionApiVersion.V2.value,
+            "prompt_drive_api_version": PROMPT_DRIVE_API_VERSION,
+            "adapter": {
+                "mode": self.mode,
+                "fixture_only": True,
+                "rolling_replay": True,
+                "real_llm_provider": self.provider.provider_id
+                == "openai-codex-oauth",
+                "provider_id": self.provider.provider_id,
+                "model_id": self.provider.model_id,
+                "reasoning_effort": self.provider.reasoning_effort,
+                "live_execution_enabled": False,
+                "direct_ros_commands_allowed": False,
+                "credentials_accepted": False,
+                "mission_service_persistence": True,
+                "source_sha": self.source_sha,
+            },
+            "scenario": RollingReplayScenario.LLM_DRIVING.value,
+            "proposal": self._proposal,
+            "approval": {
+                "required": self._proposal is not None,
+                "enabled": state == WebMissionState.PROPOSED.value,
+                "approved": bool(approval.get("approved", False)),
+                "proposal_digest": (
+                    "" if self._proposal is None else self._proposal["proposal_digest"]
+                ),
+                "required_phrase": self._approval_phrase(),
+                "simulation_only": True,
+            },
+            "mission": {
+                "mission_id": "" if mission is None else mission["mission_id"],
+                "state": state,
+                "progress": 0.0
+                if projection is None
+                else float(projection["progress"]),
+                "terminal": terminal,
+                "terminal_reason": (
+                    ""
+                    if projection is None
+                    else str(projection.get("terminal_reason", ""))
+                ),
+                "result": dict(result),
+            },
+            "artifacts": _terminal_artifacts(result, fixture_only=True),
+            "safety": {
+                "stop_active": bool(replay_safety.get("stop_active", False)),
+                "estop_latched": bool(
+                    replay_safety.get("estop_latched", False)
+                ),
+                "collision_state": str(
+                    replay_safety.get("collision_state", "CLEAR")
+                ),
+                "front_clearance_m": obstacles.get("forward_clearance_m"),
+                "forward_corridor_clearance_m": obstacles.get(
+                    "forward_clearance_m"
+                ),
+                "forward_corridor_min_angle_deg": -25.0,
+                "forward_corridor_max_angle_deg": 25.0,
+                "left_clearance_m": obstacles.get("left_clearance_m"),
+                "right_clearance_m": obstacles.get("right_clearance_m"),
+                "trajectory_min_clearance_m": obstacles.get(
+                    "forward_clearance_m"
+                ),
+                "trajectory_horizon_s": 0.75,
+                "telemetry_fresh": bool(localization.get("fresh", True)),
+                "independent_robot_safety": True,
+                "browser_is_sole_safety_mechanism": False,
+            },
+            "events": list(rolling_events),
+            "map": map_payload,
+            "rolling": (
+                {
+                    "world_snapshot": None,
+                    "decision_snapshots": [],
+                    "active_intent": None,
+                    "intent_revisions": [],
+                    "inference": {
+                        "in_flight": False,
+                        "provider_calls_started": 0,
+                        "provider_calls_completed": 0,
+                        "movement_updates_during_calls": 0,
+                    },
+                    "metrics": {},
+                }
+                if projection is None
+                else {
+                    "world_snapshot": projection["world_snapshot"],
+                    "decision_snapshots": projection["decision_snapshots"],
+                    "active_intent": projection["active_intent"],
+                    "intent_revisions": projection["intent_revisions"],
+                    "inference": projection["inference"],
+                    "metrics": projection["metrics"],
+                }
+            ),
+        }
+
+
 class LiveMissionWebAdapter:
     """Default-disabled browser adapter over the Pi-local Unix socket only."""
 
@@ -762,6 +1127,7 @@ class LiveMissionWebAdapter:
 def _web_state(status: str) -> str:
     normalized = str(status).strip().lower()
     mapping = {
+        "ready": WebMissionState.READY,
         "received": WebMissionState.RECEIVED,
         "planning": WebMissionState.PLANNING,
         "proposed": WebMissionState.PROPOSED,
@@ -1153,7 +1519,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Serve the loopback-only RVR mission web console.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--mode", choices=("mock", "live"), default="mock")
+    parser.add_argument(
+        "--mode",
+        choices=("mock", "live", "rolling-replay"),
+        default="mock",
+    )
     parser.add_argument(
         "--mission-socket",
         default="~/.local/state/sphero_rvr/mission-service.sock",
@@ -1165,6 +1535,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--public-origin",
         default=None,
         help="Exact authenticated HTTPS origin required for live POST requests",
+    )
+    parser.add_argument(
+        "--replay-database",
+        default="~/.local/state/sphero_rvr/rolling-replay.sqlite3",
+        help="Persistent SQLite evidence used only by rolling-replay mode",
+    )
+    parser.add_argument("--replay-model", default=None)
+    parser.add_argument(
+        "--replay-reasoning-effort",
+        choices=ALLOWED_REASONING_EFFORTS,
+        default="low",
     )
     args = parser.parse_args(argv)
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
@@ -1178,6 +1559,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             operator=args.operator,
         )
         allowed_origin = args.public_origin
+    elif args.mode == "rolling-replay":
+        adapter = RollingReplayMissionAdapter(
+            CodexOAuthRollingIntentProvider(
+                model=args.replay_model,
+                reasoning_effort=args.replay_reasoning_effort,
+            ),
+            database=args.replay_database,
+            source_sha=_local_source_sha(),
+        )
+        allowed_origin = None
     else:
         adapter = MockReplayMissionAdapter()
         allowed_origin = None
@@ -1198,7 +1589,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pass
     finally:
         server.server_close()
+        close_adapter = getattr(adapter, "close", None)
+        if callable(close_adapter):
+            close_adapter()
     return 0
+
+
+def _local_source_sha() -> str:
+    configured = str(os.environ.get("RVR_SOURCE_SHA", "")).strip()
+    if configured:
+        return configured
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        completed = None
+    value = "" if completed is None else str(completed.stdout).strip()
+    return value or "rolling-replay-local-source"
 
 
 _INDEX_HTML = r'''<!doctype html>
@@ -1271,6 +1684,15 @@ _INDEX_HTML = r'''<!doctype html>
     .event-list li { position:relative; padding-left:1.2rem; color:#cad7d7; font-size:.8rem; line-height:1.35; }
     .event-list li::before { content:""; position:absolute; left:.1rem; top:.35rem; width:.45rem; height:.45rem; border-radius:50%; background:var(--blue); }
     .event-list small { display:block; color:var(--muted); margin-bottom:.12rem; }
+    .rolling-grid { display:grid; gap:.6rem; grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .rolling-card { min-width:0; padding:.65rem; border:1px solid #294258; border-radius:.65rem; background:#071421; }
+    .rolling-card span { display:block; color:var(--muted); font-size:.67rem; text-transform:uppercase; letter-spacing:.06em; }
+    .rolling-card strong { display:block; margin-top:.24rem; overflow-wrap:anywhere; color:#d8f5ef; font-size:.8rem; }
+    .rolling-json { margin:.65rem 0 0; max-height:16rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:.65rem; border-radius:.55rem; background:#071421; color:#bdd2ff; font-size:.68rem; }
+    .revision-list { display:grid; gap:.55rem; max-height:22rem; overflow:auto; }
+    .revision { border-left:3px solid var(--teal); padding:.6rem .7rem; border-radius:.25rem .6rem .6rem .25rem; background:#091827; font-size:.76rem; line-height:1.4; }
+    .revision small { color:var(--muted); display:block; margin-bottom:.18rem; }
+    .in-flight { color:var(--amber) !important; }
     .error { min-height:1.2rem; color:#ffaba5; font-size:.8rem; margin-top:.5rem; }
     .rejected { border-color:#7e3541; color:#ffd3d0; }
     @media (max-width:1100px) { .workspace { grid-template-columns:minmax(300px,.85fr) minmax(430px,1.3fr); } .workspace > .column:last-child { grid-column:1/-1; grid-template-columns:1fr 1fr; } }
@@ -1296,7 +1718,7 @@ _INDEX_HTML = r'''<!doctype html>
         <section class="panel" aria-labelledby="mission-heading">
           <h2 id="mission-heading">Mission prompt</h2>
           <label class="field-label" for="mission-prompt">Tell the rover what to do</label>
-          <textarea id="mission-prompt" data-testid="mission-prompt">Move forward 20 centimeters, turn left 45 degrees, then move forward 15 centimeters.</textarea>
+          <textarea id="mission-prompt" data-testid="mission-prompt">Explore this room, identify and map the shoes and any recognized people, inspect uncertain findings from another viewpoint, then stop safely.</textarea>
           <label class="field-label" for="scenario" id="scenario-label">Replay outcome</label>
           <select id="scenario" data-testid="scenario"></select>
           <div class="actions"><button class="primary" id="propose" data-testid="propose">Generate proposal</button></div>
@@ -1323,6 +1745,10 @@ _INDEX_HTML = r'''<!doctype html>
           <h2 id="proposal-heading">LLM proposal</h2>
           <div id="proposal-view" class="empty">Submit a mission to see a typed route proposal or rejection.</div>
         </section>
+        <section class="panel" id="rolling-intent-panel" hidden>
+          <h2>Current finite leased intent</h2>
+          <div id="rolling-intent" class="empty">No validated intent yet.</div>
+        </section>
       </div>
       <div class="column">
         <section class="panel" aria-labelledby="status-heading">
@@ -1334,6 +1760,15 @@ _INDEX_HTML = r'''<!doctype html>
         <section class="panel" aria-labelledby="events-heading">
           <h2 id="events-heading">Event history</h2>
           <ol class="event-list" id="event-list"><li class="empty">No mission events yet.</li></ol>
+        </section>
+        <section class="panel" id="rolling-loop-panel" hidden>
+          <h2>Asynchronous LLM loop</h2>
+          <div class="rolling-grid" id="rolling-metrics"></div>
+          <div class="revision-list" id="rolling-revisions"></div>
+        </section>
+        <section class="panel" id="rolling-world-panel" hidden>
+          <h2>Fresh world snapshot & detections</h2>
+          <pre class="rolling-json" id="rolling-world"></pre>
         </section>
         <section class="panel" aria-labelledby="result-heading">
           <h2 id="result-heading">Terminal evidence</h2>
@@ -1374,15 +1809,16 @@ _INDEX_HTML = r'''<!doctype html>
         hydratedMissionId = missionId;
       }
       const live = !snapshot.adapter.fixture_only;
+      const rollingReplay = Boolean(snapshot.adapter.rolling_replay);
       const execution = live && snapshot.adapter.live_execution_enabled;
       const badge = document.querySelector('[data-testid="mode-badge"]');
-      badge.className = `mode-badge${live ? ' live' : ''}${execution ? ' execution' : ''}`;
-      badge.textContent = live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
-      $('scenario-label').textContent = live ? 'Service target' : 'Replay outcome';
-      $('approval-heading').textContent = live ? 'Run confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : 'Approval is digest-bound and authorizes only the mock adapter.';
-      $('authority-copy').textContent = live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
-      $('approve').textContent = live ? 'Approve and run' : 'Approve simulation';
+      badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
+      badge.textContent = rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      $('scenario-label').textContent = live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
+      $('approval-heading').textContent = live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
+      $('approval-hint').textContent = live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
+      $('approve').textContent = live ? 'Approve and run' : rollingReplay ? 'Start rolling replay' : 'Approve simulation';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -1442,8 +1878,51 @@ _INDEX_HTML = r'''<!doctype html>
         $('result-view').textContent = 'No terminal evidence yet.';
       }
       $('artifact-list').innerHTML = artifacts.map((artifact) => `<li><a href="${escapeHtml(artifact.href)}" target="_blank" rel="noopener">${escapeHtml(artifact.label)}</a> <span class="hint">${escapeHtml(artifact.media_type)}</span></li>`).join('');
+      renderRolling(snapshot);
       renderMap(snapshot.map);
       if (snapshot.mission.terminal && timer) { clearInterval(timer); timer = null; }
+    }
+
+    function renderRolling(snapshot) {
+      const enabled = Boolean(snapshot.adapter.rolling_replay);
+      $('rolling-intent-panel').hidden = !enabled;
+      $('rolling-loop-panel').hidden = !enabled;
+      $('rolling-world-panel').hidden = !enabled;
+      if (!enabled) return;
+      const rolling = snapshot.rolling || {};
+      const intent = rolling.active_intent;
+      if (intent) {
+        $('rolling-intent').className = '';
+        $('rolling-intent').innerHTML = `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Steering / speed</span><strong>${Number(intent.steering).toFixed(2)} · ${Number(intent.speed_limit_mps).toFixed(2)} m/s</strong></div><div class="rolling-card"><span>Safe corridor</span><strong>${escapeHtml(intent.safe_corridor)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint</span><strong>${escapeHtml(intent.viewpoint)}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)}</code>`;
+      } else {
+        $('rolling-intent').className = 'empty';
+        $('rolling-intent').textContent = rolling.inference && rolling.inference.in_flight ? 'First LLM intent is being produced while replay perception updates.' : 'No validated intent yet.';
+      }
+      const inference = rolling.inference || {};
+      const metrics = rolling.metrics || {};
+      const metricItems = [
+        ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
+        ['Intent revisions', metrics.intent_revision_count || 0],
+        ['Motion ticks during LLM', metrics.motion_updates_while_llm_in_flight || 0],
+        ['Artificial zero gaps', metrics.artificial_zero_motion_gaps || 0],
+        ['Perception / map updates', `${metrics.perception_updates || 0} / ${metrics.semantic_map_updates || 0}`],
+        ['Object / face tracking', `${metrics.continuous_object_tracking ? 'continuous' : 'warming'} / ${metrics.continuous_face_tracking ? 'continuous' : 'warming'}`],
+      ];
+      $('rolling-metrics').innerHTML = metricItems.map(([label,value], index) => `<div class="rolling-card"><span>${escapeHtml(label)}</span><strong class="${index === 0 && inference.in_flight ? 'in-flight' : ''}">${escapeHtml(value)}</strong></div>`).join('');
+      const revisions = rolling.intent_revisions || [];
+      $('rolling-revisions').innerHTML = revisions.length ? revisions.slice().reverse().map((item) => `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.movement_updates_during_call)} replay updates during call</small><strong>${Number(item.steering).toFixed(2)} steering · ${escapeHtml(item.safe_corridor)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint)}</strong><br>${escapeHtml(item.rationale)}</div>`).join('') : '<p class="empty">No completed LLM revisions yet.</p>';
+      const world = rolling.world_snapshot || {};
+      const visible = {
+        snapshot_id: world.snapshot_id,
+        tick: world.tick,
+        elapsed_s: world.elapsed_s,
+        localization: world.localization,
+        obstacles: world.obstacles,
+        progress: world.progress,
+        camera: world.camera,
+        semantic_map: world.semantic_map,
+      };
+      $('rolling-world').textContent = JSON.stringify(visible, null, 2);
     }
 
     function renderMap(map) {
