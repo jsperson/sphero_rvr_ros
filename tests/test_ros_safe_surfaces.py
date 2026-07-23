@@ -115,7 +115,7 @@ def test_node_config_declares_safe_surface_defaults():
 
     assert config.odom_publish_period == 0.1
     assert config.odom_counts_per_meter == 4337.768
-    assert config.odom_wheel_track_m == 0.18
+    assert config.odom_wheel_track_m == 0.2507
     assert config.odom_frame_id == "odom"
     assert config.base_frame_id == "base_link"
     assert config.odom_publish_tf is True

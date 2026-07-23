@@ -146,10 +146,48 @@ def test_turn_angle_primitive_uses_measured_heading_and_stops_at_angle():
     done = controller.update(OdomMotionState(stamp=2.2, x_m=0.0, y_m=0.0, yaw_rad=math.radians(89.0)))
 
     assert mid.kind is MotionPrimitiveKind.TURN_ANGLE
-    assert mid.command.angular_z > 0.0
+    assert mid.command.angular_z == pytest.approx(0.25)
     assert done.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED
     assert done.measured_angle_rad == pytest.approx(math.radians(89.0))
     assert done.command.angular_z == 0.0
+
+
+def test_turn_angle_primitive_applies_configured_speed_ceiling_in_both_directions():
+    config = MotionPrimitiveConfig(max_turn_speed_rad_s=0.2)
+
+    left = MotionPrimitiveController(config)
+    left.start(
+        MotionPrimitiveGoal.turn_angle(
+            angle_rad=math.radians(45.0),
+            angular_speed_rad_s=0.5,
+            timeout_s=8.0,
+        ),
+        OdomMotionState(stamp=0.0, x_m=0.0, y_m=0.0, yaw_rad=0.0),
+    )
+    left_command = left.update(
+        OdomMotionState(stamp=0.1, x_m=0.0, y_m=0.0, yaw_rad=0.0)
+    ).command
+
+    right = MotionPrimitiveController(config)
+    right.start(
+        MotionPrimitiveGoal.turn_angle(
+            angle_rad=math.radians(-45.0),
+            angular_speed_rad_s=0.5,
+            timeout_s=8.0,
+        ),
+        OdomMotionState(stamp=0.0, x_m=0.0, y_m=0.0, yaw_rad=0.0),
+    )
+    right_command = right.update(
+        OdomMotionState(stamp=0.1, x_m=0.0, y_m=0.0, yaw_rad=0.0)
+    ).command
+
+    assert left_command.angular_z == pytest.approx(0.2)
+    assert right_command.angular_z == pytest.approx(-0.2)
+
+
+def test_motion_primitive_config_rejects_nonpositive_turn_speed_ceiling():
+    with pytest.raises(ValueError, match="max_turn_speed_rad_s"):
+        MotionPrimitiveConfig(max_turn_speed_rad_s=0.0)
 
 
 def test_turn_angle_primitive_preserves_signed_direction_and_rejects_wrong_way_rotation():

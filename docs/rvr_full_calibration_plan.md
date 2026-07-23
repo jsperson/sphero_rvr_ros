@@ -10,7 +10,10 @@ Known from first-pass floor calibration:
 
 - Initial straight-line encoder scale: `odom_counts_per_meter: 4337.768`.
 - Test conditions: `linear=0.05`, `duration=1.00`, `max-duty=128`.
-- Current config uses the two-run estimate `odom_counts_per_meter: 4337.768` and the still-unvalidated `odom_wheel_track_m: 0.18` in `config/rvr.yaml`.
+- Current config uses the straight-run estimate `odom_counts_per_meter: 4337.768`
+  and the explicitly reviewed attempt-2 lidar estimate
+  `odom_wheel_track_m: 0.2507` in `config/rvr.yaml`. The track value remains
+  provisional until a restrained turn confirmation.
 - ROS mission velocity currently uses the explicit `raw_motor` backend; native
   RC-SI is diagnostic-only. The June 24 scale does not transfer between packet
   backends.

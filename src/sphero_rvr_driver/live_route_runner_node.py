@@ -181,6 +181,7 @@ def main(args=None):
                 "max_terminal_angle_error_rad": math.radians(5.0),
                 "distance_tolerance_m": odom_defaults.distance_tolerance_m,
                 "angle_tolerance_rad": odom_defaults.angle_tolerance_rad,
+                "max_turn_speed_rad_s": odom_defaults.max_turn_speed_rad_s,
                 "heading_kp": odom_defaults.heading_kp,
                 "max_heading_correction_rad_s": odom_defaults.max_heading_correction_rad_s,
                 "max_sample_age_s": odom_defaults.max_sample_age_s,
@@ -195,6 +196,7 @@ def main(args=None):
             odom = MotionPrimitiveConfig(
                 distance_tolerance_m=float(self.get_parameter("distance_tolerance_m").value),
                 angle_tolerance_rad=float(self.get_parameter("angle_tolerance_rad").value),
+                max_turn_speed_rad_s=float(self.get_parameter("max_turn_speed_rad_s").value),
                 heading_kp=float(self.get_parameter("heading_kp").value),
                 max_heading_correction_rad_s=float(self.get_parameter("max_heading_correction_rad_s").value),
                 max_sample_age_s=float(self.get_parameter("max_sample_age_s").value),

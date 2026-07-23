@@ -49,7 +49,9 @@ class RVRNodeConfig:
     ambient_light_publish_period: float = 2.0
     odom_publish_period: float = 0.1
     odom_counts_per_meter: float = DEFAULT_ODOM_COUNTS_PER_METER
-    odom_wheel_track_m: float = 0.18
+    # Attempt-2 full-scan registration estimated 0.250696 m. Keep the rounded,
+    # explicitly reviewed value pending the restrained confirmation run.
+    odom_wheel_track_m: float = 0.2507
     odom_frame_id: str = "odom"
     base_frame_id: str = "base_link"
     odom_publish_tf: bool = True

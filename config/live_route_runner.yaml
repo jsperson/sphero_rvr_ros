@@ -33,6 +33,9 @@ live_route_runner:
     max_terminal_angle_error_rad: 0.08726646259971647
     distance_tolerance_m: 0.01
     angle_tolerance_rad: 0.034906585
+    # Keep turn primitives slow while effective track geometry is confirmed.
+    # This ceiling is independent of the broader driver angular safety limit.
+    max_turn_speed_rad_s: 0.25
     heading_kp: 1.5
     max_heading_correction_rad_s: 0.6
     max_sample_age_s: 0.30

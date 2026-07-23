@@ -18,9 +18,10 @@ sphero_rvr_driver:
     diagnostics_metadata_period: 30.0
     ambient_light_publish_period: 2.0
     odom_publish_period: 0.1
-    # Encoder odometry is a rough mapping/localization aid. Tune these from live measurements.
+    # Encoder odometry is a rough mapping/localization aid. The effective
+    # skid-steer track is evidence-derived and still requires confirmation.
     odom_counts_per_meter: 4337.768
-    odom_wheel_track_m: 0.18
+    odom_wheel_track_m: 0.2507
     odom_frame_id: odom
     base_frame_id: base_link
     odom_publish_tf: true
