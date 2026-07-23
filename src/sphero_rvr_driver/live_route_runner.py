@@ -548,8 +548,12 @@ class LiveRouteRunner:
             return RouteTerminalReason.MISSING_COLLISION_STATE.value
         if age_s > self.config.collision_state_max_age_s + 1e-9:
             return RouteTerminalReason.STALE_COLLISION_STATE.value
-        if collision_state is not CollisionState.CLEAR:
-            if collision_state in {CollisionState.STARTUP, CollisionState.SLOW}:
+        # SLOW is an authoritative, fresh supervisor state: the downstream
+        # collision supervisor is actively bounding the command.  Treat only
+        # its stop/fault states as vetoes so route progress remains observable
+        # while that bounded command is applied.
+        if collision_state not in {CollisionState.CLEAR, CollisionState.SLOW}:
+            if collision_state is CollisionState.STARTUP:
                 return RouteTerminalReason.MISSING_COLLISION_STATE.value
             return RouteTerminalReason.COLLISION_VETO.value
         return None

@@ -321,6 +321,8 @@ def test_encoder_state_parser_is_typed_and_rejects_malformed_or_nonfinite_input(
     (
         ({"collision": CollisionState.STOPPED.value}, "collision_veto", ToolResultStatus.BLOCKED),
         ({"collision": CollisionState.SENSOR_STALE.value}, "collision_veto", ToolResultStatus.BLOCKED),
+        ({"collision": CollisionState.ESTOPPED.value}, "collision_veto", ToolResultStatus.BLOCKED),
+        ({"collision": CollisionState.DISABLED.value}, "collision_veto", ToolResultStatus.BLOCKED),
     ),
 )
 def test_live_route_runner_propagates_collision_supervisor_terminal_blocks(state_kwargs, terminal, status) -> None:
@@ -381,12 +383,41 @@ def test_live_route_runner_requires_new_route_request_after_collision_supervisor
     assert runner.active
 
 
-@pytest.mark.parametrize("collision", ["", "BOGUS", CollisionState.STARTUP.value, CollisionState.SLOW.value])
-def test_live_route_runner_treats_unknown_or_not_explicitly_clear_collision_state_as_missing(collision: str) -> None:
+@pytest.mark.parametrize("collision", ["", "BOGUS", CollisionState.STARTUP.value])
+def test_live_route_runner_treats_unknown_or_startup_collision_state_as_missing(collision: str) -> None:
     manifest = run_route_replay(_route(), (_state(1.0, 0.0, 0.0, 0.0, collision=collision),))
 
     assert manifest.terminal_reason == "missing_collision_state"
     assert manifest.status is ToolResultStatus.BLOCKED
+
+
+def test_live_route_runner_accepts_fresh_supervisor_slow_state_as_safe_bounded_motion() -> None:
+    runner = LiveRouteRunner()
+    request = LiveRouteRequest(
+        route_id="slow-bounded-move",
+        max_runtime_s=10.0,
+        max_travel_m=0.5,
+        segments=(
+            RouteSegmentRequest(
+                "move",
+                "move_distance",
+                {"distance_m": 0.2, "speed_mps": 0.1, "timeout_s": 5.0},
+            ),
+        ),
+    )
+
+    initial = runner.start(
+        request,
+        _state(1.0, 0.0, 0.0, 0.0, collision=CollisionState.SLOW.value),
+    )
+    command = runner.update(
+        _state(1.05, 0.0, 0.0, 0.0, collision=CollisionState.SLOW.value),
+    )
+
+    assert initial.linear_x == 0.0
+    assert command.linear_x > 0.0
+    assert runner.active
+    assert runner.manifest().terminal_reason == "running"
 
 
 def test_live_route_runner_propagates_stop_estop_cancel_and_stale_data() -> None:
