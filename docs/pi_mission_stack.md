@@ -188,16 +188,20 @@ RVR_LIVE_EXECUTION_REVIEWED_SHA=<exact RVR_DEPLOYED_SHA>
 ```
 
 Startup must fail unless the reviewed, source, and deployed SHAs all match. A LIVE/execution-enabled banner
-only means proposals may become approvable; it is not physical approval. Generate
-one prepared stage, show Scott the complete unchanged digest and physical effect,
-and wait for his fresh explicit approval phrase. The server rechecks safety before
-recording approval and before route submission.
+only means proposals may become confirmable; it is not permission for an unattended
+mission. During one Scott-attended calibration series, the exact-SHA gate may
+remain enabled for up to three repeats of the same bounded stage. For each newly
+planned route, Scott reviews its typed effect and clicks **Approve and run** once;
+he never enters a GUID, digest, code, or hash. The server reloads and binds the
+unchanged proposal internally and rechecks safety before recording confirmation
+and again before route submission.
 
-After that one stage or any failed check, immediately restore `false` and blank,
-restart the mission service, stop the supervised ROS graph, issue/verify zero, and
-repeat the process/device cleanup audit. Each restrained 10 cm translation,
-45-degree turn, and multi-step prompt is a separate authorization. Follow
-`docs/motion_calibration.md` and stop on missing, stale, or inconsistent evidence.
+After the reviewed repeat series—or immediately after any failed check—restore
+`false` and blank, restart the mission service, stop the supervised ROS graph,
+issue/verify zero, and repeat the process/device cleanup audit. A later turn,
+multi-step prompt, or materially different stage starts a new attended series.
+Follow `docs/motion_calibration.md` and stop on missing, stale, or inconsistent
+evidence.
 
 ### Exact attended procedure
 
@@ -286,12 +290,11 @@ area is clear, and the operator can use physical power/ESTOP immediately.
 
 5. Open the tailnet HTTPS page. Confirm the LIVE physical-execution banner and
    fresh safety state. Enter only the current stage prompt. Scott reviews the
-   complete typed proposal, physical effect, limits, model identity, and digest,
-   then clicks **Approve and run** once. The Pi reloads that current persisted
-   proposal and supplies its exact digest to the mission service; the browser
-   does not manufacture approval authority and Scott does not copy a hash. Never
-   treat approval of a proposal-only, changed, terminal, or prior-stage mission
-   as approval of a new motion.
+   complete typed proposal, physical effect, limits, and model identity, then
+   clicks **Approve and run** once. The Pi reloads that current persisted proposal
+   and supplies its exact digest to the mission service; the browser does not
+   manufacture approval authority and Scott does not see or copy a hash. Repeat
+   this single-click review for each route in the bounded series.
 
 6. At terminal state, use the page's Terminal evidence panel and Terminal result
    JSON link. Record start/final pose and timestamps, final heading, route-local
@@ -302,7 +305,8 @@ area is clear, and the operator can use physical power/ESTOP immediately.
    tracks disagree unexpectedly, heading drift is unexplained, the pose continues
    changing, or any safety/error state occurred.
 
-7. Relock after every stage—success or failure—before considering another:
+7. Relock after the bounded repeat series, or immediately after any failed
+   readiness or execution check:
 
    ```bash
    ros2 service call /stop std_srvs/srv/Trigger '{}'

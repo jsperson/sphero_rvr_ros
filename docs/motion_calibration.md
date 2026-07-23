@@ -183,8 +183,10 @@ request to make the success tolerance wider.
    ESTOP is `CLEAR`, odom/encoders are fresh, and `/cmd_vel_motor` is zero.
 3. Submit `Move forward 25 centimeters, then stop.` in the live web console.
    Review the complete proposal and use the single **Approve and run** action.
-4. At terminal state, relock execution and call STOP before measuring. Measure
-   actual travel from the same body reference; do not use odometry as the tape
+4. At terminal state, require zero motor output and stationary evidence before
+   measuring. The reviewed exact-SHA execution gate may remain enabled for the
+   three-run series; no GUID, digest, code, or hash is entered. Measure actual
+   travel from the same body reference; do not use odometry as the tape
    measurement.
 5. Download the page's Terminal result JSON and analyze it, for example:
 
@@ -207,6 +209,8 @@ request to make the success tolerance wider.
    from one exact source SHA, every individual safety/evidence gate to pass, and
    each counts-per-meter value to be within 5% of the median. Exit 2 means the
    set was analyzed but rejected. Neither analyzer changes config.
+   Relock execution immediately after the third run or after any rejected or
+   unsafe result.
 7. If the 0.25 m set is eligible, repeat the complete three-sample procedure at
    0.50 m. Compare both sets, floor, payload, battery, heading drift, and visible
    slip before human review of any config change. Rebuild and revalidate after a

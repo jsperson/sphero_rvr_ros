@@ -1209,8 +1209,8 @@ _INDEX_HTML = r'''<!doctype html>
       badge.className = `mode-badge${live ? ' live' : ''}${execution ? ' execution' : ''}`;
       badge.textContent = live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
       $('scenario-label').textContent = live ? 'Service target' : 'Replay outcome';
-      $('approval-heading').textContent = live ? 'Physical approval' : 'Simulation approval';
-      $('approval-hint').textContent = live ? (execution ? 'Review the current route, then approve once. The Pi binds the unchanged proposal digest automatically.' : 'Physical approval is locked by the deployed Pi configuration.') : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('approval-heading').textContent = live ? 'Run confirmation' : 'Simulation approval';
+      $('approval-hint').textContent = live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : 'Approval is digest-bound and authorizes only the mock adapter.';
       $('authority-copy').textContent = live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('approve').textContent = live ? 'Approve and run' : 'Approve simulation';
       $('mission-state').textContent = snapshot.mission.state;
@@ -1231,7 +1231,7 @@ _INDEX_HTML = r'''<!doctype html>
         const limits = Object.entries(proposal.limits).map(([key,value]) => `<span class="chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join('');
         const decisionClass = proposal.decision === 'reject' ? ' rejected' : '';
         $('proposal-view').className = decisionClass;
-        const approvalAudit = live ? `<p class="field-label">Server approval binding</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code>` : `<p class="field-label">Approval digest</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code><p class="field-label">Required phrase</p><code class="digest">${escapeHtml(snapshot.approval.required_phrase || 'Not approvable')}</code>`;
+        const approvalAudit = live ? `<p class="hint">The Pi records the exact route you confirmed.</p><details><summary>Technical approval audit</summary><code class="digest">${escapeHtml(proposal.proposal_digest)}</code></details>` : `<p class="field-label">Approval digest</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code><p class="field-label">Required phrase</p><code class="digest">${escapeHtml(snapshot.approval.required_phrase || 'Not approvable')}</code>`;
         $('proposal-view').innerHTML = `<div class="plan-meta"><div class="meta"><span>Decision</span><strong>${escapeHtml(proposal.decision)}</strong></div><div class="meta"><span>Model</span><strong>${escapeHtml(proposal.provider_id)}/${escapeHtml(proposal.model_id)}</strong></div></div><p>${escapeHtml(proposal.summary)}</p>${segments}<div class="limits">${limits}</div>${approvalAudit}`;
       } else {
         $('proposal-view').className = 'empty';

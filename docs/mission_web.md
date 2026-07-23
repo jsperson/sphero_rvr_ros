@@ -38,7 +38,8 @@ missions the operator reviews the route and clicks **Approve and run** once; the
 Pi then reloads the persisted proposal, recomputes the exact full-digest approval
 phrase, and sends it through the existing mission-service approval boundary.
 The digest binding and approval audit remain server-owned, but the operator no
-longer copies a hash.
+longer copies or enters a GUID, digest, code, or hash. The raw digest is available
+only in the collapsed **Technical approval audit** detail.
 
 ```text
 browser
