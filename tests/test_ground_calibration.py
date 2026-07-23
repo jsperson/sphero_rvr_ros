@@ -30,6 +30,7 @@ def test_ground_sample_computes_independent_track_scale_and_error():
     assert sample["left_counts_per_meter"] == pytest.approx(4000.0)
     assert sample["right_counts_per_meter"] == pytest.approx(4080.0)
     assert sample["mean_counts_per_meter"] == pytest.approx(4040.0)
+    assert sample["mission_id"] == "mission-1"
     assert sample["odom_error_pct"] == pytest.approx(-4.0)
     assert sample["track_mismatch_pct"] == pytest.approx(100 * 20 / 1010)
     assert sample["eligible_for_calibration_set"] is True
@@ -76,10 +77,17 @@ def test_ground_sample_requires_nonzero_encoder_evidence():
         )
 
 
-def _analyzed_sample(route_id: str, mean_counts: float, *, source_sha: str = "calibration-sha"):
+def _analyzed_sample(
+    route_id: str,
+    mean_counts: float,
+    *,
+    mission_id: str | None = None,
+    source_sha: str = "calibration-sha",
+):
     return {
         "schema": "sphero_rvr.ground_calibration_sample.v1",
         "source_sha": source_sha,
+        "mission_id": mission_id if mission_id is not None else f"mission-{route_id}",
         "route_id": route_id,
         "actual_distance_m": 0.25,
         "left_counts_per_meter": mean_counts - 20.0,
@@ -106,6 +114,20 @@ def test_ground_set_uses_median_only_after_three_consistent_distinct_safe_sample
     assert report["rejection_reasons"] == []
 
 
+def test_ground_set_accepts_repeated_digest_route_with_distinct_mission_executions():
+    report = aggregate_ground_samples(
+        [
+            _analyzed_sample("route-same-digest", 4300.0, mission_id="run-1"),
+            _analyzed_sample("route-same-digest", 4350.0, mission_id="run-2"),
+            _analyzed_sample("route-same-digest", 4400.0, mission_id="run-3"),
+        ]
+    )
+
+    assert report["mission_ids"] == ["run-1", "run-2", "run-3"]
+    assert report["route_ids"] == ["route-same-digest"] * 3
+    assert report["eligible_for_config_review"] is True
+
+
 @pytest.mark.parametrize(
     ("samples", "reason"),
     (
@@ -120,10 +142,10 @@ def test_ground_set_uses_median_only_after_three_consistent_distinct_safe_sample
         (
             [
                 _analyzed_sample("route-1", 4300.0),
-                _analyzed_sample("route-1", 4350.0),
+                _analyzed_sample("route-2", 4350.0, mission_id="mission-route-1"),
                 _analyzed_sample("route-3", 4400.0),
             ],
-            "not unique",
+            "execution identities are not unique",
         ),
         (
             [

@@ -205,10 +205,12 @@ request to make the success tolerance wider.
      --output ground-set-025m.json
    ```
 
-   Exit 0 and `eligible_for_config_review=true` require three distinct routes
-   from one exact source SHA, every individual safety/evidence gate to pass, and
-   each counts-per-meter value to be within 5% of the median. Exit 2 means the
-   set was analyzed but rejected. Neither analyzer changes config.
+   Exit 0 and `eligible_for_config_review=true` require three distinct mission
+   executions from one exact source SHA, every individual safety/evidence gate
+   to pass, and each counts-per-meter value to be within 5% of the median.
+   Identical approved proposals intentionally share a digest-derived route ID;
+   their persisted mission IDs distinguish the physical repeats. Exit 2 means
+   the set was analyzed but rejected. Neither analyzer changes config.
    Relock execution immediately after the third run or after any rejected or
    unsafe result.
 7. If the 0.25 m set is eligible, repeat the complete three-sample procedure at

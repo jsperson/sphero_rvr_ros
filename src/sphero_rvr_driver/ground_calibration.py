@@ -76,6 +76,7 @@ def analyze_ground_sample(
     return {
         "schema": GROUND_SAMPLE_SCHEMA,
         "source_sha": str(result.get("source_sha", "unknown")),
+        "mission_id": str(payload.get("mission_id", result.get("mission_id", ""))),
         "route_id": str(result.get("route_id", "")),
         "terminal_reason": terminal_reason,
         "terminal_settled": settled,
@@ -99,9 +100,11 @@ def aggregate_ground_samples(samples: Sequence[Mapping[str, Any]]) -> dict[str, 
     """Produce a fail-closed repeatability report from analyzed ground samples.
 
     A set becomes eligible for human config review only when it contains at
-    least three distinct, individually eligible routes from one exact source
-    SHA and every mean counts-per-meter value is within five percent of the
-    median. No config file is read or changed here.
+    least three distinct, individually eligible mission executions from one
+    exact source SHA and every mean counts-per-meter value is within five
+    percent of the median. Identical approved proposals intentionally share a
+    route ID, so mission ID is the repeat identity when it is available. No
+    config file is read or changed here.
     """
 
     if len(samples) < MINIMUM_GROUND_SAMPLES:
@@ -114,6 +117,7 @@ def aggregate_ground_samples(samples: Sequence[Mapping[str, Any]]) -> dict[str, 
         if not isinstance(sample, Mapping) or sample.get("schema") != GROUND_SAMPLE_SCHEMA:
             raise GroundCalibrationError(f"sample {index} has an unsupported schema")
         source_sha = str(sample.get("source_sha", "")).strip()
+        mission_id = str(sample.get("mission_id", "")).strip()
         route_id = str(sample.get("route_id", "")).strip()
         if not source_sha or source_sha == "unknown":
             raise GroundCalibrationError(f"sample {index} is missing an exact source SHA")
@@ -143,14 +147,20 @@ def aggregate_ground_samples(samples: Sequence[Mapping[str, Any]]) -> dict[str, 
         normalized.append(
             {
                 "source_sha": source_sha,
+                "mission_id": mission_id,
                 "route_id": route_id,
+                "sample_identity": (
+                    f"mission:{mission_id}" if mission_id else f"route:{route_id}"
+                ),
                 "eligible": sample.get("eligible_for_calibration_set") is True,
                 **numeric,
             }
         )
 
     source_shas = sorted({sample["source_sha"] for sample in normalized})
+    mission_ids = [sample["mission_id"] for sample in normalized]
     route_ids = [sample["route_id"] for sample in normalized]
+    sample_identities = [sample["sample_identity"] for sample in normalized]
     means = [sample["mean_counts_per_meter"] for sample in normalized]
     median_mean = statistics.median(means)
     deviations = [100.0 * abs(value - median_mean) / median_mean for value in means]
@@ -158,8 +168,8 @@ def aggregate_ground_samples(samples: Sequence[Mapping[str, Any]]) -> dict[str, 
     rejection_reasons = []
     if len(source_shas) != 1:
         rejection_reasons.append("samples do not share one exact source SHA")
-    if len(set(route_ids)) != len(route_ids):
-        rejection_reasons.append("route_id values are not unique")
+    if len(set(sample_identities)) != len(sample_identities):
+        rejection_reasons.append("mission execution identities are not unique")
     if not all(sample["eligible"] for sample in normalized):
         rejection_reasons.append("one or more samples failed the individual safety/evidence gate")
     if max_deviation_pct > MAX_SET_DEVIATION_PCT:
@@ -171,6 +181,7 @@ def aggregate_ground_samples(samples: Sequence[Mapping[str, Any]]) -> dict[str, 
         "schema": GROUND_SET_SCHEMA,
         "sample_count": len(normalized),
         "source_sha": source_shas[0] if len(source_shas) == 1 else None,
+        "mission_ids": mission_ids,
         "route_ids": route_ids,
         "actual_distance_m": [sample["actual_distance_m"] for sample in normalized],
         "median_left_counts_per_meter": statistics.median(

@@ -196,6 +196,16 @@ he never enters a GUID, digest, code, or hash. The server reloads and binds the
 unchanged proposal internally and rechecks safety before recording confirmation
 and again before route submission.
 
+An attended orchestration layer may treat an unambiguous confirmation such as
+`Ready for Run 2` as that one approval action when the exact bounded stage has
+already been stated, the newly planned typed proposal matches that stage, the
+operator identity is authenticated, and current safety evidence passes. The
+orchestrator supplies `confirm_current_proposal`; the server still reloads and
+binds the complete digest internally. Never require the operator to transcribe a
+GUID, digest, code, or hash. A changed proposal, ambiguous confirmation, expired
+approval, different stage, or failed safety check requires a new human-readable
+review and confirmation.
+
 After the reviewed repeat series—or immediately after any failed check—restore
 `false` and blank, restart the mission service, stop the supervised ROS graph,
 issue/verify zero, and repeat the process/device cleanup audit. A later turn,
