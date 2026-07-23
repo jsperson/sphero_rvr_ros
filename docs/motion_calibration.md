@@ -9,11 +9,16 @@ stationary before/after lidar scans instead measured a median 36.829 degrees
 (36.802–36.866 degrees), implying an effective skid-steer track of 0.250696 m.
 
 Scott explicitly approved the rounded provisional value
-`odom_wheel_track_m: 0.2507`. Turn primitives are independently capped at
-`max_turn_speed_rad_s: 0.25` during confirmation so the corrected geometry does
-not retain the prior 0.4 rad/s coast. The 2-degree control tolerance and
-5-degree terminal acceptance gate are unchanged. These values are not final
-mapping calibration until the restrained confirmation passes.
+`odom_wheel_track_m: 0.2507`. A subsequent restrained run independently
+validated it: encoder odometry measured 26.765 degrees, fixed-wall lidar
+measured 26.567 degrees, and full-scan registration measured a 26.751-degree
+median. The run stalled mechanically while 0.25 rad/s was still commanded, so
+Scott approved raising the turn-primitive-only ceiling to
+`max_turn_speed_rad_s: 0.35`. This is a restrained midpoint below the prior
+0.4 rad/s run: it seeks adequate sustained pivot torque while limiting coast.
+The 2-degree control tolerance and 5-degree terminal acceptance gate are
+unchanged. These values are not final mapping calibration until the restrained
+confirmation passes.
 
 The straight-line encoder scale has a two-run first estimate, but the complete
 motion path is not calibrated yet. Do not use duration-based distance assumptions

@@ -146,7 +146,7 @@ def test_turn_angle_primitive_uses_measured_heading_and_stops_at_angle():
     done = controller.update(OdomMotionState(stamp=2.2, x_m=0.0, y_m=0.0, yaw_rad=math.radians(89.0)))
 
     assert mid.kind is MotionPrimitiveKind.TURN_ANGLE
-    assert mid.command.angular_z == pytest.approx(0.25)
+    assert mid.command.angular_z == pytest.approx(0.35)
     assert done.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED
     assert done.measured_angle_rad == pytest.approx(math.radians(89.0))
     assert done.command.angular_z == 0.0

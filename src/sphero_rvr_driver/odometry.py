@@ -93,7 +93,7 @@ class OdomMotionState:
 class MotionPrimitiveConfig:
     distance_tolerance_m: float = 0.01
     angle_tolerance_rad: float = math.radians(2.0)
-    max_turn_speed_rad_s: float = 0.25
+    max_turn_speed_rad_s: float = 0.35
     heading_kp: float = 1.5
     max_heading_correction_rad_s: float = 0.6
     max_sample_age_s: float = 0.30
