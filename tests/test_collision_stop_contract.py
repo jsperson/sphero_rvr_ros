@@ -147,6 +147,7 @@ def test_collision_stop_node_exposes_all_side_sector_boundaries_as_ros_parameter
         "left_spin_max_angle_deg",
         "right_spin_min_angle_deg",
         "right_spin_max_angle_deg",
+        "trajectory_clearance_margin_m",
     ):
         assert f'"{name}": defaults.{name}' in source
         assert f'{name}=float(self.get_parameter("{name}").value)' in source

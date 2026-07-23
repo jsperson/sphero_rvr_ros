@@ -109,7 +109,9 @@ Priority order, strongest first:
 1. `ESTOPPED`: output zero only. Ignore all requested nonzero commands. Requires `/clear_estop` success and then a separate normal command/reset path.
 2. `SENSOR_STALE` or malformed scan: output zero only. No operator reset can clear this; only fresh valid scans can.
 3. `STOPPED` due to collision hazard: output zero only. Requires obstacle clearance plus `/collision_stop/reset` or an explicit new safe command after hysteresis, depending on implementation parameter `reset_policy`.
-4. `SLOW` or `HOLD`: reduce or zero forward component as distances approach threshold; angular-only escape may be allowed if sectors are clear.
+4. `SLOW` or `HOLD`: reduce or zero forward motion as distances approach the
+   front threshold; hold a turn only when its projected swept footprint
+   intersects an observed point.
 5. `CLEAR`: forward bounded requested velocity.
 6. Ordinary stale `/cmd_vel`: output zero and let the driver stale timeout remain a second line of defense.
 
@@ -186,10 +188,38 @@ Default sector checks in `base_link` frame:
 | front_stop | `[-30°, +30°]` | positive linear.x | STOP/HOLD if obstacle within stop distance. |
 | front_slow | `[-45°, +45°]` | positive linear.x | Clamp forward speed when obstacle within slow distance. |
 | rear_stop | `[150°, 180°]` and `[-180°, -150°]` | negative linear.x | STOP/HOLD reverse motion. |
-| left_spin | `[45°, 135°]` | positive angular.z / left arcs | Optional block/slow turn into side obstacle. |
-| right_spin | `[-135°, -45°]` | negative angular.z / right arcs | Optional block/slow turn into side obstacle. |
+| left_spin | `[45°, 135°]` | positive angular.z / left arcs | Scan-health and diagnostic coverage; not a fixed-distance veto. |
+| right_spin | `[-135°, -45°]` | negative angular.z / right arcs | Scan-health and diagnostic coverage; not a fixed-distance veto. |
 
 The implementation transforms polar scan samples into `base_link` with TF2 and applies sector tests there. With `fail_on_missing_tf:=true`, missing, stale, or malformed transforms are reported as unsafe scan health (`missing_tf`, `stale_tf`, or `malformed_tf`) and force zero output.
+
+### Projected trajectory envelope
+
+Commands are not judged solely by a fixed distance applied to an entire broad
+sector. The supervisor projects the current bounded `linear.x` / `angular.z`
+command over:
+
+```text
+requested_cmd_timeout_s + measured_stop_time_s
+```
+
+The default horizon is `0.25 + 0.50 = 0.75 s`. It samples the constant-twist
+arc at no more than 1 cm linear or 2° angular increments, transforms every valid
+scan point into `base_link`, and sweeps the configured rectangular footprint
+along those poses. Every footprint edge is expanded by
+`trajectory_clearance_margin_m` (`0.02 m` by default). A command is held at zero
+if a point enters that projected envelope; the check is repeated on every
+command, scan, and tick while motion is requested. The existing conservative
+front/rear stop and forward-slow rules remain additional gates.
+
+This means an obstacle behind or beside the rover does not block a forward or
+turn command merely because it lies in a broad sector. A point that the current
+trajectory will approach within the stopping horizon still blocks before
+contact. Missing/malformed TF or scan data remains fail-closed.
+
+The fixed `left_spin` and `right_spin` sectors remain useful for scan-health
+coverage, nearest-side diagnostics, and operator visibility. They no longer
+substitute a radial threshold for actual swept geometry.
 
 ### Stopping and slowdown distances
 
@@ -200,6 +230,7 @@ Parameters:
 | `stop_distance_m` | double | `0.35` | Forward obstacle threshold including footprint/payload margin. |
 | `slow_distance_m` | double | `0.60` | Start linear slowdown. |
 | `reverse_stop_distance_m` | double | `0.25` | Rear obstacle threshold. |
+| `trajectory_clearance_margin_m` | double | `0.02` | Margin added to each footprint edge during current-command trajectory projection. |
 | `release_distance_m` | double | `0.45` | Front threshold required to release STOPPED. Must be greater than stop distance. |
 | `release_time_s` | double | `0.50` | Scan must remain clear for this duration before release/reset can succeed. |
 | `min_forward_scale` | double | `0.0` | Lowest scale in SLOW. `0.0` becomes HOLD. |
@@ -214,7 +245,9 @@ elif nearest_front < slow_distance_m: linear.x *= scale(nearest_front)
 else: pass through bounded linear.x
 ```
 
-Use monotonic scaling from `0.0` at `stop_distance_m` to `1.0` at `slow_distance_m`. Angular velocity may pass through only if the turn sector is not blocked and `ESTOPPED/SENSOR_STALE/STOPPED` are inactive.
+Use monotonic scaling from `0.0` at `stop_distance_m` to `1.0` at
+`slow_distance_m`. Angular velocity may pass through only if the projected
+trajectory envelope is clear and `ESTOPPED/SENSOR_STALE/STOPPED` are inactive.
 
 ### Hysteresis
 
@@ -350,6 +383,7 @@ lidar_collision_stop_supervisor:
     stop_distance_m: 0.35
     slow_distance_m: 0.60
     reverse_stop_distance_m: 0.25
+    trajectory_clearance_margin_m: 0.02
     release_distance_m: 0.45
     release_time_s: 0.50
     reset_policy: manual
@@ -369,6 +403,8 @@ Diagnostics must include at least:
 - last scan age, frame ID, valid counts, min valid range per sector;
 - whether scan-frame -> `base_link` TF is available, plus the TF failure reason and timeout;
 - nearest front/rear/side obstacle distances;
+- projected-trajectory horizon, minimum clearance, collision time/point, and
+  configured footprint margin;
 - requested command age and values;
 - output command values;
 - active limits/scales;
@@ -418,7 +454,8 @@ Fake-scan matrix:
 | obstacle clears beyond release distance for release time + reset | `CLEAR`, old command discarded |
 | stale scan while moving | `SENSOR_STALE`, zero, driver stop called |
 | reverse command with rear obstacle | reverse zero/hold |
-| angular command with side obstacle | turn blocked or slowed per side-sector setting |
+| angular command with side obstacle outside projected sweep | turn passes |
+| angular command whose projected sweep reaches an obstacle | turn held at zero with trajectory evidence |
 | `/stop` while clear | `STOPPED`, zero before driver service wait |
 | `/estop` while clear | `ESTOPPED`, zero before driver service wait, future commands ignored |
 | `/clear_estop` with stale scan | `SENSOR_STALE`, zero, no replay |

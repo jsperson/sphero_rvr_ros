@@ -24,6 +24,9 @@ def generate_launch_description():
     start_live_route_runner = LaunchConfiguration("start_live_route_runner")
     front_slow_min_angle_deg = LaunchConfiguration("front_slow_min_angle_deg")
     front_slow_max_angle_deg = LaunchConfiguration("front_slow_max_angle_deg")
+    trajectory_clearance_margin_m = LaunchConfiguration(
+        "trajectory_clearance_margin_m"
+    )
 
     rvr_node = Node(
         package="sphero_rvr_driver",
@@ -53,6 +56,10 @@ def generate_launch_description():
                 ),
                 "front_slow_max_angle_deg": ParameterValue(
                     front_slow_max_angle_deg,
+                    value_type=float,
+                ),
+                "trajectory_clearance_margin_m": ParameterValue(
+                    trajectory_clearance_margin_m,
                     value_type=float,
                 ),
             },
@@ -129,6 +136,14 @@ def generate_launch_description():
             description=(
                 "Startup-only forward slow-corridor maximum bearing. Narrowing "
                 "requires an attended, reviewed physical-layout decision."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "trajectory_clearance_margin_m",
+            default_value="0.02",
+            description=(
+                "Startup-only margin added to the footprint swept along the "
+                "current command trajectory. Changes require reviewed geometry."
             ),
         ),
         rvr_node,

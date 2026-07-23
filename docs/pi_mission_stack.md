@@ -279,8 +279,13 @@ area is clear, and the operator can use physical power/ESTOP immediately.
    arbitration configuration. A successful `ros2 param set` after startup is
    not an override and must never be treated as one. Record the selected
    corridor and the excluded return's measured bearing in the session evidence.
-   Do not alter the inner stop sector, stop/slow distances, side-turn sectors,
-   stale-data policy, or TF requirements.
+   Turn safety uses the current-command trajectory projected through the command
+   timeout plus measured stopping horizon. It sweeps the configured rectangular
+   footprint with the startup-only `trajectory_clearance_margin_m` rather than
+   applying the forward stop threshold to a whole side sector. Do not alter the
+   footprint, trajectory margin, inner stop sector, stop/slow distances,
+   stale-data policy, or TF requirements without a reviewed physical-geometry
+   change and exact-SHA validation.
 
 3. In terminal C, source `/opt/ros/jazzy/setup.bash` and the isolated mission
    workspace setup, then capture readiness without submitting a route:

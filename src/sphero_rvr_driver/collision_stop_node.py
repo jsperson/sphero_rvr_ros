@@ -272,6 +272,7 @@ def main(args=None):
                 "stop_distance_m": defaults.stop_distance_m,
                 "slow_distance_m": defaults.slow_distance_m,
                 "reverse_stop_distance_m": defaults.reverse_stop_distance_m,
+                "trajectory_clearance_margin_m": defaults.trajectory_clearance_margin_m,
                 "measured_stop_time_s": defaults.measured_stop_time_s,
                 "braking_distance_margin_m": defaults.braking_distance_margin_m,
                 "release_distance_m": defaults.release_distance_m,
@@ -315,6 +316,7 @@ def main(args=None):
                 stop_distance_m=float(self.get_parameter("stop_distance_m").value),
                 slow_distance_m=float(self.get_parameter("slow_distance_m").value),
                 reverse_stop_distance_m=float(self.get_parameter("reverse_stop_distance_m").value),
+                trajectory_clearance_margin_m=float(self.get_parameter("trajectory_clearance_margin_m").value),
                 measured_stop_time_s=float(self.get_parameter("measured_stop_time_s").value),
                 braking_distance_margin_m=float(self.get_parameter("braking_distance_margin_m").value),
                 release_distance_m=float(self.get_parameter("release_distance_m").value),
@@ -441,6 +443,12 @@ def main(args=None):
                 f"front_slow_max_angle_deg={self._config.front_slow_max_angle_deg} "
                 f"stop_distance_m={self._config.stop_distance_m} "
                 f"slow_distance_m={self._config.slow_distance_m} "
+                f"left={decision.nearest.get('left')} "
+                f"right={decision.nearest.get('right')} "
+                f"trajectory_clearance_margin_m={self._config.trajectory_clearance_margin_m} "
+                f"trajectory_horizon_s={None if decision.trajectory is None else decision.trajectory.horizon_s} "
+                f"trajectory_min_clearance_m={None if decision.trajectory is None else decision.trajectory.minimum_clearance_m} "
+                f"trajectory_collision_time_s={None if decision.trajectory is None else decision.trajectory.collision_time_s} "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f})"
             )
             self._state_pub.publish(state)
@@ -479,6 +487,30 @@ def main(args=None):
                 "front_slow_max_angle_deg": f"{self._config.front_slow_max_angle_deg:.3f}",
                 "stop_distance_m": f"{self._config.stop_distance_m:.3f}",
                 "slow_distance_m": f"{self._config.slow_distance_m:.3f}",
+                "trajectory_clearance_margin_m": f"{self._config.trajectory_clearance_margin_m:.3f}",
+                "trajectory_horizon_s": _fmt_optional(
+                    None if decision.trajectory is None else decision.trajectory.horizon_s
+                ),
+                "trajectory_min_clearance_m": _fmt_optional(
+                    None
+                    if decision.trajectory is None
+                    else decision.trajectory.minimum_clearance_m
+                ),
+                "trajectory_collision_time_s": _fmt_optional(
+                    None
+                    if decision.trajectory is None
+                    else decision.trajectory.collision_time_s
+                ),
+                "trajectory_collision_point_x_m": _fmt_optional(
+                    None
+                    if decision.trajectory is None
+                    else decision.trajectory.collision_point_x_m
+                ),
+                "trajectory_collision_point_y_m": _fmt_optional(
+                    None
+                    if decision.trajectory is None
+                    else decision.trajectory.collision_point_y_m
+                ),
                 "nearest_rear_m": _fmt_optional(decision.nearest.get("rear")),
                 "nearest_left_m": _fmt_optional(decision.nearest.get("left")),
                 "nearest_right_m": _fmt_optional(decision.nearest.get("right")),

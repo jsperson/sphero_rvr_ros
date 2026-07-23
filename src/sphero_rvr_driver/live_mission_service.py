@@ -321,6 +321,20 @@ class LiveStatusExecutor:
             "collision_slow_distance_m": collision.value.get(
                 "collision_slow_distance_m"
             ),
+            "left_clearance_m": collision.value.get("left_clearance_m"),
+            "right_clearance_m": collision.value.get("right_clearance_m"),
+            "trajectory_clearance_margin_m": collision.value.get(
+                "trajectory_clearance_margin_m"
+            ),
+            "trajectory_horizon_s": collision.value.get(
+                "trajectory_horizon_s"
+            ),
+            "trajectory_min_clearance_m": collision.value.get(
+                "trajectory_min_clearance_m"
+            ),
+            "trajectory_collision_time_s": collision.value.get(
+                "trajectory_collision_time_s"
+            ),
             "control_state": control_state,
             "control_present": control.received_at_s is not None,
             "control_valid": control.valid,

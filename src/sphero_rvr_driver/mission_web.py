@@ -406,6 +406,12 @@ class MockReplayMissionAdapter:
             "stop_active": False,
             "estop_latched": False,
             "collision_state": "CLEAR",
+            "left_clearance_m": None,
+            "right_clearance_m": None,
+            "trajectory_clearance_margin_m": None,
+            "trajectory_horizon_s": None,
+            "trajectory_min_clearance_m": None,
+            "trajectory_collision_time_s": None,
             "telemetry_fresh": True,
             "independent_robot_safety": True,
             "browser_is_sole_safety_mechanism": False,
@@ -729,6 +735,20 @@ class LiveMissionWebAdapter:
                 ),
                 "collision_slow_distance_m": safety.get(
                     "collision_slow_distance_m"
+                ),
+                "left_clearance_m": safety.get("left_clearance_m"),
+                "right_clearance_m": safety.get("right_clearance_m"),
+                "trajectory_clearance_margin_m": safety.get(
+                    "trajectory_clearance_margin_m"
+                ),
+                "trajectory_horizon_s": safety.get(
+                    "trajectory_horizon_s"
+                ),
+                "trajectory_min_clearance_m": safety.get(
+                    "trajectory_min_clearance_m"
+                ),
+                "trajectory_collision_time_s": safety.get(
+                    "trajectory_collision_time_s"
                 ),
                 "telemetry_fresh": required_fresh,
                 "independent_robot_safety": True,
@@ -1083,7 +1103,7 @@ _INDEX_HTML = r'''<!doctype html>
     .mode-badge.execution { color:var(--red); border-color:#8f3d43; background:#32161b; }
     .mode-badge.execution::before { background:var(--red); box-shadow:0 0 .8rem var(--red); }
     .shell { width:min(1500px,100%); max-width:100%; margin:auto; padding:clamp(.8rem,2vw,1.5rem); overflow:hidden; }
-    .safety-strip { display:grid; grid-template-columns:repeat(5,1fr); gap:.65rem; margin-bottom:1rem; }
+    .safety-strip { display:grid; grid-template-columns:repeat(6,1fr); gap:.65rem; margin-bottom:1rem; }
     .safety-cell { padding:.7rem .85rem; border:1px solid var(--line); border-radius:.75rem; background:rgba(14,27,43,.92); }
     .safety-cell span { display:block; color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; }
     .safety-cell strong { display:block; margin-top:.28rem; font-size:.92rem; }
@@ -1141,6 +1161,7 @@ _INDEX_HTML = r'''<!doctype html>
     <section class="safety-strip" aria-label="Safety state">
       <div class="safety-cell"><span>Collision</span><strong id="safety-collision">CLEAR</strong></div>
       <div class="safety-cell"><span>Forward corridor</span><strong id="safety-corridor">UNAVAILABLE</strong></div>
+      <div class="safety-cell"><span>Projected path</span><strong id="safety-trajectory">UNAVAILABLE</strong></div>
       <div class="safety-cell"><span>Telemetry</span><strong id="safety-telemetry">FRESH</strong></div>
       <div class="safety-cell"><span>STOP</span><strong id="safety-stop">READY</strong></div>
       <div class="safety-cell"><span>ESTOP</span><strong id="safety-estop">CLEAR</strong></div>
@@ -1252,6 +1273,19 @@ _INDEX_HTML = r'''<!doctype html>
         && Number.isFinite(corridorMin) && Number.isFinite(corridorMax)
         ? `${corridorClearance.toFixed(2)} m (${corridorMin.toFixed(0)}°…${corridorMax.toFixed(0)}°)`
         : 'UNAVAILABLE';
+      const trajectoryClearance = snapshot.safety.trajectory_min_clearance_m == null
+        ? Number.NaN : Number(snapshot.safety.trajectory_min_clearance_m);
+      const trajectoryHorizon = snapshot.safety.trajectory_horizon_s == null
+        ? Number.NaN : Number(snapshot.safety.trajectory_horizon_s);
+      const leftClearance = snapshot.safety.left_clearance_m == null
+        ? Number.NaN : Number(snapshot.safety.left_clearance_m);
+      const rightClearance = snapshot.safety.right_clearance_m == null
+        ? Number.NaN : Number(snapshot.safety.right_clearance_m);
+      $('safety-trajectory').textContent = Number.isFinite(trajectoryClearance)
+        ? `${trajectoryClearance.toFixed(2)} m over ${trajectoryHorizon.toFixed(2)} s`
+        : Number.isFinite(leftClearance) && Number.isFinite(rightClearance)
+          ? `L ${leftClearance.toFixed(2)} / R ${rightClearance.toFixed(2)} m`
+          : 'UNAVAILABLE';
       $('safety-telemetry').textContent = snapshot.safety.telemetry_fresh ? 'FRESH' : 'STALE — BLOCKED';
       $('safety-stop').textContent = snapshot.safety.stop_state || (snapshot.safety.stop_active ? 'ACTIVE' : 'READY');
       $('safety-estop').textContent = snapshot.safety.estop_state || (snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR');

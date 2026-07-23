@@ -11,6 +11,7 @@ from sphero_rvr_driver.collision_stop import (
     Transform2D,
     TwistCommand,
     evaluate_scan,
+    evaluate_projected_trajectory,
 )
 
 
@@ -39,6 +40,14 @@ def scan_with(front=None, rear=None, left=None, right=None, *, stamp=0.0, count=
         frame_id="laser",
         transform_to_base=Transform2D(),
     )
+
+
+def scan_with_point(angle_deg, distance_m, *, stamp=0.0, count=360):
+    scan = scan_with(stamp=stamp, count=count)
+    ranges = list(scan.ranges)
+    index = round((angle_deg - math.degrees(scan.angle_min)) / math.degrees(scan.angle_increment))
+    ranges[index % count] = distance_m
+    return ScanInput(**{**scan.__dict__, "ranges": tuple(ranges)})
 
 
 def test_evaluate_scan_uses_base_link_sectors_after_calibrated_pi_lidar_yaw():
@@ -219,6 +228,96 @@ def test_reverse_and_side_obstacles_hold_unsafe_components():
     assert supervisor.apply_command(TwistCommand(-0.1, 0.0), now=0.0).output.linear_x == 0.0
     assert supervisor.apply_command(TwistCommand(0.0, 0.3), now=0.0).output.angular_z == 0.0
     assert supervisor.apply_command(TwistCommand(0.0, -0.3), now=0.0).output.angular_z == 0.0
+
+
+def test_projected_turn_allows_rear_left_point_outside_actual_swept_path():
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(134.0, 0.316, stamp=0.0)
+    supervisor = CollisionStopSupervisor(cfg, now=0.0)
+    supervisor.update_scan(scan, now=0.0)
+
+    decision = supervisor.apply_command(TwistCommand(0.0, math.radians(30.0)), now=0.0)
+
+    assert decision.state is CollisionState.CLEAR
+    assert decision.output == TwistCommand(0.0, cfg.max_angular_rad_s)
+    assert decision.trajectory is not None
+    assert decision.trajectory.blocked is False
+    assert decision.trajectory.horizon_s == pytest.approx(
+        cfg.requested_cmd_timeout_s + cfg.measured_stop_time_s
+    )
+    assert decision.trajectory.minimum_clearance_m is not None
+    assert decision.trajectory.minimum_clearance_m > 0.0
+
+
+def test_projected_forward_motion_ignores_obstacle_behind_current_trajectory():
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(134.0, 0.316, stamp=0.0)
+    supervisor = CollisionStopSupervisor(cfg, now=0.0)
+    supervisor.update_scan(scan, now=0.0)
+
+    decision = supervisor.apply_command(TwistCommand(0.08, 0.0), now=0.0)
+
+    assert decision.state is CollisionState.CLEAR
+    assert decision.output == TwistCommand(0.08, 0.0)
+    assert decision.trajectory is not None
+    assert decision.trajectory.blocked is False
+
+
+def test_projected_forward_motion_blocks_obstacle_entering_corner_sweep():
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(31.0, 0.30, stamp=0.0)
+    supervisor = CollisionStopSupervisor(cfg, now=0.0)
+    supervisor.update_scan(scan, now=0.0)
+
+    decision = supervisor.apply_command(TwistCommand(0.08, 0.0), now=0.0)
+
+    assert decision.state is CollisionState.SLOW
+    assert decision.reason == "forward_trajectory_blocked"
+    assert decision.output == TwistCommand()
+    assert decision.trajectory is not None
+    assert decision.trajectory.blocked is True
+
+
+@pytest.mark.parametrize(
+    ("angle_deg", "angular_z", "reason"),
+    (
+        (50.0, 0.4, "left_trajectory_blocked"),
+        (-50.0, -0.4, "right_trajectory_blocked"),
+    ),
+)
+def test_projected_turn_blocks_only_obstacle_entering_swept_footprint(
+    angle_deg,
+    angular_z,
+    reason,
+):
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(angle_deg, 0.27, stamp=0.0)
+    projected = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.0, angular_z),
+    )
+    supervisor = CollisionStopSupervisor(cfg, now=0.0)
+    supervisor.update_scan(scan, now=0.0)
+
+    decision = supervisor.apply_command(TwistCommand(0.0, angular_z), now=0.0)
+
+    assert projected.blocked is True
+    assert projected.collision_time_s is not None
+    assert 0.0 < projected.collision_time_s <= projected.horizon_s
+    assert decision.state is CollisionState.SLOW
+    assert decision.reason == reason
+    assert decision.output == TwistCommand()
+    assert decision.trajectory == projected
+
+
+def test_trajectory_margin_and_footprint_validation_fail_closed_at_configuration():
+    with pytest.raises(ValueError, match="trajectory_clearance_margin_m"):
+        CollisionStopConfig(trajectory_clearance_margin_m=-0.01)
+    with pytest.raises(ValueError, match="trajectory_clearance_margin_m"):
+        CollisionStopConfig(trajectory_clearance_margin_m=math.nan)
+    with pytest.raises(ValueError, match="footprint_front_m"):
+        CollisionStopConfig(footprint_front_m=0.0)
 
 
 def test_stop_estop_clear_estop_do_not_replay_old_command():

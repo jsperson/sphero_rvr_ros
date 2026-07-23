@@ -37,6 +37,8 @@ lidar_collision_stop_supervisor:
     stop_distance_m: 0.35
     slow_distance_m: 0.60
     reverse_stop_distance_m: 0.25
+    # Added to every footprint edge during command-trajectory projection.
+    trajectory_clearance_margin_m: 0.02
     measured_stop_time_s: 0.50
     braking_distance_margin_m: 0.02
     release_distance_m: 0.45

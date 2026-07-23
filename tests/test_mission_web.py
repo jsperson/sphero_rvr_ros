@@ -334,6 +334,11 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';" in page
     assert "$('mission-prompt').addEventListener('input'" in page
     assert 'id="safety-corridor"' in page
+    assert 'id="safety-trajectory"' in page
+    assert "trajectory_min_clearance_m" in page
+    assert "trajectory_horizon_s" in page
+    assert "left_clearance_m" in page
+    assert "right_clearance_m" in page
     assert "forward_corridor_clearance_m" in page
     assert "if (map.available === false)" in page
     for token in (
