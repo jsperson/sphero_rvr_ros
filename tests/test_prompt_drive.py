@@ -38,13 +38,19 @@ class _FakeProvider:
     model_id = "gpt-test"
     reasoning_effort = "high"
 
-    def __init__(self, response: PromptDriveProviderResponse):
+    def __init__(
+        self,
+        response: PromptDriveProviderResponse,
+        *,
+        expected_max_motion_calls: int = 3,
+    ):
         self.response = response
+        self.expected_max_motion_calls = expected_max_motion_calls
         self.prompts: list[str] = []
 
     def propose(self, prompt: str, limits: PromptDriveLimits) -> PromptDriveProviderResponse:
         self.prompts.append(prompt)
-        assert limits.max_motion_calls == 3
+        assert limits.max_motion_calls == self.expected_max_motion_calls
         return self.response
 
 
@@ -118,6 +124,48 @@ def test_planner_applies_fixed_executor_parameters_and_stable_digest() -> None:
     assert first.segments[1].arguments["angle_deg"] == 90.0
 
 
+def test_trusted_prompt_envelope_can_be_intentionally_widened_but_not_beyond_runtime_ceilings() -> None:
+    limits = PromptDriveLimits(
+        max_motion_calls=8,
+        max_translation_m=2.0,
+        max_translation_per_call_m=0.75,
+        max_runtime_s=120.0,
+        linear_speed_mps=0.08,
+        angular_speed_deg_s=30.0,
+    )
+    provider = _FakeProvider(
+        PromptDriveProviderResponse(
+            PromptDriveDecision.PROPOSE,
+            "Traverse an attended room route.",
+            (
+                {"tool_name": "move_distance", "value": 0.75},
+                {"tool_name": "turn_angle", "value": 90.0},
+                {"tool_name": "move_distance", "value": 0.75},
+                {"tool_name": "turn_angle", "value": -90.0},
+                {"tool_name": "move_distance", "value": 0.5},
+            ),
+        ),
+        expected_max_motion_calls=8,
+    )
+
+    proposal = PromptDrivePlanner(provider, limits=limits, source_sha="test-sha").propose(
+        "Drive the bounded room route."
+    )
+
+    assert len(proposal.segments) == 5
+    assert proposal.limits.to_json_dict()["max_translation_per_call_m"] == pytest.approx(0.75)
+    assert sum(
+        float(segment.arguments.get("distance_m", 0.0))
+        for segment in proposal.segments
+    ) == pytest.approx(2.0)
+    with pytest.raises(ValueError, match="max_motion_calls"):
+        PromptDriveLimits(max_motion_calls=9)
+    with pytest.raises(ValueError, match="max_runtime_s"):
+        PromptDriveLimits(max_runtime_s=121.0)
+    with pytest.raises(ValueError, match="per_call"):
+        PromptDriveLimits(max_translation_m=2.0, max_translation_per_call_m=0.76)
+
+
 def test_exact_digest_approval_builds_correlated_live_route() -> None:
     proposal = _proposal()
 
@@ -150,6 +198,7 @@ def test_approval_refuses_wrong_phrase_and_mutated_proposal() -> None:
     (
         (({"tool_name": "capture_observation", "value": 1.0},), "non-MVP tool"),
         (({"tool_name": "move_distance", "value": -0.1},), "positive/forward"),
+        (({"tool_name": "move_distance", "value": 0.51},), "per-call translation"),
         (({"tool_name": "turn_angle", "value": 181.0},), "turn_angle exceeds"),
         (
             (

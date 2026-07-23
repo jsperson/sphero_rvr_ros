@@ -45,6 +45,7 @@ class PromptDriveLimits:
 
     max_motion_calls: int = 3
     max_translation_m: float = 0.5
+    max_translation_per_call_m: float = 0.5
     max_abs_turn_deg: float = 180.0
     max_runtime_s: float = 45.0
     linear_speed_mps: float = 0.08
@@ -53,8 +54,11 @@ class PromptDriveLimits:
     def __post_init__(self) -> None:
         if self.max_motion_calls <= 0:
             raise ValueError("max_motion_calls must be positive")
+        if self.max_motion_calls > 8:
+            raise ValueError("max_motion_calls exceeds the Mission API session ceiling")
         for name in (
             "max_translation_m",
+            "max_translation_per_call_m",
             "max_abs_turn_deg",
             "max_runtime_s",
             "linear_speed_mps",
@@ -65,8 +69,14 @@ class PromptDriveLimits:
                 raise ValueError(f"{name} must be positive and finite")
         if self.max_translation_m > 2.0:
             raise ValueError("max_translation_m exceeds the Mission API move_distance ceiling")
+        if self.max_translation_per_call_m > 0.75:
+            raise ValueError("max_translation_per_call_m exceeds the live route segment ceiling")
+        if self.max_translation_per_call_m > self.max_translation_m:
+            raise ValueError("max_translation_per_call_m exceeds the cumulative translation ceiling")
         if self.max_abs_turn_deg > 180.0:
             raise ValueError("max_abs_turn_deg exceeds the Mission API turn_angle ceiling")
+        if self.max_runtime_s > 120.0:
+            raise ValueError("max_runtime_s exceeds the Mission API session ceiling")
         if self.linear_speed_mps > 0.2:
             raise ValueError("linear_speed_mps exceeds the Mission API ceiling")
         if self.angular_speed_deg_s > 90.0:
@@ -76,6 +86,7 @@ class PromptDriveLimits:
         return {
             "max_motion_calls": self.max_motion_calls,
             "max_translation_m": self.max_translation_m,
+            "max_translation_per_call_m": self.max_translation_per_call_m,
             "max_abs_turn_deg": self.max_abs_turn_deg,
             "max_runtime_s": self.max_runtime_s,
             "linear_speed_mps": self.linear_speed_mps,
@@ -298,6 +309,12 @@ def prompt_drive_proposal_from_json(payload: Mapping[str, Any]) -> PromptDrivePr
         limits = PromptDriveLimits(
             max_motion_calls=int(raw_limits.get("max_motion_calls", 0)),
             max_translation_m=float(raw_limits.get("max_translation_m", 0.0)),
+            max_translation_per_call_m=float(
+                raw_limits.get(
+                    "max_translation_per_call_m",
+                    min(float(raw_limits.get("max_translation_m", 0.0)), 0.75),
+                )
+            ),
             max_abs_turn_deg=float(raw_limits.get("max_abs_turn_deg", 0.0)),
             max_runtime_s=float(raw_limits.get("max_runtime_s", 0.0)),
             linear_speed_mps=float(raw_limits.get("linear_speed_mps", 0.0)),
@@ -433,6 +450,7 @@ def build_prompt_drive_payload(
             "turn_angle_value_unit": "degrees, positive left and negative right",
             "max_motion_calls": limits.max_motion_calls,
             "max_cumulative_translation_m": limits.max_translation_m,
+            "max_translation_per_call_m": limits.max_translation_per_call_m,
             "max_absolute_turn_per_call_deg": limits.max_abs_turn_deg,
         },
         "execution_mode": "proposal_only_until_local_operator_approval",
@@ -464,6 +482,7 @@ def _codex_route_prompt(prompt: str, limits: PromptDriveLimits) -> str:
             "allowed_tools": ["move_distance", "turn_angle"],
             "max_motion_calls": limits.max_motion_calls,
             "max_cumulative_translation_m": limits.max_translation_m,
+            "max_translation_per_call_m": limits.max_translation_per_call_m,
             "max_absolute_turn_per_call_deg": limits.max_abs_turn_deg,
         },
         "operator_prompt": prompt,
@@ -606,6 +625,10 @@ class PromptDrivePlanner:
             if tool_id == "move_distance":
                 if value <= 0.0:
                     raise MissionValidationError("prompt-drive move_distance must be positive/forward")
+                if value > self.limits.max_translation_per_call_m + 1e-9:
+                    raise MissionValidationError(
+                        "prompt-drive move_distance exceeds the per-call translation envelope"
+                    )
                 total_translation_m += value
                 arguments = {
                     "distance_m": value,

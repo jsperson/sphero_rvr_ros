@@ -24,7 +24,7 @@ from .live_mission_service import (
 )
 from .mission_api import build_default_registry
 from .mission_service import MissionService, MissionServiceServer
-from .prompt_drive import CodexOAuthPromptDriveProvider, PromptDrivePlanner
+from .prompt_drive import CodexOAuthPromptDriveProvider, PromptDriveLimits, PromptDrivePlanner
 from .prompt_drive_ros import RosLiveRouteExecutor
 from .prompt_mission_controller import PromptMissionController
 
@@ -198,6 +198,19 @@ def main(args=None):
             )
             model_id = str(self.get_parameter("planning_model").value).strip() or None
             reasoning_effort = str(self.get_parameter("planning_reasoning_effort").value)
+            planning_limits = PromptDriveLimits(
+                max_motion_calls=int(self.get_parameter("planning_max_motion_calls").value),
+                max_translation_m=float(self.get_parameter("planning_max_translation_m").value),
+                max_translation_per_call_m=float(
+                    self.get_parameter("planning_max_translation_per_call_m").value
+                ),
+                max_abs_turn_deg=float(self.get_parameter("planning_max_abs_turn_deg").value),
+                max_runtime_s=float(self.get_parameter("planning_max_runtime_s").value),
+                linear_speed_mps=float(self.get_parameter("planning_linear_speed_mps").value),
+                angular_speed_deg_s=float(
+                    self.get_parameter("planning_angular_speed_deg_s").value
+                ),
+            )
             ros_route_executor = (
                 RosLiveRouteExecutor(
                     request_topic=str(self.get_parameter("route_request_topic").value),
@@ -236,7 +249,11 @@ def main(args=None):
                     )
                     return PromptMissionController(
                         service,
-                        PromptDrivePlanner(provider, source_sha=source_sha),
+                        PromptDrivePlanner(
+                            provider,
+                            limits=planning_limits,
+                            source_sha=source_sha,
+                        ),
                         route_executor=prompt_route_executor,
                         execution_enabled=live_execution_enabled,
                         approval_ttl_s=float(self.get_parameter("approval_ttl_s").value),
@@ -328,6 +345,13 @@ def main(args=None):
             self.declare_parameter("planning_enabled", True)
             self.declare_parameter("planning_model", "gpt-5.6-sol")
             self.declare_parameter("planning_reasoning_effort", "high")
+            self.declare_parameter("planning_max_motion_calls", 3)
+            self.declare_parameter("planning_max_translation_m", 0.5)
+            self.declare_parameter("planning_max_translation_per_call_m", 0.5)
+            self.declare_parameter("planning_max_abs_turn_deg", 180.0)
+            self.declare_parameter("planning_max_runtime_s", 45.0)
+            self.declare_parameter("planning_linear_speed_mps", 0.08)
+            self.declare_parameter("planning_angular_speed_deg_s", 30.0)
             self.declare_parameter("live_execution_enabled", False)
             self.declare_parameter("live_execution_reviewed_sha", "")
             self.declare_parameter("approval_ttl_s", 60.0)

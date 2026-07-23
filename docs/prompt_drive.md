@@ -75,6 +75,27 @@ persisted proposal and generates the same exact phrase inside the service
 boundary. Both paths bind approval to the complete unchanged proposal digest;
 the web path merely removes manual hash transcription.
 
+## Trusted motion-envelope profiles
+
+The Pi owner—not the LLM or browser—selects the prompt-drive envelope at service
+startup. The normal calibration profile is:
+
+```text
+motion calls: 3
+cumulative translation: 0.5 m
+translation per call: 0.5 m
+route runtime: 45 s
+linear/angular speed: 0.08 m/s / 30 deg/s
+```
+
+After straight-ground calibration is accepted, a reviewed attended-room profile
+may use up to eight calls, 2.0 m cumulative translation, 0.75 m per translation,
+and 120 seconds. The profile is configured with `RVR_PLANNING_*` in the
+Pi-local mission-stack environment. Hard ceilings remain in code. Every selected
+value is shown in the browser and bound into the proposal digest. The model still
+cannot choose speed, timeout, ROS topics, raw motor commands, credentials,
+STOP/ESTOP behavior, or collision policy.
+
 After approval, the client waits for both live-route request and status graph
 connections, publishes only to `/mission_api/v2/live_route/request`, and waits
 for a correlated terminal manifest. It never publishes `Twist`, raw motor data,

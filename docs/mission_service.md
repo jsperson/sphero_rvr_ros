@@ -58,6 +58,15 @@ requires fresh odometry, collision CLEAR, STOP READY, ESTOP CLEAR, and the
 authenticated operator's exact proposal-digest phrase. Readiness is checked
 before approval is persisted and again before the route is submitted.
 
+The LLM motion envelope is separately Pi-owned and configurable. The calibration
+profile remains three motion calls, 0.5 m cumulative translation, 0.5 m per
+translation, and 45 seconds at 0.08 m/s and 30 deg/s. A reviewed attended-room
+profile may widen that envelope up to the hard service ceilings of eight calls,
+2.0 m cumulative translation, 0.75 m per translation, and 120 seconds. These
+values are loaded from `RVR_PLANNING_*`, displayed with the proposal, included
+in its digest, and validated again by `PromptDriveLimits`; model output cannot
+raise them or select speed, timeout, ROS, motor, credential, or safety settings.
+
 The canonical database target is resolved and its owner lock acquired before the
 database is opened or recovery runs, so symlink aliases cannot create a second
 owner. The socket is mode `0600`, accepts one bounded JSON request per connection,

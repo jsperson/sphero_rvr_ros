@@ -20,6 +20,17 @@ live_mission_service:
     planning_enabled: true
     planning_model: gpt-5.6-sol
     planning_reasoning_effort: high
+    # Pi-owned LLM motion envelope. Calibration defaults stay conservative.
+    # Attended room driving can be intentionally widened without changing code,
+    # but PromptDriveLimits still enforces 8 calls / 2 m / 0.75 m per call /
+    # 120 s and the fixed Mission API speed ceilings.
+    planning_max_motion_calls: 3
+    planning_max_translation_m: 0.5
+    planning_max_translation_per_call_m: 0.5
+    planning_max_abs_turn_deg: 180.0
+    planning_max_runtime_s: 45.0
+    planning_linear_speed_mps: 0.08
+    planning_angular_speed_deg_s: 30.0
     # Physical authority remains absent unless both fields are explicitly
     # overridden and the reviewed SHA exactly matches source and deployed SHAs.
     live_execution_enabled: false

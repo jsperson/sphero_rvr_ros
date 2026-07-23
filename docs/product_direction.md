@@ -52,11 +52,13 @@ adapter. The Pi deployment is intentionally proposal-only: it has no physical
 executor authority and does not substitute replay fixtures for missing live map
 or sensor evidence.
 
-The current acceptance step is the exact-SHA no-motion Pi deployment and real
-browser-to-OAuth proposal path. The next separately gated step is measured
-physical validation: resolve route-local versus absolute-odometry evidence, then
-perform restrained 10 cm, 45-degree, and multi-step stages with fresh operator
-approval for each exact proposal digest.
+The current acceptance step is measured straight-ground calibration of the
+deployed browser-to-OAuth-to-route path. The Pi now owns a configurable trusted
+prompt envelope: conservative calibration defaults can later be widened to an
+attended-room profile without granting the model ROS, motor, credential, or
+safety-policy authority. Each selected limit remains visible and bound to the
+confirmed proposal. Adaptive perception-driven replanning remains the next
+planner stage after deterministic prompt routes are physically calibrated.
 
 ## Delivery discipline
 
