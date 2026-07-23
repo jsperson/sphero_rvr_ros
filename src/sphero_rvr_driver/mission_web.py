@@ -861,7 +861,16 @@ class LiveMissionWebAdapter:
             raise MissionWebError("live web adapter requires a live-mode Pi mission service")
         self._service_snapshot = service
         self.live_execution_enabled = bool(service.get("live_execution_enabled", False))
-        self.mode = "live" if self.live_execution_enabled else "live/proposal-only"
+        self.stationary_perception_enabled = bool(
+            service.get("stationary_perception_enabled", False)
+        )
+        self.mode = (
+            "live/stationary-perception"
+            if self.stationary_perception_enabled
+            else "live"
+            if self.live_execution_enabled
+            else "live/proposal-only"
+        )
 
     def set_request_identity(self, identity: str) -> None:
         self._request_context.operator = str(identity).strip()
@@ -891,7 +900,16 @@ class LiveMissionWebAdapter:
             self.live_execution_enabled = bool(
                 self._service_snapshot.get("live_execution_enabled", False)
             )
-            self.mode = "live" if self.live_execution_enabled else "live/proposal-only"
+            self.stationary_perception_enabled = bool(
+                self._service_snapshot.get("stationary_perception_enabled", False)
+            )
+            self.mode = (
+                "live/stationary-perception"
+                if self.stationary_perception_enabled
+                else "live"
+                if self.live_execution_enabled
+                else "live/proposal-only"
+            )
             return self._translate(None if mission is None else dict(mission))
 
     def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
@@ -932,9 +950,15 @@ class LiveMissionWebAdapter:
                 # recomputes the exact full-digest phrase from freshly read
                 # persisted state, so a user no longer copies a hash and the
                 # unchanged-proposal binding remains server-owned and audited.
-                server_approval = approval_phrase(
-                    prompt_drive_proposal_from_json(proposal_payload)
-                )
+                if self.stationary_perception_enabled:
+                    server_approval = (
+                        "APPROVE STATIONARY PERCEPTION "
+                        f"{str(proposal_payload.get('proposal_digest', ''))}"
+                    )
+                else:
+                    server_approval = approval_phrase(
+                        prompt_drive_proposal_from_json(proposal_payload)
+                    )
                 snapshot = self.client.approve_prompt(
                     self._mission_id,
                     approval_phrase=server_approval,
@@ -977,20 +1001,34 @@ class LiveMissionWebAdapter:
         odom = live_evidence.get("odom", {})
         collision = live_evidence.get("collision", {})
         route_progress = live_evidence.get("route_progress", {})
-        required_fresh = bool(
-            isinstance(odom, Mapping)
-            and isinstance(collision, Mapping)
-            and odom.get("fresh", False)
-            and collision.get("fresh", False)
-        )
+        if self.stationary_perception_enabled:
+            required_fresh = all(
+                isinstance(live_evidence.get(name), Mapping)
+                and bool(live_evidence[name].get("fresh", False))
+                for name in ("camera", "lidar", "localization", "semantic_map")
+            )
+        else:
+            required_fresh = bool(
+                isinstance(odom, Mapping)
+                and isinstance(collision, Mapping)
+                and odom.get("fresh", False)
+                and collision.get("fresh", False)
+            )
         stop_state = str(safety.get("stop_state", "UNKNOWN")).upper()
         estop_state = str(safety.get("estop_state", "UNKNOWN")).upper()
         execution_ready = bool(
-            self.live_execution_enabled
-            and required_fresh
-            and str(safety.get("collision_state", "UNKNOWN")).upper() == "CLEAR"
-            and stop_state == "READY"
-            and estop_state == "CLEAR"
+            (
+                self.stationary_perception_enabled
+                and not self.live_execution_enabled
+                and required_fresh
+            )
+            or (
+                self.live_execution_enabled
+                and required_fresh
+                and str(safety.get("collision_state", "UNKNOWN")).upper() == "CLEAR"
+                and stop_state == "READY"
+                and estop_state == "CLEAR"
+            )
         )
 
         if mission is None:
@@ -1054,6 +1092,25 @@ class LiveMissionWebAdapter:
                 "service_source_sha": self._service_snapshot.get("source_sha", ""),
                 "service_deployed_sha": self._service_snapshot.get("deployed_sha", ""),
                 "boundary": "Pi-local MissionService Unix socket",
+                **(
+                    {
+                        "rolling_replay": True,
+                        "stationary_perception": True,
+                        "real_llm_provider": self._service_snapshot.get(
+                            "provider_id"
+                        )
+                        == "openai-codex-oauth",
+                        "provider_id": self._service_snapshot.get("provider_id", ""),
+                        "model_id": self._service_snapshot.get("model_id", ""),
+                        "reasoning_effort": self._service_snapshot.get(
+                            "reasoning_effort", ""
+                        ),
+                        "motion_authority": False,
+                        "physical_execution_enabled": False,
+                    }
+                    if self.stationary_perception_enabled
+                    else {}
+                ),
             },
             "scenario": LiveScenario.LIVE.value,
             "proposal": dict(proposal) if proposal else None,
@@ -1066,6 +1123,7 @@ class LiveMissionWebAdapter:
                 "method": "authenticated_one_click",
                 "server_digest_bound": True,
                 "simulation_only": False,
+                "stationary_perception_only": self.stationary_perception_enabled,
             },
             "mission": {
                 "mission_id": mission_id,
@@ -1121,7 +1179,54 @@ class LiveMissionWebAdapter:
             },
             "events": translated_events,
             "map": _authoritative_live_map(live_evidence),
+            "camera_preview": _live_camera_preview(live_evidence),
+            "rolling": (
+                _stationary_projection(result)
+                if self.stationary_perception_enabled
+                else {}
+            ),
         }
+
+
+def _stationary_projection(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize running checkpoints and terminal stationary results for the UI."""
+
+    world = result.get("world_snapshot", result.get("final_snapshot", {}))
+    if not isinstance(world, Mapping):
+        world = {}
+    revisions = result.get("intent_revisions", [])
+    decisions = result.get("decision_snapshots", [])
+    inference = result.get("inference", {})
+    metrics = result.get("metrics", {})
+    return {
+        "world_snapshot": dict(world),
+        "decision_snapshots": list(decisions) if isinstance(decisions, list) else [],
+        "active_intent": (
+            result.get("active_intent")
+            if isinstance(result.get("active_intent"), Mapping)
+            else None
+        ),
+        "intent_revisions": list(revisions) if isinstance(revisions, list) else [],
+        "inference": dict(inference) if isinstance(inference, Mapping) else {},
+        "metrics": dict(metrics) if isinstance(metrics, Mapping) else {},
+    }
+
+
+def _live_camera_preview(live_evidence: Mapping[str, Any]) -> dict[str, Any]:
+    camera = live_evidence.get("camera", {})
+    if not isinstance(camera, Mapping):
+        return {"available": False}
+    value = camera.get("value", {})
+    if not isinstance(value, Mapping):
+        return {"available": False}
+    data_url = str(value.get("thumbnail_data_url", ""))
+    return {
+        "available": bool(camera.get("fresh") and data_url.startswith("data:image/jpeg;base64,")),
+        "frame_id": str(value.get("frame_id", "")),
+        "stamp_s": value.get("stamp_s"),
+        "data_url": data_url,
+        "detections": value.get("detections", []),
+    }
 
 
 def _web_state(status: str) -> str:
@@ -1478,7 +1583,11 @@ class _MissionWebHttpHandler(BaseHTTPRequestHandler):
         self.send_response(response.status)
         self.send_header("Content-Type", response.content_type)
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'",
+        )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         encoded = response.body.encode("utf-8")
@@ -1554,7 +1663,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not args.public_origin:
             parser.error("live mode requires --public-origin for same-origin enforcement")
         adapter: MissionWebAdapter = LiveMissionWebAdapter(
-            MissionServiceClient(args.mission_socket),
+            # Stationary checkpoints deliberately retain exact world snapshots and
+            # can exceed the generic command-response ceiling during a sustained
+            # live run. Keep the browser boundary finite while allowing the
+            # evidence-rich Stage C result to remain visible through termination.
+            MissionServiceClient(
+                args.mission_socket,
+                max_response_bytes=128_000_000,
+            ),
             session_id=args.session_id,
             operator=args.operator,
         )
@@ -1768,6 +1884,7 @@ _INDEX_HTML = r'''<!doctype html>
         </section>
         <section class="panel" id="rolling-world-panel" hidden>
           <h2>Fresh world snapshot & detections</h2>
+          <img id="live-camera-preview" hidden alt="Latest live stationary camera evidence" style="width:100%;max-width:640px;border-radius:12px;border:1px solid #385168;margin-bottom:1rem">
           <pre class="rolling-json" id="rolling-world"></pre>
         </section>
         <section class="panel" aria-labelledby="result-heading">
@@ -1810,15 +1927,16 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const live = !snapshot.adapter.fixture_only;
       const rollingReplay = Boolean(snapshot.adapter.rolling_replay);
+      const stationary = Boolean(snapshot.adapter.stationary_perception);
       const execution = live && snapshot.adapter.live_execution_enabled;
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
-      badge.textContent = rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
-      $('scenario-label').textContent = live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
-      $('approval-heading').textContent = live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
-      $('authority-copy').textContent = live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
-      $('approve').textContent = live ? 'Approve and run' : rollingReplay ? 'Start rolling replay' : 'Approve simulation';
+      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      $('scenario-label').textContent = stationary ? 'Stationary sensor target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
+      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
+      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
+      $('approve').textContent = stationary ? 'Start stationary perception' : live ? 'Approve and run' : rollingReplay ? 'Start rolling replay' : 'Approve simulation';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -1885,6 +2003,7 @@ _INDEX_HTML = r'''<!doctype html>
 
     function renderRolling(snapshot) {
       const enabled = Boolean(snapshot.adapter.rolling_replay);
+      const stationary = Boolean(snapshot.adapter.stationary_perception);
       $('rolling-intent-panel').hidden = !enabled;
       $('rolling-loop-panel').hidden = !enabled;
       $('rolling-world-panel').hidden = !enabled;
@@ -1893,14 +2012,23 @@ _INDEX_HTML = r'''<!doctype html>
       const intent = rolling.active_intent;
       if (intent) {
         $('rolling-intent').className = '';
-        $('rolling-intent').innerHTML = `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Steering / speed</span><strong>${Number(intent.steering).toFixed(2)} · ${Number(intent.speed_limit_mps).toFixed(2)} m/s</strong></div><div class="rolling-card"><span>Safe corridor</span><strong>${escapeHtml(intent.safe_corridor)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint</span><strong>${escapeHtml(intent.viewpoint)}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)}</code>`;
+        $('rolling-intent').innerHTML = stationary
+          ? `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Action</span><strong>${escapeHtml(intent.action)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint recommendation</span><strong>${escapeHtml(intent.viewpoint_recommendation)}</strong></div><div class="rolling-card"><span>Search targets</span><strong>${escapeHtml((intent.search_targets || []).join(', '))}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)} · motion_authority=false</code>`
+          : `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Steering / speed</span><strong>${Number(intent.steering).toFixed(2)} · ${Number(intent.speed_limit_mps).toFixed(2)} m/s</strong></div><div class="rolling-card"><span>Safe corridor</span><strong>${escapeHtml(intent.safe_corridor)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint</span><strong>${escapeHtml(intent.viewpoint)}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)}</code>`;
       } else {
         $('rolling-intent').className = 'empty';
         $('rolling-intent').textContent = rolling.inference && rolling.inference.in_flight ? 'First LLM intent is being produced while replay perception updates.' : 'No validated intent yet.';
       }
       const inference = rolling.inference || {};
       const metrics = rolling.metrics || {};
-      const metricItems = [
+      const metricItems = stationary ? [
+        ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
+        ['Intent revisions', metrics.intent_revision_count || 0],
+        ['Sensor updates during LLM', metrics.sensor_updates_while_llm_in_flight || 0],
+        ['Camera / lidar updates', `${metrics.camera_updates || 0} / ${metrics.lidar_updates || 0}`],
+        ['Semantic-map updates', metrics.semantic_map_updates || 0],
+        ['Enrolled / unknown faces', `${metrics.enrolled_face_track_count || 0} / ${metrics.unknown_face_track_count || 0}`],
+      ] : [
         ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
         ['Intent revisions', metrics.intent_revision_count || 0],
         ['Motion ticks during LLM', metrics.motion_updates_while_llm_in_flight || 0],
@@ -1910,9 +2038,21 @@ _INDEX_HTML = r'''<!doctype html>
       ];
       $('rolling-metrics').innerHTML = metricItems.map(([label,value], index) => `<div class="rolling-card"><span>${escapeHtml(label)}</span><strong class="${index === 0 && inference.in_flight ? 'in-flight' : ''}">${escapeHtml(value)}</strong></div>`).join('');
       const revisions = rolling.intent_revisions || [];
-      $('rolling-revisions').innerHTML = revisions.length ? revisions.slice().reverse().map((item) => `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.movement_updates_during_call)} replay updates during call</small><strong>${Number(item.steering).toFixed(2)} steering · ${escapeHtml(item.safe_corridor)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint)}</strong><br>${escapeHtml(item.rationale)}</div>`).join('') : '<p class="empty">No completed LLM revisions yet.</p>';
+      $('rolling-revisions').innerHTML = revisions.length ? revisions.slice().reverse().map((item) => stationary
+        ? `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.sensor_updates_during_call)} live sensor updates during call</small><strong>${escapeHtml(item.action)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint_recommendation)}</strong><br>${escapeHtml(item.rationale)}</div>`
+        : `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.movement_updates_during_call)} replay updates during call</small><strong>${Number(item.steering).toFixed(2)} steering · ${escapeHtml(item.safe_corridor)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint)}</strong><br>${escapeHtml(item.rationale)}</div>`).join('') : '<p class="empty">No completed LLM revisions yet.</p>';
       const world = rolling.world_snapshot || {};
-      const visible = {
+      const visible = stationary ? {
+        snapshot_id: world.snapshot_id,
+        version: world.version,
+        observed_at_s: world.observed_at_s,
+        sources: world.sources,
+        occupancy: world.occupancy,
+        detections: world.detections,
+        semantic_tracks: world.semantic_tracks,
+        uncertain_track_id: world.uncertain_track_id,
+        safety: world.safety,
+      } : {
         snapshot_id: world.snapshot_id,
         tick: world.tick,
         elapsed_s: world.elapsed_s,
@@ -1923,6 +2063,12 @@ _INDEX_HTML = r'''<!doctype html>
         semantic_map: world.semantic_map,
       };
       $('rolling-world').textContent = JSON.stringify(visible, null, 2);
+      const preview = snapshot.camera_preview || {};
+      $('live-camera-preview').hidden = !stationary || !preview.available;
+      if (stationary && preview.available) {
+        $('live-camera-preview').src = preview.data_url;
+        $('live-camera-preview').alt = `Live stationary camera evidence ${preview.frame_id}`;
+      }
     }
 
     function renderMap(map) {

@@ -24,7 +24,7 @@ Current `origin/main` at design time is `44912af` (`feat: expose camera lidar ca
 - `launch/rvr.launch.py`:
   - starts the live `sphero_rvr_driver` node with `config/rvr.yaml`.
 - `launch/lidar.launch.py` and `config/lidar.yaml`:
-  - start `rplidar_ros/rplidar_node`, publish `/scan`, and publish `base_link -> laser` via configurable `laser_x/y/z/roll/pitch/yaw` placeholders;
+  - start `rplidar_ros/rplidar_composition` as node `/rplidar_node`, publish `/scan`, and publish `base_link -> laser` via configurable `laser_x/y/z/roll/pitch/yaw` placeholders;
   - default lidar device is `/dev/rplidar` at `460800`, frame `laser`, scan mode `Standard`.
 - `launch/mapping.launch.py`:
   - defaults to `start_rvr:=false`, `start_lidar:=true`, `start_camera:=false`, `start_slam:=true`;

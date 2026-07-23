@@ -32,6 +32,10 @@ from .perception_navigation import (
 from .prompt_drive import CodexOAuthPromptDriveProvider, PromptDriveLimits, PromptDrivePlanner
 from .prompt_drive_ros import RosLiveRouteExecutor
 from .prompt_mission_controller import PromptMissionController
+from .stationary_perception import (
+    CodexOAuthStationaryIntentProvider,
+    StationaryPerceptionController,
+)
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:
@@ -241,6 +245,9 @@ def main(args=None):
             socket_path = Path(str(self.get_parameter("socket_path").value)).expanduser()
             registry = build_default_registry(detector_classes=("shoe", "backpack"))
             planning_enabled = bool(self.get_parameter("planning_enabled").value)
+            stationary_perception_enabled = bool(
+                self.get_parameter("stationary_perception_enabled").value
+            )
             live_execution_enabled = _validated_execution_gate(
                 enabled=bool(self.get_parameter("live_execution_enabled").value),
                 reviewed_sha=str(self.get_parameter("live_execution_reviewed_sha").value),
@@ -248,6 +255,10 @@ def main(args=None):
                 deployed_sha=deployed_sha,
                 planning_enabled=planning_enabled,
             )
+            if stationary_perception_enabled and live_execution_enabled:
+                raise ValueError(
+                    "stationary perception cannot coexist with live execution authority"
+                )
             model_id = str(self.get_parameter("planning_model").value).strip() or None
             reasoning_effort = str(self.get_parameter("planning_reasoning_effort").value)
             planning_limits = PromptDriveLimits(
@@ -293,7 +304,28 @@ def main(args=None):
                 )
 
             controller_factory = None
-            if planning_enabled:
+            if stationary_perception_enabled:
+                def controller_factory(
+                    service: MissionService,
+                ) -> StationaryPerceptionController:
+                    provider = CodexOAuthStationaryIntentProvider(
+                        model=model_id,
+                        reasoning_effort=reasoning_effort,
+                    )
+                    return StationaryPerceptionController(
+                        service,
+                        provider,
+                        self._cache,
+                        tick_s=float(
+                            self.get_parameter("stationary_perception_tick_s").value
+                        ),
+                        max_source_age_s=float(
+                            self.get_parameter(
+                                "stationary_perception_max_source_age_s"
+                            ).value
+                        ),
+                    )
+            elif planning_enabled:
                 def controller_factory(service: MissionService) -> PromptMissionController:
                     provider = CodexOAuthPromptDriveProvider(
                         model=model_id,
@@ -395,6 +427,9 @@ def main(args=None):
             self.declare_parameter("max_source_age_s", 1.0)
             self.declare_parameter("max_binding_age_s", 2.0)
             self.declare_parameter("planning_enabled", True)
+            self.declare_parameter("stationary_perception_enabled", False)
+            self.declare_parameter("stationary_perception_tick_s", 0.2)
+            self.declare_parameter("stationary_perception_max_source_age_s", 1.5)
             self.declare_parameter("planning_model", "gpt-5.6-sol")
             self.declare_parameter("planning_reasoning_effort", "high")
             self.declare_parameter("planning_max_motion_calls", 3)

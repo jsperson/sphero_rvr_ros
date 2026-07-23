@@ -19,6 +19,7 @@ setup(
                 "launch/mapping.launch.py",
                 "launch/camera.launch.py",
                 "launch/mission_service.launch.py",
+                "launch/stationary_perception.launch.py",
             ],
         ),
         (
@@ -29,6 +30,7 @@ setup(
                 "config/range_motion.yaml",
                 "config/lidar.yaml",
                 "config/slam_toolbox.yaml",
+                "config/stationary_slam_toolbox.yaml",
                 "config/camera.yaml",
                 "config/mission_planner.yaml",
                 "config/live_route_runner.yaml",
@@ -81,6 +83,7 @@ setup(
                 "docs/lidar_motion_validation.md",
                 "docs/perception_navigation.md",
                 "docs/rolling_replay.md",
+                "docs/stationary_perception.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -89,6 +92,7 @@ setup(
             [
                 "systemd/user/rvr-mission-service.service",
                 "systemd/user/rvr-mission-web.service",
+                "systemd/user/rvr-stationary-perception.service",
             ],
         ),
     ],
@@ -126,6 +130,7 @@ setup(
             "rvr_system_check = sphero_rvr_driver.system_validation:main",
             "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
             "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
+            "stationary_perception = sphero_rvr_driver.stationary_perception_node:main",
         ],
     },
 )

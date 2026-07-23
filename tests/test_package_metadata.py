@@ -20,6 +20,7 @@ EXPECTED_DATA_FILES = {
         "launch/mapping.launch.py",
         "launch/camera.launch.py",
         "launch/mission_service.launch.py",
+        "launch/stationary_perception.launch.py",
     },
     "share/sphero_rvr_driver/config": {
         "config/rvr.yaml",
@@ -29,6 +30,7 @@ EXPECTED_DATA_FILES = {
         "config/camera.yaml",
         "config/mission_service.yaml",
         "config/mission-stack.env.example",
+        "config/stationary_slam_toolbox.yaml",
     },
     "share/sphero_rvr_driver/scripts": {
         "scripts/install-rvr-pi",
@@ -61,6 +63,7 @@ EXPECTED_DATA_FILES = {
         "docs/lidar_motion_validation.md",
         "docs/perception_navigation.md",
         "docs/rolling_replay.md",
+        "docs/stationary_perception.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
@@ -74,6 +77,7 @@ EXPECTED_DATA_FILES = {
     "share/sphero_rvr_driver/systemd/user": {
         "systemd/user/rvr-mission-service.service",
         "systemd/user/rvr-mission-web.service",
+        "systemd/user/rvr-stationary-perception.service",
     },
 }
 

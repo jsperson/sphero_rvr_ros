@@ -1,0 +1,16 @@
+[Unit]
+Description=Sphero RVR live stationary lidar/camera perception (no motion authority)
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/sphero_rvr/mission-stack.env
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source "$RVR_ROS_WORKSPACE/install/setup.bash" && exec ros2 launch sphero_rvr_driver stationary_perception.launch.py enrollment_dir:="${RVR_FACE_ENROLLMENT_DIR:-$HOME/.local/share/sphero_rvr/face-enrollment}" evidence_dir:="${RVR_STATIONARY_EVIDENCE_DIR:-$HOME/.local/state/sphero_rvr/stationary-evidence}" camera_info_url:="${RVR_STATIONARY_CAMERA_INFO_URL:-file://$HOME/.ros/camera_info/rvr_pi_camera3_stagec_800x600.yaml}"'
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

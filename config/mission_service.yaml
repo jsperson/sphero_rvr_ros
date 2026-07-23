@@ -18,6 +18,11 @@ live_mission_service:
     max_source_age_s: 1.0
     max_binding_age_s: 2.0
     planning_enabled: true
+    # Stage C swaps the route planner for live stationary observation intent.
+    # The node rejects this mode if live execution authority is enabled.
+    stationary_perception_enabled: false
+    stationary_perception_tick_s: 0.2
+    stationary_perception_max_source_age_s: 1.5
     planning_model: gpt-5.6-sol
     planning_reasoning_effort: high
     # Pi-owned LLM motion envelope. Calibration defaults stay conservative.

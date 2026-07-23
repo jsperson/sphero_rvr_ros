@@ -913,6 +913,246 @@ class MissionService:
                 )
             return self.prompt_status(mission_id)
 
+    def record_stationary_perception_proposal(
+        self,
+        mission_id: str,
+        proposal: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a live-sensor proposal that can never authorize motion."""
+
+        payload = json.loads(_json_dump(dict(proposal)))
+        with self._lock:
+            if self.mode != "live" or self.live_execution_enabled:
+                raise MissionValidationError(
+                    "stationary perception requires live mode with execution disabled"
+                )
+            row = self._prompt_row(mission_id)
+            if row["status"] != "planning":
+                raise MissionValidationError(
+                    "prompt mission is not awaiting a stationary perception proposal"
+                )
+            if (
+                str(payload.get("schema", ""))
+                != "sphero_rvr.stationary_perception_proposal.v1"
+            ):
+                raise MissionValidationError(
+                    "stationary perception proposal schema is invalid"
+                )
+            if str(payload.get("prompt", "")).strip() != row["prompt"]:
+                raise MissionValidationError(
+                    "stationary perception prompt does not match the persisted mission"
+                )
+            if str(payload.get("source_sha", "")).strip() != self.source_sha:
+                raise MissionValidationError(
+                    "stationary perception source SHA does not match the service"
+                )
+            if payload.get("segments") not in ([], ()):
+                raise MissionValidationError(
+                    "stationary perception cannot contain a route or motion segments"
+                )
+            contract = payload.get("contract", {})
+            if (
+                not isinstance(contract, Mapping)
+                or bool(contract.get("motion_authority", True))
+                or bool(contract.get("physical_execution_enabled", True))
+            ):
+                raise MissionValidationError(
+                    "stationary perception proposal must explicitly deny physical authority"
+                )
+            digest = str(payload.get("proposal_digest", "")).strip().lower()
+            digest_payload = dict(payload)
+            digest_payload.pop("proposal_digest", None)
+            if (
+                len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or _arguments_digest(digest_payload) != digest
+            ):
+                raise MissionValidationError(
+                    "stationary perception digest must bind the complete proposal"
+                )
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='proposed', proposal_json=?, "
+                    "proposal_digest=?, updated_at_s=? WHERE mission_id=?",
+                    (_json_dump(payload), digest, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "stationary_perception_proposal",
+                    {
+                        "proposal": payload,
+                        "motion_authority": False,
+                        "physical_execution_enabled": False,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
+    def approve_stationary_perception_mission(
+        self,
+        mission_id: str,
+        *,
+        proposal_digest: str,
+        operator: str,
+    ) -> dict[str, Any]:
+        """Approve only live observation; no executor or route grant is created."""
+
+        digest = str(proposal_digest).strip().lower()
+        approved_by = str(operator).strip()
+        with self._lock:
+            if self.mode != "live" or self.live_execution_enabled:
+                raise MissionValidationError(
+                    "stationary perception approval requires execution-locked live mode"
+                )
+            row = self._prompt_row(mission_id)
+            if row["status"] != "proposed":
+                raise MissionValidationError(
+                    "only a proposed stationary perception mission can be approved"
+                )
+            if not approved_by:
+                raise MissionValidationError(
+                    "stationary perception approval operator is required"
+                )
+            if digest != str(row["proposal_digest"]):
+                raise MissionValidationError(
+                    "stationary perception approval does not match the persisted proposal"
+                )
+            approval = {
+                "approved": True,
+                "operator": approved_by,
+                "proposal_digest": digest,
+                "approved_at_s": self._now(),
+                "stationary_perception_only": True,
+                "motion_authority": False,
+                "physical_execution_enabled": False,
+            }
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='running', approval_json=?, "
+                    "updated_at_s=? WHERE mission_id=?",
+                    (_json_dump(approval), self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "stationary_perception_started",
+                    approval,
+                )
+            return self.prompt_status(mission_id)
+
+    def record_stationary_perception_checkpoint(
+        self,
+        mission_id: str,
+        *,
+        kind: str,
+        checkpoint: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist fresh live perception and LLM revisions without route state."""
+
+        event_kind = str(kind).strip()
+        payload = json.loads(_json_dump(dict(checkpoint)))
+        if not event_kind:
+            raise MissionValidationError(
+                "stationary perception checkpoint kind is required"
+            )
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "running":
+                raise MissionValidationError(
+                    "stationary perception checkpoint requires a running mission"
+                )
+            if bool(payload.get("motion_authority", True)) or bool(
+                payload.get("physical_execution_enabled", True)
+            ):
+                raise MissionValidationError(
+                    "stationary perception checkpoint cannot claim physical authority"
+                )
+            world_snapshot = payload.get("world_snapshot", {})
+            if not isinstance(world_snapshot, Mapping):
+                world_snapshot = {}
+            compact_event = {
+                "schema": payload.get("schema"),
+                "mission_id": payload.get("mission_id", mission_id),
+                "status": payload.get("status"),
+                "terminal": bool(payload.get("terminal", False)),
+                "terminal_reason": payload.get("terminal_reason", ""),
+                "progress": payload.get("progress", 0.0),
+                "snapshot_id": world_snapshot.get("snapshot_id", ""),
+                "active_intent": payload.get("active_intent"),
+                "inference": payload.get("inference", {}),
+                "metrics": payload.get("metrics", {}),
+                "motion_authority": False,
+                "physical_execution_enabled": False,
+            }
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET result_json=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (_json_dump(payload), self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    event_kind,
+                    compact_event,
+                )
+            return self.prompt_status(mission_id)
+
+    def finish_stationary_perception_mission(
+        self,
+        mission_id: str,
+        *,
+        status: str,
+        reason: str,
+        result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a deterministic stationary terminal result."""
+
+        destination = str(status).strip().lower()
+        if destination not in _PROMPT_TERMINAL_STATUSES - {"rejected"}:
+            raise MissionValidationError(
+                "stationary perception terminal status is invalid"
+            )
+        payload = json.loads(_json_dump(dict(result)))
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "running":
+                raise MissionValidationError(
+                    "stationary perception terminal result requires a running mission"
+                )
+            if bool(payload.get("motion_authority", True)) or bool(
+                payload.get("physical_execution_enabled", True)
+            ):
+                raise MissionValidationError(
+                    "stationary perception terminal result cannot claim physical authority"
+                )
+            terminal_reason = str(reason).strip()
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status=?, result_json=?, "
+                    "terminal_reason=?, updated_at_s=? WHERE mission_id=?",
+                    (
+                        destination,
+                        _json_dump(payload),
+                        terminal_reason,
+                        self._now(),
+                        mission_id,
+                    ),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "terminal",
+                    {
+                        "status": destination,
+                        "reason": terminal_reason,
+                        "result": payload,
+                        "motion_authority": False,
+                        "physical_execution_enabled": False,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
     def approve_prompt_mission(
         self,
         mission_id: str,
@@ -1049,6 +1289,44 @@ class MissionService:
     def prompt_status(self, mission_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._prompt_row(mission_id)
+            proposal = _json_load(row["proposal_json"], {})
+            events = self.events(row["mission_id"])
+            if (
+                isinstance(proposal, Mapping)
+                and proposal.get("schema")
+                == "sphero_rvr.stationary_perception_proposal.v1"
+            ):
+                compact_events = []
+                for event in events:
+                    payload = event.get("payload", {})
+                    if not isinstance(payload, Mapping):
+                        payload = {}
+                    compact_events.append(
+                        {
+                            **event,
+                            "payload": {
+                                key: payload[key]
+                                for key in (
+                                    "schema",
+                                    "mission_id",
+                                    "status",
+                                    "terminal",
+                                    "terminal_reason",
+                                    "reason",
+                                    "source",
+                                    "progress",
+                                    "snapshot_id",
+                                    "active_intent",
+                                    "inference",
+                                    "metrics",
+                                    "motion_authority",
+                                    "physical_execution_enabled",
+                                )
+                                if key in payload
+                            },
+                        }
+                    )
+                events = compact_events
             return {
                 "api_version": "mission_api.v2",
                 "mission_id": row["mission_id"],
@@ -1057,7 +1335,7 @@ class MissionService:
                 "mode": row["mode"],
                 "source": row["source"],
                 "prompt": row["prompt"],
-                "proposal": _json_load(row["proposal_json"], {}),
+                "proposal": proposal,
                 "proposal_digest": row["proposal_digest"],
                 "approval": _json_load(row["approval_json"], {}),
                 "approval_expires_at_s": row["approval_expires_at_s"],
@@ -1069,7 +1347,7 @@ class MissionService:
                 "deployed_sha": row["deployed_sha"],
                 "live_execution_enabled": self.live_execution_enabled,
                 "auto_resume": False,
-                "events": self.events(row["mission_id"]),
+                "events": events,
             }
 
     def latest_prompt_status(self, session_id: str) -> Optional[dict[str, Any]]:

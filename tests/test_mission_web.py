@@ -429,6 +429,7 @@ def test_http_wrapper_serves_complete_mock_flow_with_security_headers() -> None:
         with urllib.request.urlopen(f"{base}/", timeout=2.0) as response:
             assert response.status == 200
             assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert "img-src 'self' data:" in response.headers["Content-Security-Policy"]
             assert b"RVR Mission Console" in response.read()
 
         request = urllib.request.Request(
