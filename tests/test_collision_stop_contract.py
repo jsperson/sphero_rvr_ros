@@ -131,6 +131,21 @@ def test_collision_stop_node_uses_real_tf_lookup_and_truthful_diagnostics():
     assert "tf_timeout_s" in source
 
 
+def test_collision_stop_node_exposes_all_side_sector_boundaries_as_ros_parameters():
+    source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py").read_text()
+    config = (REPO_ROOT / "config" / "collision_stop.yaml").read_text()
+
+    for name in (
+        "left_spin_min_angle_deg",
+        "left_spin_max_angle_deg",
+        "right_spin_min_angle_deg",
+        "right_spin_max_angle_deg",
+    ):
+        assert f'"{name}": defaults.{name}' in source
+        assert f'{name}=float(self.get_parameter("{name}").value)' in source
+        assert f"{name}:" in config
+
+
 def test_collision_stop_public_services_do_not_spin_nested_executor():
     source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py").read_text()
 

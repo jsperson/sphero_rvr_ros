@@ -30,6 +30,10 @@ lidar_collision_stop_supervisor:
     front_slow_min_angle_deg: -45.0
     front_slow_max_angle_deg: 45.0
     rear_stop_angle_width_deg: 30.0
+    left_spin_min_angle_deg: 45.0
+    left_spin_max_angle_deg: 135.0
+    right_spin_min_angle_deg: -135.0
+    right_spin_max_angle_deg: -45.0
     stop_distance_m: 0.35
     slow_distance_m: 0.60
     reverse_stop_distance_m: 0.25
