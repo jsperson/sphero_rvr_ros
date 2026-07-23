@@ -27,15 +27,18 @@ With the rover stationary and lidar already running, capture at least 20 scans:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws_mission_stack/install/setup.bash
-rvr_lidar_motion_validation capture before.json --scan-count 20
+ros2 run sphero_rvr_driver rvr_lidar_motion_validation \
+  capture before.json --scan-count 20
 ```
 
 Run the separately reviewed mission, wait for settled terminal evidence, and
 capture the same fixed target again:
 
 ```bash
-rvr_lidar_motion_validation capture after.json --scan-count 20
-rvr_lidar_motion_validation compare before.json after.json \
+ros2 run sphero_rvr_driver rvr_lidar_motion_validation \
+  capture after.json --scan-count 20
+ros2 run sphero_rvr_driver rvr_lidar_motion_validation \
+  compare before.json after.json \
   --sector-min-deg -80 --sector-max-deg 80 \
   --output comparison.json
 ```

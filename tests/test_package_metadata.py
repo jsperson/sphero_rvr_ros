@@ -244,6 +244,14 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
     } <= console_scripts
 
+    lidar_validation = (
+        REPO_ROOT / "docs" / "lidar_motion_validation.md"
+    ).read_text()
+    assert (
+        "ros2 run sphero_rvr_driver rvr_lidar_motion_validation"
+        in lidar_validation
+    )
+
 
 def test_lidar_collision_stop_design_links_current_ros_contract() -> None:
     design = (REPO_ROOT / "docs" / "lidar_collision_stop_supervisor.md").read_text()
