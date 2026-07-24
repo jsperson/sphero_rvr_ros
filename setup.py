@@ -84,6 +84,7 @@ setup(
                 "docs/perception_navigation.md",
                 "docs/rolling_replay.md",
                 "docs/stationary_perception.md",
+                "docs/stage_d_authority.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),

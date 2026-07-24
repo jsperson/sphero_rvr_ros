@@ -64,6 +64,7 @@ EXPECTED_DATA_FILES = {
         "docs/perception_navigation.md",
         "docs/rolling_replay.md",
         "docs/stationary_perception.md",
+        "docs/stage_d_authority.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
@@ -197,6 +198,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/rvr_mcp_server.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
+        "docs/stage_d_authority.md",
         "docs/slam_replay.md",
         "docs/shoe_detector_replay.md",
         "docs/shoe_map_projection.md",
@@ -211,6 +213,28 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "LLM planner over allowlisted `mission_api.v2` rover tools",
     ]:
         assert token in readme
+
+
+def test_stage_d_contract_grants_broad_route_authority_without_motor_authority() -> None:
+    contract = (REPO_ROOT / "docs" / "stage_d_authority.md").read_text()
+
+    for token in [
+        "broad movement authority",
+        "without another approval for every step",
+        "without a fixed cumulative-distance",
+        "This is broad route authority, not raw motor authority.",
+        "0.10 m/s",
+        "0.4 rad/s",
+        "0.25 s",
+        "0.50 s",
+        "0.30 s",
+        "continuous, level driving surface",
+        "does not have cliff or drop-off sensing",
+        "exactly one `/cmd_vel_motor` publisher",
+        "cannot be disabled in the operator launch",
+        "No step in this document enables Stage D",
+    ]:
+        assert token in contract
 
 
 def test_mission_planner_docs_and_config_distinguish_rover_planner_from_kanban_agents() -> None:

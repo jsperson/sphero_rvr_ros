@@ -59,6 +59,8 @@ attended-room profile without granting the model ROS, motor, credential, or
 safety-policy authority. Each selected limit remains visible and bound to the
 confirmed proposal. Adaptive perception-driven replanning remains the next
 planner stage after deterministic prompt routes are physically calibrated.
+The broad movement-authority target and its non-bypassable safety hierarchy are
+defined in `docs/stage_d_authority.md`.
 
 ## Delivery discipline
 
