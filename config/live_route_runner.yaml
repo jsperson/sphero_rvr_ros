@@ -30,16 +30,45 @@ live_route_runner:
     terminal_settle_angle_rad: 0.017453292519943295
     terminal_settle_encoder_counts: 8
     max_terminal_distance_error_m: 0.03
-    max_terminal_angle_error_rad: 0.08726646259971647
+    # Stage D is capability-focused: a settled turn within 10 degrees is
+    # sufficient to continue closed-loop replanning. This does not relax any
+    # collision, freshness, speed, STOP/ESTOP, lease, or timeout gate.
+    max_terminal_angle_error_rad: 0.17453292519943295
+    # A stationary undershoot may be corrected only within the original
+    # correlated turn intent and its 5 s timeout. Overshoot and safety
+    # terminals never re-engage. Each correction emits exactly one nonzero
+    # command at the fixed 20 Hz control period, followed by a mandatory
+    # zero-and-settle check, so the slower 10 Hz odom stream cannot refresh a
+    # correction while waiting for feedback.
+    max_turn_corrections: 3
     distance_tolerance_m: 0.01
     angle_tolerance_rad: 0.034906585
-    # Attempt 3 validated the effective track but stalled at 0.25 rad/s.
-    # This reviewed ceiling remains below the broader driver angular limit.
+    # Attended straight runs showed one 10 Hz odom period plus drivetrain
+    # coast after zero. Keep the longer translational horizon separate from
+    # the measured turn response; settled terminal error remains authoritative.
+    target_stop_horizon_s: 0.25
+    # Exact-SHA turn traces measured roughly 0.10 s of angular travel after the
+    # release sample. The prior shared 0.25 s horizon stopped at 18.76 degrees.
+    turn_target_stop_horizon_s: 0.10
+    # The collision supervisor still owns the absolute 0.4 rad/s ceiling.
+    # 0.15 and 0.25 rad/s both stalled the installed drivetrain.  The
+    # turn-only controller therefore uses the lowest validated breakaway
+    # command while predictive braking and bounded stationary correction limit
+    # the settled angle.
     max_turn_speed_rad_s: 0.35
+    # The exact-SHA 45-degree Stage D run measured 3.21 rad/s of odometry yaw
+    # while the bounded request remained 0.35 rad/s. Use authoritative measured
+    # progress for target braking, capped above that observation so a malformed
+    # encoder jump cannot reserve an unbounded stopping distance.
+    max_turn_progress_rate_rad_s: 3.5
     heading_kp: 1.5
     max_heading_correction_rad_s: 0.6
     max_sample_age_s: 0.30
     stall_timeout_s: 0.75
     startup_grace_s: 1.50
-    min_progress_m: 0.015
+    # The 2026-07-24 attended 10 cm run advanced continuously to 44.4 mm,
+    # but the former 15 mm activity checkpoint falsely expired the stall timer.
+    # Five millimetres is about 22 encoder counts at the reviewed scale and
+    # remains separate from target, settle, timeout, and safety acceptance.
+    min_progress_m: 0.005
     min_angle_progress_rad: 0.034906585

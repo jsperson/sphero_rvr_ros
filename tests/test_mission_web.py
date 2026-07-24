@@ -22,6 +22,7 @@ from sphero_rvr_driver.mission_web import (
     build_mission_web_bundle,
     handle_mission_web_request,
     make_server,
+    _stationary_projection,
 )
 from sphero_rvr_driver.mission_api import MissionValidationError
 
@@ -118,6 +119,89 @@ class FakeLiveMissionClient:
                 }
             ],
         }
+
+
+class FakeStageDLiveMissionClient(FakeLiveMissionClient):
+    def __init__(self) -> None:
+        super().__init__(execution_enabled=True)
+        digest = "d" * 64
+        self.proposal = {
+            "schema": "sphero_rvr.stage_d_proposal.v1",
+            "mission_id": "live-mission",
+            "prompt": "Explore the room",
+            "interpreted_objective": "Explore reachable free space.",
+            "proposal_digest": digest,
+            "segments": [],
+            "first_intent": {
+                "action": "move_distance",
+                "distance_m": 0.10,
+                "angle_deg": 0.0,
+                "rationale": "Probe the fresh clear corridor.",
+            },
+            "limits": {
+                "mission_lease_s": 900.0,
+                "max_translation_per_intent_m": 0.25,
+                "max_rotation_per_intent_deg": 45.0,
+                "linear_speed_mps": 0.10,
+                "angular_speed_rad_s": 0.4,
+            },
+        }
+
+    def service_snapshot(self):
+        snapshot = super().service_snapshot()
+        snapshot.update(
+            {
+                "mode": "live/stage-d",
+                "stage_d_enabled": True,
+                "provider_id": "openai-codex-oauth",
+                "model_id": "gpt-5.6-sol",
+                "reasoning_effort": "high",
+                "stage_d_readiness": {
+                    "ready": True,
+                    "reasons": [],
+                    "execution_enabled": True,
+                    "motion_authority": False,
+                },
+            }
+        )
+        evidence = snapshot["capabilities"]["query_status_telemetry@1.0"][
+            "evidence"
+        ]
+        evidence["odom"]["fresh"] = True
+        evidence["collision"]["fresh"] = True
+        evidence["safety"].update(
+            {
+                "collision_state": "CLEAR",
+                "stop_state": "READY",
+                "estop_state": "CLEAR",
+            }
+        )
+        return snapshot
+
+    def approve_prompt(
+        self,
+        mission_id,
+        *,
+        approval_phrase,
+        operator,
+        authentication_source="",
+    ):
+        self.approvals.append(
+            (
+                mission_id,
+                approval_phrase,
+                operator,
+                authentication_source,
+            )
+        )
+        self.mission = self._snapshot("running", proposal=self.proposal)
+        self.mission["approval"] = {
+            "approved": True,
+            "authenticated": True,
+            "operator": operator,
+            "authentication_source": authentication_source,
+        }
+        return self.mission
 
 
 class FakeStationarySensorControl:
@@ -846,6 +930,204 @@ def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_
     with pytest.raises(MissionWebError, match="execution is disabled"):
         adapter.approve("", confirm_current_proposal=True)
     assert adapter.cancel()["mission"]["state"] == "CANCELLED"
+
+
+def test_live_stage_d_web_renders_loop_and_binds_tailscale_approval() -> None:
+    client = FakeStageDLiveMissionClient()
+    client.mission = client._snapshot("proposed", proposal=client.proposal)
+    client.mission["result"] = {
+        "schema": "sphero_rvr.stage_d_result.v1",
+        "mission_id": "live-mission",
+        "status": "running",
+        "world_snapshot": {
+            "snapshot_id": "snapshot-2",
+            "version": 2,
+            "evidence": {
+                "scan_fresh": True,
+                "transform_fresh": True,
+                "odometry_fresh": True,
+            },
+            "safety": {"collision_state": "CLEAR"},
+        },
+        "world_snapshots": [
+            {"snapshot_id": "snapshot-1"},
+            {"snapshot_id": "snapshot-2"},
+        ],
+        "active_intent": {
+            "revision": 2,
+            "snapshot_id": "snapshot-2",
+            "action": "turn_angle",
+            "distance_m": 0.0,
+            "angle_deg": 30.0,
+            "lease_s": 5.0,
+            "timeout_s": 5.0,
+            "observation_focus": "left corridor",
+            "rationale": "The new snapshot favors a left look.",
+        },
+        "intent_revisions": [
+            {
+                "revision": 1,
+                "action": "move_distance",
+                "distance_m": 0.10,
+                "angle_deg": 0.0,
+                "rationale": "Probe forward.",
+                "execution": {
+                    "outcome": "completed",
+                    "movement": {
+                        "requested": {
+                            "linear_mps": 0.10,
+                            "angular_rad_s": 0.0,
+                        },
+                        "supervised": {
+                            "linear_mps": 0.04,
+                            "angular_rad_s": 0.0,
+                        },
+                    },
+                },
+            }
+        ],
+        "inference": {
+            "in_flight": False,
+            "provider_calls_started": 2,
+            "provider_calls_completed": 2,
+        },
+        "metrics": {
+            "intent_revision_count": 1,
+            "completed_intents": 1,
+        },
+        "mission_lease": {
+            "duration_s": 900.0,
+            "remaining_s": 850.0,
+        },
+        "motion_authority": False,
+    }
+    adapter = LiveMissionWebAdapter(
+        client,
+        session_id="web-session",
+        operator="untrusted-fallback",
+    )
+
+    proposed = adapter.snapshot()
+    assert proposed["adapter"]["mode"] == "live/stage-d"
+    assert proposed["adapter"]["physical_execution_enabled"] is True
+    assert proposed["adapter"]["motion_authority"] is False
+    assert proposed["approval"]["enabled"] is True
+    assert proposed["rolling"]["active_intent"]["action"] == "turn_angle"
+    assert len(proposed["rolling"]["world_snapshots"]) == 2
+    movement = proposed["rolling"]["intent_revisions"][0]["execution"][
+        "movement"
+    ]
+    assert movement["requested"]["linear_mps"] == 0.10
+    assert movement["supervised"]["linear_mps"] == 0.04
+
+    with pytest.raises(MissionWebError, match="authenticated Tailscale"):
+        adapter.approve("", confirm_current_proposal=True)
+    adapter.set_request_identity("scott@example.com", authenticated=True)
+    approved = adapter.approve("", confirm_current_proposal=True)
+
+    assert approved["mission"]["state"] == "RUNNING"
+    assert client.approvals == [
+        (
+            "live-mission",
+            f"APPROVE STAGE D {client.proposal['proposal_digest']}",
+            "scott@example.com",
+            "tailscale-serve",
+        )
+    ]
+
+
+def test_stage_d_terminal_projection_preserves_truthful_loop_metrics() -> None:
+    result = {
+        "provider": {
+            "calls_started": 4,
+            "calls_completed": 4,
+        },
+        "final_snapshot": {
+            "snapshot_id": "terminal-snapshot",
+            "progress": {
+                "cumulative_translation_m": 0.11733939294669324,
+                "cumulative_rotation_deg": 26.132662180601223,
+            },
+        },
+        "intent_revisions": [
+            {
+                "revision": revision,
+                "execution": {"outcome": "completed"},
+            }
+            for revision in range(1, 5)
+        ],
+    }
+
+    projection = _stationary_projection(result)
+
+    assert projection["world_snapshot"]["snapshot_id"] == "terminal-snapshot"
+    assert projection["inference"] == {
+        "call": None,
+        "in_flight": False,
+        "provider_calls_started": 4,
+        "provider_calls_completed": 4,
+    }
+    assert projection["metrics"] == {
+        "intent_revision_count": 4,
+        "completed_intents": 4,
+        "cumulative_translation_m": pytest.approx(0.11733939294669324),
+        "cumulative_rotation_deg": pytest.approx(26.132662180601223),
+    }
+
+
+def test_locked_restart_preserves_stage_d_terminal_browser_projection() -> None:
+    client = FakeLiveMissionClient(execution_enabled=False)
+    client.mission = client._snapshot("complete", proposal={})
+    client.mission["result"] = {
+        "schema": "sphero_rvr.stage_d_result.v1",
+        "status": "complete",
+        "terminal_reason": "planner_stop",
+        "provider": {
+            "calls_started": 4,
+            "calls_completed": 4,
+        },
+        "final_snapshot": {
+            "snapshot_id": "terminal-snapshot",
+            "progress": {
+                "cumulative_translation_m": 0.11733939294669324,
+                "cumulative_rotation_deg": 26.132662180601223,
+            },
+        },
+        "intent_revisions": [
+            {
+                "revision": revision,
+                "execution": {"outcome": "completed"},
+            }
+            for revision in range(1, 5)
+        ],
+    }
+    client.mission["terminal_reason"] = "planner_stop"
+
+    snapshot = LiveMissionWebAdapter(
+        client,
+        session_id="web-session",
+        operator="scott",
+    ).snapshot()
+
+    assert snapshot["adapter"]["stage_d"] is True
+    assert snapshot["adapter"]["rolling_replay"] is True
+    assert snapshot["adapter"]["live_execution_enabled"] is False
+    assert snapshot["adapter"]["physical_execution_enabled"] is False
+    assert snapshot["approval"]["enabled"] is False
+    assert snapshot["mission"]["state"] == "COMPLETE"
+    assert snapshot["mission"]["terminal_reason"] == "planner_stop"
+    assert snapshot["rolling"]["metrics"] == {
+        "intent_revision_count": 4,
+        "completed_intents": 4,
+        "cumulative_translation_m": pytest.approx(0.11733939294669324),
+        "cumulative_rotation_deg": pytest.approx(26.132662180601223),
+    }
+    assert snapshot["rolling"]["inference"] == {
+        "call": None,
+        "in_flight": False,
+        "provider_calls_started": 4,
+        "provider_calls_completed": 4,
+    }
 
 
 def test_live_terminal_result_is_authoritative_and_downloadable() -> None:

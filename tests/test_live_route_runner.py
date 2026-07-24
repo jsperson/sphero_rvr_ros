@@ -549,6 +549,507 @@ def test_live_route_runner_fails_when_settled_target_error_exceeds_bound() -> No
     assert manifest.executed_segments[0].terminal_distance_error_m == pytest.approx(0.07)
 
 
+def test_live_route_runner_stops_early_for_observed_stage_d_coast_and_settles_in_bounds() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-duty-64-coast",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "move",
+                "move_distance",
+                {"distance_m": 0.1, "speed_mps": 0.1, "timeout_s": 5.0},
+            ),
+        ),
+    )
+    runner = LiveRouteRunner()
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(_state(0.1, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(_state(0.2, 0.0009, 0.0, 0.0, encoder_counts=(4, 4)))
+    runner.update(_state(0.3, 0.0055, 0.0, 0.0, encoder_counts=(24, 24)))
+    runner.update(_state(0.4, 0.0129, 0.0, 0.0, encoder_counts=(56, 56)))
+    runner.update(_state(0.5, 0.0235, 0.0, 0.0, encoder_counts=(102, 102)))
+    runner.update(_state(0.6, 0.0369, 0.0, 0.0, encoder_counts=(160, 160)))
+    runner.update(_state(0.7, 0.0535, 0.0, 0.0, encoder_counts=(232, 232)))
+
+    predictive_zero = runner.update(
+        _state(0.8, 0.0747, 0.0, 0.0, encoder_counts=(324, 324))
+    )
+    assert predictive_zero.linear_x == 0.0
+    assert runner.active
+
+    # Project the observed post-zero coast from the attended duty-64 trace
+    # onto the earlier release point, then provide the required stable window.
+    runner.update(_state(0.9, 0.0959, 0.0, 0.0, encoder_counts=(416, 416)))
+    runner.update(_state(1.0, 0.1088, 0.0, 0.0, encoder_counts=(472, 472)))
+    runner.update(_state(1.1, 0.1134, 0.0, 0.0, encoder_counts=(492, 492)))
+    runner.update(_state(1.7, 0.1134, 0.0, 0.0, encoder_counts=(492, 492)))
+
+    manifest = runner.manifest()
+    assert manifest.status is ToolResultStatus.COMPLETE
+    assert manifest.terminal_reason == "complete"
+    assert manifest.terminal_settled is True
+    assert manifest.measured_distance_m == pytest.approx(0.1134)
+    assert manifest.executed_segments[0].terminal_distance_error_m == pytest.approx(
+        0.0134
+    )
+
+
+def test_live_route_runner_uses_observed_turn_rate_before_stage_d_turn_coast() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-turn-45-rate",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "turn",
+                "turn_angle",
+                {
+                    "angle_deg": 45.0,
+                    "angular_speed_deg_s": math.degrees(0.4),
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    runner = LiveRouteRunner()
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+
+    for stamp, yaw_deg, counts in (
+        (0.1, 2.8, (-34, 21)),
+        (0.2, 8.0, (-97, 61)),
+        (0.3, 13.0, (-158, 99)),
+        (0.4, 19.0, (-231, 145)),
+        (0.5, 25.0, (-304, 191)),
+    ):
+        outside = runner.update(
+            _state(
+                stamp,
+                0.0,
+                0.0,
+                math.radians(yaw_deg),
+                encoder_counts=counts,
+            )
+        )
+        assert outside.angular_z == pytest.approx(0.35)
+
+    outside = runner.update(
+        _state(
+            0.6,
+            0.0,
+            0.0,
+            math.radians(31.0),
+            encoder_counts=(-377, 237),
+        )
+    )
+    predictive_zero = runner.update(
+        _state(
+            0.7,
+            0.0,
+            0.0,
+            math.radians(37.0),
+            encoder_counts=(-450, 283),
+        )
+    )
+
+    assert outside.angular_z == pytest.approx(0.35)
+    assert predictive_zero.angular_z == 0.0
+    assert runner.active
+
+    # The reviewed breakaway command and 0.10 s turn horizon release near
+    # 37 degrees. Project the measured stop response into the configured
+    # terminal band, then provide the required stationary window.
+    runner.update(
+        _state(
+            0.8,
+            -0.002,
+            -0.001,
+            math.radians(43.0),
+            encoder_counts=(-523, 329),
+        )
+    )
+    runner.update(
+        _state(
+            0.9,
+            -0.002,
+            -0.001,
+            math.radians(44.5),
+            encoder_counts=(-541, 340),
+        )
+    )
+    runner.update(
+        _state(
+            1.0,
+            -0.002,
+            -0.001,
+            math.radians(44.5),
+            encoder_counts=(-541, 340),
+        )
+    )
+    runner.update(
+        _state(
+            1.6,
+            -0.002,
+            -0.001,
+            math.radians(44.5),
+            encoder_counts=(-541, 340),
+        )
+    )
+
+    manifest = runner.manifest()
+    assert manifest.status is ToolResultStatus.COMPLETE
+    assert manifest.terminal_reason == "complete"
+    assert manifest.terminal_settled is True
+    assert manifest.measured_angle_deg == pytest.approx(44.5)
+    assert manifest.executed_segments[0].executed["angular_speed_deg_s"] == pytest.approx(
+        math.degrees(0.35)
+    )
+    assert manifest.executed_segments[0].executed[
+        "requested_angular_speed_deg_s"
+    ] == pytest.approx(math.degrees(0.4))
+    assert manifest.executed_segments[0].terminal_angle_error_deg == pytest.approx(
+        0.5
+    )
+
+
+def test_live_route_runner_corrects_stationary_turn_undershoot_within_same_intent() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-turn-correction",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "turn",
+                "turn_angle",
+                {
+                    "angle_deg": 45.0,
+                    "angular_speed_deg_s": math.degrees(0.4),
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    # Exercise the correction mechanism with a deliberately tighter threshold
+    # than the capability-oriented production default.
+    runner = LiveRouteRunner(
+        LiveRouteConfig(max_terminal_angle_error_rad=math.radians(5.0))
+    )
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(
+        _state(0.1, 0.0, 0.0, math.radians(6.0), encoder_counts=(-70, 40))
+    )
+    predictive_zero = runner.update(
+        _state(0.3, 0.0, 0.0, math.radians(34.0), encoder_counts=(-410, 255))
+    )
+    assert predictive_zero.angular_z == 0.0
+
+    runner.update(
+        _state(0.4, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    correction = runner.update(
+        _state(1.0, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    assert correction.angular_z == pytest.approx(0.35)
+    assert runner.active
+
+    correction_zero = runner.update(
+        _state(1.1, 0.0, 0.0, math.radians(44.0), encoder_counts=(-532, 331))
+    )
+    assert correction_zero.angular_z == 0.0
+    runner.update(
+        _state(1.2, 0.0, 0.0, math.radians(44.0), encoder_counts=(-532, 331))
+    )
+    runner.update(
+        _state(1.8, 0.0, 0.0, math.radians(44.0), encoder_counts=(-532, 331))
+    )
+
+    manifest = runner.manifest()
+    assert manifest.status is ToolResultStatus.COMPLETE
+    assert manifest.terminal_reason == "complete"
+    assert manifest.measured_angle_deg == pytest.approx(44.0)
+    assert manifest.executed_segments[0].turn_correction_count == 1
+
+
+def test_stage_d_turn_capability_accepts_attended_settled_trace_within_ten_degrees() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-attended-turn-capability",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "turn",
+                "turn_angle",
+                {
+                    "angle_deg": 45.0,
+                    "angular_speed_deg_s": math.degrees(0.35),
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    runner = LiveRouteRunner()
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(
+        _state(0.1, 0.0, 0.0, math.radians(6.0), encoder_counts=(-70, 40))
+    )
+    runner.update(
+        _state(0.3, 0.0, 0.0, math.radians(34.0), encoder_counts=(-410, 255))
+    )
+    runner.update(
+        _state(0.4, 0.0, 0.0, math.radians(34.352), encoder_counts=(-414, 258))
+    )
+    correction = runner.update(
+        _state(1.0, 0.0, 0.0, math.radians(34.352), encoder_counts=(-414, 258))
+    )
+    assert correction.angular_z == pytest.approx(0.35)
+    assert runner.update(
+        _state(1.049, 0.0, 0.0, math.radians(34.352), encoder_counts=(-414, 258))
+    ).angular_z == 0.0
+    runner.update(
+        _state(1.15, 0.0, 0.0, math.radians(35.353), encoder_counts=(-426, 266))
+    )
+    runner.update(
+        _state(1.75, 0.0, 0.0, math.radians(35.353), encoder_counts=(-426, 266))
+    )
+
+    manifest = runner.manifest()
+    assert manifest.status is ToolResultStatus.COMPLETE
+    assert manifest.terminal_reason == "complete"
+    assert manifest.measured_angle_deg == pytest.approx(35.353)
+    assert manifest.executed_segments[0].terminal_angle_error_deg == pytest.approx(
+        9.647
+    )
+    assert manifest.executed_segments[0].turn_correction_count == 1
+
+
+def test_turn_correction_emits_one_command_then_zeros_before_next_odometry_sample() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-turn-timed-correction",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "turn",
+                "turn_angle",
+                {
+                    "angle_deg": 45.0,
+                    "angular_speed_deg_s": math.degrees(0.35),
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    runner = LiveRouteRunner(
+        LiveRouteConfig(max_terminal_angle_error_rad=math.radians(5.0))
+    )
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(
+        _state(0.1, 0.0, 0.0, math.radians(6.0), encoder_counts=(-70, 40))
+    )
+    runner.update(
+        _state(0.3, 0.0, 0.0, math.radians(34.0), encoder_counts=(-410, 255))
+    )
+    runner.update(
+        _state(0.4, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    correction = runner.update(
+        _state(1.0, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    assert correction.angular_z == pytest.approx(0.35)
+
+    # The route timer runs faster than authoritative odometry. The correction
+    # must publish zero on the very next control tick even when that tick lands
+    # slightly before the nominal 50 ms period and odometry has not advanced.
+    correction_zero = runner.update(
+        _state(1.049, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    assert correction_zero.angular_z == 0.0
+    assert runner.active
+
+    runner.update(
+        _state(1.15, 0.0, 0.0, math.radians(43.0), encoder_counts=(-520, 324))
+    )
+    runner.update(
+        _state(1.75, 0.0, 0.0, math.radians(43.0), encoder_counts=(-520, 324))
+    )
+    assert runner.manifest().status is ToolResultStatus.COMPLETE
+    assert runner.manifest().executed_segments[0].turn_correction_count == 1
+
+
+def test_live_route_runner_allows_three_stationary_verified_turn_corrections() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-turn-three-corrections",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "turn",
+                "turn_angle",
+                {
+                    "angle_deg": 45.0,
+                    "angular_speed_deg_s": math.degrees(0.35),
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    runner = LiveRouteRunner(
+        LiveRouteConfig(max_terminal_angle_error_rad=math.radians(5.0))
+    )
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(
+        _state(0.1, 0.0, 0.0, math.radians(6.0), encoder_counts=(-70, 40))
+    )
+    runner.update(
+        _state(0.3, 0.0, 0.0, math.radians(34.0), encoder_counts=(-410, 255))
+    )
+    runner.update(
+        _state(0.4, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    assert runner.update(
+        _state(1.0, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    ).angular_z == pytest.approx(0.35)
+    assert runner.update(
+        _state(1.049, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    ).angular_z == 0.0
+
+    runner.update(
+        _state(1.15, 0.0, 0.0, math.radians(37.0), encoder_counts=(-447, 278))
+    )
+    assert runner.update(
+        _state(1.75, 0.0, 0.0, math.radians(37.0), encoder_counts=(-447, 278))
+    ).angular_z == pytest.approx(0.35)
+    assert runner.update(
+        _state(1.799, 0.0, 0.0, math.radians(37.0), encoder_counts=(-447, 278))
+    ).angular_z == 0.0
+
+    runner.update(
+        _state(1.9, 0.0, 0.0, math.radians(39.0), encoder_counts=(-471, 293))
+    )
+    assert runner.update(
+        _state(2.5, 0.0, 0.0, math.radians(39.0), encoder_counts=(-471, 293))
+    ).angular_z == pytest.approx(0.35)
+    assert runner.update(
+        _state(2.549, 0.0, 0.0, math.radians(39.0), encoder_counts=(-471, 293))
+    ).angular_z == 0.0
+
+    runner.update(
+        _state(2.65, 0.0, 0.0, math.radians(41.0), encoder_counts=(-495, 308))
+    )
+    runner.update(
+        _state(3.25, 0.0, 0.0, math.radians(41.0), encoder_counts=(-495, 308))
+    )
+    manifest = runner.manifest()
+    assert manifest.status is ToolResultStatus.COMPLETE
+    assert manifest.measured_angle_deg == pytest.approx(41.0)
+    assert manifest.executed_segments[0].turn_correction_count == 3
+
+
+def test_live_route_runner_never_corrects_turn_when_budget_is_zero() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-turn-no-correction",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "turn",
+                "turn_angle",
+                {
+                    "angle_deg": 45.0,
+                    "angular_speed_deg_s": math.degrees(0.35),
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    runner = LiveRouteRunner(
+        LiveRouteConfig(
+            max_terminal_angle_error_rad=math.radians(5.0),
+            max_turn_corrections=0,
+        )
+    )
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(
+        _state(0.1, 0.0, 0.0, math.radians(6.0), encoder_counts=(-70, 40))
+    )
+    runner.update(
+        _state(0.3, 0.0, 0.0, math.radians(34.0), encoder_counts=(-410, 255))
+    )
+    runner.update(
+        _state(0.4, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    runner.update(
+        _state(1.0, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+
+    manifest = runner.manifest()
+    assert not runner.active
+    assert manifest.status is ToolResultStatus.FAILED
+    assert manifest.terminal_reason == "target_error"
+    assert manifest.executed_segments[0].turn_correction_count == 0
+
+
+def test_collision_veto_terminates_active_turn_correction_without_resumption() -> None:
+    request = LiveRouteRequest(
+        route_id="stage-d-turn-correction-collision",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        segments=(
+            RouteSegmentRequest(
+                "turn",
+                "turn_angle",
+                {
+                    "angle_deg": 45.0,
+                    "angular_speed_deg_s": math.degrees(0.35),
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    runner = LiveRouteRunner(
+        LiveRouteConfig(max_terminal_angle_error_rad=math.radians(5.0))
+    )
+    runner.start(request, _state(0.0, 0.0, 0.0, 0.0, encoder_counts=(0, 0)))
+    runner.update(
+        _state(0.1, 0.0, 0.0, math.radians(6.0), encoder_counts=(-70, 40))
+    )
+    runner.update(
+        _state(0.3, 0.0, 0.0, math.radians(34.0), encoder_counts=(-410, 255))
+    )
+    runner.update(
+        _state(0.4, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    correction = runner.update(
+        _state(1.0, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+    assert correction.angular_z == pytest.approx(0.35)
+
+    vetoed = runner.update(
+        _state(
+            1.1,
+            0.0,
+            0.0,
+            math.radians(36.0),
+            collision="STOPPED",
+            encoder_counts=(-435, 270),
+        )
+    )
+    later_clear = runner.update(
+        _state(1.2, 0.0, 0.0, math.radians(36.0), encoder_counts=(-435, 270))
+    )
+
+    assert vetoed.linear_x == vetoed.angular_z == 0.0
+    assert later_clear.linear_x == later_clear.angular_z == 0.0
+    assert not runner.active
+    assert runner.manifest().terminal_reason == "collision_veto"
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, True])
+def test_live_route_config_rejects_invalid_turn_correction_budget(value) -> None:
+    with pytest.raises(ValueError, match="max_turn_corrections"):
+        LiveRouteConfig(max_turn_corrections=value)
+
+
 def test_live_route_runner_reports_no_progress_turn_as_stall_not_wrong_direction() -> None:
     request = LiveRouteRequest(
         route_id="turn-stall",
@@ -663,6 +1164,15 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert "terminal_settle_time_s: 0.50" in config_text
     assert "terminal_settle_timeout_s: 2.0" in config_text
     assert "max_terminal_distance_error_m: 0.03" in config_text
+    assert "max_terminal_angle_error_rad: 0.17453292519943295" in config_text
+    assert "target_stop_horizon_s: 0.25" in config_text
+    assert "turn_target_stop_horizon_s: 0.10" in config_text
+    assert "max_turn_speed_rad_s: 0.35" in config_text
+    assert "max_turn_progress_rate_rad_s: 3.5" in config_text
+    assert "control_period_s: 0.05" in config_text
+    assert "max_turn_corrections: 3" in config_text
+    assert "MAX_TURN_CORRECTION_CONTROL_PERIOD_S = 0.05" in node_source
+    assert "min_progress_m: 0.005" in config_text
     assert "/cmd_vel_motor" not in config_text
     assert "Serial" not in node_source
     assert "cmd_vel_motor" not in node_source

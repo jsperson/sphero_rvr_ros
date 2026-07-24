@@ -474,7 +474,7 @@ def test_ros_executor_uses_private_executor_and_returns_correlated_terminal_stat
 
     class _Node:
         def __init__(self, name):
-            self.callback = None
+            self.callbacks = {}
             self.context = object()
             self.pending_status = None
 
@@ -482,7 +482,7 @@ def test_ros_executor_uses_private_executor_and_returns_correlated_terminal_stat
             return _Publisher(self)
 
         def create_subscription(self, message_type, topic, callback, depth):
-            self.callback = callback
+            self.callbacks[topic] = callback
             return _Subscription()
 
         def create_client(self, service_type, name):
@@ -506,7 +506,9 @@ def test_ros_executor_uses_private_executor_and_returns_correlated_terminal_stat
             if self.node is not None and self.node.pending_status is not None:
                 status = self.node.pending_status
                 self.node.pending_status = None
-                self.node.callback(status)
+                self.node.callbacks[
+                    "/mission_api/v2/live_route/status"
+                ](status)
 
         def remove_node(self, node):
             assert node is self.node

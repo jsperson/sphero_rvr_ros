@@ -93,20 +93,26 @@ class OdomMotionState:
 class MotionPrimitiveConfig:
     distance_tolerance_m: float = 0.01
     angle_tolerance_rad: float = math.radians(2.0)
+    target_stop_horizon_s: float = 0.25
+    turn_target_stop_horizon_s: float = 0.10
     max_turn_speed_rad_s: float = 0.35
+    max_turn_progress_rate_rad_s: float = 3.5
     heading_kp: float = 1.5
     max_heading_correction_rad_s: float = 0.6
     max_sample_age_s: float = 0.30
     stall_timeout_s: float = 0.75
     startup_grace_s: float = 1.50
-    min_progress_m: float = 0.015
+    min_progress_m: float = 0.005
     min_angle_progress_rad: float = math.radians(2.0)
 
     def __post_init__(self) -> None:
         for name in (
             "distance_tolerance_m",
             "angle_tolerance_rad",
+            "target_stop_horizon_s",
+            "turn_target_stop_horizon_s",
             "max_turn_speed_rad_s",
+            "max_turn_progress_rate_rad_s",
             "heading_kp",
             "max_heading_correction_rad_s",
             "max_sample_age_s",
@@ -164,6 +170,7 @@ class _PrimitiveState:
     last_state: OdomMotionState
     last_progress: float = 0.0
     last_progress_at: float = 0.0
+    measured_progress_rate: float = 0.0
     stopped_reason: Optional[MotionPrimitiveStopReason] = None
 
 
@@ -177,6 +184,37 @@ class MotionPrimitiveController:
     def start(self, goal: MotionPrimitiveGoal, state: OdomMotionState) -> MotionPrimitiveTelemetry:
         self._state = _PrimitiveState(goal, float(state.stamp), state, state, last_progress_at=float(state.stamp))
         return self._telemetry(state, TwistCommand(), MotionPrimitiveStopReason.RUNNING)
+
+    def resume_target_correction(
+        self, state: OdomMotionState
+    ) -> MotionPrimitiveTelemetry:
+        """Resume one still-active goal after a verified stationary undershoot."""
+
+        current = self._require_state()
+        if current.stopped_reason is not MotionPrimitiveStopReason.TARGET_REACHED:
+            raise RuntimeError(
+                "motion primitive correction requires a target-reached brake"
+            )
+        current.last_state = state
+        current.last_progress = self._progress(state)
+        current.last_progress_at = float(state.stamp)
+        current.measured_progress_rate = 0.0
+        current.stopped_reason = None
+        return self._telemetry(
+            state, self._command(state), MotionPrimitiveStopReason.RUNNING
+        )
+
+    def pause_target_correction(
+        self, state: OdomMotionState
+    ) -> MotionPrimitiveTelemetry:
+        """End a bounded correction pulse and require another stationary check."""
+
+        current = self._require_state()
+        if current.goal.kind is not MotionPrimitiveKind.TURN_ANGLE:
+            raise RuntimeError("motion primitive correction pause requires a turn")
+        if current.stopped_reason is not None:
+            raise RuntimeError("motion primitive correction pause requires active motion")
+        return self._latch(MotionPrimitiveStopReason.TARGET_REACHED, state)
 
     def update(
         self,
@@ -203,12 +241,14 @@ class MotionPrimitiveController:
             return self._latch(MotionPrimitiveStopReason.CANCELLED, state)
         if wall_time - sample_time > self.config.max_sample_age_s:
             return self._latch(MotionPrimitiveStopReason.STALE_ODOM, state)
-        if sample_time - current.started_at > current.goal.timeout_s:
+        if wall_time - current.started_at > current.goal.timeout_s:
             return self._latch(MotionPrimitiveStopReason.TIMEOUT, state)
 
         signed_progress = self._signed_progress(state)
         progress = max(0.0, signed_progress if current.goal.target >= 0.0 else -signed_progress)
-        if self._reached(progress):
+        if self._reached(progress) or self._inside_target_stop_horizon(
+            progress, state, wall_time=wall_time
+        ):
             return self._latch(MotionPrimitiveStopReason.TARGET_REACHED, state)
         min_progress = self.config.min_progress_m if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE else self.config.min_angle_progress_rad
         if progress - current.last_progress >= min_progress:
@@ -252,6 +292,67 @@ class MotionPrimitiveController:
         current = self._require_state()
         tolerance = self.config.distance_tolerance_m if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE else self.config.angle_tolerance_rad
         return abs(float(current.goal.target)) - progress <= tolerance
+
+    def _inside_target_stop_horizon(
+        self,
+        progress: float,
+        state: OdomMotionState,
+        *,
+        wall_time: float,
+    ) -> bool:
+        """Release motion early enough for the measured drivetrain to settle.
+
+        The RVR supplies odometry at a lower cadence than the route control
+        timer and does not brake instantaneously after a zero command. Estimate
+        the forward progress rate from consecutive authoritative odometry
+        samples and reserve one configured stopping horizon in addition to the
+        normal goal tolerance. Translation is capped at requested speed. Turns
+        use the measured rate because the installed raw-motor mapping can rotate
+        materially faster than the requested Twist; a separate reviewed ceiling
+        still prevents one encoder jump from creating an arbitrarily large
+        braking distance. The stationary and terminal-error gates still decide
+        whether the resulting stop is acceptable.
+        """
+
+        current = self._require_state()
+        sample_period = float(state.stamp) - float(current.last_state.stamp)
+        if math.isfinite(sample_period) and sample_period > 0.0:
+            previous_progress = self._progress(current.last_state)
+            progress_rate = (float(progress) - previous_progress) / sample_period
+            if math.isfinite(progress_rate) and progress_rate > 0.0:
+                if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE:
+                    current.measured_progress_rate = min(
+                        progress_rate, float(current.goal.speed)
+                    )
+                else:
+                    current.measured_progress_rate = min(
+                        progress_rate, self.config.max_turn_progress_rate_rad_s
+                    )
+            else:
+                current.measured_progress_rate = 0.0
+        bounded_rate = current.measured_progress_rate
+        if bounded_rate <= 0.0:
+            return False
+        tolerance = (
+            self.config.distance_tolerance_m
+            if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE
+            else self.config.angle_tolerance_rad
+        )
+        projected_progress = float(progress)
+        if current.goal.kind is MotionPrimitiveKind.TURN_ANGLE:
+            # Odometry arrives at 10 Hz while the route controller runs at
+            # 20 Hz.  Retain the last authoritative yaw rate and project only
+            # to the current control tick so braking can occur between odometry
+            # samples.  The ordinary stale-odom gate bounds this projection.
+            sample_age = max(0.0, float(wall_time) - float(state.stamp))
+            projected_progress += bounded_rate * sample_age
+        remaining = abs(float(current.goal.target)) - projected_progress
+        stop_horizon_s = (
+            self.config.target_stop_horizon_s
+            if current.goal.kind is MotionPrimitiveKind.MOVE_DISTANCE
+            else self.config.turn_target_stop_horizon_s
+        )
+        return remaining <= tolerance + bounded_rate * stop_horizon_s
 
     def _latch(self, reason: MotionPrimitiveStopReason, state: OdomMotionState) -> MotionPrimitiveTelemetry:
         current = self._require_state()

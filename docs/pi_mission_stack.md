@@ -18,7 +18,8 @@ browser
 Planning credentials, proposal persistence, approval identity, and the exact
 digest gate stay on the Pi. The browser does not receive OAuth material and has
 no ROS, serial, motor, or OpenAI route. The deployed owner is intentionally
-proposal-only: `live_execution_enabled=false`, so no route executor is
+proposal-only: `RVR_STAGE_D_ENABLED=false` and
+`live_execution_enabled=false`, so no Stage D controller or route executor is
 instantiated, and the two systemd units start no motor-capable process.
 
 ## Deployment layout
@@ -84,6 +85,7 @@ RVR_SOURCE_SHA=<exact-reviewed-sha>
 RVR_DEPLOYED_SHA=<same-exact-sha>
 RVR_LIVE_EXECUTION_ENABLED=false
 RVR_LIVE_EXECUTION_REVIEWED_SHA=
+RVR_STAGE_D_ENABLED=false
 RVR_WEB_PORT=8765
 RVR_WEB_ORIGIN=https://sphero-pi-2.tailab4000.ts.net
 ```
@@ -168,14 +170,168 @@ and environment file.
 
 ## Attended physical execution gate
 
+Stage D semantic movement uses the dedicated composed graph:
+
+```bash
+ros2 launch sphero_rvr_driver stage_d_perception.launch.py
+```
+
+That command is the safe sensor-only default: `start_rvr=false` and
+`start_live_route_runner=false`. It starts lidar, camera, moving-SLAM
+configuration, and the no-authority semantic producer so its status topics can
+be inspected without a rover driver. The semantic producer publishes no
+`Twist`, route request, serial command, or motor topic.
+
+Only an attended, exact-SHA-reviewed physical session may additionally set
+`start_rvr:=true start_live_route_runner:=true`. The composed graph still routes
+typed Stage D intents through `live_route_runner → /cmd_vel →
+lidar_collision_stop_supervisor → /cmd_vel_motor`. The mission service receives
+camera, localization, and semantic-map status on its existing Mission API
+topics. It withholds semantic tracks from the planner unless camera,
+localization, and semantic-map receipts are all fresh, and it never treats
+recognition as collision evidence.
+
 The integrated browser-to-track path has been proven once with the rover
 suspended. That run also exposed an unacceptable terminal-stop discrepancy, so
 it is motion-path evidence rather than calibrated-distance acceptance. The
 runner now keeps a reached segment nonterminal until fresh odometry/encoder
 samples are stable, reports settle duration and final target error, and fails
 closed on continued motion or excessive final error. A zero command now takes
-the driver's validated immediate-stop path. This software still requires a new
-operator-attended 10 cm revalidation before the turn stage.
+the driver's validated immediate-stop path. The July 24 attended ground attempt
+then moved about 1–2 inches (0.04438 m in odometry, with matched 193/192 encoder
+counts) before continuous slow progress was falsely classified as a software
+stall. The translation activity checkpoint was reduced from 0.015 m to 0.005 m
+without changing target/settle tolerances, speed, timeout, or safety policy.
+The exact-SHA repeat at `ba968286372053042724e94af8cb0c697c80c7fa` then moved
+0.01072 m before the collision supervisor correctly zeroed output and terminated
+the mission when source-stamp age reached 0.340 s. Rosbag and installed-driver
+source evidence showed that the 10 Hz RPLidar stamps each scan before blocking
+to acquire a full revolution; the old 0.30 s source-stamp comparison therefore
+conflated normal acquisition time with time since evidence receipt. Freshness
+now uses independent fail-closed checks: 0.30 s since callback receipt detects a
+stopped/delayed stream before the driver's 0.50 s command watchdog; source
+stamps must advance monotonically to reject frozen/replayed scans; and a 0.75 s
+source-stamp sanity ceiling rejects abnormally delayed acquisition. Both ages
+are reported in collision diagnostics.
+
+The next exact-SHA real-OAuth Stage D run proved the physical controller seam at
+the installed 0.10 m/s ceiling but failed closed on settled target error:
+0.138780 m for a requested 0.10 m, with matched 600/604 encoder counts,
+0.211-degree heading change, collision `CLEAR`, and final zero output. The bag
+showed one 10 Hz odometry period between the last safe continue decision and
+zero, followed by 0.038268 m of drivetrain coast. The route controller now
+reserves a 0.25 s measured-progress stopping horizon before the target. The
+measured rate is capped at the requested primitive speed, and the unchanged
+stationary and 0.03 m terminal-error gates still fail closed. This software
+still requires a new operator-attended 10 cm revalidation at the new exact SHA
+before the turn stage.
+
+The exact-SHA `a65c50ff2c30a114025d570b04ed66f879774eff` revalidation passed
+the real browser/OAuth Stage D loop. The model selected a 0.10 m
+`move_distance`, the route runner requested zero at 0.082646 m, and the rover
+settled at 0.090715 m after 0.008069 m of additional coast. Terminal evidence
+reported `target_reached`, `terminal_settled=true`, 0.600 s settle duration,
+0.009285 m target error, matched 392/395 encoder deltas, collision `CLEAR`, and
+zero motor output. The updated world snapshot then caused a second real provider
+call to choose `stop`, completing the mission with two distinct revisions.
+
+The subsequent attended 45 degree Stage D turn failed closed at the same SHA.
+The bounded request and collision-supervised command both remained 0.35 rad/s,
+but authoritative odometry measured 3.21 rad/s of yaw. Zero was requested at
+43.256 degrees; the next 10 Hz sample had already reached 58.430 degrees and the
+rover settled at 60.326 degrees, producing a 15.326 degree `target_error`.
+There was no retry or second provider call. Independent STOP, stationary
+samples, relock, and hardware cleanup all succeeded. The controller now keeps
+the translation estimator capped at requested speed but uses measured turn
+progress with a reviewed 3.5 rad/s estimator ceiling.
+
+The next exact-SHA revalidation at
+`f9f1ebfcf53aa87ea271660238e864b74e869f37` proved that the shared 0.25 second
+horizon was not valid for a turn. It released at 18.757 degrees and settled
+stationary at 30.506 degrees, a 14.494 degree error. The bag measured
+11.749 degrees of travel from the last pre-zero sample and only 0.158 degrees
+after the first post-zero sample. The mission again failed closed after one
+provider call, issued no retry, and was independently stopped and relocked.
+Turn release now uses a separate 0.10 second horizon. An exact-SHA attempt to
+reduce the primitive request to 0.15 rad/s then moved only 2.318 degrees before
+the stall gate stopped it; the previous 0.25 rad/s calibration had also
+stalled. The route primitive therefore uses the lowest demonstrated breakaway
+request, 0.35 rad/s, and retains the last measured yaw rate so the 20 Hz
+controller can issue zero between 10 Hz odometry samples. The stale-odom gate
+bounds that projection.
+
+The first exact-SHA run of that combination then measured a slower drivetrain
+response: zero was requested at 34.826 degrees and the rover settled at 36.670
+degrees, 8.330 degrees short. It failed closed as `target_error`, issued no
+retry, and was independently stopped, relocked, and cleaned up. The executor
+then allowed at most two corrections only after verified stationary undershoot,
+inside the same correlated intent and original 5-second timeout.
+
+The exact-SHA `940e8503cc957ede46a4553b15df9f743d14f0a0` revalidation proved
+that an odometry-dependent correction was still too coarse. The initial
+0.35 rad/s command was nonzero for 0.300 seconds and settled at 37.882 degrees.
+One correction remained nonzero for 0.150 seconds while the 20 Hz controller
+waited for the next 10 Hz odometry update, then coasted to 69.283 degrees. The
+mission failed closed as `target_error` with a 24.283 degree error, collision
+`CLEAR`, final zero output, no second provider call, and no automatic resume.
+Independent STOP, two unchanged encoder samples, relock, process cleanup, and
+restart preservation of the terminal result all passed. The sealed evidence is
+under
+`/home/jsperson/rvr_runs/stage_d_turn45_correction_940e850_20260724T182000Z`.
+
+The exact-SHA `a0edb78620ab7ae8ddc332e95a746dd4c47a6581` repeat showed
+that the bounded pulses were effective but stopped just outside the then-current
+acceptance threshold.
+The initial command settled at 34.352 degrees; two corrections advanced it to
+35.353 and 39.568 degrees. The final error was 5.432 degrees, only 0.432 degrees
+outside the then-current 5 degree gate, so the mission truthfully failed
+`target_error`. Collision remained `CLEAR`, the real provider was called once,
+both final command topics were zero, independent STOP and stationary encoder
+checks passed, and restart preserved `auto_resume=false`. The sealed evidence
+is under
+`/home/jsperson/rvr_runs/stage_d_turn45_pulse_a0edb78_20260724T191500Z`.
+
+That bag also found a control-period boundary error: the second nominal 0.05
+second correction was refreshed once because the next timer tick arrived at
+49.84 ms, just below the elapsed-time comparison. Corrections now emit exactly
+one nonzero command publication, and the very next control tick emits zero and
+starts another mandatory stationary-settle check even when it arrives slightly
+early. The 20 Hz node period is validated at startup. At most three corrections
+are allowed, because the attended pulse response showed that one additional
+stationary-verified pulse is needed to enter the existing tolerance without
+raising speed or weakening the error gate. The executor never corrects
+overshoot or a safety/failure terminal, and wall time—not lagged odometry
+sample time—enforces the original intent timeout. The installed
+collision/driver ceiling remains 0.4 rad/s and the stationary gate is
+unchanged. The product decision after this trace was to accept settled turns
+within 10 degrees and proceed to capability validation. The prior 39.568-degree
+measurement is within that threshold. This changes only terminal turn
+precision; collision, freshness, STOP/ESTOP, speed, timeout, cancellation, and
+lease gates remain fail-closed.
+
+The exact-SHA `45ae1adc3942850bd43b9a31679869d3339d309a` Stage D
+capability session then exercised the complete physical loop. A first approved
+mission completed `observe` and a 0.194449 m translation; the real provider's
+third revision proposed a 30-degree turn, but a contemporaneous
+`SENSOR_STALE reason=rear_unknown` supervisor state vetoed submission with
+requested and supervised motion both zero. Later `CLEAR` evidence did not
+resume the terminal mission. Independent STOP, stationary encoder samples,
+relock, cleanup, and restart preservation passed. Its sealed evidence is
+`/home/jsperson/rvr_runs/stage_d_capability_45ae1ad_20260724T203000Z`.
+
+A separately approved retry completed four real
+`openai-codex-oauth/gpt-5.6-sol` decisions:
+`observe → turn_angle(30°) → move_distance(0.10 m) → stop`. The turn settled at
+26.133 degrees with collision `CLEAR`; it crossed a floor seam and is treated
+as bounded capability evidence, not a calibration measurement. The translation
+settled at 0.117339 m. Requested and supervised motion agreed for both movement
+intents, and the terminal progress recorded four intents, one observation,
+26.133 degrees cumulative rotation, 0.117339 m cumulative translation, and
+`planner_stop`. The one approval was authenticated by Tailscale and bound the
+prompt, exact SHAs, proposal digest, limits, safety policy, and 15-minute lease.
+Independent STOP, two zero motor samples, unchanged encoder samples, relock,
+restart/no-resume, and process cleanup passed. Its sealed evidence is
+`/home/jsperson/rvr_runs/stage_d_capability_retry_45ae1ad_20260724T204000Z`.
 
 While Scott is present, prepare the supervised ROS graph and verify fresh odom,
 collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, route-runner request/status graph
@@ -212,6 +368,18 @@ issue/verify zero, and repeat the process/device cleanup audit. A later turn,
 multi-step prompt, or materially different stage starts a new attended series.
 Follow `docs/motion_calibration.md` and stop on missing, stale, or inconsistent
 evidence.
+
+### Stage D attended extension
+
+Do not select Stage D during the straight, turn, or composed-route calibration
+series. After those gates and the attended collision exercise pass, a separate
+reviewed Stage D session also sets `RVR_STAGE_D_ENABLED=true`. The operator
+reviews “Explore the room” as an adaptive 15-minute lease and approves once;
+subsequent intents do not ask again. The page must show every snapshot,
+rationale, requested/supervised movement, and revision. STOP, ESTOP, collision,
+stale evidence, cancellation, timeout, provider loss, or restart ends that lease
+without resumption. Relock both `RVR_STAGE_D_ENABLED` and
+`RVR_LIVE_EXECUTION_ENABLED` immediately after the attended run.
 
 ### Exact attended procedure
 

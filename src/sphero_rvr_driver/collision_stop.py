@@ -8,7 +8,7 @@ live graph.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping, Optional, Sequence
 
@@ -66,12 +66,14 @@ class ScanInput:
     frame_id: str = "laser"
     transform_to_base: Optional[Transform2D] = None
     transform_error: Optional[str] = None
+    stamp_progress_error: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class CollisionStopConfig:
     requested_cmd_timeout_s: float = 0.25
     max_scan_age_s: float = 0.30
+    max_scan_stamp_age_s: float = 0.75
     startup_grace_s: float = 2.0
     min_valid_ranges: int = 12
     min_valid_fraction: float = 0.05
@@ -116,6 +118,10 @@ class CollisionStopConfig:
             object.__setattr__(self, "reset_policy", ResetPolicy(self.reset_policy))
         if self.max_scan_age_s <= 0:
             raise ValueError("max_scan_age_s must be positive")
+        if self.max_scan_stamp_age_s <= 0:
+            raise ValueError("max_scan_stamp_age_s must be positive")
+        if self.max_scan_stamp_age_s < self.max_scan_age_s:
+            raise ValueError("max_scan_stamp_age_s must be at least max_scan_age_s")
         if self.requested_cmd_timeout_s <= 0:
             raise ValueError("requested_cmd_timeout_s must be positive")
         if self.tf_timeout_s < 0:
@@ -156,6 +162,7 @@ class ScanHealth:
     base_frame: str = "base_link"
     tf_available: bool = False
     tf_reason: str = "not_checked"
+    stamp_age_s: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -207,21 +214,100 @@ class ResetResult:
     decision: ArbitrationDecision
 
 
+class ScanStampTracker:
+    """Reject non-advancing source stamps without treating acquisition as transport delay."""
+
+    def __init__(self) -> None:
+        self._latest_stamp: Optional[float] = None
+
+    def check(self, stamp: Optional[float]) -> Optional[str]:
+        if stamp is None:
+            return None
+        try:
+            current = float(stamp)
+        except (TypeError, ValueError):
+            return "non_finite_scan_stamp"
+        if not math.isfinite(current):
+            return "non_finite_scan_stamp"
+        if self._latest_stamp is not None and current <= self._latest_stamp:
+            return "non_advancing_scan_stamp"
+        self._latest_stamp = current
+        return None
+
+
 def evaluate_scan(scan: ScanInput, config: CollisionStopConfig, *, now: float) -> ScanEvaluation:
     if scan is None:
         return _scan_eval(False, "missing_scan", None, 0, 0, "", {})
     ranges = tuple(scan.ranges or ())
-    age = _scan_age(scan, now)
+    age, stamp_age = _scan_ages(scan, now)
     if age is not None and age > config.max_scan_age_s + 1e-9:
-        return _scan_eval(False, "stale_scan", age, 0, len(ranges), scan.frame_id, {})
+        return _scan_eval(
+            False,
+            "stale_scan",
+            age,
+            0,
+            len(ranges),
+            scan.frame_id,
+            {},
+            stamp_age=stamp_age,
+        )
+    if stamp_age is not None and stamp_age > config.max_scan_stamp_age_s + 1e-9:
+        return _scan_eval(
+            False,
+            "stale_scan_stamp",
+            age,
+            0,
+            len(ranges),
+            scan.frame_id,
+            {},
+            stamp_age=stamp_age,
+        )
+    if scan.stamp_progress_error:
+        return _scan_eval(
+            False,
+            str(scan.stamp_progress_error),
+            age,
+            0,
+            len(ranges),
+            scan.frame_id,
+            {},
+            stamp_age=stamp_age,
+        )
     if not ranges:
-        return _scan_eval(False, "empty_ranges", age, 0, 0, scan.frame_id, {})
+        return _scan_eval(False, "empty_ranges", age, 0, 0, scan.frame_id, {}, stamp_age=stamp_age)
     if not math.isfinite(scan.angle_min):
-        return _scan_eval(False, "angle_min", age, 0, len(ranges), scan.frame_id, {})
+        return _scan_eval(
+            False,
+            "angle_min",
+            age,
+            0,
+            len(ranges),
+            scan.frame_id,
+            {},
+            stamp_age=stamp_age,
+        )
     if not math.isfinite(scan.angle_increment) or scan.angle_increment <= 0.0:
-        return _scan_eval(False, "angle_increment", age, 0, len(ranges), scan.frame_id, {})
+        return _scan_eval(
+            False,
+            "angle_increment",
+            age,
+            0,
+            len(ranges),
+            scan.frame_id,
+            {},
+            stamp_age=stamp_age,
+        )
     if not math.isfinite(scan.range_min) or not math.isfinite(scan.range_max) or scan.range_max <= scan.range_min:
-        return _scan_eval(False, "range_limits", age, 0, len(ranges), scan.frame_id, {})
+        return _scan_eval(
+            False,
+            "range_limits",
+            age,
+            0,
+            len(ranges),
+            scan.frame_id,
+            {},
+            stamp_age=stamp_age,
+        )
 
     transform, tf_available, tf_reason = _resolve_scan_transform(scan, config)
     if not tf_available and config.fail_on_missing_tf:
@@ -236,6 +322,7 @@ def evaluate_scan(scan: ScanInput, config: CollisionStopConfig, *, now: float) -
             base_frame=config.base_frame,
             tf_available=False,
             tf_reason=tf_reason,
+            stamp_age=stamp_age,
         )
 
     sectors = _sector_samples(scan, config, transform)
@@ -244,16 +331,16 @@ def evaluate_scan(scan: ScanInput, config: CollisionStopConfig, *, now: float) -
     min_required = max(config.min_valid_ranges, math.ceil(considered * config.min_valid_fraction))
     nearest = {name: _nearest(values) for name, values in sectors.items()}
     if considered == 0:
-        return _scan_eval(False, "sector_not_covered", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
+        return _scan_eval(False, "sector_not_covered", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason, stamp_age=stamp_age)
     if valid_count < min_required:
-        return _scan_eval(False, "insufficient_valid_ranges", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
+        return _scan_eval(False, "insufficient_valid_ranges", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason, stamp_age=stamp_age)
     if config.sector_unknown_policy == "blocked":
         for name, values in sectors.items():
             sector_valid = sum(1 for value in values if value is not None)
             sector_required = max(1, math.ceil(len(values) * config.min_valid_fraction))
             if sector_valid < sector_required:
-                return _scan_eval(False, f"{name}_unknown", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
-    return _scan_eval(True, "fresh", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason)
+                return _scan_eval(False, f"{name}_unknown", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason, stamp_age=stamp_age)
+    return _scan_eval(True, "fresh", age, valid_count, considered, scan.frame_id, nearest, base_frame=config.base_frame, tf_available=tf_available, tf_reason=tf_reason, stamp_age=stamp_age)
 
 
 def _scan_eval(
@@ -268,18 +355,48 @@ def _scan_eval(
     base_frame: str = "base_link",
     tf_available: bool = False,
     tf_reason: str = "not_checked",
+    stamp_age: Optional[float] = None,
 ) -> ScanEvaluation:
     return ScanEvaluation(
-        health=ScanHealth(healthy, reason, age, valid_count, considered_count, frame_id, base_frame, tf_available, tf_reason),
+        health=ScanHealth(
+            healthy,
+            reason,
+            age,
+            valid_count,
+            considered_count,
+            frame_id,
+            base_frame,
+            tf_available,
+            tf_reason,
+            stamp_age,
+        ),
         nearest=nearest,
     )
 
 
-def _scan_age(scan: ScanInput, now: float) -> Optional[float]:
-    stamp = scan.stamp if scan.stamp is not None else scan.received_at
-    if stamp is None:
-        return None
-    return max(0.0, float(now) - float(stamp))
+def _scan_ages(scan: ScanInput, now: float) -> tuple[Optional[float], Optional[float]]:
+    """Return receipt age and source-stamp age without conflating acquisition time.
+
+    A LaserScan stamp commonly marks the beginning of a full-revolution
+    acquisition, so its age at callback time is not transport staleness.  Receipt
+    age detects a stopped stream; stamp age independently rejects frozen or
+    replayed source evidence.
+    """
+
+    receipt_basis = scan.received_at if scan.received_at is not None else scan.stamp
+    receipt_age = None if receipt_basis is None else _elapsed_age(now, receipt_basis)
+    stamp_age = None if scan.stamp is None else _elapsed_age(now, scan.stamp)
+    return receipt_age, stamp_age
+
+
+def _elapsed_age(now: float, basis: float) -> float:
+    try:
+        age = float(now) - float(basis)
+    except (TypeError, ValueError):
+        return math.inf
+    if not math.isfinite(age):
+        return math.inf
+    return max(0.0, age)
 
 
 def _resolve_scan_transform(scan: ScanInput, config: CollisionStopConfig) -> tuple[Transform2D, bool, str]:
@@ -472,6 +589,7 @@ class CollisionStopSupervisor:
         self._latest_command: Optional[TwistCommand] = None
         self._latest_command_at: Optional[float] = None
         self._clear_since: Optional[float] = None
+        self._scan_stamp_tracker = ScanStampTracker()
         self._last_decision = self._decision(
             CollisionState.STARTUP,
             "startup",
@@ -483,6 +601,9 @@ class CollisionStopSupervisor:
         )
 
     def update_scan(self, scan: ScanInput, *, now: float) -> ArbitrationDecision:
+        progress_error = self._scan_stamp_tracker.check(scan.stamp)
+        if progress_error is not None:
+            scan = replace(scan, stamp_progress_error=progress_error)
         self._latest_scan = scan
         self._latest_eval = evaluate_scan(scan, self.config, now=now)
         return self._arbitrate(self._latest_command or TwistCommand(), now=now, reason="scan")

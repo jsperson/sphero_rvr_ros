@@ -36,6 +36,9 @@ from .stationary_perception import (
     CodexOAuthStationaryIntentProvider,
     StationaryPerceptionController,
 )
+from .stage_d_controller import CodexOAuthStageDIntentProvider, StageDLimits
+from .stage_d_live_controller import StageDLiveMissionController
+from .stage_d_physical import PhysicalStageDExecutor
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:
@@ -78,6 +81,7 @@ def _collision_mapping(value: Any) -> dict[str, Any]:
     except ValueError:
         result: dict[str, Any] = {"state": raw.split(maxsplit=1)[0].upper(), "raw": raw}
         numeric_fields = {
+            "scan_age": "scan_age_s",
             "front": "front_clearance_m",
             "front_slow": "forward_corridor_clearance_m",
             "front_slow_min_angle_deg": "forward_corridor_min_angle_deg",
@@ -91,10 +95,42 @@ def _collision_mapping(value: Any) -> dict[str, Any]:
             "trajectory_min_clearance_m": "trajectory_min_clearance_m",
             "trajectory_collision_time_s": "trajectory_collision_time_s",
         }
+        boolean_fields = {
+            "scan_healthy": "scan_healthy",
+            "tf_available": "tf_available",
+        }
+        text_fields = {
+            "reason": "reason",
+            "scan_reason": "scan_reason",
+            "tf_reason": "tf_reason",
+        }
         for token in raw.split()[1:]:
             key, separator, token_value = token.partition("=")
             output_key = numeric_fields.get(key)
-            if not separator or output_key is None or token_value in {"", "None"}:
+            if not separator:
+                continue
+            boolean_key = boolean_fields.get(key)
+            if boolean_key is not None and token_value.lower() in {"true", "false"}:
+                result[boolean_key] = token_value.lower() == "true"
+                continue
+            text_key = text_fields.get(key)
+            if text_key is not None:
+                result[text_key] = token_value
+                continue
+            if key in {"requested", "output"}:
+                pair = token_value.strip("()").split(",", 1)
+                if len(pair) == 2:
+                    try:
+                        linear = float(pair[0])
+                        angular = float(pair[1])
+                    except ValueError:
+                        continue
+                    if math.isfinite(linear) and math.isfinite(angular):
+                        prefix = "requested" if key == "requested" else "supervised"
+                        result[f"{prefix}_linear_mps"] = linear
+                        result[f"{prefix}_angular_rad_s"] = angular
+                continue
+            if output_key is None or token_value in {"", "None"}:
                 continue
             try:
                 parsed_value = float(token_value)
@@ -248,6 +284,9 @@ def main(args=None):
             stationary_perception_enabled = bool(
                 self.get_parameter("stationary_perception_enabled").value
             )
+            stage_d_enabled = bool(
+                self.get_parameter("stage_d_enabled").value
+            )
             live_execution_enabled = _validated_execution_gate(
                 enabled=bool(self.get_parameter("live_execution_enabled").value),
                 reviewed_sha=str(self.get_parameter("live_execution_reviewed_sha").value),
@@ -258,6 +297,11 @@ def main(args=None):
             if stationary_perception_enabled and live_execution_enabled:
                 raise ValueError(
                     "stationary perception cannot coexist with live execution authority"
+                )
+            if stationary_perception_enabled and stage_d_enabled:
+                raise ValueError(
+                    "stationary perception and Stage D cannot own the prompt "
+                    "controller simultaneously"
                 )
             model_id = str(self.get_parameter("planning_model").value).strip() or None
             reasoning_effort = str(self.get_parameter("planning_reasoning_effort").value)
@@ -279,6 +323,9 @@ def main(args=None):
                     request_topic=str(self.get_parameter("route_request_topic").value),
                     status_topic=str(self.get_parameter("route_status_topic").value),
                     cancel_service=str(self.get_parameter("route_cancel_service").value),
+                    collision_state_topic=str(
+                        self.get_parameter("collision_state_topic").value
+                    ),
                     graph_timeout_s=float(self.get_parameter("route_graph_timeout_s").value),
                     cleanup_timeout_s=float(self.get_parameter("route_cleanup_timeout_s").value),
                 )
@@ -288,6 +335,29 @@ def main(args=None):
             prompt_route_executor = (
                 SafetyGatedPromptRouteExecutor(self._status_executor, ros_route_executor)
                 if ros_route_executor is not None
+                else None
+            )
+            stage_d_executor = (
+                PhysicalStageDExecutor(
+                    self._cache,
+                    source_sha=source_sha,
+                    deployed_sha=deployed_sha,
+                    reviewed_sha=str(
+                        self.get_parameter(
+                            "live_execution_reviewed_sha"
+                        ).value
+                    ),
+                    execution_enabled=live_execution_enabled,
+                    transport=ros_route_executor,
+                    limits=StageDLimits(),
+                    max_source_age_s=min(max_source_age_s, 0.30),
+                    cleanup_timeout_s=float(
+                        self.get_parameter(
+                            "route_cleanup_timeout_s"
+                        ).value
+                    ),
+                )
+                if stage_d_enabled
                 else None
             )
 
@@ -324,6 +394,20 @@ def main(args=None):
                                 "stationary_perception_max_source_age_s"
                             ).value
                         ),
+                    )
+            elif stage_d_enabled:
+                def controller_factory(
+                    service: MissionService,
+                ) -> StageDLiveMissionController:
+                    return StageDLiveMissionController(
+                        service,
+                        CodexOAuthStageDIntentProvider(
+                            model=model_id,
+                            reasoning_effort=reasoning_effort,
+                        ),
+                        stage_d_executor,  # type: ignore[arg-type]
+                        execution_enabled=live_execution_enabled,
+                        limits=StageDLimits(),
                     )
             elif planning_enabled:
                 def controller_factory(service: MissionService) -> PromptMissionController:
@@ -428,6 +512,7 @@ def main(args=None):
             self.declare_parameter("max_binding_age_s", 2.0)
             self.declare_parameter("planning_enabled", True)
             self.declare_parameter("stationary_perception_enabled", False)
+            self.declare_parameter("stage_d_enabled", False)
             self.declare_parameter("stationary_perception_tick_s", 0.2)
             self.declare_parameter("stationary_perception_max_source_age_s", 1.5)
             self.declare_parameter("planning_model", "gpt-5.6-sol")

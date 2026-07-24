@@ -22,7 +22,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 from urllib.parse import urlsplit
 
 from .mission_api import MissionApiVersion, MissionValidationError
@@ -46,6 +46,18 @@ from .rolling_replay import (
     RollingIntentProvider,
     RollingReplayEngine,
     canonical_digest,
+)
+from .stage_d_controller import (
+    STAGE_D_PROPOSAL_SCHEMA,
+    CodexOAuthStageDIntentProvider,
+    ReplayStageDExecutor,
+    StageDApprovalEnvelope,
+    StageDController,
+    StageDExecutor,
+    StageDIntent,
+    StageDIntentProvider,
+    StageDLimits,
+    validate_world_snapshot,
 )
 
 WEB_API_VERSION = "rvr_mission_web.v1"
@@ -75,6 +87,7 @@ class WebMissionState(str, Enum):
     STOPPED = "STOPPED"
     ESTOPPED = "ESTOPPED"
     BLOCKED = "BLOCKED"
+    TIMEOUT = "TIMEOUT"
     FAILED = "FAILED"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
 
@@ -97,6 +110,10 @@ class RollingReplayScenario(str, Enum):
     LLM_DRIVING = "rolling_llm_replay"
 
 
+class StageDScenario(str, Enum):
+    EXPLORE = "stage_d_explore"
+
+
 TERMINAL_STATES = {
     WebMissionState.REJECTED,
     WebMissionState.COMPLETE,
@@ -104,6 +121,7 @@ TERMINAL_STATES = {
     WebMissionState.STOPPED,
     WebMissionState.ESTOPPED,
     WebMissionState.BLOCKED,
+    WebMissionState.TIMEOUT,
     WebMissionState.FAILED,
     WebMissionState.RECOVERY_REQUIRED,
 }
@@ -146,6 +164,14 @@ ROLLING_REPLAY_SCENARIOS: tuple[ScenarioDefinition, ...] = (
         RollingReplayScenario.LLM_DRIVING,
         "Rolling LLM driving replay",
         "Continuous pose, perception, tracking, and mapping while real OAuth LLM revisions run asynchronously.",
+    ),
+)
+
+STAGE_D_SCENARIOS: tuple[ScenarioDefinition, ...] = (
+    ScenarioDefinition(
+        StageDScenario.EXPLORE,
+        "Stage D adaptive exploration",
+        "One approved 15-minute lease with a real OAuth planner choosing one bounded intent from every updated snapshot.",
     ),
 )
 
@@ -1145,6 +1171,514 @@ class RollingReplayMissionAdapter:
         }
 
 
+class StageDMissionAdapter:
+    """Persistent Stage D replay using the physical executor protocol boundary."""
+
+    mode = "stage-d-replay"
+    live_execution_enabled = False
+    direct_ros_commands_allowed = False
+    credentials_accepted = False
+
+    def __init__(
+        self,
+        provider: StageDIntentProvider,
+        *,
+        database: str | Path = ":memory:",
+        source_sha: str = "stage-d-local",
+        deployed_sha: Optional[str] = None,
+        session_id: str = "stage-d-web",
+        operator: str = "loopback-local-operator",
+        allow_loopback_test_approval: bool = False,
+        limits: Optional[StageDLimits] = None,
+        executor_factory: Optional[Callable[[], StageDExecutor]] = None,
+    ) -> None:
+        self.provider = provider
+        self.source_sha = str(source_sha).strip()
+        self.deployed_sha = str(deployed_sha or source_sha).strip()
+        self.session_id = str(session_id).strip()
+        self.operator = str(operator).strip()
+        self.allow_loopback_test_approval = bool(allow_loopback_test_approval)
+        self.limits = limits or StageDLimits()
+        if not all(
+            (self.source_sha, self.deployed_sha, self.session_id, self.operator)
+        ):
+            raise MissionWebError(
+                "Stage D source/deployed SHAs, session, and operator are required"
+            )
+        self._executor_factory = executor_factory or (
+            lambda: ReplayStageDExecutor(limits=self.limits)
+        )
+        self._lock = threading.RLock()
+        self._request_context = threading.local()
+        self._service = MissionService(
+            database,
+            source_sha=self.source_sha,
+            deployed_sha=self.deployed_sha,
+            mode="replay",
+            live_execution_enabled=False,
+        )
+        self._mission_id: Optional[str] = None
+        self._executor: Optional[StageDExecutor] = None
+        self._controller: Optional[StageDController] = None
+        self._proposal: Optional[dict[str, Any]] = None
+        self._staged_snapshot: Optional[dict[str, Any]] = None
+        self._staged_raw_intent: Optional[dict[str, Any]] = None
+        self._staged_intent: Optional[StageDIntent] = None
+        self._planning_error = ""
+
+    def set_request_identity(
+        self, identity: str, *, authenticated: bool = False
+    ) -> None:
+        self._request_context.operator = str(identity).strip()
+        self._request_context.authenticated = bool(authenticated)
+
+    def clear_request_identity(self) -> None:
+        self._request_context.operator = ""
+        self._request_context.authenticated = False
+
+    def _approval_identity(self) -> tuple[str, str]:
+        identity = str(
+            getattr(self._request_context, "operator", "")
+        ).strip()
+        authenticated = bool(
+            getattr(self._request_context, "authenticated", False)
+        )
+        if authenticated and identity:
+            return identity, "tailscale-serve"
+        if self.allow_loopback_test_approval:
+            return self.operator, "explicit-loopback-test-mode"
+        raise MissionWebError(
+            "Stage D approval requires a server-authenticated Tailscale identity"
+        )
+
+    def close(self) -> None:
+        with self._lock:
+            if self._controller is not None:
+                self._controller.close()
+                self._controller = None
+            self._service.close()
+
+    def scenarios(self) -> Sequence[ScenarioDefinition]:
+        return STAGE_D_SCENARIOS
+
+    def snapshot(self) -> Mapping[str, Any]:
+        with self._lock:
+            return self._snapshot_unlocked()
+
+    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
+        if str(scenario) != StageDScenario.EXPLORE.value:
+            raise MissionWebError("Stage D accepts only adaptive exploration")
+        objective = str(prompt).strip()
+        if not objective:
+            raise MissionWebError("mission prompt is required")
+        with self._lock:
+            if self._controller is not None:
+                self._controller.close()
+            self._controller = None
+            self._executor = self._executor_factory()
+            mission_id = f"stage-d-{uuid.uuid4().hex}"
+            self._mission_id = mission_id
+            self._proposal = None
+            self._staged_raw_intent = None
+            self._staged_intent = None
+            self._planning_error = ""
+            self._service.begin_prompt_mission(
+                mission_id=mission_id,
+                session_id=self.session_id,
+                prompt=objective,
+                source="web",
+            )
+            staged_snapshot = dict(self._executor.snapshot(mission_id))
+            self._staged_snapshot = json.loads(json.dumps(staged_snapshot))
+            try:
+                validate_world_snapshot(
+                    staged_snapshot,
+                    mission_id=mission_id,
+                    require_motion=False,
+                )
+                raw = dict(self.provider.choose(objective, staged_snapshot))
+                staged_intent = StageDIntent.validated(
+                    raw,
+                    revision=1,
+                    snapshot=staged_snapshot,
+                    issued_at_s=time.time(),
+                    provider_id=self.provider.provider_id,
+                    model_id=self.provider.model_id,
+                    limits=self.limits,
+                )
+            except Exception as exc:
+                self._planning_error = (
+                    f"provider_failure: {exc.__class__.__name__}: {exc}"
+                )
+                self._service.reject_prompt_planning(
+                    mission_id, self._planning_error
+                )
+                return self._snapshot_unlocked()
+            self._staged_raw_intent = json.loads(json.dumps(raw))
+            self._staged_intent = staged_intent
+            envelope = StageDApprovalEnvelope(
+                mission_id=mission_id,
+                lease_id=f"stage-d-lease-{uuid.uuid4().hex}",
+                prompt=objective,
+                interpreted_objective=staged_intent.interpreted_objective,
+                source_sha=self.source_sha,
+                deployed_sha=self.deployed_sha,
+                provider_id=self.provider.provider_id,
+                model_id=self.provider.model_id,
+                reasoning_effort=self.provider.reasoning_effort,
+                executor_mode=self._executor.mode,
+                starting_snapshot_id=str(staged_snapshot["snapshot_id"]),
+                first_intent=self._staged_raw_intent,
+                limits=self.limits,
+            )
+            self._proposal = envelope.proposal()
+            if self._proposal["schema"] != STAGE_D_PROPOSAL_SCHEMA:
+                raise MissionWebError("Stage D proposal construction failed")
+            self._service.record_rolling_replay_proposal(
+                mission_id, self._proposal
+            )
+            return self._snapshot_unlocked()
+
+    def approve(
+        self,
+        supplied_approval: str,
+        *,
+        confirm_current_proposal: bool = False,
+    ) -> Mapping[str, Any]:
+        del confirm_current_proposal
+        with self._lock:
+            if (
+                self._mission_id is None
+                or self._proposal is None
+                or self._executor is None
+                or self._staged_snapshot is None
+                or self._staged_raw_intent is None
+            ):
+                raise MissionWebError("a Stage D proposal is required before approval")
+            if str(supplied_approval).strip() != self._approval_phrase():
+                raise MissionWebError(
+                    "Stage D approval phrase does not match the current proposal"
+                )
+            approved_at = time.time()
+            first_intent = StageDIntent.validated(
+                self._staged_raw_intent,
+                revision=1,
+                snapshot=self._staged_snapshot,
+                issued_at_s=approved_at,
+                provider_id=self.provider.provider_id,
+                model_id=self.provider.model_id,
+                limits=self.limits,
+            )
+            operator, authentication_source = self._approval_identity()
+            self._service.approve_rolling_replay_mission(
+                self._mission_id,
+                proposal_digest=str(self._proposal["proposal_digest"]),
+                operator=operator,
+                authentication_source=authentication_source,
+                authenticated=True,
+            )
+            self._controller = StageDController(
+                mission_id=self._mission_id,
+                prompt=str(self._proposal["prompt"]),
+                proposal_digest=str(self._proposal["proposal_digest"]),
+                operator=operator,
+                authenticated=True,
+                authentication_source=authentication_source,
+                approved_at_s=approved_at,
+                first_snapshot=self._staged_snapshot,
+                first_intent=first_intent,
+                provider=self.provider,
+                executor=self._executor,
+                limits=self.limits,
+                checkpoint=self._persist_checkpoint,
+            )
+            self._controller.start()
+            return self._snapshot_unlocked()
+
+    def advance(self) -> Mapping[str, Any]:
+        return self.snapshot()
+
+    def cancel(self) -> Mapping[str, Any]:
+        with self._lock:
+            if self._mission_id is None:
+                raise MissionWebError("a Stage D mission is required")
+            status = str(
+                self._service.prompt_status(self._mission_id).get("status", "")
+            )
+            if status == "running" and self._controller is not None:
+                self._controller.cancel()
+            elif status == "proposed":
+                self._service.cancel_prompt_mission(
+                    self._mission_id,
+                    reason="authenticated Stage D operator cancelled mission",
+                )
+            else:
+                raise MissionWebError(
+                    "only a proposed or running Stage D mission can be cancelled"
+                )
+            return self._snapshot_unlocked()
+
+    def _persist_checkpoint(
+        self, kind: str, projection: Mapping[str, Any]
+    ) -> None:
+        mission_id = self._mission_id
+        if mission_id is None:
+            raise MissionWebError("Stage D mission identity is unavailable")
+        if str(kind) == "terminal":
+            result = projection.get("result", {})
+            if not isinstance(result, Mapping):
+                raise MissionWebError("Stage D terminal result is unavailable")
+            self._service.finish_rolling_replay_mission(
+                mission_id,
+                status=str(projection.get("status", "failed")),
+                reason=str(projection.get("terminal_reason", "")),
+                result=result,
+            )
+            return
+        checkpoint = {
+            "schema": projection.get("schema"),
+            "mission_id": mission_id,
+            "status": projection.get("status"),
+            "world_snapshot": projection.get("world_snapshot"),
+            "active_intent": projection.get("active_intent"),
+            "intent_revisions": projection.get("intent_revisions"),
+            "inference": projection.get("inference"),
+            "metrics": projection.get("metrics"),
+            "mission_lease": projection.get("mission_lease"),
+            "motion_authority": False,
+            "physical_execution_enabled": False,
+        }
+        self._service.record_rolling_replay_checkpoint(
+            mission_id, kind=str(kind), checkpoint=checkpoint
+        )
+
+    def _approval_phrase(self) -> str:
+        if self._proposal is None:
+            return ""
+        return f"APPROVE STAGE D {self._proposal['proposal_digest']}"
+
+    def _snapshot_unlocked(self) -> dict[str, Any]:
+        mission = (
+            None
+            if self._mission_id is None
+            else self._service.prompt_status(self._mission_id)
+        )
+        projection = (
+            None if self._controller is None else self._controller.snapshot()
+        )
+        status = "ready" if mission is None else str(mission["status"])
+        state = _web_state(status)
+        if projection is not None and projection.get("terminal"):
+            state = _web_state(str(projection.get("status", "failed")))
+        terminal = state in {item.value for item in TERMINAL_STATES}
+        result: Mapping[str, Any] = {}
+        if projection is not None and terminal:
+            candidate = projection.get("result", {})
+            if isinstance(candidate, Mapping):
+                result = candidate
+        approval = {} if mission is None else mission.get("approval", {})
+        if not isinstance(approval, Mapping):
+            approval = {}
+        approved_operator = str(approval.get("operator", ""))
+        authentication_source = str(
+            approval.get(
+                "authentication_source",
+                (
+                    "explicit-loopback-test-mode"
+                    if self.allow_loopback_test_approval
+                    else "tailscale-serve"
+                ),
+            )
+        )
+        world = (
+            self._staged_snapshot or {}
+            if projection is None
+            else projection.get("world_snapshot", {})
+        )
+        if not isinstance(world, Mapping):
+            world = {}
+        evidence = world.get("evidence", {})
+        safety = world.get("safety", {})
+        observations = world.get("observations", {})
+        if not isinstance(evidence, Mapping):
+            evidence = {}
+        if not isinstance(safety, Mapping):
+            safety = {}
+        if not isinstance(observations, Mapping):
+            observations = {}
+        staged_active = (
+            None if self._staged_intent is None else self._staged_intent.to_json_dict()
+        )
+        stage_events = (
+            []
+            if self._staged_intent is None
+            else [
+                {
+                    "sequence": 1,
+                    "event_type": "first_intent_proposed",
+                    "message": (
+                        f"LLM proposed {self._staged_intent.action}: "
+                        f"{self._staged_intent.rationale}"
+                    ),
+                }
+            ]
+        )
+        if projection is not None:
+            stage_events = list(projection.get("events", []))
+        map_payload = (
+            getattr(self._executor, "map_projection")()
+            if self._executor is not None
+            and callable(getattr(self._executor, "map_projection", None))
+            else {
+                "available": False,
+                "fixture_only": False,
+                "unavailable_reason": "Stage D executor map unavailable",
+            }
+        )
+        mission_lease = (
+            {
+                "duration_s": self.limits.mission_lease_s,
+                "status": "awaiting_authenticated_approval",
+                "remaining_s": self.limits.mission_lease_s,
+            }
+            if projection is None
+            else projection.get("mission_lease", {})
+        )
+        return {
+            "web_api_version": WEB_API_VERSION,
+            "mission_api_version": MissionApiVersion.V2.value,
+            "prompt_drive_api_version": PROMPT_DRIVE_API_VERSION,
+            "adapter": {
+                "mode": self.mode,
+                "fixture_only": True,
+                "rolling_replay": True,
+                "stage_d": True,
+                "real_llm_provider": self.provider.provider_id
+                == "openai-codex-oauth",
+                "provider_id": self.provider.provider_id,
+                "model_id": self.provider.model_id,
+                "reasoning_effort": self.provider.reasoning_effort,
+                "live_execution_enabled": False,
+                "direct_ros_commands_allowed": False,
+                "credentials_accepted": False,
+                "mission_service_persistence": True,
+                "source_sha": self.source_sha,
+                "deployed_sha": self.deployed_sha,
+                "approval_authentication": authentication_source,
+            },
+            "scenario": StageDScenario.EXPLORE.value,
+            "proposal": self._proposal,
+            "approval": {
+                "required": self._proposal is not None,
+                "enabled": state == WebMissionState.PROPOSED.value,
+                "approved": bool(approval.get("approved", False)),
+                "authenticated": bool(approval.get("authenticated", False)),
+                "authenticated_operator": (
+                    approved_operator
+                    if approved_operator
+                    else self.operator
+                    if self.allow_loopback_test_approval
+                    else ""
+                ),
+                "authentication_source": authentication_source,
+                "production_authenticated": (
+                    bool(approval.get("authenticated", False))
+                    and authentication_source == "tailscale-serve"
+                ),
+                "proposal_digest": (
+                    "" if self._proposal is None else self._proposal["proposal_digest"]
+                ),
+                "required_phrase": self._approval_phrase(),
+                "simulation_only": True,
+                "mission_lease": mission_lease,
+            },
+            "mission": {
+                "mission_id": "" if mission is None else mission["mission_id"],
+                "state": state,
+                "progress": (
+                    0.0
+                    if projection is None
+                    else float(projection.get("progress", 0.0))
+                ),
+                "terminal": terminal,
+                "terminal_reason": (
+                    self._planning_error
+                    if projection is None
+                    else str(projection.get("terminal_reason", ""))
+                ),
+                "result": dict(result),
+            },
+            "artifacts": _terminal_artifacts(result, fixture_only=True),
+            "safety": {
+                "stop_active": bool(safety.get("stop_active", False)),
+                "estop_latched": bool(safety.get("estop_latched", False)),
+                "collision_state": str(safety.get("collision_state", "UNKNOWN")),
+                "front_clearance_m": observations.get("forward_clearance_m"),
+                "forward_corridor_clearance_m": observations.get(
+                    "forward_clearance_m"
+                ),
+                "forward_corridor_min_angle_deg": -45.0,
+                "forward_corridor_max_angle_deg": 45.0,
+                "left_clearance_m": observations.get("left_clearance_m"),
+                "right_clearance_m": observations.get("right_clearance_m"),
+                "trajectory_min_clearance_m": observations.get(
+                    "forward_clearance_m"
+                ),
+                "trajectory_horizon_s": 0.75,
+                "telemetry_fresh": all(
+                    evidence.get(name) is True
+                    for name in (
+                        "scan_fresh",
+                        "transform_fresh",
+                        "odometry_fresh",
+                    )
+                ),
+                "independent_robot_safety": True,
+                "browser_is_sole_safety_mechanism": False,
+            },
+            "events": stage_events,
+            "map": map_payload,
+            "rolling": {
+                "world_snapshot": world or None,
+                "world_snapshots": (
+                    [world]
+                    if projection is None and world
+                    else ([] if projection is None else projection.get("world_snapshots", []))
+                ),
+                "decision_snapshots": (
+                    [self._staged_snapshot]
+                    if self._staged_snapshot is not None
+                    else []
+                ),
+                "active_intent": (
+                    staged_active
+                    if projection is None
+                    else projection.get("active_intent")
+                ),
+                "intent_revisions": (
+                    []
+                    if projection is None
+                    else projection.get("intent_revisions", [])
+                ),
+                "inference": (
+                    {
+                        "in_flight": False,
+                        "provider_calls_started": 1 if staged_active else 0,
+                        "provider_calls_completed": 1 if staged_active else 0,
+                    }
+                    if projection is None
+                    else projection.get("inference", {})
+                ),
+                "metrics": (
+                    {}
+                    if projection is None
+                    else projection.get("metrics", {})
+                ),
+                "mission_lease": mission_lease,
+            },
+        }
+
+
 class LiveMissionWebAdapter:
     """Default-disabled browser adapter over the Pi-local Unix socket only."""
 
@@ -1170,29 +1704,39 @@ class LiveMissionWebAdapter:
             service = dict(self.client.service_snapshot())
         except MissionValidationError as exc:
             raise MissionWebError(str(exc)) from exc
-        if service.get("mode") != "live":
+        if str(service.get("mode", "")).split("/", 1)[0] != "live":
             raise MissionWebError("live web adapter requires a live-mode Pi mission service")
         self._service_snapshot = service
         self.live_execution_enabled = bool(service.get("live_execution_enabled", False))
         self.stationary_perception_enabled = bool(
             service.get("stationary_perception_enabled", False)
         )
+        self.stage_d_enabled = bool(service.get("stage_d_enabled", False))
         self.mode = (
             "live/stationary-perception"
             if self.stationary_perception_enabled
+            else "live/stage-d"
+            if self.stage_d_enabled
             else "live"
             if self.live_execution_enabled
             else "live/proposal-only"
         )
 
-    def set_request_identity(self, identity: str) -> None:
+    def set_request_identity(
+        self, identity: str, *, authenticated: bool = False
+    ) -> None:
         self._request_context.operator = str(identity).strip()
+        self._request_context.authenticated = bool(authenticated)
 
     def clear_request_identity(self) -> None:
         self._request_context.operator = ""
+        self._request_context.authenticated = False
 
     def _operator_identity(self) -> str:
         return str(getattr(self._request_context, "operator", "")).strip() or self.operator
+
+    def _operator_authenticated(self) -> bool:
+        return bool(getattr(self._request_context, "authenticated", False))
 
     def scenarios(self) -> Sequence[ScenarioDefinition]:
         return LIVE_SCENARIOS
@@ -1216,9 +1760,14 @@ class LiveMissionWebAdapter:
             self.stationary_perception_enabled = bool(
                 self._service_snapshot.get("stationary_perception_enabled", False)
             )
+            self.stage_d_enabled = bool(
+                self._service_snapshot.get("stage_d_enabled", False)
+            )
             self.mode = (
                 "live/stationary-perception"
                 if self.stationary_perception_enabled
+                else "live/stage-d"
+                if self.stage_d_enabled
                 else "live"
                 if self.live_execution_enabled
                 else "live/proposal-only"
@@ -1263,19 +1812,36 @@ class LiveMissionWebAdapter:
                 # recomputes the exact full-digest phrase from freshly read
                 # persisted state, so a user no longer copies a hash and the
                 # unchanged-proposal binding remains server-owned and audited.
+                proposal_schema = str(proposal_payload.get("schema", ""))
                 if self.stationary_perception_enabled:
                     server_approval = (
                         "APPROVE STATIONARY PERCEPTION "
+                        f"{str(proposal_payload.get('proposal_digest', ''))}"
+                    )
+                elif proposal_schema == STAGE_D_PROPOSAL_SCHEMA:
+                    if not self._operator_authenticated():
+                        raise MissionWebError(
+                            "physical Stage D approval requires an authenticated "
+                            "Tailscale request"
+                        )
+                    server_approval = (
+                        "APPROVE STAGE D "
                         f"{str(proposal_payload.get('proposal_digest', ''))}"
                     )
                 else:
                     server_approval = approval_phrase(
                         prompt_drive_proposal_from_json(proposal_payload)
                     )
+                approval_kwargs = (
+                    {"authentication_source": "tailscale-serve"}
+                    if proposal_schema == STAGE_D_PROPOSAL_SCHEMA
+                    else {}
+                )
                 snapshot = self.client.approve_prompt(
                     self._mission_id,
                     approval_phrase=server_approval,
                     operator=self._operator_identity(),
+                    **approval_kwargs,
                 )
             except MissionValidationError as exc:
                 raise MissionWebError(str(exc)) from exc
@@ -1336,7 +1902,18 @@ class LiveMissionWebAdapter:
                 and required_fresh
             )
             or (
+                self.stage_d_enabled
+                and self.live_execution_enabled
+                and isinstance(
+                    self._service_snapshot.get("stage_d_readiness"),
+                    Mapping,
+                )
+                and self._service_snapshot["stage_d_readiness"].get("ready")
+                is True
+            )
+            or (
                 self.live_execution_enabled
+                and not self.stage_d_enabled
                 and required_fresh
                 and str(safety.get("collision_state", "UNKNOWN")).upper() == "CLEAR"
                 and stop_state == "READY"
@@ -1360,6 +1937,10 @@ class LiveMissionWebAdapter:
             result = mission.get("result", {}) if isinstance(mission.get("result", {}), Mapping) else {}
             mission_id = str(mission.get("mission_id", ""))
             approval = mission.get("approval", {}) if isinstance(mission.get("approval", {}), Mapping) else {}
+        stage_d_projection_enabled = self.stage_d_enabled or any(
+            str(payload.get("schema", "")).startswith("sphero_rvr.stage_d_")
+            for payload in (proposal, result)
+        )
 
         progress_value = 0.0
         if isinstance(route_progress, Mapping):
@@ -1407,6 +1988,29 @@ class LiveMissionWebAdapter:
                 "boundary": "Pi-local MissionService Unix socket",
                 **(
                     {
+                        "stage_d": True,
+                        "rolling_replay": True,
+                        "real_llm_provider": self._service_snapshot.get(
+                            "provider_id"
+                        )
+                        == "openai-codex-oauth",
+                        "provider_id": self._service_snapshot.get(
+                            "provider_id", ""
+                        ),
+                        "model_id": self._service_snapshot.get(
+                            "model_id", ""
+                        ),
+                        "reasoning_effort": self._service_snapshot.get(
+                            "reasoning_effort", ""
+                        ),
+                        "physical_execution_enabled": self.live_execution_enabled,
+                        "motion_authority": False,
+                    }
+                    if stage_d_projection_enabled
+                    else {}
+                ),
+                **(
+                    {
                         "rolling_replay": True,
                         "stationary_perception": True,
                         "real_llm_provider": self._service_snapshot.get(
@@ -1437,6 +2041,18 @@ class LiveMissionWebAdapter:
                 "server_digest_bound": True,
                 "simulation_only": False,
                 "stationary_perception_only": self.stationary_perception_enabled,
+                "stage_d": stage_d_projection_enabled,
+                "authenticated": bool(approval.get("authenticated", False)),
+                "authenticated_operator": str(approval.get("operator", "")),
+                "authentication_source": str(
+                    approval.get("authentication_source", "")
+                ),
+                "mission_lease": (
+                    result.get("mission_lease", {})
+                    if stage_d_projection_enabled
+                    and isinstance(result.get("mission_lease"), Mapping)
+                    else {}
+                ),
             },
             "mission": {
                 "mission_id": mission_id,
@@ -1495,7 +2111,7 @@ class LiveMissionWebAdapter:
             "camera_preview": _live_camera_preview(live_evidence),
             "rolling": (
                 _stationary_projection(result)
-                if self.stationary_perception_enabled
+                if self.stationary_perception_enabled or stage_d_projection_enabled
                 else {}
             ),
         }
@@ -1511,17 +2127,64 @@ def _stationary_projection(result: Mapping[str, Any]) -> dict[str, Any]:
     decisions = result.get("decision_snapshots", [])
     inference = result.get("inference", {})
     metrics = result.get("metrics", {})
+    if not isinstance(revisions, list):
+        revisions = []
+    if not isinstance(inference, Mapping):
+        inference = {}
+    if not isinstance(metrics, Mapping):
+        metrics = {}
+    if not inference:
+        provider = result.get("provider", {})
+        if isinstance(provider, Mapping):
+            inference = {
+                "call": None,
+                "in_flight": False,
+                "provider_calls_started": int(provider.get("calls_started", 0)),
+                "provider_calls_completed": int(
+                    provider.get("calls_completed", 0)
+                ),
+            }
+    if not metrics:
+        progress = world.get("progress", {})
+        if not isinstance(progress, Mapping):
+            progress = {}
+        metrics = {
+            "intent_revision_count": len(revisions),
+            "completed_intents": sum(
+                1
+                for revision in revisions
+                if isinstance(revision, Mapping)
+                and isinstance(revision.get("execution"), Mapping)
+                and revision["execution"].get("outcome") == "completed"
+            ),
+            "cumulative_translation_m": float(
+                progress.get("cumulative_translation_m", 0.0)
+            ),
+            "cumulative_rotation_deg": float(
+                progress.get("cumulative_rotation_deg", 0.0)
+            ),
+        }
     return {
         "world_snapshot": dict(world),
+        "world_snapshots": (
+            list(result.get("world_snapshots", []))
+            if isinstance(result.get("world_snapshots"), list)
+            else []
+        ),
         "decision_snapshots": list(decisions) if isinstance(decisions, list) else [],
         "active_intent": (
             result.get("active_intent")
             if isinstance(result.get("active_intent"), Mapping)
             else None
         ),
-        "intent_revisions": list(revisions) if isinstance(revisions, list) else [],
-        "inference": dict(inference) if isinstance(inference, Mapping) else {},
-        "metrics": dict(metrics) if isinstance(metrics, Mapping) else {},
+        "intent_revisions": list(revisions),
+        "inference": dict(inference),
+        "metrics": dict(metrics),
+        "mission_lease": (
+            dict(result.get("mission_lease", {}))
+            if isinstance(result.get("mission_lease"), Mapping)
+            else {}
+        ),
     }
 
 
@@ -1591,6 +2254,7 @@ def _web_state(status: str) -> str:
         "stopped": WebMissionState.STOPPED,
         "estopped": WebMissionState.ESTOPPED,
         "blocked": WebMissionState.BLOCKED,
+        "timeout": WebMissionState.TIMEOUT,
         "rejected": WebMissionState.REJECTED,
         "failed": WebMissionState.FAILED,
         "recovery_required": WebMissionState.RECOVERY_REQUIRED,
@@ -1990,7 +2654,14 @@ class _MissionWebHttpHandler(BaseHTTPRequestHandler):
         set_identity = getattr(adapter, "set_request_identity", None)
         clear_identity = getattr(adapter, "clear_request_identity", None)
         if callable(set_identity) and self.command == "POST":
-            set_identity(str(getattr(self, "_request_identity", "")))
+            identity = str(getattr(self, "_request_identity", ""))
+            set_identity(
+                identity,
+                authenticated=(
+                    bool(getattr(self.server, "require_tailscale_identity", False))
+                    and bool(identity)
+                ),
+            )
         try:
             response = handle_mission_web_request(
                 self.command,
@@ -2057,7 +2728,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
         "--mode",
-        choices=("mock", "live", "rolling-replay"),
+        choices=("mock", "live", "rolling-replay", "stage-d-replay"),
         default="mock",
     )
     parser.add_argument(
@@ -2070,7 +2741,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--public-origin",
         default=None,
-        help="Exact authenticated HTTPS origin required for live POST requests",
+        help=(
+            "Exact authenticated HTTPS origin required for live and served "
+            "Stage D POST requests"
+        ),
+    )
+    parser.add_argument(
+        "--allow-loopback-test-approval",
+        action="store_true",
+        help=(
+            "Allow an explicitly unauthenticated loopback-only Stage D replay "
+            "approval for browser/testing; never use for a served operator console"
+        ),
     )
     parser.add_argument(
         "--replay-database",
@@ -2086,6 +2768,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("the mission web service may bind only to a loopback host")
+    if args.allow_loopback_test_approval and args.mode != "stage-d-replay":
+        parser.error(
+            "--allow-loopback-test-approval is valid only in stage-d-replay mode"
+        )
     if args.mode == "live":
         if not args.public_origin:
             parser.error("live mode requires --public-origin for same-origin enforcement")
@@ -2114,6 +2800,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         allowed_origin = None
         sensor_control = None
+    elif args.mode == "stage-d-replay":
+        if args.allow_loopback_test_approval and args.public_origin:
+            parser.error(
+                "Stage D loopback test approval cannot be combined with --public-origin"
+            )
+        if not args.allow_loopback_test_approval and not args.public_origin:
+            parser.error(
+                "stage-d-replay requires --public-origin unless "
+                "--allow-loopback-test-approval is explicitly selected"
+            )
+        adapter = StageDMissionAdapter(
+            CodexOAuthStageDIntentProvider(
+                model=args.replay_model,
+                reasoning_effort=args.replay_reasoning_effort,
+            ),
+            database=args.replay_database,
+            source_sha=_local_source_sha(),
+            operator=args.operator,
+            allow_loopback_test_approval=args.allow_loopback_test_approval,
+        )
+        allowed_origin = (
+            None if args.allow_loopback_test_approval else args.public_origin
+        )
+        sensor_control = None
     else:
         adapter = MockReplayMissionAdapter()
         allowed_origin = None
@@ -2124,7 +2834,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         adapter=adapter,
         sensor_control=sensor_control,
         allowed_origin=allowed_origin,
-        require_tailscale_identity=args.mode == "live",
+        require_tailscale_identity=(
+            args.mode == "live"
+            or (
+                args.mode == "stage-d-replay"
+                and not args.allow_loopback_test_approval
+            )
+        ),
     )
     print(
         f"RVR {args.mode} web console on loopback: http://{args.host}:{server.server_address[1]} "
@@ -2390,7 +3106,7 @@ _INDEX_HTML = r'''<!doctype html>
           </div>
         </section>
         <section class="panel" id="rolling-intent-panel" hidden>
-          <h2>Current finite leased intent</h2>
+          <h2 id="rolling-intent-heading">Current finite leased intent</h2>
           <div id="rolling-intent" class="empty">No validated intent yet.</div>
         </section>
         <section class="panel" aria-labelledby="proposal-heading">
@@ -2398,7 +3114,7 @@ _INDEX_HTML = r'''<!doctype html>
           <div id="proposal-view" class="empty">Submit a mission to see a typed route proposal or rejection.</div>
         </section>
         <section class="panel" id="rolling-loop-panel" hidden>
-          <h2>Asynchronous LLM loop</h2>
+          <h2 id="rolling-loop-heading">Asynchronous LLM loop</h2>
           <div class="rolling-grid" id="rolling-metrics"></div>
           <div class="revision-list" id="rolling-revisions"></div>
         </section>
@@ -2515,6 +3231,7 @@ _INDEX_HTML = r'''<!doctype html>
 
     function renderActionState(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
+      const stageD = Boolean(snapshot.adapter.stage_d);
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
       const cancelBusy = missionRequestInFlight === 'cancel';
@@ -2527,6 +3244,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('approve').textContent = approvalBusy
         ? (stationary ? 'Starting stationary perception…' : 'Confirming…')
         : stationary ? 'Start stationary perception'
+        : stageD ? 'Approve 15-minute lease'
         : snapshot.adapter.rolling_replay ? 'Start rolling replay'
         : !snapshot.adapter.fixture_only ? 'Approve and run'
         : 'Approve simulation';
@@ -2547,6 +3265,12 @@ _INDEX_HTML = r'''<!doctype html>
                 : snapshot.approval.enabled
                   ? 'Ready: this starts stationary snapshots and leased LLM observation intent only.'
                   : 'Disabled: the authoritative stationary-perception prerequisites are not ready.';
+      } else if (stageD) {
+        $('approval-state').textContent = approvalBusy
+          ? 'Binding the prompt, SHAs, lease, speed ceilings, safety policy, starting snapshot, and first intent.'
+          : snapshot.mission.state === 'PROPOSED'
+            ? `Ready: one authenticated approval starts adaptive replanning; ${snapshot.approval.authenticated_operator} remains the bound operator.`
+            : '';
       } else {
         $('approval-state').textContent = approvalBusy
           ? 'Confirming the exact persisted proposal.'
@@ -2556,6 +3280,16 @@ _INDEX_HTML = r'''<!doctype html>
 
     function render(snapshot) {
       current = snapshot;
+      const requestStatus = $('request-status');
+      if (!missionRequestInFlight
+          && snapshot.mission.state !== 'PLANNING'
+          && requestStatus.textContent.startsWith('Planning is in progress')) {
+        requestStatus.textContent = snapshot.mission.state === 'PROPOSED'
+          ? 'Proposal generated and persisted. Review its rationale and confirmation prerequisites below.'
+          : snapshot.mission.terminal
+            ? `Planning ended: ${snapshot.mission.state} — ${snapshot.mission.terminal_reason || 'terminal result recorded'}.`
+            : '';
+      }
       const proposal = snapshot.proposal;
       const missionId = snapshot.mission.mission_id || null;
       if (proposal && missionId !== hydratedMissionId) {
@@ -2564,15 +3298,17 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const live = !snapshot.adapter.fixture_only;
       const rollingReplay = Boolean(snapshot.adapter.rolling_replay);
+      const stageD = Boolean(snapshot.adapter.stage_d);
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const execution = live && snapshot.adapter.live_execution_enabled;
+      const physicalStageD = stageD && live;
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
-      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
-      $('scenario-label').textContent = stationary ? 'Stationary sensor target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
-      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
-      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
+      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalStageD ? (execution ? 'LIVE STAGE D — SUPERVISED PHYSICAL EXECUTION' : 'LIVE STAGE D — PHYSICAL EXECUTION LOCKED') : stageD ? 'STAGE D CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      $('scenario-label').textContent = stationary ? 'Stationary sensor target' : physicalStageD ? 'Pi Stage D controller' : stageD ? 'Controller target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
+      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : stageD ? 'Stage D mission lease' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
+      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : stageD ? (physicalStageD && !execution ? 'The reviewed Pi deployment has Stage D physical execution locked; proposals remain non-executable.' : 'One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the 15-minute lease ends. Every intent remains bounded.') : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalStageD ? 'The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, 15-minute lease, speed ceilings, and safety policy. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.' : stageD ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -2618,12 +3354,14 @@ _INDEX_HTML = r'''<!doctype html>
       $('approval-input-label').hidden = live;
       $('approval-input').disabled = live || snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
       if (proposal) {
-        const segments = proposal.segments.map((segment, index) => `<div class="segment"><span>${index + 1}. <code>${escapeHtml(segment.tool_id)}</code></span><strong>${escapeHtml(JSON.stringify(segment.arguments))}</strong></div>`).join('');
+        const segments = (proposal.segments || []).map((segment, index) => `<div class="segment"><span>${index + 1}. <code>${escapeHtml(segment.tool_id)}</code></span><strong>${escapeHtml(JSON.stringify(segment.arguments))}</strong></div>`).join('');
         const limits = Object.entries(proposal.limits).map(([key,value]) => `<span class="chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join('');
         const decisionClass = proposal.decision === 'reject' ? ' rejected' : '';
         $('proposal-view').className = decisionClass;
         const approvalAudit = live ? `<p class="hint">The Pi records the exact route you confirmed.</p><details><summary>Technical approval audit</summary><code class="digest">${escapeHtml(proposal.proposal_digest)}</code></details>` : `<p class="field-label">Approval digest</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code><p class="field-label">Required phrase</p><code class="digest">${escapeHtml(snapshot.approval.required_phrase || 'Not approvable')}</code>`;
-        $('proposal-view').innerHTML = `<div class="plan-meta"><div class="meta"><span>Decision</span><strong>${escapeHtml(proposal.decision)}</strong></div><div class="meta"><span>Model</span><strong>${escapeHtml(proposal.provider_id)}/${escapeHtml(proposal.model_id)}</strong></div></div><p>${escapeHtml(proposal.summary)}</p>${segments}<div class="limits">${limits}</div>${approvalAudit}`;
+        const objective = proposal.interpreted_objective ? `<p class="field-label">Interpreted objective</p><p>${escapeHtml(proposal.interpreted_objective)}</p>` : '';
+        const firstIntent = proposal.first_intent ? `<p class="field-label">First proposed intent</p><div class="segment"><span><code>${escapeHtml(proposal.first_intent.action)}</code></span><strong>${escapeHtml(proposal.first_intent.rationale)}</strong></div>` : '';
+        $('proposal-view').innerHTML = `<div class="plan-meta"><div class="meta"><span>Decision</span><strong>${escapeHtml(proposal.decision)}</strong></div><div class="meta"><span>Model</span><strong>${escapeHtml(proposal.provider_id)}/${escapeHtml(proposal.model_id)}</strong></div></div><p>${escapeHtml(proposal.summary)}</p>${objective}${firstIntent}${segments}<div class="limits">${limits}</div>${approvalAudit}`;
       } else {
         $('proposal-view').className = 'empty';
         $('proposal-view').textContent = 'Submit a mission to see a typed route proposal or rejection.';
@@ -2654,15 +3392,20 @@ _INDEX_HTML = r'''<!doctype html>
     function renderRolling(snapshot) {
       const enabled = Boolean(snapshot.adapter.rolling_replay);
       const stationary = Boolean(snapshot.adapter.stationary_perception);
+      const stageD = Boolean(snapshot.adapter.stage_d);
       $('rolling-intent-panel').hidden = !enabled;
       $('rolling-loop-panel').hidden = !enabled;
       $('rolling-world-panel').hidden = !enabled;
       if (!enabled) return;
+      $('rolling-intent-heading').textContent = stageD ? 'Current leased Stage D intent' : 'Current finite leased intent';
+      $('rolling-loop-heading').textContent = stageD ? 'Closed-loop LLM revisions' : 'Asynchronous LLM loop';
       const rolling = snapshot.rolling || {};
       const intent = rolling.active_intent;
       if (intent) {
         $('rolling-intent').className = '';
-        $('rolling-intent').innerHTML = stationary
+        $('rolling-intent').innerHTML = stageD
+          ? `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Intent lease</span><strong>${escapeHtml(intent.lease_s)} s · timeout ${escapeHtml(intent.timeout_s)} s</strong></div><div class="rolling-card"><span>Action</span><strong>${escapeHtml(intent.action)}</strong></div><div class="rolling-card"><span>Bounded target</span><strong>${Number(intent.distance_m).toFixed(2)} m · ${Number(intent.angle_deg).toFixed(1)}°</strong></div><div class="rolling-card"><span>Mission lease remaining</span><strong>${Number((rolling.mission_lease || {}).remaining_s || 0).toFixed(1)} s</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)} · deterministic validation required</code>`
+          : stationary
           ? `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Action</span><strong>${escapeHtml(intent.action)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint recommendation</span><strong>${escapeHtml(intent.viewpoint_recommendation)}</strong></div><div class="rolling-card"><span>Search targets</span><strong>${escapeHtml((intent.search_targets || []).join(', '))}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)} · motion_authority=false</code>`
           : `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Steering / speed</span><strong>${Number(intent.steering).toFixed(2)} · ${Number(intent.speed_limit_mps).toFixed(2)} m/s</strong></div><div class="rolling-card"><span>Safe corridor</span><strong>${escapeHtml(intent.safe_corridor)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint</span><strong>${escapeHtml(intent.viewpoint)}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)}</code>`;
       } else {
@@ -2671,7 +3414,22 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const inference = rolling.inference || {};
       const metrics = rolling.metrics || {};
-      const metricItems = stationary ? [
+      const rollingWorld = rolling.world_snapshot || {};
+      const rollingObservations = rollingWorld.observations || {};
+      const rollingPerception = rollingObservations.perception || {};
+      const recognizedObjects = Array.isArray(rollingObservations.recognized_objects) ? rollingObservations.recognized_objects : [];
+      const recognizedFaces = Array.isArray(rollingObservations.recognized_faces) ? rollingObservations.recognized_faces : [];
+      const unknownFaces = Array.isArray(rollingObservations.unknown_faces) ? rollingObservations.unknown_faces : [];
+      const metricItems = stageD ? [
+        ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
+        ['Intent revisions', metrics.intent_revision_count || 0],
+        ['Completed intents', metrics.completed_intents || 0],
+        ['Cumulative translation', `${Number(metrics.cumulative_translation_m || 0).toFixed(2)} m · no lease-local cap`],
+        ['Cumulative rotation', `${Number(metrics.cumulative_rotation_deg || 0).toFixed(1)}° · no lease-local cap`],
+        ['Provider calls', `${inference.provider_calls_completed || 0} / ${inference.provider_calls_started || 0}`],
+        ['Semantic perception', rollingPerception.available ? 'FRESH + LOCALIZED' : 'UNAVAILABLE / STALE'],
+        ['Objects / known / unknown faces', `${recognizedObjects.length} / ${recognizedFaces.length} / ${unknownFaces.length}`],
+      ] : stationary ? [
         ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
         ['Intent revisions', metrics.intent_revision_count || 0],
         ['Sensor updates during LLM', metrics.sensor_updates_while_llm_in_flight || 0],
@@ -2688,11 +3446,23 @@ _INDEX_HTML = r'''<!doctype html>
       ];
       $('rolling-metrics').innerHTML = metricItems.map(([label,value], index) => `<div class="rolling-card"><span>${escapeHtml(label)}</span><strong class="${index === 0 && inference.in_flight ? 'in-flight' : ''}">${escapeHtml(value)}</strong></div>`).join('');
       const revisions = rolling.intent_revisions || [];
-      $('rolling-revisions').innerHTML = revisions.length ? revisions.slice().reverse().map((item) => stationary
+      $('rolling-revisions').innerHTML = revisions.length ? revisions.slice().reverse().map((item) => stageD
+        ? `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml((item.execution || {}).outcome || 'pending')}</small><strong>${escapeHtml(item.action)} · ${Number(item.distance_m).toFixed(2)} m · ${Number(item.angle_deg).toFixed(1)}°</strong><br>${escapeHtml(item.rationale)}<br><code class="digest">requested ${escapeHtml(JSON.stringify((((item.execution || {}).movement || {}).requested || {})))} → supervised ${escapeHtml(JSON.stringify((((item.execution || {}).movement || {}).supervised || {})))}</code></div>`
+        : stationary
         ? `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.sensor_updates_during_call)} live sensor updates during call</small><strong>${escapeHtml(item.action)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint_recommendation)}</strong><br>${escapeHtml(item.rationale)}</div>`
         : `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.movement_updates_during_call)} replay updates during call</small><strong>${Number(item.steering).toFixed(2)} steering · ${escapeHtml(item.safe_corridor)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint)}</strong><br>${escapeHtml(item.rationale)}</div>`).join('') : '<p class="empty">No completed LLM revisions yet.</p>';
       const world = rolling.world_snapshot || {};
-      const visible = stationary ? {
+      const visible = stageD ? {
+        snapshot_id: world.snapshot_id,
+        version: world.version,
+        pose: world.pose,
+        evidence: world.evidence,
+        safety: world.safety,
+        execution: world.execution,
+        progress: world.progress,
+        observations: world.observations,
+        last_execution: world.last_execution,
+      } : stationary ? {
         snapshot_id: world.snapshot_id,
         version: world.version,
         observed_at_s: world.observed_at_s,

@@ -12,7 +12,13 @@ import math
 import subprocess
 from typing import Any, Optional
 
-from .collision_stop import CollisionStopConfig, CollisionState, ScanInput, Transform2D
+from .collision_stop import (
+    CollisionStopConfig,
+    CollisionState,
+    ScanInput,
+    ScanStampTracker,
+    Transform2D,
+)
 from .live_route_runner import (
     LiveRouteConfig,
     LiveRouteRequest,
@@ -24,6 +30,8 @@ from .live_route_runner import (
 )
 from .odometry import MotionPrimitiveConfig, OdomMotionState
 from .range_motion_node import _stamp_seconds, _tf_error_reason, _transform2d_from_transform_stamped
+
+MAX_TURN_CORRECTION_CONTROL_PERIOD_S = 0.05
 
 
 def _odom_state(msg: Any) -> Optional[OdomMotionState]:
@@ -117,11 +125,21 @@ def main(args=None):
         def __init__(self):
             super().__init__("live_route_runner")
             self._declare_parameters()
+            control_period_s = float(self.get_parameter("control_period_s").value)
+            if (
+                not math.isfinite(control_period_s)
+                or control_period_s <= 0.0
+                or control_period_s > MAX_TURN_CORRECTION_CONTROL_PERIOD_S
+            ):
+                raise ValueError(
+                    "live route control_period_s must be positive and no greater than 0.05"
+                )
             self._runner = LiveRouteRunner(self._read_config())
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
             self._latest_request: Optional[LiveRouteRequest] = None
             self._latest_scan: Optional[ScanInput] = None
+            self._scan_stamp_tracker = ScanStampTracker()
             self._latest_odom: Optional[OdomMotionState] = None
             self._latest_encoder_counts: Optional[TrackEncoderState] = None
             self._collision_state: Optional[str] = None
@@ -141,7 +159,7 @@ def main(args=None):
             self.create_subscription(String, str(self.get_parameter("collision_state_topic").value), self._on_collision_state, 10)
             self.create_subscription(String, str(self.get_parameter("stop_state_topic").value), self._on_stop_state, 10)
             self.create_service(Trigger, "live_route/cancel", self._on_cancel)
-            self.create_timer(float(self.get_parameter("control_period_s").value), self._tick)
+            self.create_timer(control_period_s, self._tick)
 
         def _declare_parameters(self) -> None:
             odom_defaults = MotionPrimitiveConfig()
@@ -178,10 +196,14 @@ def main(args=None):
                 "terminal_settle_angle_rad": math.radians(1.0),
                 "terminal_settle_encoder_counts": 8,
                 "max_terminal_distance_error_m": 0.03,
-                "max_terminal_angle_error_rad": math.radians(5.0),
+                "max_terminal_angle_error_rad": math.radians(10.0),
+                "max_turn_corrections": 3,
                 "distance_tolerance_m": odom_defaults.distance_tolerance_m,
                 "angle_tolerance_rad": odom_defaults.angle_tolerance_rad,
+                "target_stop_horizon_s": odom_defaults.target_stop_horizon_s,
+                "turn_target_stop_horizon_s": odom_defaults.turn_target_stop_horizon_s,
                 "max_turn_speed_rad_s": odom_defaults.max_turn_speed_rad_s,
+                "max_turn_progress_rate_rad_s": odom_defaults.max_turn_progress_rate_rad_s,
                 "heading_kp": odom_defaults.heading_kp,
                 "max_heading_correction_rad_s": odom_defaults.max_heading_correction_rad_s,
                 "max_sample_age_s": odom_defaults.max_sample_age_s,
@@ -196,7 +218,16 @@ def main(args=None):
             odom = MotionPrimitiveConfig(
                 distance_tolerance_m=float(self.get_parameter("distance_tolerance_m").value),
                 angle_tolerance_rad=float(self.get_parameter("angle_tolerance_rad").value),
+                target_stop_horizon_s=float(
+                    self.get_parameter("target_stop_horizon_s").value
+                ),
+                turn_target_stop_horizon_s=float(
+                    self.get_parameter("turn_target_stop_horizon_s").value
+                ),
                 max_turn_speed_rad_s=float(self.get_parameter("max_turn_speed_rad_s").value),
+                max_turn_progress_rate_rad_s=float(
+                    self.get_parameter("max_turn_progress_rate_rad_s").value
+                ),
                 heading_kp=float(self.get_parameter("heading_kp").value),
                 max_heading_correction_rad_s=float(self.get_parameter("max_heading_correction_rad_s").value),
                 max_sample_age_s=float(self.get_parameter("max_sample_age_s").value),
@@ -231,6 +262,7 @@ def main(args=None):
                 terminal_settle_encoder_counts=int(self.get_parameter("terminal_settle_encoder_counts").value),
                 max_terminal_distance_error_m=float(self.get_parameter("max_terminal_distance_error_m").value),
                 max_terminal_angle_error_rad=float(self.get_parameter("max_terminal_angle_error_rad").value),
+                max_turn_corrections=int(self.get_parameter("max_turn_corrections").value),
             )
 
         def _supervisor_cmd_topic(self) -> str:
@@ -275,6 +307,7 @@ def main(args=None):
                 frame_id=frame_id,
                 transform_to_base=transform,
                 transform_error=transform_error,
+                stamp_progress_error=self._scan_stamp_tracker.check(stamp),
             )
 
         def _lookup_scan_transform(self, frame_id: str, stamp_msg) -> tuple[Optional[Transform2D], Optional[str]]:

@@ -2,6 +2,12 @@
 
 Source-of-truth implementation contract for a lidar-backed collision-stop supervisor that remains authoritative over every ordinary command source: TUI/key tap, browser/AI control, mission APIs, Nav2, teleop, rosbag replay, and future planners.
 
+The Stage D physical adapter is one such upstream mission source. It submits
+bounded work to `/cmd_vel` through `live_route_runner` and consumes the
+supervisor's scan/TF health plus requested/output evidence. It does not change
+this document's topic ownership: the supervisor remains the sole
+`/cmd_vel_motor` publisher.
+
 This is a design document only. It must not activate hardware, launch the RVR driver, publish motion, capture calibration data, or validate physically.
 
 ## Current code audited
@@ -129,7 +135,8 @@ Parameters:
 | `base_frame` | string | `base_link` | Footprint frame. Must match current RVR node default. |
 | `laser_frame` | string | `laser` | Expected scan frame; normally from `config/lidar.yaml`. |
 | `tf_timeout_s` | double | `0.05` | Bounded TF lookup timeout for transforming scan samples into `base_link`. |
-| `max_scan_age_s` | double | `0.30` | Maximum age from message stamp or receipt time. Must be less than driver `cmd_vel_timeout` (`0.5s`). |
+| `max_scan_age_s` | double | `0.30` | Maximum time since the latest scan was received. This detects a stopped or delayed stream and must be less than driver `cmd_vel_timeout` (`0.5s`). |
+| `max_scan_stamp_age_s` | double | `0.75` | Source-provenance sanity ceiling. The installed RPLidar stamps before acquiring a full revolution, so this is not the stream-loss clock. Frozen/replayed evidence is rejected immediately when stamps fail to advance; receipt age still forces zero before the driver timeout. |
 | `startup_grace_s` | double | `2.0` | Startup wait for first scan. Output zero until healthy. |
 | `min_valid_ranges` | int | `12` | Minimum valid ranges in relevant sectors. |
 | `min_valid_fraction` | double | `0.05` | Minimum valid fraction over relevant sectors. |
@@ -138,7 +145,9 @@ Parameters:
 A scan is unhealthy if any of these are true:
 
 - missing beyond `startup_grace_s` after node activation;
-- latest scan age exceeds `max_scan_age_s`;
+- time since the latest scan receipt exceeds `max_scan_age_s`;
+- source message-stamp age exceeds `max_scan_stamp_age_s`;
+- source message stamps stop advancing or move backward;
 - `ranges` is empty or too short to cover the configured sectors;
 - `angle_increment <= 0`, `angle_min/angle_max` are non-finite, or metadata cannot map ranges to angles;
 - valid range count/fraction is below threshold;
@@ -364,6 +373,7 @@ lidar_collision_stop_supervisor:
     laser_frame: laser
     tf_timeout_s: 0.05
     max_scan_age_s: 0.30
+    max_scan_stamp_age_s: 0.75
     startup_grace_s: 2.0
     min_valid_ranges: 12
     min_valid_fraction: 0.05

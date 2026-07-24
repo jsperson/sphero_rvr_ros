@@ -23,6 +23,9 @@ def generate_launch_description():
     start_lidar = LaunchConfiguration("start_lidar")
     start_camera = LaunchConfiguration("start_camera")
     start_slam = LaunchConfiguration("start_slam")
+    start_live_route_runner = LaunchConfiguration("start_live_route_runner")
+    serial_port = LaunchConfiguration("serial_port")
+    camera_info_url = LaunchConfiguration("camera_info_url")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     return LaunchDescription([
@@ -61,10 +64,30 @@ def generate_launch_description():
             default_value="true",
             description="Start slam_toolbox online async mapping node.",
         ),
+        DeclareLaunchArgument(
+            "start_live_route_runner",
+            default_value="false",
+            description=(
+                "Start the typed live-route executor above the collision-supervised "
+                "motion boundary. Effective only when start_rvr is true."
+            ),
+        ),
+        DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
+        DeclareLaunchArgument(
+            "camera_info_url",
+            default_value=(
+                "file:///home/jsperson/.ros/camera_info/"
+                "rvr_pi_camera3_800x600.yaml"
+            ),
+        ),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(rvr_launch)),
-            launch_arguments={"start_collision_stop": start_collision_stop}.items(),
+            launch_arguments={
+                "start_collision_stop": start_collision_stop,
+                "start_live_route_runner": start_live_route_runner,
+                "serial_port": serial_port,
+            }.items(),
             condition=IfCondition(start_rvr),
         ),
         EmitEvent(
@@ -81,6 +104,7 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(camera_launch)),
+            launch_arguments={"camera_info_url": camera_info_url}.items(),
             condition=IfCondition(start_camera),
         ),
         Node(

@@ -174,6 +174,68 @@ def test_missing_stale_and_malformed_scans_fail_closed():
     assert bad.reason == "angle_increment"
 
 
+def test_scan_freshness_separates_receipt_age_from_acquisition_start_stamp():
+    cfg = CollisionStopConfig(max_scan_age_s=0.3, max_scan_stamp_age_s=0.75)
+    acquiring = scan_with(stamp=10.0)
+    acquiring = ScanInput(**{**acquiring.__dict__, "received_at": 10.34})
+
+    fresh = evaluate_scan(acquiring, cfg, now=10.34)
+    receipt_stale = evaluate_scan(acquiring, cfg, now=10.65)
+    stamp_stale = evaluate_scan(
+        ScanInput(**{**acquiring.__dict__, "received_at": 10.76}),
+        cfg,
+        now=10.76,
+    )
+
+    assert fresh.healthy is True
+    assert fresh.health.age_s == pytest.approx(0.0)
+    assert fresh.health.stamp_age_s == pytest.approx(0.34)
+    assert receipt_stale.healthy is False
+    assert receipt_stale.reason == "stale_scan"
+    assert stamp_stale.healthy is False
+    assert stamp_stale.reason == "stale_scan_stamp"
+
+
+def test_scan_freshness_rejects_invalid_threshold_relationship():
+    with pytest.raises(
+        ValueError,
+        match="max_scan_stamp_age_s must be at least max_scan_age_s",
+    ):
+        CollisionStopConfig(max_scan_age_s=0.3, max_scan_stamp_age_s=0.2)
+
+
+def test_scan_freshness_rejects_frozen_or_replayed_source_stamps():
+    supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=10.0)
+    first = scan_with(stamp=10.0)
+    repeated = ScanInput(**{**first.__dict__, "received_at": 10.1})
+
+    assert supervisor.update_scan(first, now=10.0).state is CollisionState.CLEAR
+    frozen = supervisor.update_scan(repeated, now=10.1)
+
+    assert frozen.state is CollisionState.SENSOR_STALE
+    assert frozen.reason == "non_advancing_scan_stamp"
+    assert frozen.output == TwistCommand()
+
+
+@pytest.mark.parametrize(
+    ("stamp", "received_at", "reason"),
+    (
+        (math.nan, 1.0, "stale_scan_stamp"),
+        (1.0, math.nan, "stale_scan"),
+    ),
+)
+def test_scan_freshness_rejects_non_finite_timestamps(stamp, received_at, reason):
+    scan = scan_with(stamp=1.0)
+    result = evaluate_scan(
+        ScanInput(**{**scan.__dict__, "stamp": stamp, "received_at": received_at}),
+        CollisionStopConfig(),
+        now=1.0,
+    )
+
+    assert result.healthy is False
+    assert result.reason == reason
+
+
 def test_invalid_unknown_front_sector_is_blocked_not_clear():
     cfg = CollisionStopConfig(min_valid_ranges=12, min_valid_fraction=0.05)
     scan = scan_with(stamp=0.0)

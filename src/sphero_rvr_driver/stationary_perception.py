@@ -916,7 +916,9 @@ class StationaryPerceptionController:
         *,
         supplied_approval: str,
         operator: str,
+        authentication_source: str = "",
     ) -> dict[str, Any]:
+        del authentication_source
         with self._lock:
             self._ensure_open()
             current = self.service.prompt_status(mission_id)

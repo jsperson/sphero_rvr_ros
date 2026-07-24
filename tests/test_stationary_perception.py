@@ -478,7 +478,7 @@ def test_stationary_launch_and_browser_have_no_motion_surface() -> None:
     assert '"odom"' in launch_text
     assert '"base_link"' in launch_text
     assert "from nav_msgs.msg import OccupancyGrid" in node_text
-    assert 'lookup_transform(\n                        "map",\n                        "base_link"' in node_text
+    assert 'lookup_transform(\n                    "map",\n                    "base_link"' in node_text
     assert "cv2.absdiff(previous_gray, gray)" in node_text
     assert '"label": "moving_object"' in node_text
     assert '"rvr.launch.py"' not in launch_text

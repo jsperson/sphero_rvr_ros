@@ -208,6 +208,40 @@ not supplied while retaining the evidence timestamp and frame ID. Stage C live
 stationary perception may supply the latest JPEG preview and tracked detections
 through the same additive adapter fields.
 
+## Stage D closed-loop modes
+
+Stage D adds `--mode stage-d-replay`. Proposal generation calls the real
+Codex/ChatGPT OAuth provider with the starting typed world snapshot and shows
+the interpreted objective plus the first bounded intent before approval. One
+digest-bound approval starts the 15-minute replay lease. The page then shows
+each updated snapshot, intent and rationale, requested and collision-supervised
+movement, cumulative travel, remaining lease, and terminal outcome.
+
+The normal Stage D CLI requires `--public-origin`, exact same-origin POSTs, and
+an authenticated `Tailscale-User-Login` supplied by Tailscale Serve. The
+server-owned identity and authentication source are stored with the proposal
+digest. Supplying that header directly to a plain loopback server does not
+authenticate approval. `--allow-loopback-test-approval` is an explicit
+repository/browser-harness escape hatch for replay tests only; it cannot be
+combined with a public origin.
+
+The `stage-d-replay` mode is deliberately replay-only. Its executor implements
+the same `StageDExecutor` boundary as the production physical adapter, while
+`live_execution_enabled`, `physical_execution_enabled`, and `motion_authority`
+remain false. See `stage_d_controller.md`.
+
+In live mode, a mission service configured with `stage_d_enabled=true` exposes
+the same proposal and rolling projection. The page labels the deployment as
+locked or supervised-live from authoritative service state, shows the active
+900-second lease, every world snapshot and LLM revision, and requested versus
+supervised velocities. When the moving perception producer is present, it also
+shows whether semantic perception is fresh and localized plus counts of object,
+known-face, and unknown-face tracks; the authoritative camera and map panels
+continue to show the underlying evidence. It can submit, authenticate one
+Tailscale approval, poll, and cancel. It cannot choose an intent, publish a
+topic, enable either deployment gate, or own motion. Packaged configuration
+keeps Stage D and live execution false.
+
 ## Installed Pi services
 
 The package installs:
@@ -228,7 +262,9 @@ Run focused tests only through the bounded runner:
 ```bash
 python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
   tests/test_rolling_replay.py tests/test_mission_web.py tests/test_prompt_mission_controller.py \
-  tests/test_live_mission_service.py tests/test_package_metadata.py
+  tests/test_live_mission_service.py tests/test_stage_d_controller.py \
+  tests/test_stage_d_physical.py tests/test_stage_d_live_controller.py \
+  tests/test_package_metadata.py
 ```
 
 The suite covers the typed adapter boundary, every replay outcome, mock exact

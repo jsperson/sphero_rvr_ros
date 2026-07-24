@@ -1,8 +1,10 @@
-"""ROS 2 live lidar/camera adapter for stationary perception only.
+"""ROS 2 live lidar/camera semantic-perception adapter.
 
 The node subscribes to sensors and publishes JSON evidence consumed by the
 mission-service cache.  It has no Twist type, rover SDK import, serial access,
-route publisher, or physical execution surface.
+route publisher, or physical execution surface.  Stage C supplies a static
+odom transform and uses the default stationary session; Stage D supplies real
+wheel odometry and explicitly selects a moving session.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ class _Track:
             "x_m": round(self.x_m, 4),
             "y_m": round(self.y_m, 4),
             "uncertainty_m": round(self.uncertainty_m, 4),
+            "last_seen_s": self.last_seen_s,
             "observation_count": self.observation_count,
             "evidence_ids": list(self.evidence_ids[-12:]),
             "recognized_from_enrollment": self.recognized_from_enrollment,
@@ -430,8 +433,12 @@ def main(args=None):
             self.declare_parameter(
                 "evidence_dir", "~/.local/state/sphero_rvr/stationary-evidence"
             )
+            self.declare_parameter("stationary_session", True)
             self.declare_parameter("camera_process_period_s", 0.3)
             self.declare_parameter("face_match_threshold", 44.0)
+            self._stationary_session = bool(
+                self.get_parameter("stationary_session").value
+            )
             self._lock = threading.RLock()
             self._latest_scan: Optional[dict[str, Any]] = None
             self._latest_occupancy: dict[str, Any] = {}
@@ -509,8 +516,12 @@ def main(args=None):
                 callback_group=self._sensor_callbacks,
             )
             self.get_logger().info(
-                "stationary perception ready: no motion authority; "
-                f"{self._enrollment.identity_count} explicitly enrolled identities"
+                (
+                    "stationary perception ready: no motion authority; "
+                    if self._stationary_session
+                    else "moving semantic perception ready: no motion authority; "
+                )
+                + f"{self._enrollment.identity_count} explicitly enrolled identities"
             )
 
         def _on_camera_info(self, message: Any) -> None:
@@ -518,6 +529,96 @@ def main(args=None):
             if len(values) == 9 and values[0] > 0.0 and values[4] > 0.0:
                 with self._lock:
                     self._camera_matrix = values
+
+        def _localization_from_tf(
+            self,
+            *,
+            stamp_s: float,
+            map_id: str,
+            quality: float = 0.8,
+            resolution_m: float = 0.05,
+        ) -> dict[str, Any]:
+            source = (
+                "slam_toolbox_stationary"
+                if self._stationary_session
+                else "slam_toolbox_moving"
+            )
+            try:
+                transform = self._tf_buffer.lookup_transform(
+                    "map",
+                    "base_link",
+                    rclpy.time.Time(),
+                    timeout=Duration(seconds=0.2),
+                )
+                translation = transform.transform.translation
+                rotation = transform.transform.rotation
+                yaw = math.atan2(
+                    2.0
+                    * (
+                        float(rotation.w) * float(rotation.z)
+                        + float(rotation.x) * float(rotation.y)
+                    ),
+                    1.0
+                    - 2.0
+                    * (
+                        float(rotation.y) ** 2
+                        + float(rotation.z) ** 2
+                    ),
+                )
+                self._latest_pose = {
+                    "x_m": float(translation.x),
+                    "y_m": float(translation.y),
+                    "yaw_deg": math.degrees(yaw),
+                }
+                localization = LocalizationEstimate(
+                    state=LocalizationState.VALID,
+                    source=source,
+                    pose=Pose2D(
+                        x_m=float(translation.x),
+                        y_m=float(translation.y),
+                        yaw_rad=yaw,
+                        stamp_s=stamp_s,
+                        frame_id="map",
+                    ),
+                    quality=max(0.0, min(1.0, float(quality))),
+                    covariance_xy_m2=float(resolution_m) ** 2,
+                    covariance_yaw_rad2=0.0025,
+                    detail=(
+                        (
+                            "Live slam_toolbox map->base_link pose with a "
+                            "truthful static odom->base_link transform for "
+                            "this immobile Stage C session."
+                        )
+                        if self._stationary_session
+                        else (
+                            "Live slam_toolbox map->base_link pose driven by "
+                            "the rover's authoritative moving odometry."
+                        )
+                    ),
+                ).to_json_dict()
+            except TransformException as exc:
+                localization = LocalizationEstimate(
+                    state=LocalizationState.LOST,
+                    source=source,
+                    pose=None,
+                    quality=0.0,
+                    covariance_xy_m2=None,
+                    covariance_yaw_rad2=None,
+                    detail=(
+                        "slam_toolbox transform unavailable: "
+                        f"{exc.__class__.__name__}"
+                    ),
+                ).to_json_dict()
+            localization.update(
+                {
+                    "map_id": str(map_id),
+                    "stamp_s": stamp_s,
+                    "stationary_session": self._stationary_session,
+                    "motion_authority": False,
+                    "physical_execution_enabled": False,
+                }
+            )
+            return localization
 
         def _on_scan(self, message: Any) -> None:
             with self._lock:
@@ -628,71 +729,15 @@ def main(args=None):
                     "width_m": width * resolution,
                     "height_m": height * resolution,
                 }
-                try:
-                    transform = self._tf_buffer.lookup_transform(
-                        "map",
-                        "base_link",
-                        rclpy.time.Time(),
-                        timeout=Duration(seconds=0.2),
-                    )
-                    translation = transform.transform.translation
-                    rotation = transform.transform.rotation
-                    yaw = math.atan2(
-                        2.0
-                        * (
-                            float(rotation.w) * float(rotation.z)
-                            + float(rotation.x) * float(rotation.y)
-                        ),
-                        1.0
-                        - 2.0
-                        * (
-                            float(rotation.y) ** 2
-                            + float(rotation.z) ** 2
-                        ),
-                    )
-                    self._latest_pose = {
-                        "x_m": float(translation.x),
-                        "y_m": float(translation.y),
-                        "yaw_deg": math.degrees(yaw),
-                    }
-                    known_cells = sum(1 for value in message.data if int(value) >= 0)
-                    known_ratio = known_cells / max(1, len(message.data))
-                    localization = LocalizationEstimate(
-                        state=LocalizationState.VALID,
-                        source="slam_toolbox_stationary",
-                        pose=Pose2D(
-                            x_m=float(translation.x),
-                            y_m=float(translation.y),
-                            yaw_rad=yaw,
-                            stamp_s=stamp_s,
-                            frame_id="map",
-                        ),
-                        quality=min(1.0, 0.65 + known_ratio),
-                        covariance_xy_m2=resolution**2,
-                        covariance_yaw_rad2=0.0025,
-                        detail=(
-                            "Live slam_toolbox map->base_link pose with a truthful "
-                            "static odom->base_link transform for this immobile Stage C session."
-                        ),
-                    ).to_json_dict()
-                except TransformException as exc:
-                    localization = LocalizationEstimate(
-                        state=LocalizationState.LOST,
-                        source="slam_toolbox_stationary",
-                        pose=None,
-                        quality=0.0,
-                        covariance_xy_m2=None,
-                        covariance_yaw_rad2=None,
-                        detail=f"slam_toolbox transform unavailable: {exc.__class__.__name__}",
-                    ).to_json_dict()
-                localization.update(
-                    {
-                        "map_id": map_id,
-                        "stamp_s": stamp_s,
-                        "stationary_session": True,
-                        "motion_authority": False,
-                        "physical_execution_enabled": False,
-                    }
+                known_cells = sum(
+                    1 for value in message.data if int(value) >= 0
+                )
+                known_ratio = known_cells / max(1, len(message.data))
+                localization = self._localization_from_tf(
+                    stamp_s=stamp_s,
+                    map_id=map_id,
+                    quality=min(1.0, 0.65 + known_ratio),
+                    resolution_m=resolution,
                 )
                 self._publish(self._localization_pub, localization)
                 self._publish(
@@ -726,6 +771,19 @@ def main(args=None):
                 return
             try:
                 stamp_s = _stamp_s(message)
+                with self._lock:
+                    map_id = str(
+                        self._latest_occupancy.get("map_id", "")
+                    )
+                    resolution_m = float(
+                        self._latest_occupancy.get("resolution_m", 0.05)
+                    )
+                    localization = self._localization_from_tf(
+                        stamp_s=stamp_s,
+                        map_id=map_id,
+                        resolution_m=resolution_m,
+                    )
+                self._publish(self._localization_pub, localization)
                 gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
                 detections = self._detections(frame_rgb, gray, frame_id)
                 with self._lock:
@@ -1073,7 +1131,7 @@ def main(args=None):
                     "objects": objects,
                     "occupancy_available": bool(occupancy_points),
                     "occupancy_source": "slam_toolbox",
-                    "stationary": True,
+                    "stationary": self._stationary_session,
                 },
                 "motion_authority": False,
                 "physical_execution_enabled": False,

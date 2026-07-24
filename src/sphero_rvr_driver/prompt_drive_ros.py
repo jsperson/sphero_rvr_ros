@@ -9,6 +9,8 @@ runner remains the sole owner of ``/cmd_vel`` above the collision supervisor.
 from __future__ import annotations
 
 import json
+import math
+import re
 import threading
 import time
 from typing import Any, Mapping, Optional
@@ -24,12 +26,14 @@ class RosLiveRouteExecutor:
         request_topic: str = "/mission_api/v2/live_route/request",
         status_topic: str = "/mission_api/v2/live_route/status",
         cancel_service: str = "live_route/cancel",
+        collision_state_topic: str = "/collision_stop/state",
         graph_timeout_s: float = 5.0,
         cleanup_timeout_s: float = 3.0,
     ):
         self.request_topic = request_topic
         self.status_topic = status_topic
         self.cancel_service = cancel_service
+        self.collision_state_topic = collision_state_topic
         self.graph_timeout_s = float(graph_timeout_s)
         self.cleanup_timeout_s = float(cleanup_timeout_s)
         self._cancel_requested = threading.Event()
@@ -90,6 +94,13 @@ class RosLiveRouteExecutor:
         publisher = node.create_publisher(String, self.request_topic, 10)
         cancel_client = node.create_client(Trigger, self.cancel_service)
         terminal: Optional[Mapping[str, Any]] = None
+        supervision = {
+            "samples": 0,
+            "collision_state": "UNKNOWN",
+            "requested": {"linear_mps": 0.0, "angular_rad_s": 0.0},
+            "supervised": {"linear_mps": 0.0, "angular_rad_s": 0.0},
+            "motor_topic_publisher": "lidar_collision_stop_supervisor",
+        }
         route_published = False
         cancellation_attempted = False
 
@@ -105,6 +116,25 @@ class RosLiveRouteExecutor:
                 terminal = dict(payload)
 
         subscription = node.create_subscription(String, self.status_topic, _on_status, 10)
+        def _on_collision(message) -> None:
+            sample = _supervision_sample(str(getattr(message, "data", "")))
+            if sample is None:
+                return
+            supervision["samples"] = int(supervision["samples"]) + 1
+            supervision["collision_state"] = sample["collision_state"]
+            for channel in ("requested", "supervised"):
+                for component in ("linear_mps", "angular_rad_s"):
+                    prior = float(supervision[channel][component])  # type: ignore[index]
+                    candidate = float(sample[channel][component])
+                    if abs(candidate) >= abs(prior):
+                        supervision[channel][component] = candidate  # type: ignore[index]
+
+        collision_subscription = node.create_subscription(
+            String,
+            self.collision_state_topic,
+            _on_collision,
+            10,
+        )
         try:
             graph_deadline = time.monotonic() + self.graph_timeout_s
             while (
@@ -137,7 +167,7 @@ class RosLiveRouteExecutor:
                 raise MissionValidationError(
                     "live route status timed out and cancellation could not be confirmed; use physical STOP/ESTOP"
                 )
-            return terminal
+            return {**dict(terminal), "supervision": dict(supervision)}
         except BaseException:
             if route_published and terminal is None and not cancellation_attempted:
                 self._request_cancel(executor, cancel_client, Trigger)
@@ -168,3 +198,37 @@ class RosLiveRouteExecutor:
         except Exception:
             return False
         return bool(getattr(response, "success", False))
+
+
+_MOTION_PAIR = re.compile(
+    r"(requested|output)=\(\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*"
+    r"([-+]?[0-9]*\.?[0-9]+)\s*\)"
+)
+
+
+def _supervision_sample(raw: str) -> Optional[dict[str, Any]]:
+    text = str(raw).strip()
+    if not text:
+        return None
+    parts = text.split(maxsplit=1)
+    pairs: dict[str, tuple[float, float]] = {}
+    for match in _MOTION_PAIR.finditer(text):
+        linear = float(match.group(2))
+        angular = float(match.group(3))
+        if math.isfinite(linear) and math.isfinite(angular):
+            pairs[match.group(1)] = (linear, angular)
+    if "requested" not in pairs or "output" not in pairs:
+        return None
+    requested = pairs["requested"]
+    output = pairs["output"]
+    return {
+        "collision_state": parts[0].upper(),
+        "requested": {
+            "linear_mps": requested[0],
+            "angular_rad_s": requested[1],
+        },
+        "supervised": {
+            "linear_mps": output[0],
+            "angular_rad_s": output[1],
+        },
+    }

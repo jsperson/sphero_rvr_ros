@@ -32,6 +32,10 @@ remain independent stop paths. Stage B carries `motion_authority=false` and
 `physical_execution_enabled=false` in every checkpoint and terminal result.
 The module has no ROS, serial, sensor-device, or physical-adapter dependency.
 
+Stage D retains this repeatedly revised snapshot/intent shape but uses the
+separate `StageDExecutor` protocol. Its production adapter is exact-SHA gated
+and default-off; Stage B rolling replay never acquires that adapter or authority.
+
 ## Real-provider demonstration
 
 Run only on loopback:

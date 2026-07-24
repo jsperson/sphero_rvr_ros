@@ -60,6 +60,7 @@ _PROMPT_TERMINAL_STATUSES = {
     "cancelled",
     "stopped",
     "estopped",
+    "timeout",
     "rejected",
     "recovery_required",
 }
@@ -726,8 +727,12 @@ class MissionService:
                 raise MissionValidationError(
                     "prompt mission is not awaiting a rolling replay proposal"
                 )
-            if str(payload.get("schema", "")) != "sphero_rvr.rolling_replay_proposal.v1":
-                raise MissionValidationError("rolling replay proposal schema is invalid")
+            proposal_schema = str(payload.get("schema", ""))
+            if proposal_schema not in {
+                "sphero_rvr.rolling_replay_proposal.v1",
+                "sphero_rvr.stage_d_proposal.v1",
+            }:
+                raise MissionValidationError("adaptive replay proposal schema is invalid")
             if str(payload.get("prompt", "")).strip() != row["prompt"]:
                 raise MissionValidationError(
                     "rolling replay proposal prompt does not match the persisted mission"
@@ -762,8 +767,241 @@ class MissionService:
                 self._append_event(
                     mission_id,
                     row["session_id"],
-                    "rolling_replay_proposal",
+                    (
+                        "stage_d_proposal"
+                        if proposal_schema == "sphero_rvr.stage_d_proposal.v1"
+                        else "rolling_replay_proposal"
+                    ),
                     {"proposal": payload, "motion_authority": False},
+                )
+            return self.prompt_status(mission_id)
+
+    def record_stage_d_proposal(
+        self,
+        mission_id: str,
+        proposal: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a Stage D proposal in replay or reviewed live mode."""
+
+        payload = json.loads(_json_dump(dict(proposal)))
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "planning":
+                raise MissionValidationError(
+                    "prompt mission is not awaiting a Stage D proposal"
+                )
+            if payload.get("schema") != "sphero_rvr.stage_d_proposal.v1":
+                raise MissionValidationError("Stage D proposal schema is invalid")
+            if str(payload.get("prompt", "")).strip() != row["prompt"]:
+                raise MissionValidationError(
+                    "Stage D proposal prompt does not match the persisted mission"
+                )
+            if str(payload.get("source_sha", "")).strip() != self.source_sha:
+                raise MissionValidationError(
+                    "Stage D proposal source SHA does not match the service"
+                )
+            if str(payload.get("deployed_sha", "")).strip() != self.deployed_sha:
+                raise MissionValidationError(
+                    "Stage D proposal deployed SHA does not match the service"
+                )
+            if payload.get("segments") not in ([], ()):
+                raise MissionValidationError(
+                    "Stage D proposal cannot contain a fixed primitive route"
+                )
+            if payload.get("safety_policy") != "lidar_collision_stop.v1":
+                raise MissionValidationError(
+                    "Stage D proposal safety policy is not the installed policy"
+                )
+            from .stage_d_controller import StageDLimits
+
+            if payload.get("limits") != StageDLimits().to_json_dict():
+                raise MissionValidationError(
+                    "Stage D proposal limits do not match the installed authority profile"
+                )
+            contract = payload.get("contract")
+            if not isinstance(contract, Mapping):
+                raise MissionValidationError(
+                    "Stage D proposal contract is missing"
+                )
+            expected_physical = bool(
+                self.mode == "live" and self.live_execution_enabled
+            )
+            if (
+                contract.get("fixed_route") is not False
+                or contract.get("replanning_after_every_intent") is not True
+                or contract.get("one_authenticated_approval") is not True
+                or contract.get("per_intent_approval") is not False
+                or contract.get("motion_authority") is not False
+                or contract.get("physical_execution_enabled")
+                is not expected_physical
+                or contract.get("drop_off_detection") is not False
+            ):
+                raise MissionValidationError(
+                    "Stage D proposal contract does not match service authority"
+                )
+            if self.mode == "live" and payload.get("executor_mode") != (
+                "physical-supervised-live-route"
+            ):
+                raise MissionValidationError(
+                    "live Stage D requires the supervised physical executor mode"
+                )
+            digest = str(payload.get("proposal_digest", "")).strip().lower()
+            body = dict(payload)
+            body.pop("proposal_digest", None)
+            from .rolling_replay import canonical_digest
+
+            if digest != canonical_digest(body):
+                raise MissionValidationError(
+                    "Stage D proposal digest does not match its envelope"
+                )
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='proposed', "
+                    "proposal_json=?, proposal_digest=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (_json_dump(payload), digest, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "stage_d_proposal",
+                    {
+                        "proposal_digest": digest,
+                        "lease_id": payload.get("lease_id"),
+                        "first_intent": payload.get("first_intent"),
+                        "motion_authority": False,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
+    def approve_stage_d_mission(
+        self,
+        mission_id: str,
+        *,
+        supplied_approval: str,
+        operator: str,
+        authentication_source: str,
+        expires_at_s: float,
+    ) -> dict[str, Any]:
+        """Bind one authenticated live approval to the persisted Stage D envelope."""
+
+        with self._lock:
+            if self.mode != "live" or not self.live_execution_enabled:
+                raise MissionValidationError(
+                    "physical Stage D execution is disabled by reviewed service configuration"
+                )
+            row = self._prompt_row(mission_id)
+            if row["status"] != "proposed":
+                raise MissionValidationError(
+                    "only a proposed Stage D mission can be approved"
+                )
+            proposal = _json_load(row["proposal_json"], {})
+            if proposal.get("schema") != "sphero_rvr.stage_d_proposal.v1":
+                raise MissionValidationError(
+                    "persisted mission is not a Stage D proposal"
+                )
+            approved_by = str(operator).strip()
+            identity_source = str(authentication_source).strip()
+            if not approved_by or identity_source != "tailscale-serve":
+                raise MissionValidationError(
+                    "physical Stage D requires a Tailscale-authenticated operator"
+                )
+            digest = str(row["proposal_digest"])
+            if str(supplied_approval).strip() != f"APPROVE STAGE D {digest}":
+                raise MissionValidationError(
+                    "Stage D approval does not match the persisted proposal"
+                )
+            now = self._now()
+            requested_expires = float(expires_at_s)
+            lease_s = float(
+                _json_load(row["proposal_json"], {})
+                .get("limits", {})
+                .get("mission_lease_s", 0.0)
+            )
+            if (
+                not math.isfinite(requested_expires)
+                or not math.isfinite(lease_s)
+                or lease_s != 900.0
+                or requested_expires < now + lease_s - 5.0
+                or requested_expires > now + lease_s
+            ):
+                raise MissionValidationError(
+                    "Stage D approval must request the complete 15-minute lease"
+                )
+            expires = now + lease_s
+            approval = {
+                "approved": True,
+                "authenticated": True,
+                "authentication_source": identity_source,
+                "operator": approved_by,
+                "proposal_digest": digest,
+                "approval_id": f"{approved_by}:{digest}",
+                "approved_at_s": now,
+                "expires_at_s": expires,
+                "lease_id": proposal.get("lease_id"),
+            }
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='approved', "
+                    "approval_json=?, approval_expires_at_s=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (_json_dump(approval), expires, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "stage_d_approval",
+                    approval,
+                )
+            return self.prompt_status(mission_id)
+
+    def record_stage_d_checkpoint(
+        self,
+        mission_id: str,
+        *,
+        kind: str,
+        checkpoint: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist the latest live Stage D projection without granting authority."""
+
+        payload = json.loads(_json_dump(dict(checkpoint)))
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] not in {"running", "cancel_requested"}:
+                raise MissionValidationError(
+                    "Stage D checkpoint requires a running mission"
+                )
+            if str(payload.get("mission_id", "")) != str(mission_id):
+                raise MissionValidationError(
+                    "Stage D checkpoint mission identity changed"
+                )
+            if payload.get("schema") != "sphero_rvr.stage_d_result.v1":
+                raise MissionValidationError(
+                    "Stage D checkpoint schema is invalid"
+                )
+            if payload.get("motion_authority") is not False:
+                raise MissionValidationError(
+                    "Stage D checkpoint cannot claim browser motion authority"
+                )
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET result_json=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (_json_dump(payload), self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "stage_d_checkpoint",
+                    {
+                        "kind": str(kind),
+                        "status": payload.get("status"),
+                        "snapshot_id": _json_load(
+                            _json_dump(payload.get("world_snapshot", {})), {}
+                        ).get("snapshot_id"),
+                        "active_intent": payload.get("active_intent"),
+                        "metrics": payload.get("metrics"),
+                    },
                 )
             return self.prompt_status(mission_id)
 
@@ -773,11 +1011,14 @@ class MissionService:
         *,
         proposal_digest: str,
         operator: str,
+        authentication_source: str = "replay-local",
+        authenticated: bool = False,
     ) -> dict[str, Any]:
         """Approve a no-authority replay without crossing the live gate."""
 
         supplied_digest = str(proposal_digest).strip().lower()
         approved_by = str(operator).strip()
+        identity_source = str(authentication_source).strip()
         with self._lock:
             if self.mode != "replay" or self.live_execution_enabled:
                 raise MissionValidationError(
@@ -790,6 +1031,10 @@ class MissionService:
                 )
             if not approved_by:
                 raise MissionValidationError("replay approval operator is required")
+            if not identity_source:
+                raise MissionValidationError(
+                    "replay approval authentication source is required"
+                )
             if supplied_digest != str(row["proposal_digest"]):
                 raise MissionValidationError(
                     "rolling replay approval does not match the persisted proposal"
@@ -797,6 +1042,8 @@ class MissionService:
             approval = {
                 "approved": True,
                 "operator": approved_by,
+                "authenticated": bool(authenticated),
+                "authentication_source": identity_source,
                 "proposal_digest": supplied_digest,
                 "approved_at_s": self._now(),
                 "simulation_only": True,
@@ -1294,7 +1541,10 @@ class MissionService:
             if (
                 isinstance(proposal, Mapping)
                 and proposal.get("schema")
-                == "sphero_rvr.stationary_perception_proposal.v1"
+                in {
+                    "sphero_rvr.stationary_perception_proposal.v1",
+                    "sphero_rvr.stage_d_proposal.v1",
+                }
             ):
                 compact_events = []
                 for event in events:
@@ -2036,6 +2286,9 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
                 str(request.get("mission_id", "")),
                 supplied_approval=str(request.get("approval_phrase", "")),
                 operator=str(request.get("operator", "")),
+                authentication_source=str(
+                    request.get("authentication_source", "")
+                ),
             )
         if operation == "prompt_cancel":
             return self.prompt_controller.cancel(

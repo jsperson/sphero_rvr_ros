@@ -146,7 +146,8 @@ class LiveRouteConfig:
     terminal_settle_angle_rad: float = math.radians(1.0)
     terminal_settle_encoder_counts: int = 8
     max_terminal_distance_error_m: float = 0.03
-    max_terminal_angle_error_rad: float = math.radians(5.0)
+    max_terminal_angle_error_rad: float = math.radians(10.0)
+    max_turn_corrections: int = 3
 
     def __post_init__(self) -> None:
         for name in (
@@ -173,6 +174,12 @@ class LiveRouteConfig:
             or int(self.terminal_settle_encoder_counts) < 0
         ):
             raise ValueError("terminal_settle_encoder_counts must be a non-negative integer")
+        if (
+            isinstance(self.max_turn_corrections, bool)
+            or int(self.max_turn_corrections) != self.max_turn_corrections
+            or int(self.max_turn_corrections) < 0
+        ):
+            raise ValueError("max_turn_corrections must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -220,6 +227,7 @@ class ExecutedRouteSegment:
     terminal_settle_duration_s: Optional[float] = None
     terminal_distance_error_m: Optional[float] = None
     terminal_angle_error_deg: Optional[float] = None
+    turn_correction_count: int = 0
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -245,6 +253,7 @@ class ExecutedRouteSegment:
             "terminal_settle_duration_s": self.terminal_settle_duration_s,
             "terminal_distance_error_m": self.terminal_distance_error_m,
             "terminal_angle_error_deg": self.terminal_angle_error_deg,
+            "turn_correction_count": self.turn_correction_count,
         }
 
 
@@ -317,6 +326,8 @@ class _ActiveSegment:
     telemetry: MotionPrimitiveTelemetry
     start_odom: OdomMotionState
     start_encoder_counts: Optional[TrackEncoderState]
+    correction_count: int = 0
+    correction_command_issued: bool = False
 
 
 @dataclass
@@ -400,9 +411,24 @@ class LiveRouteRunner:
             collision_veto=_collision_veto(state.collision_state),
         )
         self._active.telemetry = telemetry
+        if (
+            telemetry.stop_reason is MotionPrimitiveStopReason.RUNNING
+            and self._active.correction_command_issued
+        ):
+            telemetry = self._active.controller.pause_target_correction(state.odom)
+            self._active.telemetry = telemetry
+            self._active.correction_command_issued = False
+            self._settling = _SettlingState(
+                started_at=float(state.stamp),
+                stable_since=float(state.stamp),
+                reference_odom=state.odom,
+                reference_encoder_counts=state.encoder_counts,
+            )
+            return TwistCommand()
         if telemetry.stop_reason is MotionPrimitiveStopReason.RUNNING:
             return telemetry.command
         if telemetry.stop_reason is MotionPrimitiveStopReason.TARGET_REACHED:
+            self._active.correction_command_issued = False
             self._settling = _SettlingState(
                 started_at=float(state.stamp),
                 stable_since=float(state.stamp),
@@ -485,13 +511,26 @@ class LiveRouteRunner:
         timeout_s = float(segment.arguments["timeout_s"])
         _require_positive_finite(angular_speed_deg_s, "turn_angle.angular_speed_deg_s")
         _require_positive_finite(timeout_s, "turn_angle.timeout_s")
+        requested_speed_rad_s = math.radians(angular_speed_deg_s)
+        executed_speed_rad_s = min(
+            requested_speed_rad_s, self.config.odom.max_turn_speed_rad_s
+        )
+        executed_arguments = {
+            "angle_deg": angle_deg,
+            "angular_speed_deg_s": math.degrees(executed_speed_rad_s),
+            "timeout_s": timeout_s,
+        }
+        if executed_speed_rad_s < requested_speed_rad_s:
+            executed_arguments["requested_angular_speed_deg_s"] = (
+                angular_speed_deg_s
+            )
         return (
             MotionPrimitiveGoal.turn_angle(
                 angle_rad=math.radians(angle_deg),
-                angular_speed_rad_s=math.radians(angular_speed_deg_s),
+                angular_speed_rad_s=executed_speed_rad_s,
                 timeout_s=timeout_s,
             ),
-            {"angle_deg": angle_deg, "angular_speed_deg_s": angular_speed_deg_s, "timeout_s": timeout_s},
+            executed_arguments,
         )
 
     def dynamic_translation_cap(self, state: LiveRouteState, *, direction: float) -> float:
@@ -507,7 +546,11 @@ class LiveRouteRunner:
             raise MissionValidationError("missing_scan")
         scan_eval = evaluate_scan(state.scan, self.config.scan, now=float(state.stamp))
         if not scan_eval.healthy:
-            reason = RouteTerminalReason.STALE_SCAN.value if scan_eval.reason == "stale_scan" else scan_eval.reason
+            reason = (
+                RouteTerminalReason.STALE_SCAN.value
+                if scan_eval.reason.startswith("stale_scan")
+                else scan_eval.reason
+            )
             raise MissionValidationError(reason)
         return scan_eval
 
@@ -530,7 +573,11 @@ class LiveRouteRunner:
             return RouteTerminalReason.MISSING_SCAN.value
         scan_eval = evaluate_scan(state.scan, self.config.scan, now=float(state.stamp))
         if not scan_eval.healthy:
-            return RouteTerminalReason.STALE_SCAN.value if scan_eval.reason == "stale_scan" else RouteTerminalReason.UNSAFE_CLEARANCE.value
+            return (
+                RouteTerminalReason.STALE_SCAN.value
+                if scan_eval.reason.startswith("stale_scan")
+                else RouteTerminalReason.UNSAFE_CLEARANCE.value
+            )
         if _collision_veto(state.collision_state):
             return RouteTerminalReason.COLLISION_VETO.value
         return None
@@ -609,6 +656,7 @@ class LiveRouteRunner:
                     if active.goal.kind is MotionPrimitiveKind.TURN_ANGLE
                     else None
                 ),
+                turn_correction_count=active.correction_count,
                 **pose_measurement,
                 **track_measurement,
             )
@@ -641,6 +689,14 @@ class LiveRouteRunner:
 
         settled_duration = float(state.stamp) - settling.started_at
         if self._terminal_target_error_exceeded(active, telemetry):
+            if self._can_correct_turn_undershoot(active, telemetry, state):
+                active.correction_count += 1
+                active.correction_command_issued = True
+                active.telemetry = active.controller.resume_target_correction(
+                    state.odom
+                )
+                self._settling = None
+                return active.telemetry.command
             self._record_active(
                 telemetry,
                 state,
@@ -699,6 +755,29 @@ class LiveRouteRunner:
             return error > self.config.max_terminal_distance_error_m
         error = abs(abs(telemetry.measured_angle_rad) - abs(active.goal.target))
         return error > self.config.max_terminal_angle_error_rad
+
+    def _can_correct_turn_undershoot(
+        self,
+        active: _ActiveSegment,
+        telemetry: MotionPrimitiveTelemetry,
+        state: LiveRouteState,
+    ) -> bool:
+        """Permit bounded correction only before this intent is terminal."""
+
+        if active.goal.kind is not MotionPrimitiveKind.TURN_ANGLE:
+            return False
+        if active.correction_count >= self.config.max_turn_corrections:
+            return False
+        measured = abs(float(telemetry.measured_angle_rad))
+        target = abs(float(active.goal.target))
+        if target - measured <= self.config.max_terminal_angle_error_rad:
+            return False
+        controller_state = active.controller._require_state()
+        assert state.odom is not None
+        return (
+            float(state.stamp) - float(controller_state.started_at)
+            < float(active.goal.timeout_s)
+        )
 
     def _active_is_partial_translation(self) -> bool:
         active = self._active

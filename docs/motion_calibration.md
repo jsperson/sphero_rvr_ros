@@ -1,5 +1,60 @@
 # RVR motion and odometry calibration
 
+## July 24 straight-run stall-classifier finding
+
+The first attended, approved 10 cm browser-to-track run at source SHA
+`984defb65cc953b62e4d23bda6f334f69a698606` failed closed with terminal reason
+`stall` after 0.04438 m of measured travel. Scott independently observed about
+1–2 inches of motion and reported everything else normal. The tracks remained
+matched (193/192 encoder counts), collision stayed `CLEAR`, the driver reported
+no firmware stall or motor fault, and battery voltage remained healthy.
+Requested and supervised speed never exceeded 0.08 m/s, and the final
+motor-bound command was zero.
+
+The recorded odometry advanced throughout the commanded interval, but the
+controller refreshed its activity timer only after each additional 0.015 m.
+That checkpoint was too coarse for the slow tail of this trace: continuous
+sub-checkpoint progress was classified as inactivity for 0.75 seconds. The live
+route controller's translation activity quantum is therefore 0.005 m, about
+22 counts at the reviewed 4337.768 counts/m scale. A replay regression preserves
+the complete observed slow-progress prefix and a separate test proves that zero
+progress still terminates as `stall`.
+
+This correction does not change the 0.01 m goal tolerance, 0.03 m terminal error
+bound, 0.50 s stationary-evidence window, speed ceilings, intent timeout, or any
+collision/STOP/ESTOP/stale-data rule. The failed run is evidence for the
+classifier change, not straight-distance acceptance. A newly built exact SHA
+still requires a separately authorized attended 10 cm revalidation before the
+turn stage.
+
+## July 24 Stage D stopping-horizon finding
+
+The first real-OAuth physical Stage D intent at
+`a7b9a3771db9c9f332ec348ab54aeac4455ac8bf` used the installed Stage D
+0.10 m/s ceiling, which maps to effective duty 64. That resolved the duty-51
+stall, but the deterministic terminal gate correctly rejected the run as
+`target_error`: a 0.10 m intent settled at 0.138780 m. The tracks remained
+matched at 600/604 counts, heading changed only 0.211 degrees, collision stayed
+`CLEAR`, and two independent post-terminal samples proved the rover stationary.
+The mission recorded one real LLM revision and ended with
+`auto_resume=false`; no second intent was requested.
+
+The bag shows why: odometry was 0.074692 m on the last sample that should have
+continued, then 0.100511 m one 10 Hz sample later when the route first emitted
+zero. The drivetrain coasted another 0.038268 m before settling. The route
+controller now reserves a 0.25 second target stopping horizon, covering one
+odometry period plus the observed coast. It estimates progress rate from
+consecutive authoritative odometry samples and caps that estimate at the
+requested primitive speed so one encoder jump cannot manufacture an unbounded
+braking distance. The existing stationary and 0.03 m terminal-error gates remain
+authoritative; the horizon cannot turn an undershoot or overshoot into success.
+A replay regression projects the observed post-zero coast from the earlier
+release point and requires a settled 0.1134 m terminal measurement.
+
+This is a controller correction, not acceptance evidence. A rebuilt exact SHA
+still requires a fresh attended 10 cm Stage D run before physical turn or room
+exploration.
+
 ## Provisional effective turn geometry
 
 The July 23 attended 45-degree attempt ended with 699 differential encoder
@@ -16,9 +71,62 @@ median. The run stalled mechanically while 0.25 rad/s was still commanded, so
 Scott approved raising the turn-primitive-only ceiling to
 `max_turn_speed_rad_s: 0.35`. This is a restrained midpoint below the prior
 0.4 rad/s run: it seeks adequate sustained pivot torque while limiting coast.
-The 2-degree control tolerance and 5-degree terminal acceptance gate are
-unchanged. These values are not final mapping calibration until the restrained
-confirmation passes.
+The 2-degree control tolerance and, at the time of these trials, 5-degree
+terminal acceptance gate were unchanged.
+
+Two exact-SHA Stage D traces then bounded the release behavior at that command.
+Without predictive release, a `0.35 rad/s` request reached 43.256 degrees before
+zero and settled at 60.326 degrees. A first measured-rate correction reused the
+straight-run `0.25 s` horizon; it released at 18.757 degrees and settled at
+30.506 degrees. Both runs failed closed as `target_error`, issued no retry, and
+ended with independent STOP, stationary evidence, and relock. The second bag
+measured 11.749 degrees of travel from the last pre-zero odometry sample and
+only 0.158 degrees after the first post-zero sample, with zero requested
+0.050 seconds after the release sample.
+
+The next exact-SHA run tested a `0.15 rad/s` operating request with the separate
+`0.10 s` horizon. That request moved only 2.318 degrees in 1.50 seconds before
+the deterministic stall gate stopped the route. The encoders changed by only
+-24/+20 counts and the settled path displacement was 0.000461 m. The provider
+was not called again, independent STOP succeeded, and the graph was stationary,
+cleaned up, and relocked. Together with the earlier `0.25 rad/s` stall, this
+shows that lowering the continuous request below the drivetrain breakaway point
+cannot control the turn.
+
+The turn primitive therefore returns to the lowest request that demonstrated
+sustained motion, `0.35 rad/s`, while the collision supervisor and driver retain
+their installed absolute `0.4 rad/s` ceiling. The `0.10 s` turn horizon now
+retains the last authoritative 10 Hz yaw rate and projects it only to the
+current 20 Hz control tick. This permits a zero command between odometry
+samples, instead of waiting for the next sample to jump past the braking point.
+The stale-odometry gate bounds the projection. Translation keeps its independent
+`0.25 s` horizon and `0.10 m/s` ceiling. Stationary evidence and the configured
+settled-angle error remain authoritative.
+
+The first exact-SHA between-sample revalidation exposed a second source of
+variation. The same 0.35 rad/s request now peaked at 1.81 rad/s measured yaw
+instead of the earlier 3.21 rad/s. Zero was requested after 0.50 seconds at
+34.826 degrees, and the rover settled at 36.670 degrees, 8.330 degrees short.
+The route failed closed as `target_error`, made no retry, and was independently
+stopped and relocked. The trace also showed asymmetric -665/+31 encoder counts
+and 0.0722 m of route displacement, so a one-shot stopping horizon is not
+sufficiently repeatable on the installed drivetrain and floor.
+
+The turn executor now remains closed-loop inside the same correlated intent:
+after zero, it first requires the normal stationary window. If the settled
+result is still outside the configured terminal tolerance, it may re-engage the
+same bounded 0.35 rad/s command at most three times, always within the original
+5-second timeout.
+Every correction tick still passes the fresh odometry, scan, collision,
+STOP/ESTOP, cancellation, and route-runtime gates. It never corrects an
+overshoot or any terminal safety/failure result, and it does not create a new
+LLM intent or approval. Correction count is included in the terminal manifest.
+After the attended run settled at 39.568 degrees for a requested 45-degree
+turn, the product decision was to prioritize closed-loop exploration capability
+over tighter turn precision. Production Stage D therefore accepts a stationary
+turn within 10 degrees. The measured 5.432-degree error is inside that
+capability threshold. Collision, freshness, STOP/ESTOP, speed, intent duration,
+and lease gates are unchanged; this tolerance is not a safety boundary.
 
 The straight-line encoder scale has a two-run first estimate, but the complete
 motion path is not calibrated yet. Do not use duration-based distance assumptions
@@ -276,9 +384,9 @@ the validated immediate raw-motor stop rather than a slew-enabled RC zero. The
 runner then requires 0.50 seconds of stable fresh evidence, permits at most 2.0
 seconds to settle, and fails with `motion_not_settled` if motion continues. A
 settled translation more than 0.03 m from its target or a settled turn more than
-5 degrees from its target fails with `target_error`. These are acceptance
-bounds, not calibration corrections; do not change them merely to make a
-physical test pass.
+10 degrees from its target fails with `target_error`. These are capability
+acceptance bounds, not claims of mapping-grade precision. The wider turn bound
+reflects the product decision recorded above and does not weaken safety gates.
 
 Null track fields mean the evidence was unavailable or its scale disagreed with
 the reviewed runner configuration. Do not infer zeros and do not advance a

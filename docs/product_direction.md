@@ -46,21 +46,29 @@ Shoe mapping is the first acceptance slice, not a hard-coded product boundary. O
 ## Current implementation focus
 
 The repository now integrates the real Pi-local ChatGPT OAuth planner, typed
-`move_distance` and `turn_angle` proposals, durable mission lifecycle, exact
-digest-bound approval records, truthful live status, and a map-driven browser
-adapter. The Pi deployment is intentionally proposal-only: it has no physical
-executor authority and does not substitute replay fixtures for missing live map
-or sensor evidence.
+`move_distance`, `turn_angle`, `observe`, and `stop` intents, durable mission
+lifecycle, exact digest-bound approval records, truthful live status, a
+map-driven browser adapter, and the production Stage D executor seam. The
+packaged Pi configuration remains intentionally proposal-only: both Stage D
+selection and physical execution default off, and live views never substitute
+replay fixtures for missing evidence.
 
-The current acceptance step is measured straight-ground calibration of the
-deployed browser-to-OAuth-to-route path. The Pi now owns a configurable trusted
-prompt envelope: conservative calibration defaults can later be widened to an
-attended-room profile without granting the model ROS, motor, credential, or
-safety-policy authority. Each selected limit remains visible and bound to the
-confirmed proposal. Adaptive perception-driven replanning remains the next
-planner stage after deterministic prompt routes are physically calibrated.
-The broad movement-authority target and its non-bypassable safety hierarchy are
-defined in `docs/stage_d_authority.md`.
+Stage D now implements repeated typed intent selection through the real OAuth
+provider and either the replay executor or the exact-SHA-gated live-route
+executor. The live adapter persists each snapshot/revision, keeps collision
+supervision authoritative, and never resumes after a terminal event or restart.
+An attended run has proven real `observe → turn → move → stop` replanning and a
+separate stale-evidence veto on the rover.
+
+The Stage C/Stage D join is now implemented in code: the moving planner snapshot
+can carry fresh camera detections, localized semantic tracks, enrolled face
+identities, unknown faces, and perception provenance. A dedicated launch
+composes camera, lidar, moving SLAM, semantic tracking, live-route execution,
+and collision supervision while defaulting the motor graph off. Deterministic
+tests prove that fresh recognition can change subsequent movement decisions and
+that stale or unlocalized semantic tracks are withheld. Physical acceptance
+still requires the attended collision and moving-perception gates in
+`docs/stage_d_controller.md` and `docs/stage_d_authority.md`.
 
 ## Delivery discipline
 

@@ -249,6 +249,7 @@ def main(args=None):
                 "base_frame": "base_link",
                 "laser_frame": "laser",
                 "max_scan_age_s": defaults.max_scan_age_s,
+                "max_scan_stamp_age_s": defaults.max_scan_stamp_age_s,
                 "startup_grace_s": defaults.startup_grace_s,
                 "min_valid_ranges": defaults.min_valid_ranges,
                 "min_valid_fraction": defaults.min_valid_fraction,
@@ -293,6 +294,7 @@ def main(args=None):
             return CollisionStopConfig(
                 requested_cmd_timeout_s=float(self.get_parameter("requested_cmd_timeout_s").value),
                 max_scan_age_s=float(self.get_parameter("max_scan_age_s").value),
+                max_scan_stamp_age_s=float(self.get_parameter("max_scan_stamp_age_s").value),
                 startup_grace_s=float(self.get_parameter("startup_grace_s").value),
                 min_valid_ranges=int(self.get_parameter("min_valid_ranges").value),
                 min_valid_fraction=float(self.get_parameter("min_valid_fraction").value),
@@ -437,7 +439,13 @@ def main(args=None):
             state = String()
             state.data = (
                 f"{decision.state.value} reason={decision.reason} "
-                f"scan_age={decision.scan_health.age_s} front={decision.nearest.get('front')} "
+                f"scan_healthy={str(decision.scan_health.healthy).lower()} "
+                f"scan_reason={decision.scan_health.reason} "
+                f"scan_age={decision.scan_health.age_s} "
+                f"scan_stamp_age={decision.scan_health.stamp_age_s} "
+                f"tf_available={str(decision.scan_health.tf_available).lower()} "
+                f"tf_reason={decision.scan_health.tf_reason} "
+                f"front={decision.nearest.get('front')} "
                 f"front_slow={decision.nearest.get('front_slow')} "
                 f"front_slow_min_angle_deg={self._config.front_slow_min_angle_deg} "
                 f"front_slow_max_angle_deg={self._config.front_slow_max_angle_deg} "
@@ -449,6 +457,7 @@ def main(args=None):
                 f"trajectory_horizon_s={None if decision.trajectory is None else decision.trajectory.horizon_s} "
                 f"trajectory_min_clearance_m={None if decision.trajectory is None else decision.trajectory.minimum_clearance_m} "
                 f"trajectory_collision_time_s={None if decision.trajectory is None else decision.trajectory.collision_time_s} "
+                f"requested=({decision.requested.linear_x:.3f},{decision.requested.angular_z:.3f}) "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f})"
             )
             self._state_pub.publish(state)
@@ -477,6 +486,11 @@ def main(args=None):
                 "scan_healthy": str(decision.scan_health.healthy).lower(),
                 "scan_reason": decision.scan_health.reason,
                 "scan_age_s": "" if decision.scan_health.age_s is None else f"{decision.scan_health.age_s:.3f}",
+                "scan_stamp_age_s": (
+                    ""
+                    if decision.scan_health.stamp_age_s is None
+                    else f"{decision.scan_health.stamp_age_s:.3f}"
+                ),
                 "scan_frame": decision.scan_health.frame_id,
                 "base_frame": decision.scan_health.base_frame,
                 "valid_ranges": str(decision.scan_health.valid_count),

@@ -2,11 +2,12 @@
 
 ## Status and intent
 
-Stage D is the first browser-initiated, adaptive physical-movement stage. It is
-a design and acceptance contract, not authorization to enable physical
-execution. The deployed Pi remains Stage C with
-`RVR_LIVE_EXECUTION_ENABLED=false` until the Stage D replay gates and attended
-physical acceptance sequence pass.
+Stage D is the first browser-initiated, adaptive physical-movement stage. Its
+software path is implemented behind independent default-off Stage D selection
+and exact-SHA live-execution gates. This document is not authorization to enable
+either gate. The deployed Pi remains nonphysical with
+`RVR_STAGE_D_ENABLED=false` and `RVR_LIVE_EXECUTION_ENABLED=false` until the
+attended physical acceptance sequence passes.
 
 Stage D deliberately gives the supervisory planner broad movement authority
 inside one operator-approved mission:
@@ -91,12 +92,15 @@ driver ceilings:
 |---|---:|---|
 | Forward/reverse linear speed | `0.10 m/s` | collision supervisor and driver |
 | Angular speed | `0.4 rad/s` | collision supervisor and driver |
+| Turn primitive operating request | `0.35 rad/s` | deterministic executor |
 | Requested-command lease | `0.25 s` | collision supervisor |
 | Driver command watchdog | `0.50 s` | driver |
 | Maximum scan age | `0.30 s` | collision supervisor |
 | Translation per executor intent | `0.25 m` | deterministic executor |
 | Rotation per executor intent | `45 deg` | deterministic executor |
 | Executor intent timeout | `5 s` | deterministic executor |
+| Stationary turn corrections | at most `3`, inside the same intent/timeout | deterministic executor |
+| Turn correction pulse | one nonzero `20 Hz` control publication, then mandatory zero-and-settle | deterministic executor |
 | Mission lease | `15 min` | mission service |
 
 The planner may chain short intents continuously; these bounds limit the amount
@@ -215,12 +219,39 @@ Stage D implementation proceeds without physical authority first:
    authority state, cancellation, reconnect, and truthful terminal evidence.
 5. An attended no-motion Pi audit proves the exact deployed graph and authority
    configuration.
-6. Existing measured 10 cm, 45 degree, and short composed-route stages pass with
-   settled odometry and encoder evidence.
+6. Existing measured 10 cm and 45 degree stages satisfy the capability
+   thresholds with settled odometry and encoder evidence; composed behavior is
+   then proven by the real repeatedly-replanned Stage D mission.
 7. An attended collision exercise with a non-damaging visible obstacle proves
    slow, stop, manual reset, and no contact at the installed caps.
 8. Only then may an attended, closed-room exploration mission use the broad
    Stage D envelope.
 
+The exact-SHA attended capability slice has now demonstrated real repeated
+OAuth replanning through observation, turn, translation, and model-selected
+stop. A separate run also demonstrated that transient unsafe scan evidence
+vetoes a later LLM turn with zero requested and supervised movement and no
+automatic resume. These results do not waive step 7: general physical use
+remains blocked until the attended non-damaging obstacle exercise records
+slow/stop/manual-reset/no-contact evidence.
+
 No step in this document enables Stage D or authorizes an unattended physical
 run.
+
+## Functional implementation
+
+`stage_d_controller.md` documents the replay and production controller boundary.
+The live implementation consumes authoritative receipt-time scan/TF/odom and
+STOP/ESTOP state, sends one bounded intent through the reviewed live-route seam,
+and can add fresh camera detections plus localized semantic object/face tracks
+to the exact snapshot shown to the LLM. Semantic evidence is discarded when
+camera, localization, or semantic-map receipts are stale. Face identity is
+accepted only with explicit enrollment evidence. Recognition may influence
+strategy but never changes the motion envelope or safety hierarchy.
+correlates settled terminal and supervision evidence, and asks the real
+Codex/ChatGPT OAuth planner again. Approval binds the exact deployment and the
+whole 15-minute envelope once; the browser never gains motion authority.
+
+The implementation remains disabled in packaged configuration. Only the
+attended hardware steps above remain before a physical Stage D mission can be
+accepted.

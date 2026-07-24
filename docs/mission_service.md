@@ -58,6 +58,18 @@ requires fresh odometry, collision CLEAR, STOP READY, ESTOP CLEAR, and the
 authenticated operator's exact proposal-digest phrase. Readiness is checked
 before approval is persisted and again before the route is submitted.
 
+Stage D is selected separately with `RVR_STAGE_D_ENABLED=true`. Its installed
+default is false, and selection alone creates no route transport when live
+execution remains false. When both reviewed gates are enabled, MissionService
+owns the repeatedly replanned controller and persists the proposal, one
+Tailscale-authenticated 900-second approval, every world-snapshot/intent
+checkpoint, and the terminal result. The approval digest binds the prompt,
+source/deployed SHA, provider identity, physical executor mode, starting
+snapshot, first intent, speed and per-intent limits, lease, and installed lidar
+safety policy. A restart converts approved, queued, running, or
+cancel-requested Stage D work to `recovery_required`; it never recreates an
+executor lease.
+
 The LLM motion envelope is separately Pi-owned and configurable. The calibration
 profile remains three motion calls, 0.5 m cumulative translation, 0.5 m per
 translation, and 45 seconds at 0.08 m/s and 30 deg/s. A reviewed attended-room
