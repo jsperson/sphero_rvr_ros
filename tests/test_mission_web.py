@@ -4,6 +4,8 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
+from typing import Mapping
 
 import pytest
 
@@ -12,6 +14,9 @@ from sphero_rvr_driver.mission_web import (
     LiveMissionWebAdapter,
     MissionWebError,
     MockReplayMissionAdapter,
+    STATIONARY_SENSOR_CONTROL_PATH,
+    STATIONARY_SENSOR_UNIT,
+    SystemdStationarySensorControl,
     WebMissionState,
     build_mission_web_bundle,
     handle_mission_web_request,
@@ -24,11 +29,17 @@ PROMPT = "Move forward 20 centimeters, turn left 45 degrees, then move forward 1
 
 
 class FakeLiveMissionClient:
-    def __init__(self, *, execution_enabled: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        execution_enabled: bool = False,
+        stationary_perception_enabled: bool = False,
+    ) -> None:
         self.proposal = _proposal(MockReplayMissionAdapter(source_sha="live-source"))["proposal"]
         self.mission = None
         self.submissions = []
         self.execution_enabled = execution_enabled
+        self.stationary_perception_enabled = stationary_perception_enabled
         self.approvals = []
 
     def service_snapshot(self):
@@ -39,6 +50,7 @@ class FakeLiveMissionClient:
             "deployed_sha": "live-deployed",
             "planning_enabled": True,
             "live_execution_enabled": self.execution_enabled,
+            "stationary_perception_enabled": self.stationary_perception_enabled,
             "capabilities": {
                 "query_status_telemetry@1.0": {
                     "evidence": {
@@ -105,6 +117,27 @@ class FakeLiveMissionClient:
                 }
             ],
         }
+
+
+class FakeStationarySensorControl:
+    def __init__(self) -> None:
+        self.active = False
+        self.requests: list[tuple[bool, Mapping[str, object]]] = []
+
+    def status(self):
+        return {
+            "available": True,
+            "active": self.active,
+            "transitioning": False,
+            "state": "active" if self.active else "inactive",
+            "detail": "active / running" if self.active else "inactive / dead",
+            "unit": STATIONARY_SENSOR_UNIT,
+        }
+
+    def set_active(self, active, *, authority_snapshot):
+        self.requests.append((active, authority_snapshot))
+        self.active = active
+        return self.status()
 
 
 def _proposal(adapter: MockReplayMissionAdapter, scenario: str = "success") -> dict:
@@ -371,6 +404,152 @@ def test_router_exposes_only_bounded_mock_routes_and_rejects_direct_command_path
         handle_mission_web_request("GET", "/api/mission/start", "", adapter)
 
 
+def test_stationary_sensor_route_controls_only_no_motion_stage_c_service() -> None:
+    adapter = LiveMissionWebAdapter(
+        FakeLiveMissionClient(stationary_perception_enabled=True)
+    )
+    sensor_control = FakeStationarySensorControl()
+
+    ready = json.loads(
+        handle_mission_web_request(
+            "GET",
+            "/api/web/state",
+            "",
+            adapter,
+            sensor_control,
+        ).body
+    )
+    assert ready["sensor_control"] == {
+        "active": False,
+        "available": True,
+        "detail": "inactive / dead",
+        "start_permitted": True,
+        "state": "inactive",
+        "transitioning": False,
+        "unit": STATIONARY_SENSOR_UNIT,
+    }
+    assert ready["adapter"]["motion_authority"] is False
+    assert ready["adapter"]["physical_execution_enabled"] is False
+
+    started = json.loads(
+        handle_mission_web_request(
+            "POST",
+            STATIONARY_SENSOR_CONTROL_PATH,
+            json.dumps({"active": True}),
+            adapter,
+            sensor_control,
+        ).body
+    )
+    assert started["sensor_control"]["active"] is True
+    assert sensor_control.requests[0][0] is True
+    assert sensor_control.requests[0][1]["adapter"]["live_execution_enabled"] is False
+
+    stopped = json.loads(
+        handle_mission_web_request(
+            "POST",
+            STATIONARY_SENSOR_CONTROL_PATH,
+            json.dumps({"active": False}),
+            adapter,
+            sensor_control,
+        ).body
+    )
+    assert stopped["sensor_control"]["active"] is False
+    assert [request[0] for request in sensor_control.requests] == [True, False]
+
+
+def test_stationary_sensor_route_rejects_unconfigured_and_non_boolean_requests() -> None:
+    adapter = LiveMissionWebAdapter(
+        FakeLiveMissionClient(stationary_perception_enabled=True)
+    )
+    with pytest.raises(MissionWebError, match="not available"):
+        handle_mission_web_request(
+            "POST",
+            STATIONARY_SENSOR_CONTROL_PATH,
+            json.dumps({"active": True}),
+            adapter,
+        )
+    with pytest.raises(MissionWebError, match="boolean active"):
+        handle_mission_web_request(
+            "POST",
+            STATIONARY_SENSOR_CONTROL_PATH,
+            json.dumps({"active": "true"}),
+            adapter,
+            FakeStationarySensorControl(),
+        )
+
+
+def test_systemd_sensor_control_is_fixed_and_fails_closed_on_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[:2] == ["ps", "-eo"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[0] == "fuser":
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        if "show" in command:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="LoadState=loaded\nActiveState=active\nSubState=running\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("sphero_rvr_driver.mission_web.subprocess.run", fake_run)
+    with pytest.raises(MissionWebError, match="only the stationary"):
+        SystemdStationarySensorControl("rvr-mission-service.service")
+
+    control = SystemdStationarySensorControl()
+    unsafe_snapshot = LiveMissionWebAdapter(
+        FakeLiveMissionClient(execution_enabled=True)
+    ).snapshot()
+    with pytest.raises(MissionWebError, match="motion authority are disabled"):
+        control.set_active(True, authority_snapshot=unsafe_snapshot)
+    assert calls == []
+
+    safe_snapshot = LiveMissionWebAdapter(
+        FakeLiveMissionClient(stationary_perception_enabled=True)
+    ).snapshot()
+    status = control.set_active(True, authority_snapshot=safe_snapshot)
+    assert status["active"] is True
+    assert calls[0][0] == ["ps", "-eo", "pid=,args="]
+    assert calls[1][0] == ["fuser", "/dev/ttyAMA0"]
+    assert calls[2][0] == [
+        "systemctl",
+        "--user",
+        "start",
+        STATIONARY_SENSOR_UNIT,
+    ]
+    assert calls[3][0][-1] == STATIONARY_SENSOR_UNIT
+    assert calls[3][1]["timeout"] == pytest.approx(3.0)
+
+
+def test_systemd_sensor_control_refuses_detected_motion_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **kwargs):
+        del kwargs
+        if command[:2] == ["ps", "-eo"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="123 ros2 run sphero_rvr_driver live_route_runner\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command after motion conflict: {command}")
+
+    monkeypatch.setattr("sphero_rvr_driver.mission_web.subprocess.run", fake_run)
+    safe_snapshot = LiveMissionWebAdapter(
+        FakeLiveMissionClient(stationary_perception_enabled=True)
+    ).snapshot()
+    with pytest.raises(MissionWebError, match="motion process is present"):
+        SystemdStationarySensorControl().set_active(
+            True,
+            authority_snapshot=safe_snapshot,
+        )
+
+
 def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence() -> None:
     bundle = build_mission_web_bundle(app_name="RVR Test Console")
     page = bundle["index_html"]
@@ -407,12 +586,16 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "forward_corridor_clearance_m" in page
     assert "if (map.available === false)" in page
     assert "Unavailable layers:" in page
-    assert "if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();" in page
+    assert "function shouldContinuouslyPoll(snapshot)" in page
+    assert "Boolean(snapshot.adapter.stationary_perception)" in page
     assert "const origin = bounds.origin" in page
     assert "STALE LOCALIZATION" in page
     assert "STALE CAMERA EVIDENCE" in page
     assert "CAMERA INTERRUPTED" in page
     assert "empty.hidden = hasPixels || state === 'interrupted';" in page
+    assert 'id="sensors-toggle"' in page
+    assert "Turn sensors on" in page
+    assert "/api/web/stationary-sensors" in page
     assert "Frame pixels not supplied" in page
     assert "detection-box" in page
     assert 'id="safety-authority"' in page

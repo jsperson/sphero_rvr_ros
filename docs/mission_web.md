@@ -143,6 +143,19 @@ executor only when the reviewed, source, and deployed SHAs match. Even in that m
 the UI and server keep approval disabled until authoritative odometry and safety
 evidence are fresh and clear. Missing STOP/ESTOP evidence renders `UNKNOWN`.
 
+When Stage C is configured, the safety strip includes an authenticated
+**Telemetry + camera** toggle. It can start or stop only the fixed
+`rvr-stationary-perception.service` user unit; it never enables the unit at boot
+and exposes no arbitrary service name or shell command. Startup is rejected
+unless the service snapshot proves live execution, physical execution, and
+motion authority are all false. A runtime preflight also refuses startup when
+a driver, route/motion process, motion-topic publisher command, or rover UART
+owner is present. The unit contains lidar, Camera 3, stationary SLAM, tracking,
+and semantic perception only—no rover driver, route executor, serial transport,
+motor graph, or motion publisher. Sensor state and startup errors remain
+visible, and live stationary pages continue polling after a terminal mission so
+newly requested map and camera evidence can still appear.
+
 ## HTTP routes
 
 ```text
@@ -153,6 +166,7 @@ POST /api/web/mission/propose
 POST /api/web/mission/approve
 POST /api/web/mission/advance   # mock/replay only
 POST /api/web/mission/cancel
+POST /api/web/stationary-sensors  # fixed Stage C user unit only
 ```
 
 Direct motor, arbitrary write, ROS, `/cmd_vel`, and `/cmd_vel_motor` routes are

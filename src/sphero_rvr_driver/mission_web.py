@@ -52,6 +52,8 @@ MAX_REQUEST_BYTES = 64 * 1024
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 TERMINAL_ARTIFACT_PATH = "/api/web/artifacts/terminal-result"
+STATIONARY_SENSOR_CONTROL_PATH = "/api/web/stationary-sensors"
+STATIONARY_SENSOR_UNIT = "rvr-stationary-perception.service"
 
 
 class MissionWebError(ValueError):
@@ -269,6 +271,189 @@ class MissionWebAdapter(Protocol):
     def advance(self) -> Mapping[str, Any]: ...
 
     def cancel(self) -> Mapping[str, Any]: ...
+
+
+class StationarySensorControl(Protocol):
+    """Bounded control for the fixed no-motion stationary perception unit."""
+
+    def status(self) -> Mapping[str, Any]: ...
+
+    def set_active(
+        self,
+        active: bool,
+        *,
+        authority_snapshot: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
+
+class SystemdStationarySensorControl:
+    """Start or stop only the installed Stage C stationary sensor unit."""
+
+    def __init__(self, unit: str = STATIONARY_SENSOR_UNIT) -> None:
+        if str(unit).strip() != STATIONARY_SENSOR_UNIT:
+            raise MissionWebError("only the stationary perception service may be controlled")
+        self.unit = STATIONARY_SENSOR_UNIT
+        self._lock = threading.RLock()
+
+    def status(self) -> Mapping[str, Any]:
+        with self._lock:
+            try:
+                completed = subprocess.run(
+                    [
+                        "systemctl",
+                        "--user",
+                        "show",
+                        "--property=LoadState",
+                        "--property=ActiveState",
+                        "--property=SubState",
+                        self.unit,
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=3.0,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return {
+                    "available": False,
+                    "active": False,
+                    "transitioning": False,
+                    "state": "unavailable",
+                    "detail": f"Unable to query stationary sensors: {exc}",
+                    "unit": self.unit,
+                }
+            properties = {}
+            for line in str(completed.stdout).splitlines():
+                key, separator, value = line.partition("=")
+                if separator:
+                    properties[key.strip()] = value.strip()
+            active_state = properties.get("ActiveState", "unknown").lower()
+            sub_state = properties.get("SubState", "unknown").lower()
+            loaded = properties.get("LoadState", "not-found").lower() == "loaded"
+            available = completed.returncode == 0 and loaded
+            detail = (
+                f"{active_state} / {sub_state}"
+                if available
+                else str(completed.stderr).strip() or "Stationary sensor service is not installed."
+            )
+            return {
+                "available": available,
+                "active": active_state == "active",
+                "transitioning": active_state in {"activating", "deactivating", "reloading"},
+                "state": active_state if available else "unavailable",
+                "detail": detail,
+                "unit": self.unit,
+            }
+
+    def set_active(
+        self,
+        active: bool,
+        *,
+        authority_snapshot: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        with self._lock:
+            if active and not _stationary_sensor_start_permitted(authority_snapshot):
+                raise MissionWebError(
+                    "stationary sensors may start only while physical execution and motion authority are disabled"
+                )
+            if active:
+                _assert_stationary_no_motion_runtime()
+            action = "start" if active else "stop"
+            try:
+                completed = subprocess.run(
+                    ["systemctl", "--user", action, self.unit],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=20.0,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise MissionWebError(f"unable to {action} stationary sensors: {exc}") from exc
+            if completed.returncode != 0:
+                detail = str(completed.stderr).strip() or str(completed.stdout).strip()
+                raise MissionWebError(
+                    f"unable to {action} stationary sensors: {detail or 'systemd request failed'}"
+                )
+            status = dict(self.status())
+            if bool(status.get("active", False)) != active:
+                raise MissionWebError(
+                    f"stationary sensors did not reach the requested {'active' if active else 'inactive'} state"
+                )
+            return status
+
+
+def _stationary_sensor_start_permitted(snapshot: Mapping[str, Any]) -> bool:
+    adapter = snapshot.get("adapter", {})
+    if not isinstance(adapter, Mapping):
+        return False
+    return bool(
+        not adapter.get("fixture_only", True)
+        and adapter.get("stationary_perception", False)
+        and not adapter.get("live_execution_enabled", False)
+        and adapter.get("motion_authority") is False
+        and adapter.get("physical_execution_enabled") is False
+    )
+
+
+def _assert_stationary_no_motion_runtime() -> None:
+    """Reject fixed-odom sensing when a motor-capable runtime may be present."""
+
+    try:
+        processes = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MissionWebError(
+            f"unable to verify the no-motion process boundary: {exc}"
+        ) from exc
+    if processes.returncode != 0:
+        detail = str(processes.stderr).strip() or "process inspection failed"
+        raise MissionWebError(f"unable to verify the no-motion process boundary: {detail}")
+    forbidden = (
+        "rvr_node",
+        "live_route_runner",
+        "range_motion_controller",
+        "lidar_collision_stop_supervisor",
+        "supervised_rvr.launch.py",
+        "rvr.launch.py",
+        "rvr-console",
+        "/cmd_vel",
+        "/cmd_vel_motor",
+    )
+    conflicts = [
+        line.strip()
+        for line in str(processes.stdout).splitlines()
+        if any(token in line for token in forbidden)
+    ]
+    if conflicts:
+        raise MissionWebError(
+            "stationary sensors refused because a driver, route, or motion process is present"
+        )
+    try:
+        serial_owner = subprocess.run(
+            ["fuser", "/dev/ttyAMA0"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MissionWebError(f"unable to verify rover serial ownership: {exc}") from exc
+    if serial_owner.returncode == 0:
+        raise MissionWebError(
+            "stationary sensors refused because the rover serial device has an owner"
+        )
+    if serial_owner.returncode not in {1}:
+        detail = str(serial_owner.stderr).strip() or "serial ownership check failed"
+        raise MissionWebError(f"unable to verify rover serial ownership: {detail}")
 
 
 class _FixturePromptProvider:
@@ -1483,6 +1668,7 @@ def handle_mission_web_request(
     path: str,
     body: str,
     adapter: MissionWebAdapter,
+    sensor_control: Optional[StationarySensorControl] = None,
 ) -> MissionWebResponse:
     """Dependency-free router used by tests and the local HTTP wrapper."""
 
@@ -1499,7 +1685,7 @@ def handle_mission_web_request(
         if normalized_path == "/favicon.ico":
             return MissionWebResponse(204, "image/x-icon", "")
         if normalized_path == "/api/web/state":
-            return _json_response(200, adapter.snapshot())
+            return _json_response(200, _with_sensor_control(adapter.snapshot(), sensor_control))
         if normalized_path == "/api/web/scenarios":
             return _json_response(200, {"scenarios": [item.to_json_dict() for item in adapter.scenarios()]})
         if normalized_path == TERMINAL_ARTIFACT_PATH:
@@ -1536,9 +1722,41 @@ def handle_mission_web_request(
         result = adapter.advance()
     elif normalized_path == "/api/web/mission/cancel":
         result = adapter.cancel()
+    elif normalized_path == STATIONARY_SENSOR_CONTROL_PATH:
+        if sensor_control is None:
+            raise MissionWebError("stationary sensor control is not available")
+        if "active" not in payload or not isinstance(payload["active"], bool):
+            raise MissionWebError("stationary sensor request requires a boolean active value")
+        authority_snapshot = adapter.snapshot()
+        sensor_control.set_active(
+            bool(payload["active"]),
+            authority_snapshot=authority_snapshot,
+        )
+        result = adapter.snapshot()
     else:
         raise MissionWebError(f"POST route is not exposed: {normalized_path}")
-    return _json_response(200, result)
+    return _json_response(200, _with_sensor_control(result, sensor_control))
+
+
+def _with_sensor_control(
+    snapshot: Mapping[str, Any],
+    sensor_control: Optional[StationarySensorControl],
+) -> dict[str, Any]:
+    result = dict(snapshot)
+    if sensor_control is None:
+        status: dict[str, Any] = {
+            "available": False,
+            "active": False,
+            "transitioning": False,
+            "state": "unavailable",
+            "detail": "Stationary sensor control is not configured.",
+            "unit": STATIONARY_SENSOR_UNIT,
+        }
+    else:
+        status = dict(sensor_control.status())
+    status["start_permitted"] = _stationary_sensor_start_permitted(snapshot)
+    result["sensor_control"] = status
+    return result
 
 
 def _json_object(body: str) -> Mapping[str, Any]:
@@ -1601,12 +1819,19 @@ class _MissionWebHttpHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, body: str) -> None:
         adapter = getattr(self.server, "mission_web_adapter")
+        sensor_control = getattr(self.server, "stationary_sensor_control", None)
         set_identity = getattr(adapter, "set_request_identity", None)
         clear_identity = getattr(adapter, "clear_request_identity", None)
         if callable(set_identity) and self.command == "POST":
             set_identity(str(getattr(self, "_request_identity", "")))
         try:
-            response = handle_mission_web_request(self.command, self.path, body, adapter)
+            response = handle_mission_web_request(
+                self.command,
+                self.path,
+                body,
+                adapter,
+                sensor_control,
+            )
         except (MissionWebError, UnicodeDecodeError) as exc:
             self._send_error(400, str(exc))
             return
@@ -1646,11 +1871,13 @@ def make_server(
     port: int = DEFAULT_PORT,
     *,
     adapter: Optional[MissionWebAdapter] = None,
+    sensor_control: Optional[StationarySensorControl] = None,
     allowed_origin: Optional[str] = None,
     require_tailscale_identity: bool = False,
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, int(port)), _MissionWebHttpHandler)
     setattr(server, "mission_web_adapter", adapter or MockReplayMissionAdapter())
+    setattr(server, "stationary_sensor_control", sensor_control)
     setattr(server, "enforce_same_origin", allowed_origin is not None)
     setattr(server, "allowed_origin", "" if allowed_origin is None else str(allowed_origin).rstrip("/"))
     setattr(server, "require_tailscale_identity", bool(require_tailscale_identity))
@@ -1708,6 +1935,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             operator=args.operator,
         )
         allowed_origin = args.public_origin
+        sensor_control: Optional[StationarySensorControl] = SystemdStationarySensorControl()
     elif args.mode == "rolling-replay":
         adapter = RollingReplayMissionAdapter(
             CodexOAuthRollingIntentProvider(
@@ -1718,13 +1946,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             source_sha=_local_source_sha(),
         )
         allowed_origin = None
+        sensor_control = None
     else:
         adapter = MockReplayMissionAdapter()
         allowed_origin = None
+        sensor_control = None
     server = make_server(
         args.host,
         args.port,
         adapter=adapter,
+        sensor_control=sensor_control,
         allowed_origin=allowed_origin,
         require_tailscale_identity=args.mode == "live",
     )
@@ -1792,12 +2023,14 @@ _INDEX_HTML = r'''<!doctype html>
     .mode-badge.execution { color:var(--red); border-color:#8f3d43; background:#32161b; }
     .mode-badge.execution::before { background:var(--red); box-shadow:0 0 .8rem var(--red); }
     .shell { width:min(1680px,100%); max-width:100%; margin:auto; padding:clamp(.6rem,1.3vw,1rem); }
-    .safety-strip { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:.5rem; margin-bottom:.65rem; }
+    .safety-strip { display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:.5rem; margin-bottom:.65rem; }
     .safety-cell { min-width:0; padding:.52rem .62rem; border:1px solid var(--line); border-radius:.58rem; background:#0d1a28; }
     .safety-cell span { display:block; color:var(--muted); font-size:.61rem; text-transform:uppercase; letter-spacing:.08em; }
     .safety-cell strong { display:block; margin-top:.2rem; overflow-wrap:anywhere; font-size:.76rem; line-height:1.25; }
     .safety-cell.warning { border-color:#91652d; background:#2b2112; }
     .safety-cell.unsafe { border-color:#91414a; background:#31191e; }
+    .sensor-control button { width:100%; margin-top:.28rem; padding:.32rem .42rem; border:1px solid #40617a; border-radius:.42rem; color:var(--ink); background:#182a3d; font-size:.7rem; font-weight:800; }
+    .sensor-control small { display:block; margin-top:.22rem; color:var(--muted); font-size:.62rem; line-height:1.25; }
     .workspace { display:grid; grid-template-columns:minmax(0,2.35fr) minmax(320px,.75fr); gap:.75rem; align-items:start; min-width:0; }
     .visual-column, .ops-sidebar { display:grid; gap:.75rem; min-width:0; }
     .ops-sidebar { position:sticky; top:4.15rem; max-height:calc(100vh - 4.8rem); overflow-y:auto; overscroll-behavior:contain; padding-right:.15rem; scrollbar-width:thin; }
@@ -1912,6 +2145,11 @@ _INDEX_HTML = r'''<!doctype html>
       <div class="safety-cell"><span>Forward corridor</span><strong id="safety-corridor">UNAVAILABLE</strong></div>
       <div class="safety-cell"><span>Projected path</span><strong id="safety-trajectory">UNAVAILABLE</strong></div>
       <div class="safety-cell"><span>Telemetry</span><strong id="safety-telemetry">FRESH</strong></div>
+      <div class="safety-cell sensor-control" id="sensor-control" hidden>
+        <span>Telemetry + camera</span>
+        <button id="sensors-toggle" type="button" aria-pressed="false" disabled>Turn sensors on</button>
+        <small id="sensors-status" role="status">Control unavailable</small>
+      </div>
       <div class="safety-cell"><span>STOP</span><strong id="safety-stop">READY</strong></div>
       <div class="safety-cell"><span>ESTOP</span><strong id="safety-estop">CLEAR</strong></div>
       <div class="safety-cell"><span>Motion authority</span><strong id="safety-authority">NONE</strong></div>
@@ -2022,6 +2260,7 @@ _INDEX_HTML = r'''<!doctype html>
     let timer = null;
     let hydratedMissionId = null;
     let promptDirty = false;
+    let sensorRequestInFlight = false;
 
     async function api(path, options = {}) {
       const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
@@ -2057,6 +2296,39 @@ _INDEX_HTML = r'''<!doctype html>
       const cell = $(id).closest('.safety-cell');
       cell.classList.toggle('warning', tone === 'warning');
       cell.classList.toggle('unsafe', tone === 'unsafe');
+    }
+
+    function shouldContinuouslyPoll(snapshot) {
+      return !snapshot.adapter.fixture_only
+        && (!snapshot.mission.terminal || Boolean(snapshot.adapter.stationary_perception));
+    }
+
+    function renderSensorControl(snapshot) {
+      const stationary = Boolean(snapshot.adapter.stationary_perception);
+      const panel = $('sensor-control');
+      const button = $('sensors-toggle');
+      const label = $('sensors-status');
+      const control = snapshot.sensor_control || {};
+      panel.hidden = !stationary;
+      if (!stationary) return;
+      const active = Boolean(control.active);
+      const transitioning = sensorRequestInFlight || Boolean(control.transitioning);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.textContent = transitioning
+        ? (active ? 'Stopping…' : 'Starting…')
+        : (active ? 'Turn sensors off' : 'Turn sensors on');
+      button.disabled = transitioning
+        || !control.available
+        || (!active && !control.start_permitted);
+      label.textContent = transitioning
+        ? (active ? 'Stopping stationary sensors' : 'Starting stationary sensors')
+        : active
+          ? (snapshot.safety.telemetry_fresh ? 'On · data fresh' : 'On · waiting for fresh data')
+          : control.available
+            ? 'Off · no live map or camera'
+            : (control.detail || 'Control unavailable');
+      panel.classList.toggle('warning', !active || !snapshot.safety.telemetry_fresh);
+      panel.classList.toggle('unsafe', active && control.state === 'failed');
     }
 
     function render(snapshot) {
@@ -2119,6 +2391,7 @@ _INDEX_HTML = r'''<!doctype html>
       setSafetyTone('safety-stop', ['READY','CLEAR'].includes(stopState) ? '' : stopState === 'UNKNOWN' ? 'warning' : 'unsafe');
       setSafetyTone('safety-estop', estopState === 'CLEAR' ? '' : estopState === 'UNKNOWN' ? 'warning' : 'unsafe');
       setSafetyTone('safety-authority', execution ? 'unsafe' : stationary || rollingReplay || live ? 'warning' : '');
+      renderSensorControl(snapshot);
       $('approve').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
       $('approval-input').hidden = live;
       $('approval-input-label').hidden = live;
@@ -2151,7 +2424,10 @@ _INDEX_HTML = r'''<!doctype html>
       renderRolling(snapshot);
       renderMap(snapshot.map, snapshot);
       renderCamera(snapshot);
-      if (snapshot.mission.terminal && timer) { clearInterval(timer); timer = null; }
+      if (!shouldContinuouslyPoll(snapshot) && snapshot.mission.terminal && timer) {
+        clearInterval(timer);
+        timer = null;
+      }
     }
 
     function renderRolling(snapshot) {
@@ -2391,7 +2667,7 @@ _INDEX_HTML = r'''<!doctype html>
         $('approval-input').value = '';
         promptDirty = false;
         render(snapshot);
-        if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();
+        if (shouldContinuouslyPoll(snapshot)) startTimer();
       } catch (error) { $('request-error').textContent = error.message; }
     }
 
@@ -2409,8 +2685,33 @@ _INDEX_HTML = r'''<!doctype html>
 
     async function cancelMission() {
       stopTimer();
-      try { render(await api('/api/web/mission/cancel', {method:'POST', body:'{}'})); }
+      try {
+        const snapshot = await api('/api/web/mission/cancel', {method:'POST', body:'{}'});
+        render(snapshot);
+        if (shouldContinuouslyPoll(snapshot)) startTimer();
+      }
       catch (error) { $('request-error').textContent = error.message; }
+    }
+
+    async function toggleSensors() {
+      if (!current || sensorRequestInFlight) return;
+      sensorRequestInFlight = true;
+      $('request-error').textContent = '';
+      renderSensorControl(current);
+      try {
+        const active = !Boolean(current.sensor_control && current.sensor_control.active);
+        const snapshot = await api('/api/web/stationary-sensors', {
+          method:'POST',
+          body:JSON.stringify({active}),
+        });
+        sensorRequestInFlight = false;
+        render(snapshot);
+        if (shouldContinuouslyPoll(snapshot)) startTimer();
+      } catch (error) {
+        sensorRequestInFlight = false;
+        renderSensorControl(current);
+        $('request-error').textContent = error.message;
+      }
     }
 
     function startTimer() {
@@ -2425,10 +2726,11 @@ _INDEX_HTML = r'''<!doctype html>
     $('propose').addEventListener('click', propose);
     $('approve').addEventListener('click', approve);
     $('cancel').addEventListener('click', cancelMission);
+    $('sensors-toggle').addEventListener('click', toggleSensors);
     $('mission-prompt').addEventListener('input', () => { promptDirty = true; });
     Promise.all([loadScenarios(), api('/api/web/state')]).then(([,snapshot]) => {
       render(snapshot);
-      if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();
+      if (shouldContinuouslyPoll(snapshot)) startTimer();
     }).catch((error) => $('request-error').textContent = error.message);
   </script>
 </body>

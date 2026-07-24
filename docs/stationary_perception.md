@@ -40,3 +40,11 @@ rover driver or route executor process, no motion topics, and no owner of the
 rover serial device. Stopping the service interrupts live sensors and causes a
 running Stage C mission to terminate on freshness. Restarting sensors only
 creates new live evidence; it cannot restore an expired mission intent.
+
+The Stage C web console may explicitly start or stop this one fixed user unit
+through its authenticated same-origin sensor toggle. The server rejects start
+unless its authoritative service snapshot reports stationary perception
+configured with live execution, physical execution, and motion authority all
+false. It also rejects a detected driver, route/motion process, motion-topic
+publisher command, or rover UART owner. The toggle does not enable the unit
+across reboot and cannot name or control any other systemd service.
