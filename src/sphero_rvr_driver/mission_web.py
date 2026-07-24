@@ -461,7 +461,6 @@ class SystemdTelemetryControl:
                             "systemctl",
                             "--user",
                             "reset-failed",
-                            ADAPTIVE_MISSION_UNIT,
                             self.unit,
                         ],
                         text=True,

@@ -692,7 +692,6 @@ def test_systemd_telemetry_stop_requires_clean_unit_descendants_and_lidar_handle
         "systemctl",
         "--user",
         "reset-failed",
-        "rvr-adaptive-mission.service",
         TELEMETRY_UNIT,
     ]
     assert [call[0] for call in calls].count(["fuser", "/dev/rplidar"]) == 1
