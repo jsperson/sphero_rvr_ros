@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import threading
 import urllib.error
 import urllib.request
@@ -550,6 +551,105 @@ def test_systemd_sensor_control_refuses_detected_motion_process(
         )
 
 
+def test_systemd_sensor_stop_requires_clean_unit_descendants_and_lidar_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[:3] == ["systemctl", "--user", "stop"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["systemctl", "--user", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "LoadState=loaded\n"
+                    "ActiveState=inactive\n"
+                    "SubState=dead\n"
+                    "Result=success\n"
+                    "MainPID=0\n"
+                    "ControlPID=0\n"
+                ),
+                stderr="",
+            )
+        if command[:2] == ["ps", "-eo"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="123 /usr/bin/live_mission_service\n",
+                stderr="",
+            )
+        if command == ["fuser", "/dev/rplidar"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        raise AssertionError(f"unexpected shutdown command: {command}")
+
+    monkeypatch.setattr("sphero_rvr_driver.mission_web.subprocess.run", fake_run)
+    safe_snapshot = LiveMissionWebAdapter(
+        FakeLiveMissionClient(stationary_perception_enabled=True)
+    ).snapshot()
+
+    status = SystemdStationarySensorControl().set_active(
+        False,
+        authority_snapshot=safe_snapshot,
+    )
+
+    assert status["state"] == "inactive"
+    assert status["verified_stopped"] is True
+    assert [call[0] for call in calls].count(["fuser", "/dev/rplidar"]) == 1
+    assert any(call[0][:2] == ["ps", "-eo"] for call in calls)
+
+
+def test_systemd_sensor_stop_retains_degraded_state_when_unit_does_not_stop_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **kwargs):
+        del kwargs
+        if command[:3] == ["systemctl", "--user", "stop"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["systemctl", "--user", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "LoadState=loaded\n"
+                    "ActiveState=failed\n"
+                    "SubState=failed\n"
+                    "Result=exit-code\n"
+                    "MainPID=0\n"
+                    "ControlPID=0\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected degraded shutdown command: {command}")
+
+    monkeypatch.setattr("sphero_rvr_driver.mission_web.subprocess.run", fake_run)
+    control = SystemdStationarySensorControl()
+    safe_snapshot = LiveMissionWebAdapter(
+        FakeLiveMissionClient(stationary_perception_enabled=True)
+    ).snapshot()
+
+    with pytest.raises(MissionWebError, match="did not reach"):
+        control.set_active(False, authority_snapshot=safe_snapshot)
+
+    status = control.status()
+    assert status["state"] == "degraded"
+    assert status["verified_stopped"] is False
+    assert "Shutdown degraded" in status["detail"]
+
+
+def test_stationary_sensor_unit_explicitly_stops_motor_before_sigint_shutdown() -> None:
+    unit = (
+        Path(__file__).resolve().parents[1]
+        / "systemd"
+        / "user"
+        / "rvr-stationary-perception.service"
+    ).read_text()
+
+    assert "ros2 service call /stop_motor std_srvs/srv/Empty" in unit
+    assert "KillMode=mixed" in unit
+    assert "KillSignal=SIGINT" in unit
+    assert "TimeoutStopSec=25" in unit
+
+
 def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence() -> None:
     bundle = build_mission_web_bundle(app_name="RVR Test Console")
     page = bundle["index_html"]
@@ -598,6 +698,13 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'id="sensors-toggle"' in page
     assert "Turn sensors on" in page
     assert "/api/web/stationary-sensors" in page
+    assert 'id="request-status" role="status" aria-live="polite"' in page
+    assert 'id="approval-state" role="status" aria-live="polite"' in page
+    assert "Generating and persisting the proposal" in page
+    assert "Starting stationary snapshots and the leased LLM observation-intent loop" in page
+    assert "Connection interrupted:" in page
+    assert "Retrying automatically" in page
+    assert "motor, camera, and sensor processes verified stopped" in page
     assert "Frame pixels not supplied" in page
     assert "detection-box" in page
     assert 'id="safety-authority"' in page

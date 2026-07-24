@@ -48,3 +48,14 @@ configured with live execution, physical execution, and motion authority all
 false. It also rejects a detected driver, route/motion process, motion-topic
 publisher command, or rover UART owner. The toggle does not enable the unit
 across reboot and cannot name or control any other systemd service.
+
+Stopping is a verified hardware lifecycle, not merely an `inactive` systemd
+label. The unit calls the RPLidar node's fixed `/stop_motor` service before ROS
+shutdown and uses `SIGINT`, which is the upstream driver's graceful cleanup
+signal. The browser receives success only after the unit is inactive/dead, the
+lidar/camera/SLAM/perception descendants are absent, `/dev/rplidar` has no owner,
+and cached live evidence has aged out of the fresh state. Any failed command,
+remaining descendant or handle, fresh evidence past the deadline, or failed unit
+state is reported as degraded and must not be rendered as `Off`. Previously
+captured frames or map metadata may remain reviewable only with an explicit stale
+or interrupted label.
