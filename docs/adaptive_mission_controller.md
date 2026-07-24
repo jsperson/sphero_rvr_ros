@@ -1,11 +1,11 @@
-# Stage D closed-loop controller
+# Adaptive mission closed-loop controller
 
-`sphero_rvr_driver.stage_d_controller` is the first functional Stage D
+`sphero_rvr_driver.adaptive_mission_controller` is the first functional Adaptive mission
 vertical slice. It runs against a replay executor by default and keeps
 `live_execution_enabled=false`, `physical_execution_enabled=false`, and
 `motion_authority=false`. The controller does not import ROS or expose a
 publisher. The production service can now bind the same controller to the
-disabled-by-default `PhysicalStageDExecutor`.
+disabled-by-default `PhysicalAdaptiveMissionExecutor`.
 
 ## Closed-loop boundary
 
@@ -15,16 +15,16 @@ prompt
   -> exact typed world snapshot
   -> one move_distance / turn_angle / observe / stop intent
   -> deterministic snapshot, type, lease, and magnitude validation
-  -> StageDExecutor
+  -> AdaptiveMissionExecutor
   -> collision-supervisor decision
   -> requested versus supervised movement evidence
   -> updated typed world snapshot
   -> Codex chooses again
 ```
 
-The `StageDExecutor` protocol is the physical-integration seam.
-`ReplayStageDExecutor` uses it without ROS or hardware.
-`PhysicalStageDExecutor` consumes the mission node's receipt-time scan/TF,
+The `AdaptiveMissionExecutor` protocol is the physical-integration seam.
+`ReplayAdaptiveMissionExecutor` uses it without ROS or hardware.
+`PhysicalAdaptiveMissionExecutor` consumes the mission node's receipt-time scan/TF,
 odometry, collision, STOP, and ESTOP evidence and maps exactly one movement
 intent to one `LiveRouteRequest`. `RosLiveRouteExecutor` submits that request to
 `live_route_runner`, which is the bounded `/cmd_vel` publisher. The
@@ -60,8 +60,8 @@ snapshot explicitly reports that drop-off detection is unavailable.
 
 ## Moving semantic perception
 
-Stage D now reuses the Stage C camera/SLAM semantic producer without giving that
-producer motion authority. `stage_d_perception.launch.py` composes real lidar,
+Adaptive mission reuses the stationary camera/SLAM semantic producer without giving that
+producer motion authority. `adaptive_mission_perception.launch.py` composes real lidar,
 camera, moving `slam_toolbox`, and semantic tracking with the existing
 collision-supervised rover graph. Its default is `start_rvr:=false`; physical
 movement additionally requires the reviewed deployment gates and an explicit
@@ -94,11 +94,11 @@ Run the browser slice behind authenticated Tailscale HTTPS:
 
 ```bash
 PYTHONPATH=src python3 -m sphero_rvr_driver.mission_web \
-  --mode stage-d-replay \
+  --mode adaptive-mission-replay \
   --host 127.0.0.1 \
   --port 8877 \
   --public-origin https://sphero-pi-2.example-tailnet.ts.net \
-  --replay-database /tmp/rvr-stage-d.sqlite3 \
+  --replay-database /tmp/rvr-adaptive-mission.sqlite3 \
   --replay-reasoning-effort low
 ```
 
@@ -116,7 +116,7 @@ The no-motion OAuth smoke uses the same controller and executor boundaries with
 `motion_permitted=false`:
 
 ```bash
-PYTHONPATH=src python3 scripts/rvr_stage_d_oauth_smoke.py \
+PYTHONPATH=src python3 scripts/rvr_adaptive_mission_oauth_smoke.py \
   --reasoning-effort low
 ```
 
@@ -129,7 +129,7 @@ of translation, rotation, and observation from each updated snapshot, then
 requires a model-selected stop:
 
 ```bash
-PYTHONPATH=src python3 scripts/rvr_stage_d_oauth_replay.py \
+PYTHONPATH=src python3 scripts/rvr_adaptive_mission_oauth_replay.py \
   --reasoning-effort low
 ```
 
@@ -142,7 +142,7 @@ and a final `stop`, while both physical authority flags remain false.
 The live mission service now implements that binding, including authenticated
 Tailscale approval, exact source/deployed/reviewed SHA equality, durable
 checkpoints, correlated cancellation, and restart-to-`recovery_required`.
-`RVR_STAGE_D_ENABLED=false`, `RVR_LIVE_EXECUTION_ENABLED=false`, and a blank
+`RVR_ADAPTIVE_MISSION_ENABLED=false`, `RVR_LIVE_EXECUTION_ENABLED=false`, and a blank
 reviewed SHA remain the installed defaults; merely installing this code grants
 no motion authority.
 
@@ -179,7 +179,7 @@ recorded 26.133 degrees rotation, 0.117339 m translation, one observation, and
 `planner_stop`. Independent STOP, two zero motor samples, unchanged encoder
 samples, relock, and restart-preserved completion all passed. The sealed
 evidence is under
-`/home/jsperson/rvr_runs/stage_d_capability_retry_45ae1ad_20260724T204000Z`.
+`/home/jsperson/rvr_runs/adaptive_mission_capability_retry_45ae1ad_20260724T204000Z`.
 
 The immediately preceding exact-SHA attempt independently proved the veto path.
 After `observe` and a completed 0.194449 m translation, the real provider chose
@@ -187,11 +187,11 @@ a 30-degree turn. The collision supervisor reported `SENSOR_STALE` with
 `rear_unknown`; submission was blocked with requested and supervised motion
 both zero, and the mission never resumed when the sector later returned
 `CLEAR`. Its sealed evidence is under
-`/home/jsperson/rvr_runs/stage_d_capability_45ae1ad_20260724T203000Z`.
+`/home/jsperson/rvr_runs/adaptive_mission_capability_45ae1ad_20260724T203000Z`.
 
 Remaining physical acceptance is the attended non-damaging obstacle exercise
 for collision slow/stop/manual-reset/no-contact evidence, followed by an
 attended moving-perception mission proving that real camera/SLAM tracks remain
 fresh and influence real OAuth revisions while the rover moves. The
 deterministic semantic-fusion, collision, and stale-veto suites already pass;
-the physical gates in `stage_d_authority.md` still apply.
+the physical gates in `adaptive_mission_authority.md` still apply.

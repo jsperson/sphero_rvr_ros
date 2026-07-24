@@ -36,9 +36,9 @@ from .stationary_perception import (
     CodexOAuthStationaryIntentProvider,
     StationaryPerceptionController,
 )
-from .stage_d_controller import CodexOAuthStageDIntentProvider, StageDLimits
-from .stage_d_live_controller import StageDLiveMissionController
-from .stage_d_physical import PhysicalStageDExecutor
+from .adaptive_mission_controller import CodexOAuthAdaptiveMissionIntentProvider, AdaptiveMissionLimits
+from .adaptive_mission_live_controller import LiveAdaptiveMissionController
+from .adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:
@@ -67,7 +67,7 @@ def _localization_mapping(value: Any) -> dict[str, Any]:
         if bool(parsed.get("motion_authority", True)):
             raise ValueError("navigation status must not claim motion authority")
         if bool(parsed.get("physical_execution_enabled", True)):
-            raise ValueError("Stage 1 navigation status must keep physical execution disabled")
+            raise ValueError("Perception navigation navigation status must keep physical execution disabled")
         return parsed
     return LocalizationEstimate.from_mapping(parsed).to_json_dict()
 
@@ -284,8 +284,8 @@ def main(args=None):
             stationary_perception_enabled = bool(
                 self.get_parameter("stationary_perception_enabled").value
             )
-            stage_d_enabled = bool(
-                self.get_parameter("stage_d_enabled").value
+            adaptive_mission_enabled = bool(
+                self.get_parameter("adaptive_mission_enabled").value
             )
             live_execution_enabled = _validated_execution_gate(
                 enabled=bool(self.get_parameter("live_execution_enabled").value),
@@ -298,9 +298,9 @@ def main(args=None):
                 raise ValueError(
                     "stationary perception cannot coexist with live execution authority"
                 )
-            if stationary_perception_enabled and stage_d_enabled:
+            if stationary_perception_enabled and adaptive_mission_enabled:
                 raise ValueError(
-                    "stationary perception and Stage D cannot own the prompt "
+                    "stationary perception and Adaptive mission cannot own the prompt "
                     "controller simultaneously"
                 )
             model_id = str(self.get_parameter("planning_model").value).strip() or None
@@ -337,8 +337,8 @@ def main(args=None):
                 if ros_route_executor is not None
                 else None
             )
-            stage_d_executor = (
-                PhysicalStageDExecutor(
+            adaptive_mission_executor = (
+                PhysicalAdaptiveMissionExecutor(
                     self._cache,
                     source_sha=source_sha,
                     deployed_sha=deployed_sha,
@@ -349,7 +349,7 @@ def main(args=None):
                     ),
                     execution_enabled=live_execution_enabled,
                     transport=ros_route_executor,
-                    limits=StageDLimits(),
+                    limits=AdaptiveMissionLimits(),
                     max_source_age_s=min(max_source_age_s, 0.30),
                     cleanup_timeout_s=float(
                         self.get_parameter(
@@ -357,7 +357,7 @@ def main(args=None):
                         ).value
                     ),
                 )
-                if stage_d_enabled
+                if adaptive_mission_enabled
                 else None
             )
 
@@ -395,19 +395,19 @@ def main(args=None):
                             ).value
                         ),
                     )
-            elif stage_d_enabled:
+            elif adaptive_mission_enabled:
                 def controller_factory(
                     service: MissionService,
-                ) -> StageDLiveMissionController:
-                    return StageDLiveMissionController(
+                ) -> LiveAdaptiveMissionController:
+                    return LiveAdaptiveMissionController(
                         service,
-                        CodexOAuthStageDIntentProvider(
+                        CodexOAuthAdaptiveMissionIntentProvider(
                             model=model_id,
                             reasoning_effort=reasoning_effort,
                         ),
-                        stage_d_executor,  # type: ignore[arg-type]
+                        adaptive_mission_executor,  # type: ignore[arg-type]
                         execution_enabled=live_execution_enabled,
-                        limits=StageDLimits(),
+                        limits=AdaptiveMissionLimits(),
                     )
             elif planning_enabled:
                 def controller_factory(service: MissionService) -> PromptMissionController:
@@ -512,7 +512,7 @@ def main(args=None):
             self.declare_parameter("max_binding_age_s", 2.0)
             self.declare_parameter("planning_enabled", True)
             self.declare_parameter("stationary_perception_enabled", False)
-            self.declare_parameter("stage_d_enabled", False)
+            self.declare_parameter("adaptive_mission_enabled", False)
             self.declare_parameter("stationary_perception_tick_s", 0.2)
             self.declare_parameter("stationary_perception_max_source_age_s", 1.5)
             self.declare_parameter("planning_model", "gpt-5.6-sol")

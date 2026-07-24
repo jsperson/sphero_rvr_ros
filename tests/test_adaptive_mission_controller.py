@@ -13,16 +13,16 @@ from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_service import MissionService
 from sphero_rvr_driver.mission_web import (
     MissionWebError,
-    StageDMissionAdapter,
+    AdaptiveMissionAdapter,
     make_server,
 )
-from sphero_rvr_driver.stage_d_controller import (
+from sphero_rvr_driver.adaptive_mission_controller import (
     ReplayCollisionSupervisor,
-    ReplayStageDExecutor,
-    StageDApprovalEnvelope,
-    StageDIntent,
-    StageDLimits,
-    _stage_d_provider_prompt,
+    ReplayAdaptiveMissionExecutor,
+    AdaptiveMissionApprovalEnvelope,
+    AdaptiveMissionIntent,
+    AdaptiveMissionLimits,
+    _adaptive_mission_provider_prompt,
     make_world_snapshot,
     validate_world_snapshot,
 )
@@ -48,7 +48,7 @@ def _raw(snapshot: Mapping[str, Any], action: str, value: float = 0.0) -> dict[s
 
 
 class SequenceProvider:
-    provider_id = "injected-stage-d-provider"
+    provider_id = "injected-adaptive-mission-provider"
     model_id = "deterministic-test-model"
     reasoning_effort = "fixture"
 
@@ -123,7 +123,7 @@ class RecognitionDrivenProvider:
         return raw
 
 
-class SemanticReplayStageDExecutor(ReplayStageDExecutor):
+class SemanticReplayAdaptiveMissionExecutor(ReplayAdaptiveMissionExecutor):
     def snapshot(self, mission_id: str) -> Mapping[str, Any]:
         snapshot = dict(super().snapshot(mission_id))
         snapshot.pop("schema", None)
@@ -166,20 +166,20 @@ class SemanticReplayStageDExecutor(ReplayStageDExecutor):
         return make_world_snapshot(snapshot)
 
 
-def _wait_terminal(adapter: StageDMissionAdapter, timeout_s: float = 3.0) -> dict[str, Any]:
+def _wait_terminal(adapter: AdaptiveMissionAdapter, timeout_s: float = 3.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         snapshot = dict(adapter.snapshot())
         if snapshot["mission"]["terminal"]:
             return snapshot
         time.sleep(0.005)
-    raise AssertionError("Stage D mission did not reach a terminal state")
+    raise AssertionError("adaptive mission did not reach a terminal state")
 
 
-def test_stage_d_provider_prompt_exposes_semantics_without_granting_safety_authority() -> None:
-    snapshot = ReplayStageDExecutor().snapshot("semantic-prompt")
+def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_safety_authority() -> None:
+    snapshot = ReplayAdaptiveMissionExecutor().snapshot("semantic-prompt")
     request = json.loads(
-        _stage_d_provider_prompt(
+        _adaptive_mission_provider_prompt(
             "Find the shoe, approach only through clear floor, then stop.",
             snapshot,
         )
@@ -203,8 +203,8 @@ def test_stage_d_provider_prompt_exposes_semantics_without_granting_safety_autho
     ]
 
 
-def test_stage_d_rejects_malformed_semantic_observation_shape() -> None:
-    snapshot = dict(ReplayStageDExecutor().snapshot("malformed-semantics"))
+def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None:
+    snapshot = dict(ReplayAdaptiveMissionExecutor().snapshot("malformed-semantics"))
     snapshot.pop("schema", None)
     snapshot.pop("snapshot_id", None)
     observations = dict(snapshot["observations"])
@@ -231,14 +231,14 @@ def test_stage_d_rejects_malformed_semantic_observation_shape() -> None:
         ("stop", 0.0),
     ),
 )
-def test_stage_d_accepts_all_supported_snapshot_bound_intents(
+def test_adaptive_mission_accepts_all_supported_snapshot_bound_intents(
     action: str, value: float
 ) -> None:
-    limits = StageDLimits()
-    executor = ReplayStageDExecutor(limits=limits)
+    limits = AdaptiveMissionLimits()
+    executor = ReplayAdaptiveMissionExecutor(limits=limits)
     snapshot = executor.snapshot("intent-validation")
 
-    intent = StageDIntent.validated(
+    intent = AdaptiveMissionIntent.validated(
         _raw(snapshot, action, value),
         revision=1,
         snapshot=snapshot,
@@ -261,14 +261,14 @@ def test_stage_d_accepts_all_supported_snapshot_bound_intents(
         ("turn_angle", 45.1, "rotation exceeds 45"),
     ),
 )
-def test_stage_d_rejects_intent_above_per_intent_envelope(
+def test_adaptive_mission_rejects_intent_above_per_intent_envelope(
     action: str, value: float, message: str
 ) -> None:
-    limits = StageDLimits()
-    snapshot = ReplayStageDExecutor(limits=limits).snapshot("bounded")
+    limits = AdaptiveMissionLimits()
+    snapshot = ReplayAdaptiveMissionExecutor(limits=limits).snapshot("bounded")
 
     with pytest.raises(MissionValidationError, match=message):
-        StageDIntent.validated(
+        AdaptiveMissionIntent.validated(
             _raw(snapshot, action, value),
             revision=1,
             snapshot=snapshot,
@@ -279,20 +279,20 @@ def test_stage_d_rejects_intent_above_per_intent_envelope(
         )
 
 
-def test_stage_d_replans_repeatedly_without_a_cumulative_travel_cap(tmp_path) -> None:
+def test_adaptive_mission_replans_repeatedly_without_a_cumulative_travel_cap(tmp_path) -> None:
     provider = SequenceProvider(
         [("move_distance", 0.25)] * 6
         + [("turn_angle", 45.0), ("observe", 0.0), ("stop", 0.0)]
     )
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "replanning.sqlite3",
-        source_sha="stage-d-source",
-        deployed_sha="stage-d-source",
+        source_sha="adaptive-mission-source",
+        deployed_sha="adaptive-mission-source",
         allow_loopback_test_approval=True,
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         assert proposed["mission"]["state"] == "PROPOSED"
         assert proposed["proposal"]["segments"] == []
         assert proposed["proposal"]["interpreted_objective"]
@@ -339,19 +339,19 @@ def test_stage_d_replans_repeatedly_without_a_cumulative_travel_cap(tmp_path) ->
     assert terminal["mission"]["result"]["limits"]["angular_speed_rad_s"] == 0.4
 
 
-def test_stage_d_replans_movement_from_fresh_recognition_evidence(tmp_path) -> None:
+def test_adaptive_mission_replans_movement_from_fresh_recognition_evidence(tmp_path) -> None:
     provider = RecognitionDrivenProvider()
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "recognition-driven.sqlite3",
-        source_sha="semantic-stage-d-source",
+        source_sha="semantic-adaptive-mission-source",
         allow_loopback_test_approval=True,
-        executor_factory=SemanticReplayStageDExecutor,
+        executor_factory=SemanticReplayAdaptiveMissionExecutor,
     )
     try:
         proposed = adapter.propose(
             "Find the shoe, approach it only through clear floor, then stop.",
-            "stage_d_explore",
+            "adaptive_mission_explore",
         )
         assert proposed["proposal"]["first_intent"]["action"] == "observe"
         adapter.approve(proposed["approval"]["required_phrase"])
@@ -386,16 +386,16 @@ def test_collision_supervisor_vetoes_llm_and_records_zero_supervised_motion(
 ) -> None:
     provider = SequenceProvider([("move_distance", 0.25), ("stop", 0.0)])
     supervisor = ReplayCollisionSupervisor(collision_on_intent=1)
-    executor = ReplayStageDExecutor(supervisor=supervisor)
-    adapter = StageDMissionAdapter(
+    executor = ReplayAdaptiveMissionExecutor(supervisor=supervisor)
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "collision.sqlite3",
-        source_sha="stage-d-collision",
+        source_sha="adaptive-mission-collision",
         allow_loopback_test_approval=True,
         executor_factory=lambda: executor,
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         adapter.approve(proposed["approval"]["required_phrase"])
         terminal = _wait_terminal(adapter)
     finally:
@@ -413,16 +413,16 @@ def test_collision_supervisor_vetoes_llm_and_records_zero_supervised_motion(
 
 def test_stale_updated_snapshot_stops_before_another_provider_call(tmp_path) -> None:
     provider = SequenceProvider([("move_distance", 0.10), ("stop", 0.0)])
-    executor = ReplayStageDExecutor(stale_after_intents=1)
-    adapter = StageDMissionAdapter(
+    executor = ReplayAdaptiveMissionExecutor(stale_after_intents=1)
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "stale.sqlite3",
-        source_sha="stage-d-stale",
+        source_sha="adaptive-mission-stale",
         allow_loopback_test_approval=True,
         executor_factory=lambda: executor,
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         adapter.approve(proposed["approval"]["required_phrase"])
         terminal = _wait_terminal(adapter)
     finally:
@@ -442,14 +442,14 @@ def test_provider_network_failure_is_terminal_and_never_restarts(tmp_path) -> No
         [("observe", 0.0)],
         fail_after_calls=1,
     )
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "provider.sqlite3",
-        source_sha="stage-d-provider-failure",
+        source_sha="adaptive-mission-provider-failure",
         allow_loopback_test_approval=True,
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         adapter.approve(proposed["approval"]["required_phrase"])
         terminal = _wait_terminal(adapter)
         later = dict(adapter.snapshot())
@@ -474,14 +474,14 @@ class TimeoutProvider(SequenceProvider):
 
 def test_executor_timeout_stops_loop_with_supervised_zero(tmp_path) -> None:
     provider = TimeoutProvider([("move_distance", 0.25)])
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "timeout.sqlite3",
-        source_sha="stage-d-timeout",
+        source_sha="adaptive-mission-timeout",
         allow_loopback_test_approval=True,
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         adapter.approve(proposed["approval"]["required_phrase"])
         terminal = _wait_terminal(adapter)
     finally:
@@ -503,17 +503,17 @@ def test_mission_lease_expiry_stops_while_provider_is_still_in_flight(
         [("observe", 0.0), ("stop", 0.0)],
         delay_after_first_s=0.4,
     )
-    limits = StageDLimits(mission_lease_s=0.08)
-    adapter = StageDMissionAdapter(
+    limits = AdaptiveMissionLimits(mission_lease_s=0.08)
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "mission-lease.sqlite3",
-        source_sha="stage-d-mission-lease",
+        source_sha="adaptive-mission-mission-lease",
         allow_loopback_test_approval=True,
         limits=limits,
-        executor_factory=lambda: ReplayStageDExecutor(limits=limits),
+        executor_factory=lambda: ReplayAdaptiveMissionExecutor(limits=limits),
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         started = time.monotonic()
         adapter.approve(proposed["approval"]["required_phrase"])
         terminal = _wait_terminal(adapter)
@@ -534,21 +534,21 @@ def test_mission_lease_expiry_stops_while_provider_is_still_in_flight(
         ("estop", "ESTOPPED", "estop_latched"),
     ),
 )
-def test_stop_and_estop_end_stage_d_during_provider_call(
+def test_stop_and_estop_end_adaptive_mission_during_provider_call(
     tmp_path, method: str, state: str, reason: str
 ) -> None:
     provider = SequenceProvider(
         [("observe", 0.0), ("stop", 0.0)],
         delay_after_first_s=0.4,
     )
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / f"{method}.sqlite3",
-        source_sha=f"stage-d-{method}",
+        source_sha=f"adaptive-mission-{method}",
         allow_loopback_test_approval=True,
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         adapter.approve(proposed["approval"]["required_phrase"])
         assert provider.entered_delayed_call.wait(timeout=1.0)
         assert adapter._controller is not None
@@ -567,14 +567,14 @@ def test_cancellation_during_provider_call_is_immediate_and_terminal(tmp_path) -
         [("observe", 0.0), ("stop", 0.0)],
         delay_after_first_s=0.4,
     )
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "cancel.sqlite3",
-        source_sha="stage-d-cancel",
+        source_sha="adaptive-mission-cancel",
         allow_loopback_test_approval=True,
     )
     try:
-        proposed = adapter.propose(PROMPT, "stage_d_explore")
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
         adapter.approve(proposed["approval"]["required_phrase"])
         assert provider.entered_delayed_call.wait(timeout=1.0)
         started = time.monotonic()
@@ -589,14 +589,14 @@ def test_cancellation_during_provider_call_is_immediate_and_terminal(tmp_path) -
     assert cancelled["mission"]["result"]["auto_resume"] is False
 
 
-def test_restart_marks_approved_stage_d_mission_recovery_required(tmp_path) -> None:
+def test_restart_marks_approved_adaptive_mission_recovery_required(tmp_path) -> None:
     database = tmp_path / "restart.sqlite3"
-    limits = StageDLimits()
-    executor = ReplayStageDExecutor(limits=limits)
-    mission_id = "stage-d-restart"
+    limits = AdaptiveMissionLimits()
+    executor = ReplayAdaptiveMissionExecutor(limits=limits)
+    mission_id = "adaptive-mission-restart"
     snapshot = executor.snapshot(mission_id)
     raw = _raw(snapshot, "observe")
-    intent = StageDIntent.validated(
+    intent = AdaptiveMissionIntent.validated(
         raw,
         revision=1,
         snapshot=snapshot,
@@ -605,7 +605,7 @@ def test_restart_marks_approved_stage_d_mission_recovery_required(tmp_path) -> N
         model_id="test",
         limits=limits,
     )
-    proposal = StageDApprovalEnvelope(
+    proposal = AdaptiveMissionApprovalEnvelope(
         mission_id=mission_id,
         lease_id="restart-lease",
         prompt=PROMPT,
@@ -659,20 +659,20 @@ def test_restart_marks_approved_stage_d_mission_recovery_required(tmp_path) -> N
     assert "execution is not resumed" in recovered["terminal_reason"]
 
 
-def test_browser_bundle_exposes_stage_d_objective_lease_and_supervision() -> None:
+def test_browser_bundle_exposes_adaptive_mission_objective_lease_and_supervision() -> None:
     from sphero_rvr_driver.mission_web import build_mission_web_bundle
 
     html = build_mission_web_bundle()["index_html"]
 
-    assert "STAGE D CLOSED LOOP" in html
-    assert "Interpreted objective" in html
-    assert "First proposed intent" in html
+    assert "ADAPTIVE MISSION CLOSED LOOP" in html
+    assert "Mission log" in html
+    assert "LLM ${proposal.decision" in html
+    assert "First intent" in html
     assert "Approve 15-minute lease" in html
     assert "requested" in html
     assert "supervised" in html
-    assert "Closed-loop LLM revisions" in html
-    assert "Semantic perception" in html
-    assert "Objects / known / unknown faces" in html
+    assert "Revision ${revision.revision}" in html
+    assert "Fresh world snapshot &amp; detections" in html
 
 
 def _post_json(
@@ -688,15 +688,15 @@ def _post_json(
         return json.loads(response.read())
 
 
-def test_stage_d_approval_requires_server_authenticated_identity(tmp_path) -> None:
+def test_adaptive_mission_approval_requires_server_authenticated_identity(tmp_path) -> None:
     provider = SequenceProvider([("stop", 0.0)])
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "secure-approval.sqlite3",
-        source_sha="stage-d-secure-approval",
+        source_sha="adaptive-mission-secure-approval",
         operator="untrusted-loopback-label",
     )
-    proposed = adapter.propose(PROMPT, "stage_d_explore")
+    proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
     with pytest.raises(MissionWebError, match="server-authenticated Tailscale"):
         adapter.approve(proposed["approval"]["required_phrase"])
 
@@ -727,17 +727,17 @@ def test_stage_d_approval_requires_server_authenticated_identity(tmp_path) -> No
     assert not thread.is_alive()
 
 
-def test_stage_d_tailscale_identity_is_bound_to_single_lease_approval(
+def test_adaptive_mission_tailscale_identity_is_bound_to_single_lease_approval(
     tmp_path,
 ) -> None:
     provider = SequenceProvider(
         [("move_distance", 0.10), ("observe", 0.0), ("stop", 0.0)]
     )
-    adapter = StageDMissionAdapter(
+    adapter = AdaptiveMissionAdapter(
         provider,
         database=tmp_path / "tailscale-approval.sqlite3",
-        source_sha="stage-d-auth-source",
-        deployed_sha="stage-d-deployed",
+        source_sha="adaptive-mission-auth-source",
+        deployed_sha="adaptive-mission-deployed",
         operator="untrusted-fallback",
     )
     allowed_origin = "https://sphero-pi-2.example.ts.net"
@@ -759,7 +759,7 @@ def test_stage_d_tailscale_identity_is_bound_to_single_lease_approval(
     try:
         proposed = _post_json(
             f"{base}/api/web/mission/propose",
-            {"prompt": PROMPT, "scenario": "stage_d_explore"},
+            {"prompt": PROMPT, "scenario": "adaptive_mission_explore"},
             headers,
         )
         assert proposed["approval"]["authenticated_operator"] == ""

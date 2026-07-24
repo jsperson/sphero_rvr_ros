@@ -1,15 +1,15 @@
-# Stage D broad movement authority
+# Adaptive mission broad movement authority
 
 ## Status and intent
 
-Stage D is the first browser-initiated, adaptive physical-movement stage. Its
-software path is implemented behind independent default-off Stage D selection
+Adaptive mission is the first browser-initiated, adaptive physical-movement stage. Its
+software path is implemented behind independent default-off Adaptive mission selection
 and exact-SHA live-execution gates. This document is not authorization to enable
 either gate. The deployed Pi remains nonphysical with
-`RVR_STAGE_D_ENABLED=false` and `RVR_LIVE_EXECUTION_ENABLED=false` until the
+`RVR_ADAPTIVE_MISSION_ENABLED=false` and `RVR_LIVE_EXECUTION_ENABLED=false` until the
 attended physical acceptance sequence passes.
 
-Stage D deliberately gives the supervisory planner broad movement authority
+Adaptive mission deliberately gives the supervisory planner broad movement authority
 inside one operator-approved mission:
 
 - choose any reachable direction, heading, waypoint, or region consistent with
@@ -35,7 +35,7 @@ contact an obstacle. The runtime does not try to classify an obstacle as hard
 or soft; any detected obstruction is protected space.
 
 Lidar collision avoidance reduces collision risk but does not guarantee that
-contact is impossible. Stage D does not have cliff or drop-off sensing and does
+contact is impossible. Adaptive mission does not have cliff or drop-off sensing and does
 not claim to detect edges. Its operating environment is assumed to provide a
 continuous, level driving surface. That is an explicit environmental
 assumption, not a runtime safety condition or a reason to fabricate a clear
@@ -62,7 +62,7 @@ ownership.
 
 ## Approved-mission envelope
 
-One authenticated approval binds the complete Stage D envelope:
+One authenticated approval binds the complete Adaptive mission envelope:
 
 - exact prompt and its visible plain-language interpretation;
 - source and deployed SHAs;
@@ -79,13 +79,13 @@ A changed prompt, increased speed, changed safety policy, changed execution
 mode, expired mission lease, process restart, or different deployed SHA requires
 a new proposal and approval. Restart never resumes motion automatically.
 
-The initial Stage D mission lease is 15 minutes. It may end earlier and may be
+The initial Adaptive mission mission lease is 15 minutes. It may end earlier and may be
 renewed only with a new approval. The whole-mission lease bounds unattended
 software state; it is not a cumulative-distance limit.
 
 ## Motion envelope
 
-The initial Stage D caps match the currently installed and tested supervisor and
+The initial Adaptive mission caps match the currently installed and tested supervisor and
 driver ceilings:
 
 | Limit | Initial value | Authority |
@@ -187,7 +187,7 @@ The planner may not:
 
 ## Browser contract
 
-“Generate proposal” must produce a visibly useful Stage D proposal, not merely
+“Generate proposal” must produce a visibly useful Adaptive mission proposal, not merely
 persist an opaque contract. Before approval, the browser shows:
 
 - the exact prompt and its interpreted objective;
@@ -206,7 +206,7 @@ from a submitted prompt alone.
 
 ## Acceptance sequence
 
-Stage D implementation proceeds without physical authority first:
+Adaptive mission implementation proceeds without physical authority first:
 
 1. Replay and simulation prove arbitrary multi-intent traversal, adaptive
    replanning, one-approval envelope binding, and terminal artifact generation.
@@ -221,11 +221,11 @@ Stage D implementation proceeds without physical authority first:
    configuration.
 6. Existing measured 10 cm and 45 degree stages satisfy the capability
    thresholds with settled odometry and encoder evidence; composed behavior is
-   then proven by the real repeatedly-replanned Stage D mission.
+   then proven by the real repeatedly-replanned Adaptive mission mission.
 7. An attended collision exercise with a non-damaging visible obstacle proves
    slow, stop, manual reset, and no contact at the installed caps.
 8. Only then may an attended, closed-room exploration mission use the broad
-   Stage D envelope.
+   Adaptive mission envelope.
 
 The exact-SHA attended capability slice has now demonstrated real repeated
 OAuth replanning through observation, turn, translation, and model-selected
@@ -235,12 +235,12 @@ automatic resume. These results do not waive step 7: general physical use
 remains blocked until the attended non-damaging obstacle exercise records
 slow/stop/manual-reset/no-contact evidence.
 
-No step in this document enables Stage D or authorizes an unattended physical
+No step in this document enables Adaptive mission or authorizes an unattended physical
 run.
 
 ## Functional implementation
 
-`stage_d_controller.md` documents the replay and production controller boundary.
+`adaptive_mission_controller.md` documents the replay and production controller boundary.
 The live implementation consumes authoritative receipt-time scan/TF/odom and
 STOP/ESTOP state, sends one bounded intent through the reviewed live-route seam,
 and can add fresh camera detections plus localized semantic object/face tracks
@@ -253,5 +253,5 @@ Codex/ChatGPT OAuth planner again. Approval binds the exact deployment and the
 whole 15-minute envelope once; the browser never gains motion authority.
 
 The implementation remains disabled in packaged configuration. Only the
-attended hardware steps above remain before a physical Stage D mission can be
+attended hardware steps above remain before a physical Adaptive mission mission can be
 accepted.

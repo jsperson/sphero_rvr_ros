@@ -730,7 +730,7 @@ class MissionService:
             proposal_schema = str(payload.get("schema", ""))
             if proposal_schema not in {
                 "sphero_rvr.rolling_replay_proposal.v1",
-                "sphero_rvr.stage_d_proposal.v1",
+                "sphero_rvr.adaptive_mission_proposal.v1",
             }:
                 raise MissionValidationError("adaptive replay proposal schema is invalid")
             if str(payload.get("prompt", "")).strip() != row["prompt"]:
@@ -768,60 +768,60 @@ class MissionService:
                     mission_id,
                     row["session_id"],
                     (
-                        "stage_d_proposal"
-                        if proposal_schema == "sphero_rvr.stage_d_proposal.v1"
+                        "adaptive_mission_proposal"
+                        if proposal_schema == "sphero_rvr.adaptive_mission_proposal.v1"
                         else "rolling_replay_proposal"
                     ),
                     {"proposal": payload, "motion_authority": False},
                 )
             return self.prompt_status(mission_id)
 
-    def record_stage_d_proposal(
+    def record_adaptive_mission_proposal(
         self,
         mission_id: str,
         proposal: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Persist a Stage D proposal in replay or reviewed live mode."""
+        """Persist an adaptive mission proposal in replay or reviewed live mode."""
 
         payload = json.loads(_json_dump(dict(proposal)))
         with self._lock:
             row = self._prompt_row(mission_id)
             if row["status"] != "planning":
                 raise MissionValidationError(
-                    "prompt mission is not awaiting a Stage D proposal"
+                    "prompt mission is not awaiting an adaptive mission proposal"
                 )
-            if payload.get("schema") != "sphero_rvr.stage_d_proposal.v1":
-                raise MissionValidationError("Stage D proposal schema is invalid")
+            if payload.get("schema") != "sphero_rvr.adaptive_mission_proposal.v1":
+                raise MissionValidationError("Adaptive mission proposal schema is invalid")
             if str(payload.get("prompt", "")).strip() != row["prompt"]:
                 raise MissionValidationError(
-                    "Stage D proposal prompt does not match the persisted mission"
+                    "Adaptive mission proposal prompt does not match the persisted mission"
                 )
             if str(payload.get("source_sha", "")).strip() != self.source_sha:
                 raise MissionValidationError(
-                    "Stage D proposal source SHA does not match the service"
+                    "Adaptive mission proposal source SHA does not match the service"
                 )
             if str(payload.get("deployed_sha", "")).strip() != self.deployed_sha:
                 raise MissionValidationError(
-                    "Stage D proposal deployed SHA does not match the service"
+                    "Adaptive mission proposal deployed SHA does not match the service"
                 )
             if payload.get("segments") not in ([], ()):
                 raise MissionValidationError(
-                    "Stage D proposal cannot contain a fixed primitive route"
+                    "Adaptive mission proposal cannot contain a fixed primitive route"
                 )
             if payload.get("safety_policy") != "lidar_collision_stop.v1":
                 raise MissionValidationError(
-                    "Stage D proposal safety policy is not the installed policy"
+                    "Adaptive mission proposal safety policy is not the installed policy"
                 )
-            from .stage_d_controller import StageDLimits
+            from .adaptive_mission_controller import AdaptiveMissionLimits
 
-            if payload.get("limits") != StageDLimits().to_json_dict():
+            if payload.get("limits") != AdaptiveMissionLimits().to_json_dict():
                 raise MissionValidationError(
-                    "Stage D proposal limits do not match the installed authority profile"
+                    "Adaptive mission proposal limits do not match the installed authority profile"
                 )
             contract = payload.get("contract")
             if not isinstance(contract, Mapping):
                 raise MissionValidationError(
-                    "Stage D proposal contract is missing"
+                    "Adaptive mission proposal contract is missing"
                 )
             expected_physical = bool(
                 self.mode == "live" and self.live_execution_enabled
@@ -837,13 +837,13 @@ class MissionService:
                 or contract.get("drop_off_detection") is not False
             ):
                 raise MissionValidationError(
-                    "Stage D proposal contract does not match service authority"
+                    "Adaptive mission proposal contract does not match service authority"
                 )
             if self.mode == "live" and payload.get("executor_mode") != (
                 "physical-supervised-live-route"
             ):
                 raise MissionValidationError(
-                    "live Stage D requires the supervised physical executor mode"
+                    "live Adaptive mission requires the supervised physical executor mode"
                 )
             digest = str(payload.get("proposal_digest", "")).strip().lower()
             body = dict(payload)
@@ -852,7 +852,7 @@ class MissionService:
 
             if digest != canonical_digest(body):
                 raise MissionValidationError(
-                    "Stage D proposal digest does not match its envelope"
+                    "Adaptive mission proposal digest does not match its envelope"
                 )
             with self._connection:
                 self._connection.execute(
@@ -864,7 +864,7 @@ class MissionService:
                 self._append_event(
                     mission_id,
                     row["session_id"],
-                    "stage_d_proposal",
+                    "adaptive_mission_proposal",
                     {
                         "proposal_digest": digest,
                         "lease_id": payload.get("lease_id"),
@@ -874,7 +874,7 @@ class MissionService:
                 )
             return self.prompt_status(mission_id)
 
-    def approve_stage_d_mission(
+    def approve_adaptive_mission(
         self,
         mission_id: str,
         *,
@@ -883,33 +883,33 @@ class MissionService:
         authentication_source: str,
         expires_at_s: float,
     ) -> dict[str, Any]:
-        """Bind one authenticated live approval to the persisted Stage D envelope."""
+        """Bind one authenticated live approval to the persisted Adaptive mission envelope."""
 
         with self._lock:
             if self.mode != "live" or not self.live_execution_enabled:
                 raise MissionValidationError(
-                    "physical Stage D execution is disabled by reviewed service configuration"
+                    "physical Adaptive mission execution is disabled by reviewed service configuration"
                 )
             row = self._prompt_row(mission_id)
             if row["status"] != "proposed":
                 raise MissionValidationError(
-                    "only a proposed Stage D mission can be approved"
+                    "only a proposed adaptive mission can be approved"
                 )
             proposal = _json_load(row["proposal_json"], {})
-            if proposal.get("schema") != "sphero_rvr.stage_d_proposal.v1":
+            if proposal.get("schema") != "sphero_rvr.adaptive_mission_proposal.v1":
                 raise MissionValidationError(
-                    "persisted mission is not a Stage D proposal"
+                    "persisted mission is not an adaptive mission proposal"
                 )
             approved_by = str(operator).strip()
             identity_source = str(authentication_source).strip()
             if not approved_by or identity_source != "tailscale-serve":
                 raise MissionValidationError(
-                    "physical Stage D requires a Tailscale-authenticated operator"
+                    "physical Adaptive mission requires a Tailscale-authenticated operator"
                 )
             digest = str(row["proposal_digest"])
-            if str(supplied_approval).strip() != f"APPROVE STAGE D {digest}":
+            if str(supplied_approval).strip() != f"APPROVE ADAPTIVE MISSION {digest}":
                 raise MissionValidationError(
-                    "Stage D approval does not match the persisted proposal"
+                    "Adaptive mission approval does not match the persisted proposal"
                 )
             now = self._now()
             requested_expires = float(expires_at_s)
@@ -926,7 +926,7 @@ class MissionService:
                 or requested_expires > now + lease_s
             ):
                 raise MissionValidationError(
-                    "Stage D approval must request the complete 15-minute lease"
+                    "Adaptive mission approval must request the complete 15-minute lease"
                 )
             expires = now + lease_s
             approval = {
@@ -950,38 +950,38 @@ class MissionService:
                 self._append_event(
                     mission_id,
                     row["session_id"],
-                    "stage_d_approval",
+                    "adaptive_mission_approval",
                     approval,
                 )
             return self.prompt_status(mission_id)
 
-    def record_stage_d_checkpoint(
+    def record_adaptive_mission_checkpoint(
         self,
         mission_id: str,
         *,
         kind: str,
         checkpoint: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Persist the latest live Stage D projection without granting authority."""
+        """Persist the latest live Adaptive mission projection without granting authority."""
 
         payload = json.loads(_json_dump(dict(checkpoint)))
         with self._lock:
             row = self._prompt_row(mission_id)
             if row["status"] not in {"running", "cancel_requested"}:
                 raise MissionValidationError(
-                    "Stage D checkpoint requires a running mission"
+                    "Adaptive mission checkpoint requires a running mission"
                 )
             if str(payload.get("mission_id", "")) != str(mission_id):
                 raise MissionValidationError(
-                    "Stage D checkpoint mission identity changed"
+                    "Adaptive mission checkpoint mission identity changed"
                 )
-            if payload.get("schema") != "sphero_rvr.stage_d_result.v1":
+            if payload.get("schema") != "sphero_rvr.adaptive_mission_result.v1":
                 raise MissionValidationError(
-                    "Stage D checkpoint schema is invalid"
+                    "Adaptive mission checkpoint schema is invalid"
                 )
             if payload.get("motion_authority") is not False:
                 raise MissionValidationError(
-                    "Stage D checkpoint cannot claim browser motion authority"
+                    "Adaptive mission checkpoint cannot claim browser motion authority"
                 )
             with self._connection:
                 self._connection.execute(
@@ -992,7 +992,7 @@ class MissionService:
                 self._append_event(
                     mission_id,
                     row["session_id"],
-                    "stage_d_checkpoint",
+                    "adaptive_mission_checkpoint",
                     {
                         "kind": str(kind),
                         "status": payload.get("status"),
@@ -1543,7 +1543,7 @@ class MissionService:
                 and proposal.get("schema")
                 in {
                     "sphero_rvr.stationary_perception_proposal.v1",
-                    "sphero_rvr.stage_d_proposal.v1",
+                    "sphero_rvr.adaptive_mission_proposal.v1",
                 }
             ):
                 compact_events = []

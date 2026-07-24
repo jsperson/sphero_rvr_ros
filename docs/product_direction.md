@@ -48,19 +48,19 @@ Shoe mapping is the first acceptance slice, not a hard-coded product boundary. O
 The repository now integrates the real Pi-local ChatGPT OAuth planner, typed
 `move_distance`, `turn_angle`, `observe`, and `stop` intents, durable mission
 lifecycle, exact digest-bound approval records, truthful live status, a
-map-driven browser adapter, and the production Stage D executor seam. The
-packaged Pi configuration remains intentionally proposal-only: both Stage D
+map-driven browser adapter, and the production Adaptive mission executor seam. The
+packaged Pi configuration remains intentionally proposal-only: both Adaptive mission
 selection and physical execution default off, and live views never substitute
 replay fixtures for missing evidence.
 
-Stage D now implements repeated typed intent selection through the real OAuth
+Adaptive mission now implements repeated typed intent selection through the real OAuth
 provider and either the replay executor or the exact-SHA-gated live-route
 executor. The live adapter persists each snapshot/revision, keeps collision
 supervision authoritative, and never resumes after a terminal event or restart.
 An attended run has proven real `observe → turn → move → stop` replanning and a
 separate stale-evidence veto on the rover.
 
-The Stage C/Stage D join is now implemented in code: the moving planner snapshot
+The stationary-perception/adaptive-mission join is implemented in code: the moving planner snapshot
 can carry fresh camera detections, localized semantic tracks, enrolled face
 identities, unknown faces, and perception provenance. A dedicated launch
 composes camera, lidar, moving SLAM, semantic tracking, live-route execution,
@@ -68,7 +68,7 @@ and collision supervision while defaulting the motor graph off. Deterministic
 tests prove that fresh recognition can change subsequent movement decisions and
 that stale or unlocalized semantic tracks are withheld. Physical acceptance
 still requires the attended collision and moving-perception gates in
-`docs/stage_d_controller.md` and `docs/stage_d_authority.md`.
+`docs/adaptive_mission_controller.md` and `docs/adaptive_mission_authority.md`.
 
 ## Delivery discipline
 

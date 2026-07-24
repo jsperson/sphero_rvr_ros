@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real ChatGPT-OAuth Stage D adaptive movement replay acceptance."""
+"""Real ChatGPT-OAuth Adaptive mission adaptive movement replay acceptance."""
 
 from __future__ import annotations
 
@@ -9,16 +9,16 @@ import subprocess
 import tempfile
 import time
 
-from sphero_rvr_driver.mission_web import StageDMissionAdapter
-from sphero_rvr_driver.stage_d_controller import (
-    CodexOAuthStageDIntentProvider,
+from sphero_rvr_driver.mission_web import AdaptiveMissionAdapter
+from sphero_rvr_driver.adaptive_mission_controller import (
+    CodexOAuthAdaptiveMissionIntentProvider,
 )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a real OAuth planner through repeated Stage D movement "
+            "Run a real OAuth planner through repeated Adaptive mission movement "
             "revisions using the replay executor"
         )
     )
@@ -37,7 +37,7 @@ def main() -> int:
         )
         .stdout.strip()
     )
-    provider = CodexOAuthStageDIntentProvider(
+    provider = CodexOAuthAdaptiveMissionIntentProvider(
         model=args.model,
         reasoning_effort=args.reasoning_effort,
         timeout_s=args.provider_timeout,
@@ -49,8 +49,8 @@ def main() -> int:
         "observation. Choose the order and magnitudes from current clearances "
         "and progress. Once all three kinds of evidence are present, stop."
     )
-    with tempfile.TemporaryDirectory(prefix="rvr-stage-d-oauth-replay-") as temp:
-        adapter = StageDMissionAdapter(
+    with tempfile.TemporaryDirectory(prefix="rvr-adaptive-mission-oauth-replay-") as temp:
+        adapter = AdaptiveMissionAdapter(
             provider,
             database=f"{temp}/mission.sqlite3",
             source_sha=source_sha,
@@ -59,10 +59,10 @@ def main() -> int:
             allow_loopback_test_approval=True,
         )
         try:
-            proposed = adapter.propose(prompt, "stage_d_explore")
+            proposed = adapter.propose(prompt, "adaptive_mission_explore")
             if proposed["mission"]["state"] != "PROPOSED":
                 raise RuntimeError(
-                    "real provider did not produce a Stage D proposal: "
+                    "real provider did not produce a adaptive mission proposal: "
                     f"{proposed['mission']}"
                 )
             adapter.approve(proposed["approval"]["required_phrase"])
@@ -74,7 +74,7 @@ def main() -> int:
                 time.sleep(0.05)
             else:
                 adapter.cancel()
-                raise RuntimeError("Stage D OAuth replay did not terminate in time")
+                raise RuntimeError("Adaptive mission OAuth replay did not terminate in time")
         finally:
             adapter.close()
 
@@ -83,7 +83,7 @@ def main() -> int:
     final_snapshot = result.get("final_snapshot", {})
     progress = final_snapshot.get("progress", {})
     evidence = {
-        "schema": "sphero_rvr.stage_d_oauth_replay.v1",
+        "schema": "sphero_rvr.adaptive_mission_oauth_replay.v1",
         "status": terminal["mission"]["state"],
         "terminal_reason": terminal["mission"]["terminal_reason"],
         "provider": result.get("provider", {}),

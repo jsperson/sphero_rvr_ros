@@ -2,8 +2,8 @@
 
 The node subscribes to sensors and publishes JSON evidence consumed by the
 mission-service cache.  It has no Twist type, rover SDK import, serial access,
-route publisher, or physical execution surface.  Stage C supplies a static
-odom transform and uses the default stationary session; Stage D supplies real
+route publisher, or physical execution surface.  Stationary perception supplies a static
+odom transform and uses the default stationary session; Adaptive mission supplies real
 wheel odometry and explicitly selects a moving session.
 """
 
@@ -587,7 +587,7 @@ def main(args=None):
                         (
                             "Live slam_toolbox map->base_link pose with a "
                             "truthful static odom->base_link transform for "
-                            "this immobile Stage C session."
+                            "this immobile Stationary perception session."
                         )
                         if self._stationary_session
                         else (

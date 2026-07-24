@@ -27,10 +27,10 @@ classifier change, not straight-distance acceptance. A newly built exact SHA
 still requires a separately authorized attended 10 cm revalidation before the
 turn stage.
 
-## July 24 Stage D stopping-horizon finding
+## July 24 Adaptive mission stopping-horizon finding
 
-The first real-OAuth physical Stage D intent at
-`a7b9a3771db9c9f332ec348ab54aeac4455ac8bf` used the installed Stage D
+The first real-OAuth physical Adaptive mission intent at
+`a7b9a3771db9c9f332ec348ab54aeac4455ac8bf` used the installed Adaptive mission
 0.10 m/s ceiling, which maps to effective duty 64. That resolved the duty-51
 stall, but the deterministic terminal gate correctly rejected the run as
 `target_error`: a 0.10 m intent settled at 0.138780 m. The tracks remained
@@ -52,7 +52,7 @@ A replay regression projects the observed post-zero coast from the earlier
 release point and requires a settled 0.1134 m terminal measurement.
 
 This is a controller correction, not acceptance evidence. A rebuilt exact SHA
-still requires a fresh attended 10 cm Stage D run before physical turn or room
+still requires a fresh attended 10 cm Adaptive mission run before physical turn or room
 exploration.
 
 ## Provisional effective turn geometry
@@ -74,7 +74,7 @@ Scott approved raising the turn-primitive-only ceiling to
 The 2-degree control tolerance and, at the time of these trials, 5-degree
 terminal acceptance gate were unchanged.
 
-Two exact-SHA Stage D traces then bounded the release behavior at that command.
+Two exact-SHA Adaptive mission traces then bounded the release behavior at that command.
 Without predictive release, a `0.35 rad/s` request reached 43.256 degrees before
 zero and settled at 60.326 degrees. A first measured-rate correction reused the
 straight-run `0.25 s` horizon; it released at 18.757 degrees and settled at
@@ -123,7 +123,7 @@ overshoot or any terminal safety/failure result, and it does not create a new
 LLM intent or approval. Correction count is included in the terminal manifest.
 After the attended run settled at 39.568 degrees for a requested 45-degree
 turn, the product decision was to prioritize closed-loop exploration capability
-over tighter turn precision. Production Stage D therefore accepts a stationary
+over tighter turn precision. Production Adaptive mission therefore accepts a stationary
 turn within 10 degrees. The measured 5.432-degree error is inside that
 capability threshold. Collision, freshness, STOP/ESTOP, speed, intent duration,
 and lease gates are unchanged; this tolerance is not a safety boundary.

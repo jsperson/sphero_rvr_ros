@@ -64,7 +64,7 @@ EXPECTED_DATA_FILES = {
         "docs/perception_navigation.md",
         "docs/rolling_replay.md",
         "docs/stationary_perception.md",
-        "docs/stage_d_authority.md",
+        "docs/adaptive_mission_authority.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
@@ -78,7 +78,7 @@ EXPECTED_DATA_FILES = {
     "share/sphero_rvr_driver/systemd/user": {
         "systemd/user/rvr-mission-service.service",
         "systemd/user/rvr-mission-web.service",
-        "systemd/user/rvr-stationary-perception.service",
+        "systemd/user/rvr-telemetry.service",
     },
 }
 
@@ -198,7 +198,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/rvr_mcp_server.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
-        "docs/stage_d_authority.md",
+        "docs/adaptive_mission_authority.md",
         "docs/slam_replay.md",
         "docs/shoe_detector_replay.md",
         "docs/shoe_map_projection.md",
@@ -215,8 +215,8 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         assert token in readme
 
 
-def test_stage_d_contract_grants_broad_route_authority_without_motor_authority() -> None:
-    contract = (REPO_ROOT / "docs" / "stage_d_authority.md").read_text()
+def test_adaptive_mission_contract_grants_broad_route_authority_without_motor_authority() -> None:
+    contract = (REPO_ROOT / "docs" / "adaptive_mission_authority.md").read_text()
 
     for token in [
         "broad movement authority",
@@ -232,7 +232,7 @@ def test_stage_d_contract_grants_broad_route_authority_without_motor_authority()
         "does not have cliff or drop-off sensing",
         "exactly one `/cmd_vel_motor` publisher",
         "cannot be disabled in the operator launch",
-        "No step in this document enables Stage D",
+        "No step in this document enables Adaptive mission",
     ]:
         assert token in contract
 

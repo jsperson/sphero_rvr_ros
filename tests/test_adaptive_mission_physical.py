@@ -10,11 +10,11 @@ import pytest
 from sphero_rvr_driver.live_mission_service import LiveStateCache
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.prompt_drive_ros import _supervision_sample
-from sphero_rvr_driver.stage_d_controller import StageDIntent, StageDLimits
-from sphero_rvr_driver.stage_d_physical import PhysicalStageDExecutor
+from sphero_rvr_driver.adaptive_mission_controller import AdaptiveMissionIntent, AdaptiveMissionLimits
+from sphero_rvr_driver.adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
 
 
-SHA = "stage-d-reviewed-sha"
+SHA = "adaptive-mission-reviewed-sha"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -54,13 +54,13 @@ def _cache(now: float = 100.0) -> LiveStateCache:
 
 
 def _intent(
-    executor: PhysicalStageDExecutor,
+    executor: PhysicalAdaptiveMissionExecutor,
     action: str,
     value: float,
     *,
     revision: int = 1,
-) -> StageDIntent:
-    snapshot = executor.snapshot("physical-stage-d")
+) -> AdaptiveMissionIntent:
+    snapshot = executor.snapshot("physical-adaptive-mission")
     raw = {
         "snapshot_id": snapshot["snapshot_id"],
         "action": action,
@@ -72,14 +72,14 @@ def _intent(
         "lease_s": 5.0,
         "timeout_s": 5.0,
     }
-    return StageDIntent.validated(
+    return AdaptiveMissionIntent.validated(
         raw,
         revision=revision,
         snapshot=snapshot,
         issued_at_s=100.0,
         provider_id="test-provider",
         model_id="test-model",
-        limits=StageDLimits(),
+        limits=AdaptiveMissionLimits(),
     )
 
 
@@ -132,8 +132,8 @@ class FakeRouteTransport:
         return True
 
 
-def test_physical_stage_d_is_observation_only_when_gate_is_disabled() -> None:
-    executor = PhysicalStageDExecutor(
+def test_physical_adaptive_mission_is_observation_only_when_gate_is_disabled() -> None:
+    executor = PhysicalAdaptiveMissionExecutor(
         _cache(),
         source_sha=SHA,
         deployed_sha=SHA,
@@ -141,8 +141,8 @@ def test_physical_stage_d_is_observation_only_when_gate_is_disabled() -> None:
         now=lambda: 100.0,
     )
     try:
-        executor.reset("disabled-stage-d")
-        snapshot = executor.snapshot("disabled-stage-d")
+        executor.reset("disabled-adaptive-mission")
+        snapshot = executor.snapshot("disabled-adaptive-mission")
     finally:
         executor.close()
 
@@ -154,7 +154,7 @@ def test_physical_stage_d_is_observation_only_when_gate_is_disabled() -> None:
     assert snapshot["evidence"]["drop_off_detection_available"] is False
 
 
-def test_physical_stage_d_fuses_only_fresh_localized_semantic_evidence() -> None:
+def test_physical_adaptive_mission_fuses_only_fresh_localized_semantic_evidence() -> None:
     cache = _cache()
     cache.update(
         "camera",
@@ -233,7 +233,7 @@ def test_physical_stage_d_fuses_only_fresh_localized_semantic_evidence() -> None
         },
         received_at_s=100.0,
     )
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         cache,
         source_sha=SHA,
         deployed_sha=SHA,
@@ -241,7 +241,7 @@ def test_physical_stage_d_fuses_only_fresh_localized_semantic_evidence() -> None
         now=lambda: 100.0,
     )
     try:
-        snapshot = executor.snapshot("semantic-stage-d")
+        snapshot = executor.snapshot("semantic-adaptive-mission")
     finally:
         executor.close()
 
@@ -270,7 +270,7 @@ def test_physical_stage_d_fuses_only_fresh_localized_semantic_evidence() -> None
     assert observations["camera_detections"][0]["track_id"] == "shoe-detection"
 
 
-def test_physical_stage_d_withholds_stale_semantic_tracks_from_llm() -> None:
+def test_physical_adaptive_mission_withholds_stale_semantic_tracks_from_llm() -> None:
     cache = _cache()
     cache.update(
         "camera",
@@ -297,7 +297,7 @@ def test_physical_stage_d_withholds_stale_semantic_tracks_from_llm() -> None:
         },
         received_at_s=98.8,
     )
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         cache,
         source_sha=SHA,
         deployed_sha=SHA,
@@ -305,7 +305,7 @@ def test_physical_stage_d_withholds_stale_semantic_tracks_from_llm() -> None:
         now=lambda: 100.0,
     )
     try:
-        observations = executor.snapshot("stale-semantic-stage-d")[
+        observations = executor.snapshot("stale-semantic-adaptive-mission")[
             "observations"
         ]
     finally:
@@ -318,9 +318,9 @@ def test_physical_stage_d_withholds_stale_semantic_tracks_from_llm() -> None:
     assert observations["recognized_faces"] == []
 
 
-def test_stage_d_perception_launch_fuses_sensors_without_bypassing_supervisor() -> None:
+def test_adaptive_mission_perception_launch_fuses_sensors_without_bypassing_supervisor() -> None:
     launch_text = (
-        REPO_ROOT / "launch/stage_d_perception.launch.py"
+        REPO_ROOT / "launch/adaptive_mission_perception.launch.py"
     ).read_text()
     mapping_text = (REPO_ROOT / "launch/mapping.launch.py").read_text()
     perception_text = (
@@ -336,13 +336,13 @@ def test_stage_d_perception_launch_fuses_sensors_without_bypassing_supervisor() 
     assert '"start_slam": "true"' in launch_text
     assert '"stationary_session": False' in launch_text
     assert 'executable="stationary_perception"' in launch_text
-    assert "Stage D semantic perception exited" in launch_text
+    assert "Adaptive mission semantic perception exited" in launch_text
     assert '"start_live_route_runner": start_live_route_runner' in mapping_text
     assert '"camera_info_url": camera_info_url' in mapping_text
     assert '"last_seen_s": self.last_seen_s' in perception_text
     assert "localization = self._localization_from_tf(" in perception_text
     assert "slam_toolbox_moving" in perception_text
-    assert '"launch/stage_d_perception.launch.py"' in setup_text
+    assert '"launch/adaptive_mission_perception.launch.py"' in setup_text
 
 
 @pytest.mark.parametrize(
@@ -353,11 +353,11 @@ def test_stage_d_perception_launch_fuses_sensors_without_bypassing_supervisor() 
         ("a", "a", ""),
     ),
 )
-def test_physical_stage_d_gate_requires_exact_reviewed_deployment(
+def test_physical_adaptive_mission_gate_requires_exact_reviewed_deployment(
     source: str, deployed: str, reviewed: str
 ) -> None:
     with pytest.raises(MissionValidationError, match="identical source"):
-        PhysicalStageDExecutor(
+        PhysicalAdaptiveMissionExecutor(
             _cache(),
             source_sha=source,
             deployed_sha=deployed,
@@ -368,9 +368,9 @@ def test_physical_stage_d_gate_requires_exact_reviewed_deployment(
         )
 
 
-def test_physical_stage_d_submits_exactly_one_bounded_supervised_route() -> None:
+def test_physical_adaptive_mission_submits_exactly_one_bounded_supervised_route() -> None:
     transport = FakeRouteTransport()
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         _cache(),
         source_sha=SHA,
         deployed_sha=SHA,
@@ -380,7 +380,7 @@ def test_physical_stage_d_submits_exactly_one_bounded_supervised_route() -> None
         now=lambda: 100.0,
     )
     try:
-        executor.reset("physical-stage-d")
+        executor.reset("physical-adaptive-mission")
         executor.bind_approval(
             proposal_digest="a" * 64,
             approval_id="operator:" + "a" * 64,
@@ -408,7 +408,7 @@ def test_physical_stage_d_submits_exactly_one_bounded_supervised_route() -> None
     assert result.snapshot["progress"]["cumulative_translation_m"] == 0.25
 
 
-def test_physical_stage_d_rejects_uncorrelated_terminal_evidence() -> None:
+def test_physical_adaptive_mission_rejects_uncorrelated_terminal_evidence() -> None:
     transport = FakeRouteTransport(
         {
             "route_id": "wrong-route",
@@ -423,7 +423,7 @@ def test_physical_stage_d_rejects_uncorrelated_terminal_evidence() -> None:
             },
         }
     )
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         _cache(),
         source_sha=SHA,
         deployed_sha=SHA,
@@ -433,7 +433,7 @@ def test_physical_stage_d_rejects_uncorrelated_terminal_evidence() -> None:
         now=lambda: 100.0,
     )
     try:
-        executor.reset("physical-stage-d")
+        executor.reset("physical-adaptive-mission")
         executor.bind_approval(
             proposal_digest="b" * 64,
             approval_id="operator:" + "b" * 64,
@@ -451,10 +451,10 @@ def test_physical_stage_d_rejects_uncorrelated_terminal_evidence() -> None:
     assert result.movement.supervised_linear_mps == 0.0
 
 
-def test_physical_stage_d_collision_terminal_vetoes_llm_motion() -> None:
+def test_physical_adaptive_mission_collision_terminal_vetoes_llm_motion() -> None:
     transport = FakeRouteTransport(
         {
-            "route_id": "physical-stage-d:stage-d-intent:1",
+            "route_id": "physical-adaptive-mission:adaptive-mission-intent:1",
             "status": "blocked",
             "terminal_reason": "collision_veto",
             "source_sha": SHA,
@@ -474,7 +474,7 @@ def test_physical_stage_d_collision_terminal_vetoes_llm_motion() -> None:
             },
         }
     )
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         _cache(),
         source_sha=SHA,
         deployed_sha=SHA,
@@ -484,7 +484,7 @@ def test_physical_stage_d_collision_terminal_vetoes_llm_motion() -> None:
         now=lambda: 100.0,
     )
     try:
-        executor.reset("physical-stage-d")
+        executor.reset("physical-adaptive-mission")
         executor.bind_approval(
             proposal_digest="e" * 64,
             approval_id="operator:" + "e" * 64,
@@ -503,10 +503,10 @@ def test_physical_stage_d_collision_terminal_vetoes_llm_motion() -> None:
     assert result.movement.supervised_linear_mps == 0.0
 
 
-def test_physical_stage_d_rechecks_stale_evidence_at_submission() -> None:
+def test_physical_adaptive_mission_rechecks_stale_evidence_at_submission() -> None:
     cache = _cache()
     transport = FakeRouteTransport()
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         cache,
         source_sha=SHA,
         deployed_sha=SHA,
@@ -515,7 +515,7 @@ def test_physical_stage_d_rechecks_stale_evidence_at_submission() -> None:
         transport=transport,
         now=lambda: 100.0,
     )
-    executor.reset("physical-stage-d")
+    executor.reset("physical-adaptive-mission")
     executor.bind_approval(
         proposal_digest="9" * 64,
         approval_id="operator:" + "9" * 64,
@@ -565,9 +565,9 @@ class BlockingTransport(FakeRouteTransport):
         return True
 
 
-def test_physical_stage_d_cancellation_reaches_transport_and_returns_zero() -> None:
+def test_physical_adaptive_mission_cancellation_reaches_transport_and_returns_zero() -> None:
     transport = BlockingTransport()
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         _cache(),
         source_sha=SHA,
         deployed_sha=SHA,
@@ -577,7 +577,7 @@ def test_physical_stage_d_cancellation_reaches_transport_and_returns_zero() -> N
         now=lambda: 100.0,
     )
     cancellation = threading.Event()
-    executor.reset("physical-stage-d")
+    executor.reset("physical-adaptive-mission")
     executor.bind_approval(
         proposal_digest="c" * 64,
         approval_id="operator:" + "c" * 64,
@@ -623,9 +623,9 @@ class UnconfirmedCancellationTransport(BlockingTransport):
         return False
 
 
-def test_physical_stage_d_timeout_reports_uncertain_cleanup_until_settled() -> None:
+def test_physical_adaptive_mission_timeout_reports_uncertain_cleanup_until_settled() -> None:
     transport = UnconfirmedCancellationTransport()
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         _cache(),
         source_sha=SHA,
         deployed_sha=SHA,
@@ -635,13 +635,13 @@ def test_physical_stage_d_timeout_reports_uncertain_cleanup_until_settled() -> N
         cleanup_timeout_s=0.05,
         now=lambda: 100.0,
     )
-    executor.reset("physical-stage-d")
+    executor.reset("physical-adaptive-mission")
     executor.bind_approval(
         proposal_digest="f" * 64,
         approval_id="operator:" + "f" * 64,
         operator="scott@example.com",
     )
-    snapshot = executor.snapshot("physical-stage-d")
+    snapshot = executor.snapshot("physical-adaptive-mission")
     raw = {
         "snapshot_id": snapshot["snapshot_id"],
         "action": "move_distance",
@@ -653,14 +653,14 @@ def test_physical_stage_d_timeout_reports_uncertain_cleanup_until_settled() -> N
         "lease_s": 0.05,
         "timeout_s": 0.05,
     }
-    intent = StageDIntent.validated(
+    intent = AdaptiveMissionIntent.validated(
         raw,
         revision=1,
         snapshot=snapshot,
         issued_at_s=100.0,
         provider_id="test-provider",
         model_id="test-model",
-        limits=StageDLimits(),
+        limits=AdaptiveMissionLimits(),
     )
     result = executor.execute(intent, threading.Event())
     transport.release.set()

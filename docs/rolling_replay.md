@@ -1,6 +1,6 @@
 # Rolling LLM replay
 
-Milestone 1 / Stage B is the browser-visible, no-motion proof that the LLM is
+Rolling replay is the browser-visible, no-motion proof that the LLM is
 the navigation-decision driver rather than a one-time fixed-route generator.
 
 ## Runtime shape
@@ -13,7 +13,7 @@ one structured response per fresh snapshot.
 
 While a provider call is in flight, the engine continues to update:
 
-- lidar-authoritative Stage 1 localization and pose;
+- lidar-authoritative replay localization and pose;
 - simulated traveled path and current bounded command;
 - camera frames and detections;
 - stable shoe and unknown-face tracks;
@@ -28,13 +28,13 @@ replaces the previous valid intent. Compatible nonzero intents do not pass
 through a zero command.
 
 Localization freshness, lease expiry, collision, STOP, ESTOP, and cancellation
-remain independent stop paths. Stage B carries `motion_authority=false` and
+remain independent stop paths. Rolling replay carries `motion_authority=false` and
 `physical_execution_enabled=false` in every checkpoint and terminal result.
 The module has no ROS, serial, sensor-device, or physical-adapter dependency.
 
-Stage D retains this repeatedly revised snapshot/intent shape but uses the
-separate `StageDExecutor` protocol. Its production adapter is exact-SHA gated
-and default-off; Stage B rolling replay never acquires that adapter or authority.
+Adaptive mission retains this repeatedly revised snapshot/intent shape but uses the
+separate `AdaptiveMissionExecutor` protocol. Its production adapter is exact-SHA gated
+and default-off; rolling replay never acquires that adapter or authority.
 
 ## Real-provider demonstration
 
@@ -45,7 +45,7 @@ PYTHONPATH=src python3 -m sphero_rvr_driver.mission_web \
   --mode rolling-replay \
   --host 127.0.0.1 \
   --port 8876 \
-  --replay-database /tmp/rvr-stage-b.sqlite3 \
+  --replay-database /tmp/rvr-rolling-replay.sqlite3 \
   --replay-reasoning-effort none
 ```
 

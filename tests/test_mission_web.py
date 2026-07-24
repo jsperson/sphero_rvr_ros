@@ -15,9 +15,9 @@ from sphero_rvr_driver.mission_web import (
     LiveMissionWebAdapter,
     MissionWebError,
     MockReplayMissionAdapter,
-    STATIONARY_SENSOR_CONTROL_PATH,
-    STATIONARY_SENSOR_UNIT,
-    SystemdStationarySensorControl,
+    TELEMETRY_CONTROL_PATH,
+    TELEMETRY_UNIT,
+    SystemdTelemetryControl,
     WebMissionState,
     build_mission_web_bundle,
     handle_mission_web_request,
@@ -121,12 +121,12 @@ class FakeLiveMissionClient:
         }
 
 
-class FakeStageDLiveMissionClient(FakeLiveMissionClient):
+class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
     def __init__(self) -> None:
         super().__init__(execution_enabled=True)
         digest = "d" * 64
         self.proposal = {
-            "schema": "sphero_rvr.stage_d_proposal.v1",
+            "schema": "sphero_rvr.adaptive_mission_proposal.v1",
             "mission_id": "live-mission",
             "prompt": "Explore the room",
             "interpreted_objective": "Explore reachable free space.",
@@ -151,12 +151,12 @@ class FakeStageDLiveMissionClient(FakeLiveMissionClient):
         snapshot = super().service_snapshot()
         snapshot.update(
             {
-                "mode": "live/stage-d",
-                "stage_d_enabled": True,
+                "mode": "live/adaptive-mission",
+                "adaptive_mission_enabled": True,
                 "provider_id": "openai-codex-oauth",
                 "model_id": "gpt-5.6-sol",
                 "reasoning_effort": "high",
-                "stage_d_readiness": {
+                "adaptive_mission_readiness": {
                     "ready": True,
                     "reasons": [],
                     "execution_enabled": True,
@@ -204,7 +204,7 @@ class FakeStageDLiveMissionClient(FakeLiveMissionClient):
         return self.mission
 
 
-class FakeStationarySensorControl:
+class FakeTelemetryControl:
     def __init__(self) -> None:
         self.active = False
         self.requests: list[tuple[bool, Mapping[str, object]]] = []
@@ -216,7 +216,7 @@ class FakeStationarySensorControl:
             "transitioning": False,
             "state": "active" if self.active else "inactive",
             "detail": "active / running" if self.active else "inactive / dead",
-            "unit": STATIONARY_SENSOR_UNIT,
+            "unit": TELEMETRY_UNIT,
         }
 
     def set_active(self, active, *, authority_snapshot):
@@ -489,11 +489,11 @@ def test_router_exposes_only_bounded_mock_routes_and_rejects_direct_command_path
         handle_mission_web_request("GET", "/api/mission/start", "", adapter)
 
 
-def test_stationary_sensor_route_controls_only_no_motion_stage_c_service() -> None:
+def test_stationary_sensor_route_controls_only_no_motion_stationary_perception_service() -> None:
     adapter = LiveMissionWebAdapter(
         FakeLiveMissionClient(stationary_perception_enabled=True)
     )
-    sensor_control = FakeStationarySensorControl()
+    telemetry_control = FakeTelemetryControl()
 
     ready = json.loads(
         handle_mission_web_request(
@@ -501,17 +501,17 @@ def test_stationary_sensor_route_controls_only_no_motion_stage_c_service() -> No
             "/api/web/state",
             "",
             adapter,
-            sensor_control,
+            telemetry_control,
         ).body
     )
-    assert ready["sensor_control"] == {
+    assert ready["telemetry_control"] == {
         "active": False,
         "available": True,
         "detail": "inactive / dead",
         "start_permitted": True,
         "state": "inactive",
         "transitioning": False,
-        "unit": STATIONARY_SENSOR_UNIT,
+        "unit": TELEMETRY_UNIT,
     }
     assert ready["adapter"]["motion_authority"] is False
     assert ready["adapter"]["physical_execution_enabled"] is False
@@ -519,27 +519,27 @@ def test_stationary_sensor_route_controls_only_no_motion_stage_c_service() -> No
     started = json.loads(
         handle_mission_web_request(
             "POST",
-            STATIONARY_SENSOR_CONTROL_PATH,
+            TELEMETRY_CONTROL_PATH,
             json.dumps({"active": True}),
             adapter,
-            sensor_control,
+            telemetry_control,
         ).body
     )
-    assert started["sensor_control"]["active"] is True
-    assert sensor_control.requests[0][0] is True
-    assert sensor_control.requests[0][1]["adapter"]["live_execution_enabled"] is False
+    assert started["telemetry_control"]["active"] is True
+    assert telemetry_control.requests[0][0] is True
+    assert telemetry_control.requests[0][1]["adapter"]["live_execution_enabled"] is False
 
     stopped = json.loads(
         handle_mission_web_request(
             "POST",
-            STATIONARY_SENSOR_CONTROL_PATH,
+            TELEMETRY_CONTROL_PATH,
             json.dumps({"active": False}),
             adapter,
-            sensor_control,
+            telemetry_control,
         ).body
     )
-    assert stopped["sensor_control"]["active"] is False
-    assert [request[0] for request in sensor_control.requests] == [True, False]
+    assert stopped["telemetry_control"]["active"] is False
+    assert [request[0] for request in telemetry_control.requests] == [True, False]
 
 
 def test_stationary_sensor_route_rejects_unconfigured_and_non_boolean_requests() -> None:
@@ -549,21 +549,21 @@ def test_stationary_sensor_route_rejects_unconfigured_and_non_boolean_requests()
     with pytest.raises(MissionWebError, match="not available"):
         handle_mission_web_request(
             "POST",
-            STATIONARY_SENSOR_CONTROL_PATH,
+            TELEMETRY_CONTROL_PATH,
             json.dumps({"active": True}),
             adapter,
         )
     with pytest.raises(MissionWebError, match="boolean active"):
         handle_mission_web_request(
             "POST",
-            STATIONARY_SENSOR_CONTROL_PATH,
+            TELEMETRY_CONTROL_PATH,
             json.dumps({"active": "true"}),
             adapter,
-            FakeStationarySensorControl(),
+            FakeTelemetryControl(),
         )
 
 
-def test_systemd_sensor_control_is_fixed_and_fails_closed_on_authority(
+def test_systemd_telemetry_control_is_fixed_and_fails_closed_on_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
@@ -583,10 +583,10 @@ def test_systemd_sensor_control_is_fixed_and_fails_closed_on_authority(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("sphero_rvr_driver.mission_web.subprocess.run", fake_run)
-    with pytest.raises(MissionWebError, match="only the stationary"):
-        SystemdStationarySensorControl("rvr-mission-service.service")
+    with pytest.raises(MissionWebError, match="only the fixed telemetry"):
+        SystemdTelemetryControl("rvr-mission-service.service")
 
-    control = SystemdStationarySensorControl()
+    control = SystemdTelemetryControl()
     unsafe_snapshot = LiveMissionWebAdapter(
         FakeLiveMissionClient(execution_enabled=True)
     ).snapshot()
@@ -605,13 +605,13 @@ def test_systemd_sensor_control_is_fixed_and_fails_closed_on_authority(
         "systemctl",
         "--user",
         "start",
-        STATIONARY_SENSOR_UNIT,
+        TELEMETRY_UNIT,
     ]
-    assert calls[3][0][-1] == STATIONARY_SENSOR_UNIT
+    assert calls[3][0][-1] == TELEMETRY_UNIT
     assert calls[3][1]["timeout"] == pytest.approx(3.0)
 
 
-def test_systemd_sensor_control_refuses_detected_motion_process(
+def test_systemd_telemetry_control_refuses_detected_motion_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_run(command, **kwargs):
@@ -629,13 +629,13 @@ def test_systemd_sensor_control_refuses_detected_motion_process(
         FakeLiveMissionClient(stationary_perception_enabled=True)
     ).snapshot()
     with pytest.raises(MissionWebError, match="motion process is present"):
-        SystemdStationarySensorControl().set_active(
+        SystemdTelemetryControl().set_active(
             True,
             authority_snapshot=safe_snapshot,
         )
 
 
-def test_systemd_sensor_stop_requires_clean_unit_descendants_and_lidar_handle(
+def test_systemd_telemetry_stop_requires_clean_unit_descendants_and_lidar_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
@@ -672,18 +672,25 @@ def test_systemd_sensor_stop_requires_clean_unit_descendants_and_lidar_handle(
         FakeLiveMissionClient(stationary_perception_enabled=True)
     ).snapshot()
 
-    status = SystemdStationarySensorControl().set_active(
+    status = SystemdTelemetryControl().set_active(
         False,
         authority_snapshot=safe_snapshot,
     )
 
     assert status["state"] == "inactive"
     assert status["verified_stopped"] is True
+    assert calls[0][0] == [
+        "systemctl",
+        "--user",
+        "stop",
+        "rvr-adaptive-mission.service",
+        TELEMETRY_UNIT,
+    ]
     assert [call[0] for call in calls].count(["fuser", "/dev/rplidar"]) == 1
     assert any(call[0][:2] == ["ps", "-eo"] for call in calls)
 
 
-def test_systemd_sensor_stop_retains_degraded_state_when_unit_does_not_stop_cleanly(
+def test_systemd_telemetry_stop_retains_degraded_state_when_unit_does_not_stop_cleanly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_run(command, **kwargs):
@@ -706,7 +713,7 @@ def test_systemd_sensor_stop_retains_degraded_state_when_unit_does_not_stop_clea
         raise AssertionError(f"unexpected degraded shutdown command: {command}")
 
     monkeypatch.setattr("sphero_rvr_driver.mission_web.subprocess.run", fake_run)
-    control = SystemdStationarySensorControl()
+    control = SystemdTelemetryControl()
     safe_snapshot = LiveMissionWebAdapter(
         FakeLiveMissionClient(stationary_perception_enabled=True)
     ).snapshot()
@@ -720,12 +727,12 @@ def test_systemd_sensor_stop_retains_degraded_state_when_unit_does_not_stop_clea
     assert "Shutdown degraded" in status["detail"]
 
 
-def test_stationary_sensor_unit_explicitly_stops_motor_before_sigint_shutdown() -> None:
+def test_telemetry_unit_explicitly_stops_motor_before_sigint_shutdown() -> None:
     unit = (
         Path(__file__).resolve().parents[1]
         / "systemd"
         / "user"
-        / "rvr-stationary-perception.service"
+        / "rvr-telemetry.service"
     ).read_text()
 
     assert "ros2 service call /stop_motor std_srvs/srv/Empty" in unit
@@ -756,8 +763,6 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "Authoritative live room map unavailable" in page
     assert "The browser uses the Pi-local mission-service boundary" in page
     assert "No code or hash entry is required" in page
-    assert "Technical approval audit" in page
-    assert "The Pi records the exact route you confirmed" in page
     assert "let hydratedMissionId = null;" in page
     assert "if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';" in page
     assert "$('mission-prompt').addEventListener('input'" in page
@@ -779,9 +784,10 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "STALE CAMERA EVIDENCE" in page
     assert "CAMERA INTERRUPTED" in page
     assert "empty.hidden = hasPixels || state === 'interrupted';" in page
-    assert 'id="sensors-toggle"' in page
-    assert "Turn sensors on" in page
-    assert "/api/web/stationary-sensors" in page
+    assert 'id="telemetry-toggle"' in page
+    assert "Turn telemetry on" in page
+    assert "Turn telemetry off" in page
+    assert "/api/web/telemetry" in page
     assert 'id="request-status" role="status" aria-live="polite"' in page
     assert 'id="approval-state" role="status" aria-live="polite"' in page
     assert "Generating and persisting the proposal" in page
@@ -795,14 +801,17 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert page.index('aria-label="Safety state"') < page.index('id="map-heading"')
     assert page.index('id="map-heading"') < page.index('id="camera-heading"')
     assert page.index('id="camera-heading"') < page.index('id="mission-heading"')
-    assert page.index('id="mission-heading"') < page.index('id="rolling-intent-panel"')
-    assert page.index('id="rolling-loop-panel"') < page.index('id="rolling-world-panel"')
+    assert page.index('id="status-heading"') < page.index('id="mission-heading"')
+    assert page.index('id="mission-heading"') < page.index('id="mission-log-heading"')
+    assert 'id="rolling-intent-panel"' not in page
+    assert 'id="rolling-loop-panel"' not in page
+    assert 'id="proposal-heading"' not in page
     for token in (
         "Mission prompt",
-        "LLM proposal",
         "Live spatial map",
         "Camera",
         "Mission status",
+        "Mission log",
         "Event history",
         "Terminal evidence",
         "Authority boundary",
@@ -932,11 +941,11 @@ def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_
     assert adapter.cancel()["mission"]["state"] == "CANCELLED"
 
 
-def test_live_stage_d_web_renders_loop_and_binds_tailscale_approval() -> None:
-    client = FakeStageDLiveMissionClient()
+def test_live_adaptive_mission_web_renders_loop_and_binds_tailscale_approval() -> None:
+    client = FakeAdaptiveMissionLiveMissionClient()
     client.mission = client._snapshot("proposed", proposal=client.proposal)
     client.mission["result"] = {
-        "schema": "sphero_rvr.stage_d_result.v1",
+        "schema": "sphero_rvr.adaptive_mission_result.v1",
         "mission_id": "live-mission",
         "status": "running",
         "world_snapshot": {
@@ -1008,7 +1017,7 @@ def test_live_stage_d_web_renders_loop_and_binds_tailscale_approval() -> None:
     )
 
     proposed = adapter.snapshot()
-    assert proposed["adapter"]["mode"] == "live/stage-d"
+    assert proposed["adapter"]["mode"] == "live/adaptive-mission"
     assert proposed["adapter"]["physical_execution_enabled"] is True
     assert proposed["adapter"]["motion_authority"] is False
     assert proposed["approval"]["enabled"] is True
@@ -1029,14 +1038,14 @@ def test_live_stage_d_web_renders_loop_and_binds_tailscale_approval() -> None:
     assert client.approvals == [
         (
             "live-mission",
-            f"APPROVE STAGE D {client.proposal['proposal_digest']}",
+            f"APPROVE ADAPTIVE MISSION {client.proposal['proposal_digest']}",
             "scott@example.com",
             "tailscale-serve",
         )
     ]
 
 
-def test_stage_d_terminal_projection_preserves_truthful_loop_metrics() -> None:
+def test_adaptive_mission_terminal_projection_preserves_truthful_loop_metrics() -> None:
     result = {
         "provider": {
             "calls_started": 4,
@@ -1075,11 +1084,11 @@ def test_stage_d_terminal_projection_preserves_truthful_loop_metrics() -> None:
     }
 
 
-def test_locked_restart_preserves_stage_d_terminal_browser_projection() -> None:
+def test_locked_restart_preserves_adaptive_mission_terminal_browser_projection() -> None:
     client = FakeLiveMissionClient(execution_enabled=False)
     client.mission = client._snapshot("complete", proposal={})
     client.mission["result"] = {
-        "schema": "sphero_rvr.stage_d_result.v1",
+        "schema": "sphero_rvr.adaptive_mission_result.v1",
         "status": "complete",
         "terminal_reason": "planner_stop",
         "provider": {
@@ -1109,7 +1118,7 @@ def test_locked_restart_preserves_stage_d_terminal_browser_projection() -> None:
         operator="scott",
     ).snapshot()
 
-    assert snapshot["adapter"]["stage_d"] is True
+    assert snapshot["adapter"]["adaptive_mission"] is True
     assert snapshot["adapter"]["rolling_replay"] is True
     assert snapshot["adapter"]["live_execution_enabled"] is False
     assert snapshot["adapter"]["physical_execution_enabled"] is False

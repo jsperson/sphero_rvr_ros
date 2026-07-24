@@ -549,9 +549,9 @@ def test_live_route_runner_fails_when_settled_target_error_exceeds_bound() -> No
     assert manifest.executed_segments[0].terminal_distance_error_m == pytest.approx(0.07)
 
 
-def test_live_route_runner_stops_early_for_observed_stage_d_coast_and_settles_in_bounds() -> None:
+def test_live_route_runner_stops_early_for_observed_adaptive_mission_coast_and_settles_in_bounds() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-duty-64-coast",
+        route_id="adaptive-mission-duty-64-coast",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(
@@ -595,9 +595,9 @@ def test_live_route_runner_stops_early_for_observed_stage_d_coast_and_settles_in
     )
 
 
-def test_live_route_runner_uses_observed_turn_rate_before_stage_d_turn_coast() -> None:
+def test_live_route_runner_uses_observed_turn_rate_before_adaptive_mission_turn_coast() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-turn-45-rate",
+        route_id="adaptive-mission-turn-45-rate",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(
@@ -714,7 +714,7 @@ def test_live_route_runner_uses_observed_turn_rate_before_stage_d_turn_coast() -
 
 def test_live_route_runner_corrects_stationary_turn_undershoot_within_same_intent() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-turn-correction",
+        route_id="adaptive-mission-turn-correction",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(
@@ -770,9 +770,9 @@ def test_live_route_runner_corrects_stationary_turn_undershoot_within_same_inten
     assert manifest.executed_segments[0].turn_correction_count == 1
 
 
-def test_stage_d_turn_capability_accepts_attended_settled_trace_within_ten_degrees() -> None:
+def test_adaptive_mission_turn_capability_accepts_attended_settled_trace_within_ten_degrees() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-attended-turn-capability",
+        route_id="adaptive-mission-attended-turn-capability",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(
@@ -824,7 +824,7 @@ def test_stage_d_turn_capability_accepts_attended_settled_trace_within_ten_degre
 
 def test_turn_correction_emits_one_command_then_zeros_before_next_odometry_sample() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-turn-timed-correction",
+        route_id="adaptive-mission-turn-timed-correction",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(
@@ -878,7 +878,7 @@ def test_turn_correction_emits_one_command_then_zeros_before_next_odometry_sampl
 
 def test_live_route_runner_allows_three_stationary_verified_turn_corrections() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-turn-three-corrections",
+        route_id="adaptive-mission-turn-three-corrections",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(
@@ -947,7 +947,7 @@ def test_live_route_runner_allows_three_stationary_verified_turn_corrections() -
 
 def test_live_route_runner_never_corrects_turn_when_budget_is_zero() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-turn-no-correction",
+        route_id="adaptive-mission-turn-no-correction",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(
@@ -991,7 +991,7 @@ def test_live_route_runner_never_corrects_turn_when_budget_is_zero() -> None:
 
 def test_collision_veto_terminates_active_turn_correction_without_resumption() -> None:
     request = LiveRouteRequest(
-        route_id="stage-d-turn-correction-collision",
+        route_id="adaptive-mission-turn-correction-collision",
         max_runtime_s=5.0,
         max_travel_m=0.25,
         segments=(

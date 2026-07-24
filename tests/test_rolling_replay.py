@@ -152,7 +152,7 @@ def test_web_adapter_persists_replay_and_exposes_terminal_evidence(tmp_path) -> 
     adapter = RollingReplayMissionAdapter(
         ScriptedRollingIntentProvider(delay_s=0.05),
         database=tmp_path / "rolling.sqlite3",
-        source_sha="stage-b-test-sha",
+        source_sha="rolling-replay-test-sha",
         tick_s=0.01,
     )
     try:
@@ -187,7 +187,7 @@ def test_rolling_replay_proposal_can_cancel_without_starting_provider(tmp_path) 
     adapter = RollingReplayMissionAdapter(
         ScriptedRollingIntentProvider(),
         database=tmp_path / "cancel.sqlite3",
-        source_sha="stage-b-cancel-sha",
+        source_sha="rolling-replay-cancel-sha",
     )
     try:
         adapter.propose(MISSION, "rolling_llm_replay")
@@ -199,11 +199,13 @@ def test_rolling_replay_proposal_can_cancel_without_starting_provider(tmp_path) 
     assert cancelled["rolling"]["inference"]["provider_calls_started"] == 0
 
 
-def test_browser_bundle_renders_stage_b_evidence_panels() -> None:
+def test_browser_bundle_renders_rolling_replay_evidence_panels() -> None:
     html = build_mission_web_bundle()["index_html"]
 
-    assert "Current finite leased intent" in html
-    assert "Asynchronous LLM loop" in html
+    assert "Mission log" in html
+    assert "Active intent · revision" in html
+    assert "Revision ${revision.revision}" in html
     assert "Fresh world snapshot &amp; detections" in html
-    assert "Motion ticks during LLM" in html
+    assert "requested ${JSON.stringify" in html
+    assert "supervised ${JSON.stringify" in html
     assert "ROLLING LLM REPLAY — NO MOTION AUTHORITY" in html

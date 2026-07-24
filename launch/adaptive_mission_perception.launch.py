@@ -30,7 +30,7 @@ def generate_launch_description():
     semantic_perception = Node(
         package="sphero_rvr_driver",
         executable="stationary_perception",
-        name="stage_d_semantic_perception",
+        name="adaptive_mission_semantic_perception",
         output="screen",
         parameters=[
             {
@@ -48,14 +48,14 @@ def generate_launch_description():
                 default_value="false",
                 description=(
                     "MOTOR-CAPABLE only when explicitly true. The default starts "
-                    "the Stage D perception graph without a rover driver."
+                    "the Adaptive mission perception graph without a rover driver."
                 ),
             ),
             DeclareLaunchArgument(
                 "start_live_route_runner",
                 default_value="false",
                 description=(
-                    "Typed Stage D route executor; requires start_rvr:=true for "
+                    "Typed Adaptive mission route executor; requires start_rvr:=true for "
                     "physical movement."
                 ),
             ),
@@ -69,14 +69,14 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "evidence_dir",
                 default_value=(
-                    "/home/jsperson/.local/state/sphero_rvr/stage-d-perception"
+                    "/home/jsperson/.local/state/sphero_rvr/adaptive-mission-perception"
                 ),
             ),
             DeclareLaunchArgument(
                 "camera_info_url",
                 default_value=(
                     "file:///home/jsperson/.ros/camera_info/"
-                    "rvr_pi_camera3_stagec_800x600.yaml"
+                    "rvr_pi_camera3_800x600.yaml"
                 ),
             ),
             IncludeLaunchDescription(
@@ -98,7 +98,7 @@ def generate_launch_description():
                 event=Shutdown(
                     reason=(
                         "start_live_route_runner requires start_rvr:=true in "
-                        "the Stage D perception launch"
+                        "the Adaptive mission perception launch"
                     )
                 ),
                 condition=IfCondition(
@@ -120,7 +120,7 @@ def generate_launch_description():
                         EmitEvent(
                             event=Shutdown(
                                 reason=(
-                                    "Stage D semantic perception exited; "
+                                    "Adaptive mission semantic perception exited; "
                                     "shutting down the supervised graph"
                                 )
                             )

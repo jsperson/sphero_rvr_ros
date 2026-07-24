@@ -1,4 +1,4 @@
-"""Durable live Stage D orchestration owned by MissionService."""
+"""Durable live Adaptive mission orchestration owned by MissionService."""
 
 from __future__ import annotations
 
@@ -10,48 +10,48 @@ import uuid
 
 from .mission_api import MissionValidationError
 from .mission_service import MissionService
-from .stage_d_controller import (
-    CodexOAuthStageDIntentProvider,
-    StageDApprovalEnvelope,
-    StageDController,
-    StageDIntent,
-    StageDIntentProvider,
-    StageDLimits,
+from .adaptive_mission_controller import (
+    CodexOAuthAdaptiveMissionIntentProvider,
+    AdaptiveMissionApprovalEnvelope,
+    AdaptiveMissionController,
+    AdaptiveMissionIntent,
+    AdaptiveMissionIntentProvider,
+    AdaptiveMissionLimits,
     validate_world_snapshot,
 )
-from .stage_d_physical import PhysicalStageDExecutor
+from .adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
 
 
-class StageDLiveMissionController:
+class LiveAdaptiveMissionController:
     """Plan and run one repeatedly replanned physical mission at a time."""
 
     def __init__(
         self,
         service: MissionService,
-        provider: StageDIntentProvider,
-        executor: PhysicalStageDExecutor,
+        provider: AdaptiveMissionIntentProvider,
+        executor: PhysicalAdaptiveMissionExecutor,
         *,
         execution_enabled: bool = False,
-        limits: Optional[StageDLimits] = None,
+        limits: Optional[AdaptiveMissionLimits] = None,
         clock_s: Any = time.time,
     ) -> None:
         self.service = service
         self.provider = provider
         self.executor = executor
         self.execution_enabled = bool(execution_enabled)
-        self.limits = limits or StageDLimits()
+        self.limits = limits or AdaptiveMissionLimits()
         self._clock_s = clock_s
         if self.execution_enabled != self.service.live_execution_enabled:
             raise MissionValidationError(
-                "Stage D controller and service execution gates must agree"
+                "Adaptive mission controller and service execution gates must agree"
             )
         if self.execution_enabled != self.executor.execution_enabled:
             raise MissionValidationError(
-                "Stage D controller and physical executor gates must agree"
+                "Adaptive mission controller and physical executor gates must agree"
             )
         self._lock = threading.RLock()
         self._threads: dict[str, threading.Thread] = {}
-        self._controllers: dict[str, StageDController] = {}
+        self._controllers: dict[str, AdaptiveMissionController] = {}
         self._staged: dict[str, dict[str, Any]] = {}
         self._active_execution_id: Optional[str] = None
         self._closed = False
@@ -72,10 +72,10 @@ class StageDLiveMissionController:
                 or self._staged
             ):
                 raise MissionValidationError(
-                    "another physical Stage D mission is already active or awaiting approval"
+                    "another physical adaptive mission is already active or awaiting approval"
                 )
             identifier = str(
-                mission_id or f"stage-d-live-{uuid.uuid4().hex}"
+                mission_id or f"adaptive-mission-live-{uuid.uuid4().hex}"
             )
             snapshot = self.service.begin_prompt_mission(
                 mission_id=identifier,
@@ -98,25 +98,25 @@ class StageDLiveMissionController:
             self._ensure_open()
             if not self.execution_enabled:
                 raise MissionValidationError(
-                    "physical Stage D is disabled by reviewed service configuration"
+                    "physical Adaptive mission is disabled by reviewed service configuration"
                 )
             if self._active_execution_id is not None:
                 raise MissionValidationError(
-                    "another physical Stage D mission owns execution"
+                    "another physical adaptive mission owns execution"
                 )
             staged = self._staged.get(str(mission_id))
             if staged is None:
                 raise MissionValidationError(
-                    "Stage D proposal is not staged in this process"
+                    "adaptive mission proposal is not staged in this process"
                 )
             readiness = self.executor.readiness()
             if readiness.get("ready") is not True:
                 raise MissionValidationError(
-                    "physical Stage D readiness failed: "
+                    "physical Adaptive mission readiness failed: "
                     + ",".join(str(item) for item in readiness.get("reasons", []))
                 )
             approval_requested_at = float(self._clock_s())
-            snapshot = self.service.approve_stage_d_mission(
+            snapshot = self.service.approve_adaptive_mission(
                 mission_id,
                 supplied_approval=supplied_approval,
                 operator=operator,
@@ -128,7 +128,7 @@ class StageDLiveMissionController:
             approval = snapshot.get("approval", {})
             if not isinstance(approval, Mapping):
                 raise MissionValidationError(
-                    "Stage D approval persistence failed"
+                    "adaptive mission approval persistence failed"
                 )
             approved_at = float(approval["approved_at_s"])
             self.executor.bind_approval(
@@ -136,7 +136,7 @@ class StageDLiveMissionController:
                 approval_id=str(approval.get("approval_id", "")),
                 operator=str(approval.get("operator", "")),
             )
-            first_intent = StageDIntent.validated(
+            first_intent = AdaptiveMissionIntent.validated(
                 staged["raw_intent"],
                 revision=1,
                 snapshot=staged["snapshot"],
@@ -145,7 +145,7 @@ class StageDLiveMissionController:
                 model_id=self.provider.model_id,
                 limits=self.limits,
             )
-            controller = StageDController(
+            controller = AdaptiveMissionController(
                 mission_id=mission_id,
                 prompt=str(staged["proposal"]["prompt"]),
                 proposal_digest=str(
@@ -182,7 +182,7 @@ class StageDLiveMissionController:
         self,
         mission_id: str,
         *,
-        reason: str = "operator cancelled Stage D mission",
+        reason: str = "operator cancelled adaptive mission",
     ) -> dict[str, Any]:
         with self._lock:
             snapshot = self.service.prompt_status(mission_id)
@@ -197,7 +197,7 @@ class StageDLiveMissionController:
                         mission_id,
                         "recovery_required",
                         reason=(
-                            "Stage D controller is unavailable; physical "
+                            "Adaptive mission controller is unavailable; physical "
                             "recovery required"
                         ),
                     )
@@ -213,8 +213,8 @@ class StageDLiveMissionController:
         readiness = self.executor.readiness()
         return {
             "api_version": "mission_api.v2",
-            "mode": "live/stage-d",
-            "stage_d_enabled": True,
+            "mode": "live/adaptive-mission",
+            "adaptive_mission_enabled": True,
             "source_sha": self.service.source_sha,
             "deployed_sha": self.service.deployed_sha,
             "planning_enabled": True,
@@ -225,7 +225,7 @@ class StageDLiveMissionController:
             "provider_id": self.provider.provider_id,
             "model_id": self.provider.model_id,
             "reasoning_effort": self.provider.reasoning_effort,
-            "stage_d_readiness": readiness,
+            "adaptive_mission_readiness": readiness,
             "capabilities": self.service.capabilities(),
         }
 
@@ -244,7 +244,7 @@ class StageDLiveMissionController:
         alive = [thread.name for thread in threads if thread.is_alive()]
         if alive:
             raise RuntimeError(
-                f"Stage D live worker did not stop: {alive[0]}"
+                f"Adaptive mission live worker did not stop: {alive[0]}"
             )
         self.executor.close()
 
@@ -259,7 +259,7 @@ class StageDLiveMissionController:
                 require_motion=False,
             )
             raw = dict(self.provider.choose(mission["prompt"], snapshot))
-            intent = StageDIntent.validated(
+            intent = AdaptiveMissionIntent.validated(
                 raw,
                 revision=1,
                 snapshot=snapshot,
@@ -268,9 +268,9 @@ class StageDLiveMissionController:
                 model_id=self.provider.model_id,
                 limits=self.limits,
             )
-            proposal = StageDApprovalEnvelope(
+            proposal = AdaptiveMissionApprovalEnvelope(
                 mission_id=mission_id,
-                lease_id=f"stage-d-live-lease-{uuid.uuid4().hex}",
+                lease_id=f"adaptive-mission-live-lease-{uuid.uuid4().hex}",
                 prompt=str(mission["prompt"]),
                 interpreted_objective=intent.interpreted_objective,
                 source_sha=self.service.source_sha,
@@ -284,7 +284,7 @@ class StageDLiveMissionController:
                 limits=self.limits,
                 physical_execution_enabled=self.execution_enabled,
             ).proposal()
-            self.service.record_stage_d_proposal(mission_id, proposal)
+            self.service.record_adaptive_mission_proposal(mission_id, proposal)
             with self._lock:
                 self._staged[mission_id] = {
                     "snapshot": json.loads(json.dumps(snapshot)),
@@ -299,7 +299,7 @@ class StageDLiveMissionController:
                 }:
                     self.service.reject_prompt_planning(
                         mission_id,
-                        f"Stage D planning failed: {exc.__class__.__name__}: {exc}",
+                        f"Adaptive mission planning failed: {exc.__class__.__name__}: {exc}",
                     )
             except MissionValidationError:
                 pass
@@ -314,7 +314,7 @@ class StageDLiveMissionController:
         projection: Mapping[str, Any],
     ) -> None:
         if kind != "terminal":
-            self.service.record_stage_d_checkpoint(
+            self.service.record_adaptive_mission_checkpoint(
                 mission_id,
                 kind=kind,
                 checkpoint=projection,
@@ -342,7 +342,7 @@ class StageDLiveMissionController:
         thread = threading.Thread(
             target=target,
             args=(mission_id,),
-            name=f"stage-d-live-planning-{mission_id}",
+            name=f"adaptive-mission-live-planning-{mission_id}",
             daemon=True,
         )
         self._threads[mission_id] = thread
@@ -351,14 +351,14 @@ class StageDLiveMissionController:
     def _ensure_open(self) -> None:
         if self._closed:
             raise MissionValidationError(
-                "Stage D live mission controller is closed"
+                "Adaptive mission live mission controller is closed"
             )
 
 
-def default_stage_d_provider(
+def default_adaptive_mission_provider(
     *, model: Optional[str], reasoning_effort: str
-) -> CodexOAuthStageDIntentProvider:
-    return CodexOAuthStageDIntentProvider(
+) -> CodexOAuthAdaptiveMissionIntentProvider:
+    return CodexOAuthAdaptiveMissionIntentProvider(
         model=model,
         reasoning_effort=reasoning_effort,
     )

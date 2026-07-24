@@ -14,8 +14,8 @@ The interface treats spatial and visual evidence as the primary operating view.
 On desktop, a wide main column contains the live map and then the camera at the
 same width; the narrower operations sidebar scrolls independently. The safety
 strip remains above both columns. At tablet and mobile widths, the page becomes a
-single column in this order: safety state, map, camera, mission controls, current
-intent and LLM activity, then collapsed evidence and diagnostics. The page does
+single column in this order: safety state, map, camera, one mission status,
+mission controls, and a running mission log, then collapsed evidence and diagnostics. The page does
 not require horizontal scrolling.
 
 The map renders available occupancy or obstacle evidence, rover pose and heading,
@@ -32,8 +32,8 @@ an unavailable source, an interrupted stream, and a stale last frame are distinc
 states; the browser never invents pixels or detections.
 
 Safety state and active warnings are never placed in collapsed details. Mission
-status, prompt, submission, approval/cancel controls, current leased intent, and
-LLM activity remain in the operational flow. World snapshots, terminal evidence,
+status, prompt, submission, approval/cancel controls, and the combined mission
+log remain in the operational flow. World snapshots, terminal evidence,
 event history, and lower-level authority diagnostics use collapsed disclosure
 panels so long histories do not displace the map and camera.
 
@@ -59,7 +59,7 @@ is discarded because the mock adapter has no physical executor.
 
 ## Rolling LLM replay mode
 
-Stage B uses the same loopback browser, digest confirmation, and persistent
+Rolling replay uses the same loopback browser, digest confirmation, and persistent
 `MissionService` event/result seam, but replaces the fixed fixture route with
 one finite leased intent at a time:
 
@@ -68,7 +68,7 @@ rvr_mission_web \
   --mode rolling-replay \
   --host 127.0.0.1 \
   --port 8876 \
-  --replay-database artifacts/perception_action_stage_b/replay.sqlite3 \
+  --replay-database artifacts/perception_action_replay/replay.sqlite3 \
   --replay-reasoning-effort none
 ```
 
@@ -101,8 +101,7 @@ missions the operator reviews the route and clicks **Approve and run** once; the
 Pi then reloads the persisted proposal, recomputes the exact full-digest approval
 phrase, and sends it through the existing mission-service approval boundary.
 The digest binding and approval audit remain server-owned, but the operator no
-longer copies or enters a GUID, digest, code, or hash. The raw digest is available
-only in the collapsed **Technical approval audit** detail.
+longer copies or enters a GUID, digest, code, or hash.
 
 ```text
 browser
@@ -143,9 +142,10 @@ executor only when the reviewed, source, and deployed SHAs match. Even in that m
 the UI and server keep approval disabled until authoritative odometry and safety
 evidence are fresh and clear. Missing STOP/ESTOP evidence renders `UNKNOWN`.
 
-When Stage C is configured, the safety strip includes an authenticated
-**Telemetry + camera** toggle. It can start or stop only the fixed
-`rvr-stationary-perception.service` user unit; it never enables the unit at boot
+When stationary or adaptive perception is configured, the safety strip includes
+an authenticated **Camera + lidar** telemetry toggle. It starts only the fixed
+no-motion `rvr-telemetry.service` user unit and can stop both that unit and the
+explicit-start adaptive mission unit that may own the same sensors. It never enables either unit at boot
 and exposes no arbitrary service name or shell command. Startup is rejected
 unless the service snapshot proves live execution, physical execution, and
 motion authority are all false. A runtime preflight also refuses startup when
@@ -181,7 +181,7 @@ POST /api/web/mission/propose
 POST /api/web/mission/approve
 POST /api/web/mission/advance   # mock/replay only
 POST /api/web/mission/cancel
-POST /api/web/stationary-sensors  # fixed Stage C user unit only
+POST /api/web/telemetry  # boolean active; fixed service targets only
 ```
 
 Direct motor, arbitrary write, ROS, `/cmd_vel`, and `/cmd_vel_motor` routes are
@@ -202,22 +202,22 @@ authoritative mission-service data. Missing or stale semantic-map evidence is
 shown as unavailable; fixtures are never substituted into a live view. The map is
 only a visualization and does no browser-side inference or planning.
 
-Stage B rolling replay may include camera frame identity and detection metadata
+Rolling replay may include camera frame identity and detection metadata
 without image bytes. In that case the camera explicitly reports that pixels were
-not supplied while retaining the evidence timestamp and frame ID. Stage C live
+not supplied while retaining the evidence timestamp and frame ID. Live
 stationary perception may supply the latest JPEG preview and tracked detections
 through the same additive adapter fields.
 
-## Stage D closed-loop modes
+## Adaptive mission closed-loop modes
 
-Stage D adds `--mode stage-d-replay`. Proposal generation calls the real
+Adaptive mission adds `--mode adaptive-mission-replay`. Proposal generation calls the real
 Codex/ChatGPT OAuth provider with the starting typed world snapshot and shows
 the interpreted objective plus the first bounded intent before approval. One
 digest-bound approval starts the 15-minute replay lease. The page then shows
 each updated snapshot, intent and rationale, requested and collision-supervised
 movement, cumulative travel, remaining lease, and terminal outcome.
 
-The normal Stage D CLI requires `--public-origin`, exact same-origin POSTs, and
+The normal Adaptive mission CLI requires `--public-origin`, exact same-origin POSTs, and
 an authenticated `Tailscale-User-Login` supplied by Tailscale Serve. The
 server-owned identity and authentication source are stored with the proposal
 digest. Supplying that header directly to a plain loopback server does not
@@ -225,12 +225,12 @@ authenticate approval. `--allow-loopback-test-approval` is an explicit
 repository/browser-harness escape hatch for replay tests only; it cannot be
 combined with a public origin.
 
-The `stage-d-replay` mode is deliberately replay-only. Its executor implements
-the same `StageDExecutor` boundary as the production physical adapter, while
+The `adaptive-mission-replay` mode is deliberately replay-only. Its executor implements
+the same `AdaptiveMissionExecutor` boundary as the production physical adapter, while
 `live_execution_enabled`, `physical_execution_enabled`, and `motion_authority`
-remain false. See `stage_d_controller.md`.
+remain false. See `adaptive_mission_controller.md`.
 
-In live mode, a mission service configured with `stage_d_enabled=true` exposes
+In live mode, a mission service configured with `adaptive_mission_enabled=true` exposes
 the same proposal and rolling projection. The page labels the deployment as
 locked or supervised-live from authoritative service state, shows the active
 900-second lease, every world snapshot and LLM revision, and requested versus
@@ -240,7 +240,7 @@ known-face, and unknown-face tracks; the authoritative camera and map panels
 continue to show the underlying evidence. It can submit, authenticate one
 Tailscale approval, poll, and cancel. It cannot choose an intent, publish a
 topic, enable either deployment gate, or own motion. Packaged configuration
-keeps Stage D and live execution false.
+keeps Adaptive mission and live execution false.
 
 ## Installed Pi services
 
@@ -262,8 +262,8 @@ Run focused tests only through the bounded runner:
 ```bash
 python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
   tests/test_rolling_replay.py tests/test_mission_web.py tests/test_prompt_mission_controller.py \
-  tests/test_live_mission_service.py tests/test_stage_d_controller.py \
-  tests/test_stage_d_physical.py tests/test_stage_d_live_controller.py \
+  tests/test_live_mission_service.py tests/test_adaptive_mission_controller.py \
+  tests/test_adaptive_mission_physical.py tests/test_adaptive_mission_live_controller.py \
   tests/test_package_metadata.py
 ```
 

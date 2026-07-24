@@ -29,10 +29,10 @@ The tested core API is `sphero_rvr_driver.supervised_coordinator`:
 
 This is intentionally no random bump-and-turn. Segment choice is deterministic and bounded from an observable clearance snapshot; future map-aware selectors should keep the same property.
 
-Stage D uses a separate LLM strategy layer but preserves this ownership rule:
-the model supplies one typed bounded intent, `PhysicalStageDExecutor` converts
+Adaptive mission uses a separate LLM strategy layer but preserves this ownership rule:
+the model supplies one typed bounded intent, `PhysicalAdaptiveMissionExecutor` converts
 it to one live-route segment, and deterministic route and collision components
-retain all velocity and stop authority. Stage D does not call range-motion,
+retain all velocity and stop authority. Adaptive mission does not call range-motion,
 publish ROS, or create a second `/cmd_vel_motor` owner.
 
 ## State model

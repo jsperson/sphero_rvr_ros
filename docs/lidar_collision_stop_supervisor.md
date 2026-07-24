@@ -2,7 +2,7 @@
 
 Source-of-truth implementation contract for a lidar-backed collision-stop supervisor that remains authoritative over every ordinary command source: TUI/key tap, browser/AI control, mission APIs, Nav2, teleop, rosbag replay, and future planners.
 
-The Stage D physical adapter is one such upstream mission source. It submits
+The Adaptive mission physical adapter is one such upstream mission source. It submits
 bounded work to `/cmd_vel` through `live_route_runner` and consumes the
 supervisor's scan/TF health plus requested/output evidence. It does not change
 this document's topic ownership: the supervisor remains the sole

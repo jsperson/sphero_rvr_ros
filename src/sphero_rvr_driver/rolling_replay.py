@@ -900,7 +900,7 @@ class RollingReplayEngine:
                 None if self._active_intent is None else self._active_intent.revision
             ),
             "source_evidence": {
-                "stage1_replay": "artifacts/perception_navigation_stage1/turn_attempt_5_replay.json",
+                "navigation_replay": "artifacts/perception_navigation_replay/turn_attempt_5_replay.json",
                 "localization_contract": "sphero_rvr.perception_navigation_result.v1",
             },
         }

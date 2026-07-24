@@ -254,7 +254,7 @@ def test_recorded_attempt_5_track_asymmetry_stops_before_correction() -> None:
     replay_path = (
         Path(__file__).parents[1]
         / "artifacts"
-        / "perception_navigation_stage1"
+        / "perception_navigation_replay"
         / "turn_attempt_5_replay.json"
     )
     payload = json.loads(replay_path.read_text())

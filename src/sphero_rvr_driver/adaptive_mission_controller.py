@@ -1,4 +1,4 @@
-"""Stage D snapshot-to-intent closed-loop controller.
+"""Adaptive mission snapshot-to-intent closed-loop controller.
 
 The model receives typed world evidence and selects one bounded intent.  It has
 no ROS, serial, topic, velocity, or motor surface.  A deterministic executor
@@ -26,11 +26,11 @@ from .mission_api import MissionValidationError
 from .prompt_drive import ALLOWED_REASONING_EFFORTS, DEFAULT_CODEX_MODEL_ID
 
 
-STAGE_D_WORLD_SCHEMA = "sphero_rvr.stage_d_world_snapshot.v1"
-STAGE_D_INTENT_SCHEMA = "sphero_rvr.stage_d_intent.v1"
-STAGE_D_PROPOSAL_SCHEMA = "sphero_rvr.stage_d_proposal.v1"
-STAGE_D_RESULT_SCHEMA = "sphero_rvr.stage_d_result.v1"
-STAGE_D_SAFETY_POLICY = "lidar_collision_stop.v1"
+ADAPTIVE_MISSION_WORLD_SCHEMA = "sphero_rvr.adaptive_mission_world_snapshot.v1"
+ADAPTIVE_MISSION_INTENT_SCHEMA = "sphero_rvr.adaptive_mission_intent.v1"
+ADAPTIVE_MISSION_PROPOSAL_SCHEMA = "sphero_rvr.adaptive_mission_proposal.v1"
+ADAPTIVE_MISSION_RESULT_SCHEMA = "sphero_rvr.adaptive_mission_result.v1"
+ADAPTIVE_MISSION_SAFETY_POLICY = "lidar_collision_stop.v1"
 
 _ACTIONS = {"move_distance", "turn_angle", "observe", "stop"}
 _CLEAR_COLLISION_STATES = {"CLEAR", "SLOW"}
@@ -44,7 +44,7 @@ def canonical_digest(payload: Mapping[str, Any]) -> str:
 
 
 @dataclass(frozen=True)
-class StageDLimits:
+class AdaptiveMissionLimits:
     mission_lease_s: float = 15.0 * 60.0
     max_translation_per_intent_m: float = 0.25
     max_rotation_per_intent_deg: float = 45.0
@@ -67,7 +67,7 @@ class StageDLimits:
             )
         }
         if any(not math.isfinite(value) or value <= 0.0 for value in values.values()):
-            raise ValueError("Stage D limits must be positive and finite")
+            raise ValueError("adaptive mission limits must be positive and finite")
         ceilings = {
             "mission_lease_s": 900.0,
             "max_translation_per_intent_m": 0.25,
@@ -79,7 +79,7 @@ class StageDLimits:
         }
         for name, ceiling in ceilings.items():
             if values[name] > ceiling:
-                raise ValueError(f"{name} exceeds the Stage D authority ceiling")
+                raise ValueError(f"{name} exceeds the adaptive mission authority ceiling")
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -98,7 +98,7 @@ class StageDLimits:
 
 def make_world_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
     body = json.loads(json.dumps(dict(payload), allow_nan=False))
-    body["schema"] = STAGE_D_WORLD_SCHEMA
+    body["schema"] = ADAPTIVE_MISSION_WORLD_SCHEMA
     body.pop("snapshot_id", None)
     body["snapshot_id"] = canonical_digest(body)
     return body
@@ -110,25 +110,25 @@ def validate_world_snapshot(
     mission_id: str,
     require_motion: bool = False,
 ) -> None:
-    if str(snapshot.get("schema", "")) != STAGE_D_WORLD_SCHEMA:
-        raise MissionValidationError("Stage D world snapshot schema is invalid")
+    if str(snapshot.get("schema", "")) != ADAPTIVE_MISSION_WORLD_SCHEMA:
+        raise MissionValidationError("adaptive mission world snapshot schema is invalid")
     if str(snapshot.get("mission_id", "")) != str(mission_id):
-        raise MissionValidationError("Stage D world snapshot mission identity changed")
+        raise MissionValidationError("adaptive mission world snapshot mission identity changed")
     supplied = str(snapshot.get("snapshot_id", ""))
     digest_payload = dict(snapshot)
     digest_payload.pop("snapshot_id", None)
     if supplied != canonical_digest(digest_payload):
-        raise MissionValidationError("Stage D world snapshot digest is invalid")
+        raise MissionValidationError("adaptive mission world snapshot digest is invalid")
     evidence = snapshot.get("evidence")
     safety = snapshot.get("safety")
     execution = snapshot.get("execution")
     observations = snapshot.get("observations")
     if not isinstance(evidence, Mapping) or not isinstance(safety, Mapping):
-        raise MissionValidationError("Stage D world snapshot lacks typed evidence")
+        raise MissionValidationError("adaptive mission world snapshot lacks typed evidence")
     if not isinstance(execution, Mapping):
-        raise MissionValidationError("Stage D world snapshot lacks executor evidence")
+        raise MissionValidationError("adaptive mission world snapshot lacks executor evidence")
     if not isinstance(observations, Mapping):
-        raise MissionValidationError("Stage D world snapshot lacks typed observations")
+        raise MissionValidationError("adaptive mission world snapshot lacks typed observations")
     for name in (
         "camera_detections",
         "semantic_tracks",
@@ -138,13 +138,13 @@ def validate_world_snapshot(
     ):
         if name in observations and not isinstance(observations.get(name), list):
             raise MissionValidationError(
-                f"Stage D world snapshot {name} must be a list"
+                f"adaptive mission world snapshot {name} must be a list"
             )
     if "perception" in observations and not isinstance(
         observations.get("perception"), Mapping
     ):
         raise MissionValidationError(
-            "Stage D world snapshot perception status must be an object"
+            "adaptive mission world snapshot perception status must be an object"
         )
     for name in ("scan_fresh", "transform_fresh", "odometry_fresh"):
         if evidence.get(name) is not True:
@@ -161,7 +161,7 @@ def validate_world_snapshot(
 
 
 @dataclass(frozen=True)
-class StageDIntent:
+class AdaptiveMissionIntent:
     revision: int
     snapshot_id: str
     action: str
@@ -187,27 +187,27 @@ class StageDIntent:
         issued_at_s: float,
         provider_id: str,
         model_id: str,
-        limits: StageDLimits,
-    ) -> "StageDIntent":
+        limits: AdaptiveMissionLimits,
+    ) -> "AdaptiveMissionIntent":
         if str(raw.get("snapshot_id", "")) != str(snapshot.get("snapshot_id", "")):
             raise MissionValidationError(
-                "Stage D intent is not bound to the exact world snapshot"
+                "adaptive mission intent is not bound to the exact world snapshot"
             )
         action = str(raw.get("action", "")).strip()
         if action not in _ACTIONS:
-            raise MissionValidationError("Stage D intent action is unsupported")
-        distance = _finite(raw.get("distance_m"), "Stage D intent distance")
-        angle = _finite(raw.get("angle_deg"), "Stage D intent angle")
-        lease = _finite(raw.get("lease_s"), "Stage D intent lease")
-        timeout = _finite(raw.get("timeout_s"), "Stage D intent timeout")
+            raise MissionValidationError("adaptive mission intent action is unsupported")
+        distance = _finite(raw.get("distance_m"), "adaptive mission intent distance")
+        angle = _finite(raw.get("angle_deg"), "adaptive mission intent angle")
+        lease = _finite(raw.get("lease_s"), "adaptive mission intent lease")
+        timeout = _finite(raw.get("timeout_s"), "adaptive mission intent timeout")
         if abs(distance) > limits.max_translation_per_intent_m:
-            raise MissionValidationError("Stage D intent translation exceeds 0.25 m")
+            raise MissionValidationError("adaptive mission intent translation exceeds 0.25 m")
         if abs(angle) > limits.max_rotation_per_intent_deg:
-            raise MissionValidationError("Stage D intent rotation exceeds 45 degrees")
+            raise MissionValidationError("adaptive mission intent rotation exceeds 45 degrees")
         if not 0.0 < lease <= limits.max_intent_lease_s:
-            raise MissionValidationError("Stage D intent lease exceeds 5 seconds")
+            raise MissionValidationError("adaptive mission intent lease exceeds 5 seconds")
         if not 0.0 < timeout <= limits.max_intent_timeout_s:
-            raise MissionValidationError("Stage D intent timeout exceeds 5 seconds")
+            raise MissionValidationError("adaptive mission intent timeout exceeds 5 seconds")
         if action == "move_distance":
             if distance == 0.0 or angle != 0.0:
                 raise MissionValidationError(
@@ -232,14 +232,14 @@ class StageDIntent:
         objective = str(raw.get("interpreted_objective", "")).strip()
         focus = str(raw.get("observation_focus", "")).strip()
         if not rationale or len(rationale) > 800:
-            raise MissionValidationError("Stage D intent rationale is required and bounded")
+            raise MissionValidationError("adaptive mission intent rationale is required and bounded")
         if not objective or len(objective) > 500:
             raise MissionValidationError(
-                "Stage D interpreted objective is required and bounded"
+                "Adaptive mission interpreted objective is required and bounded"
             )
         if not focus or len(focus) > 160:
             raise MissionValidationError(
-                "Stage D observation focus is required and bounded"
+                "Adaptive mission observation focus is required and bounded"
             )
         return cls(
             revision=int(revision),
@@ -260,7 +260,7 @@ class StageDIntent:
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
-            "schema": STAGE_D_INTENT_SCHEMA,
+            "schema": ADAPTIVE_MISSION_INTENT_SCHEMA,
             "revision": self.revision,
             "snapshot_id": self.snapshot_id,
             "action": self.action,
@@ -278,7 +278,7 @@ class StageDIntent:
         }
 
 
-class StageDIntentProvider(Protocol):
+class AdaptiveMissionIntentProvider(Protocol):
     provider_id: str
     model_id: str
     reasoning_effort: str
@@ -288,8 +288,8 @@ class StageDIntentProvider(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
-class CodexOAuthStageDIntentProvider:
-    """Real ChatGPT-OAuth planner for one snapshot-bound Stage D intent."""
+class CodexOAuthAdaptiveMissionIntentProvider:
+    """Real ChatGPT-OAuth planner for one snapshot-bound adaptive mission intent."""
 
     provider_id = "openai-codex-oauth"
 
@@ -320,18 +320,18 @@ class CodexOAuthStageDIntentProvider:
         executable = shutil.which(self.codex_command)
         if executable is None:
             raise MissionValidationError(
-                "Codex CLI is not installed; Stage D requires the real OAuth provider"
+                "Codex CLI is not installed; Adaptive mission requires the real OAuth provider"
             )
         env = dict(os.environ)
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_API_KEY", None)
         self._require_chatgpt_oauth(executable, env)
-        with tempfile.TemporaryDirectory(prefix="rvr-stage-d-") as directory:
+        with tempfile.TemporaryDirectory(prefix="rvr-adaptive-mission-") as directory:
             root = Path(directory)
             schema_path = root / "intent-schema.json"
             output_path = root / "intent.json"
             schema_path.write_text(
-                json.dumps(_stage_d_output_schema(), sort_keys=True),
+                json.dumps(_adaptive_mission_output_schema(), sort_keys=True),
                 encoding="utf-8",
             )
             command = [
@@ -371,7 +371,7 @@ class CodexOAuthStageDIntentProvider:
             try:
                 completed = subprocess.run(
                     command,
-                    input=_stage_d_provider_prompt(prompt, snapshot),
+                    input=_adaptive_mission_provider_prompt(prompt, snapshot),
                     text=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
@@ -382,24 +382,24 @@ class CodexOAuthStageDIntentProvider:
                 )
             except subprocess.TimeoutExpired as exc:
                 raise MissionValidationError(
-                    "Codex OAuth Stage D intent call timed out"
+                    "Codex OAuth adaptive mission intent call timed out"
                 ) from exc
             if completed.returncode != 0:
                 detail = str(completed.stderr).strip().splitlines()
                 suffix = f": {detail[-1]}" if detail else ""
                 raise MissionValidationError(
-                    "Codex OAuth Stage D intent call failed with exit code "
+                    "Codex OAuth adaptive mission intent call failed with exit code "
                     f"{completed.returncode}{suffix}"
                 )
             try:
                 payload = json.loads(output_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise MissionValidationError(
-                    "Codex OAuth Stage D intent call returned malformed output"
+                    "Codex OAuth adaptive mission intent call returned malformed output"
                 ) from exc
         if not isinstance(payload, Mapping):
             raise MissionValidationError(
-                "Codex OAuth Stage D intent output must be an object"
+                "Codex OAuth adaptive mission intent output must be an object"
             )
         return dict(payload)
 
@@ -434,7 +434,7 @@ class CodexOAuthStageDIntentProvider:
             self._oauth_checked = True
 
 
-def _stage_d_output_schema() -> dict[str, Any]:
+def _adaptive_mission_output_schema() -> dict[str, Any]:
     return {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
@@ -472,7 +472,7 @@ def _stage_d_output_schema() -> dict[str, Any]:
     }
 
 
-def _stage_d_provider_prompt(
+def _adaptive_mission_provider_prompt(
     prompt: str, snapshot: Mapping[str, Any]
 ) -> str:
     request = {
@@ -515,7 +515,7 @@ def _stage_d_provider_prompt(
 
 
 @dataclass(frozen=True)
-class StageDApprovalEnvelope:
+class AdaptiveMissionApprovalEnvelope:
     mission_id: str
     lease_id: str
     prompt: str
@@ -528,13 +528,13 @@ class StageDApprovalEnvelope:
     executor_mode: str
     starting_snapshot_id: str
     first_intent: Mapping[str, Any]
-    limits: StageDLimits
-    safety_policy: str = STAGE_D_SAFETY_POLICY
+    limits: AdaptiveMissionLimits
+    safety_policy: str = ADAPTIVE_MISSION_SAFETY_POLICY
     physical_execution_enabled: bool = False
 
     def proposal(self) -> dict[str, Any]:
         body = {
-            "schema": STAGE_D_PROPOSAL_SCHEMA,
+            "schema": ADAPTIVE_MISSION_PROPOSAL_SCHEMA,
             "mission_id": self.mission_id,
             "lease_id": self.lease_id,
             "prompt": self.prompt,
@@ -596,7 +596,7 @@ class MovementDecision:
             "collision_state": self.collision_state,
             "motor_topic_publisher": "lidar_collision_stop_supervisor",
             "command_path": [
-                "stage_d_intent_executor",
+                "adaptive_mission_intent_executor",
                 "/cmd_vel",
                 "lidar_collision_stop_supervisor",
                 "/cmd_vel_motor",
@@ -622,13 +622,13 @@ class IntentExecutionResult:
         }
 
 
-class StageDExecutor(Protocol):
+class AdaptiveMissionExecutor(Protocol):
     mode: str
 
     def snapshot(self, mission_id: str) -> Mapping[str, Any]: ...
 
     def execute(
-        self, intent: StageDIntent, cancellation: threading.Event
+        self, intent: AdaptiveMissionIntent, cancellation: threading.Event
     ) -> IntentExecutionResult: ...
 
 
@@ -641,9 +641,9 @@ class ReplayCollisionSupervisor:
 
     def supervise(
         self,
-        intent: StageDIntent,
+        intent: AdaptiveMissionIntent,
         snapshot: Mapping[str, Any],
-        limits: StageDLimits,
+        limits: AdaptiveMissionLimits,
     ) -> MovementDecision:
         self.calls += 1
         evidence = snapshot.get("evidence", {})
@@ -703,7 +703,7 @@ class ReplayCollisionSupervisor:
         )
 
 
-class ReplayStageDExecutor:
+class ReplayAdaptiveMissionExecutor:
     """Fast replay executor implementing the future physical adapter boundary."""
 
     mode = "replay-simulation"
@@ -711,12 +711,12 @@ class ReplayStageDExecutor:
     def __init__(
         self,
         *,
-        limits: Optional[StageDLimits] = None,
+        limits: Optional[AdaptiveMissionLimits] = None,
         supervisor: Optional[ReplayCollisionSupervisor] = None,
         motion_permitted: bool = True,
         stale_after_intents: Optional[int] = None,
     ) -> None:
-        self.limits = limits or StageDLimits()
+        self.limits = limits or AdaptiveMissionLimits()
         self.supervisor = supervisor or ReplayCollisionSupervisor()
         self.motion_permitted = bool(motion_permitted)
         self.stale_after_intents = stale_after_intents
@@ -761,7 +761,7 @@ class ReplayStageDExecutor:
                     "collision_state": "CLEAR",
                     "stop_active": False,
                     "estop_latched": False,
-                    "supervisor": STAGE_D_SAFETY_POLICY,
+                    "supervisor": ADAPTIVE_MISSION_SAFETY_POLICY,
                 },
                 "execution": {
                     "mode": self.mode,
@@ -818,7 +818,7 @@ class ReplayStageDExecutor:
         )
 
     def execute(
-        self, intent: StageDIntent, cancellation: threading.Event
+        self, intent: AdaptiveMissionIntent, cancellation: threading.Event
     ) -> IntentExecutionResult:
         before = self.snapshot(self._mission_id)
         if cancellation.is_set():
@@ -901,7 +901,7 @@ class ReplayStageDExecutor:
         return {
             "available": True,
             "fixture_only": True,
-            "source": "stage-d-replay-executor",
+            "source": "adaptive-mission-replay-executor",
             "frame": "map",
             "bounds": {
                 "origin": {"x_m": 0.0, "y_m": 0.0},
@@ -922,8 +922,8 @@ class ReplayStageDExecutor:
         }
 
 
-class StageDController:
-    """Execute one approved, repeatedly replanned Stage D mission lease."""
+class AdaptiveMissionController:
+    """Execute one approved, repeatedly replanned adaptive mission lease."""
 
     def __init__(
         self,
@@ -936,10 +936,10 @@ class StageDController:
         authentication_source: str,
         approved_at_s: float,
         first_snapshot: Mapping[str, Any],
-        first_intent: StageDIntent,
-        provider: StageDIntentProvider,
-        executor: StageDExecutor,
-        limits: Optional[StageDLimits] = None,
+        first_intent: AdaptiveMissionIntent,
+        provider: AdaptiveMissionIntentProvider,
+        executor: AdaptiveMissionExecutor,
+        limits: Optional[AdaptiveMissionLimits] = None,
         checkpoint: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
         owns_executor: bool = True,
         now: Callable[[], float] = time.time,
@@ -950,7 +950,7 @@ class StageDController:
             or not str(authentication_source).strip()
         ):
             raise MissionValidationError(
-                "Stage D requires an authenticated approval operator and source"
+                "Adaptive mission requires an authenticated approval operator and source"
             )
         self.mission_id = str(mission_id)
         self.prompt = str(prompt)
@@ -960,7 +960,7 @@ class StageDController:
         self.approved_at_s = float(approved_at_s)
         self.provider = provider
         self.executor = executor
-        self.limits = limits or StageDLimits()
+        self.limits = limits or AdaptiveMissionLimits()
         self._checkpoint = checkpoint
         self._owns_executor = bool(owns_executor)
         self._now = now
@@ -970,14 +970,14 @@ class StageDController:
         self._shutdown = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._provider_pool = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="stage-d-provider"
+            max_workers=1, thread_name_prefix="adaptive-mission-provider"
         )
         self._provider_future: Optional[Future[Mapping[str, Any]]] = None
         self._terminal = False
         self._status = "approved"
         self._terminal_reason = ""
         self._world = json.loads(json.dumps(dict(first_snapshot)))
-        self._active_intent: Optional[StageDIntent] = first_intent
+        self._active_intent: Optional[AdaptiveMissionIntent] = first_intent
         self._revisions: list[dict[str, Any]] = []
         self._snapshots = [json.loads(json.dumps(self._world))]
         self._events: list[dict[str, Any]] = []
@@ -995,11 +995,11 @@ class StageDController:
     def start(self) -> None:
         with self._lock:
             if self._thread is not None:
-                raise RuntimeError("Stage D controller already started")
+                raise RuntimeError("Adaptive mission controller already started")
             self._status = "running"
             self._thread = threading.Thread(
                 target=self._run,
-                name=f"stage-d-{self.mission_id}",
+                name=f"adaptive-mission-{self.mission_id}",
                 daemon=True,
             )
             self._thread.start()
@@ -1027,7 +1027,7 @@ class StageDController:
             thread.join(timeout=max(0.0, float(timeout_s)))
         if thread is not None and thread.is_alive():
             raise RuntimeError(
-                "Stage D controller shutdown did not prove executor cleanup"
+                "Adaptive mission controller shutdown did not prove executor cleanup"
             )
         self._provider_pool.shutdown(wait=False, cancel_futures=True)
         close_executor = getattr(self.executor, "close", None)
@@ -1159,7 +1159,7 @@ class StageDController:
                 raw = future.result()
                 self._provider_future = None
                 issued_at = self._now()
-                next_intent = StageDIntent.validated(
+                next_intent = AdaptiveMissionIntent.validated(
                     raw,
                     revision=len(self._revisions) + 1,
                     snapshot=self._world,
@@ -1207,7 +1207,7 @@ class StageDController:
         self._execution_in_flight = False
         self._append_event(
             "terminal",
-            f"Stage D loop ended {status}: {reason}; automatic resumption is disabled.",
+            f"Adaptive mission loop ended {status}: {reason}; automatic resumption is disabled.",
         )
         self._emit_checkpoint("terminal", self._projection())
 
@@ -1264,7 +1264,7 @@ class StageDController:
             }
         )
         return {
-            "schema": STAGE_D_RESULT_SCHEMA,
+            "schema": ADAPTIVE_MISSION_RESULT_SCHEMA,
             "mission_id": self.mission_id,
             "status": self._status,
             "terminal": self._terminal,
@@ -1332,7 +1332,7 @@ class StageDController:
 
     def _terminal_result(self) -> dict[str, Any]:
         return {
-            "schema": STAGE_D_RESULT_SCHEMA,
+            "schema": ADAPTIVE_MISSION_RESULT_SCHEMA,
             "mission_id": self.mission_id,
             "status": self._status,
             "terminal_reason": self._terminal_reason,
@@ -1355,7 +1355,7 @@ class StageDController:
                 "expires_at_s": self._mission_expires_at_s,
             },
             "limits": self.limits.to_json_dict(),
-            "safety_policy": STAGE_D_SAFETY_POLICY,
+            "safety_policy": ADAPTIVE_MISSION_SAFETY_POLICY,
             "auto_resume": False,
             "drop_off_detection_available": False,
             "motor_topic_publisher": "lidar_collision_stop_supervisor",

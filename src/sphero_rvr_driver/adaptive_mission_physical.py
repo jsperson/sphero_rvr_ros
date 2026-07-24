@@ -1,4 +1,4 @@
-"""Disabled-by-default physical Stage D executor over the live-route seam.
+"""Disabled-by-default physical adaptive mission executor over the live-route seam.
 
 This module is ROS-free.  It consumes the production node's receipt-time cache
 and delegates one bounded movement intent at a time to ``RosLiveRouteExecutor``.
@@ -21,24 +21,24 @@ from .live_route_runner import (
     RouteSegmentRequest,
 )
 from .mission_api import MissionValidationError
-from .stage_d_controller import (
+from .adaptive_mission_controller import (
     IntentExecutionResult,
     MovementDecision,
-    STAGE_D_SAFETY_POLICY,
-    StageDIntent,
-    StageDLimits,
+    ADAPTIVE_MISSION_SAFETY_POLICY,
+    AdaptiveMissionIntent,
+    AdaptiveMissionLimits,
     make_world_snapshot,
     validate_world_snapshot,
 )
 
 
-class StageDRouteTransport(Protocol):
+class AdaptiveMissionRouteTransport(Protocol):
     def execute(self, request: LiveRouteRequest) -> Mapping[str, Any]: ...
 
     def cancel(self) -> bool: ...
 
 
-def validate_physical_stage_d_gate(
+def validate_physical_adaptive_mission_gate(
     *,
     enabled: bool,
     source_sha: str,
@@ -61,16 +61,16 @@ def validate_physical_stage_d_gate(
         or source != reviewed
     ):
         raise MissionValidationError(
-            "physical Stage D requires identical source, deployed, and reviewed SHAs"
+            "physical Adaptive mission requires identical source, deployed, and reviewed SHAs"
         )
     if not transport_available:
         raise MissionValidationError(
-            "physical Stage D requires the supervised live-route transport"
+            "physical Adaptive mission requires the supervised live-route transport"
         )
     return True
 
 
-class PhysicalStageDExecutor:
+class PhysicalAdaptiveMissionExecutor:
     """One-intent physical adapter with no direct ROS or motor command surface."""
 
     mode = "physical-supervised-live-route"
@@ -84,8 +84,8 @@ class PhysicalStageDExecutor:
         deployed_sha: str,
         reviewed_sha: str = "",
         execution_enabled: bool = False,
-        transport: Optional[StageDRouteTransport] = None,
-        limits: Optional[StageDLimits] = None,
+        transport: Optional[AdaptiveMissionRouteTransport] = None,
+        limits: Optional[AdaptiveMissionLimits] = None,
         max_source_age_s: float = 0.30,
         max_perception_age_s: float = 1.0,
         cleanup_timeout_s: float = 3.0,
@@ -95,7 +95,7 @@ class PhysicalStageDExecutor:
         self.source_sha = _required_sha(source_sha, "source_sha")
         self.deployed_sha = _required_sha(deployed_sha, "deployed_sha")
         self.transport = transport
-        self.limits = limits or StageDLimits()
+        self.limits = limits or AdaptiveMissionLimits()
         self.max_source_age_s = float(max_source_age_s)
         self.max_perception_age_s = float(max_perception_age_s)
         self.cleanup_timeout_s = float(cleanup_timeout_s)
@@ -105,23 +105,23 @@ class PhysicalStageDExecutor:
             or self.max_source_age_s <= 0.0
         ):
             raise MissionValidationError(
-                "physical Stage D source age must be positive and finite"
+                "physical adaptive mission source age must be positive and finite"
             )
         if (
             not math.isfinite(self.max_perception_age_s)
             or self.max_perception_age_s <= 0.0
         ):
             raise MissionValidationError(
-                "physical Stage D perception age must be positive and finite"
+                "physical Adaptive mission perception age must be positive and finite"
             )
         if (
             not math.isfinite(self.cleanup_timeout_s)
             or self.cleanup_timeout_s <= 0.0
         ):
             raise MissionValidationError(
-                "physical Stage D cleanup timeout must be positive and finite"
+                "physical Adaptive mission cleanup timeout must be positive and finite"
             )
-        self.execution_enabled = validate_physical_stage_d_gate(
+        self.execution_enabled = validate_physical_adaptive_mission_gate(
             enabled=execution_enabled,
             source_sha=self.source_sha,
             deployed_sha=self.deployed_sha,
@@ -130,7 +130,7 @@ class PhysicalStageDExecutor:
         )
         self._lock = threading.RLock()
         self._pool = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="stage-d-live-route"
+            max_workers=1, thread_name_prefix="adaptive-mission-live-route"
         )
         self._future: Optional[Future[Mapping[str, Any]]] = None
         self._mission_id = ""
@@ -151,11 +151,11 @@ class PhysicalStageDExecutor:
         with self._lock:
             if self._future is not None and not self._future.done():
                 raise MissionValidationError(
-                    "cannot reset Stage D while a physical intent is active"
+                    "cannot reset Adaptive mission while a physical intent is active"
                 )
             self._mission_id = str(mission_id).strip()
             if not self._mission_id:
-                raise MissionValidationError("physical Stage D mission id is required")
+                raise MissionValidationError("physical adaptive mission id is required")
             self._proposal_digest = ""
             self._approval_id = ""
             self._operator = ""
@@ -175,7 +175,7 @@ class PhysicalStageDExecutor:
         with self._lock:
             if not self.execution_enabled:
                 raise MissionValidationError(
-                    "physical Stage D execution is disabled by deployment configuration"
+                    "physical Adaptive mission execution is disabled by deployment configuration"
                 )
             digest = str(proposal_digest).strip().lower()
             approval = str(approval_id).strip()
@@ -187,14 +187,14 @@ class PhysicalStageDExecutor:
                 or not principal
             ):
                 raise MissionValidationError(
-                    "physical Stage D approval binding is incomplete"
+                    "physical adaptive mission approval binding is incomplete"
                 )
             self._proposal_digest = digest
             self._approval_id = approval
             self._operator = principal
 
     def readiness(self) -> dict[str, Any]:
-        snapshot = self.snapshot(self._mission_id or "stage-d-readiness")
+        snapshot = self.snapshot(self._mission_id or "adaptive-mission-readiness")
         evidence = snapshot["evidence"]
         safety = snapshot["safety"]
         reasons = []
@@ -218,7 +218,7 @@ class PhysicalStageDExecutor:
             "source_sha": self.source_sha,
             "deployed_sha": self.deployed_sha,
             "command_path": [
-                "StageDController",
+                "AdaptiveMissionController",
                 "RosLiveRouteExecutor",
                 "live_route_runner",
                 "/cmd_vel",
@@ -305,7 +305,7 @@ class PhysicalStageDExecutor:
                     "collision_state": collision_state,
                     "stop_active": stop_active,
                     "estop_latched": estop_latched,
-                    "supervisor": STAGE_D_SAFETY_POLICY,
+                    "supervisor": ADAPTIVE_MISSION_SAFETY_POLICY,
                     "control_state": control.get("state", "UNKNOWN"),
                 },
                 "execution": {
@@ -350,7 +350,7 @@ class PhysicalStageDExecutor:
         )
 
     def execute(
-        self, intent: StageDIntent, cancellation: threading.Event
+        self, intent: AdaptiveMissionIntent, cancellation: threading.Event
     ) -> IntentExecutionResult:
         before = self.snapshot(self._mission_id)
         if cancellation.is_set():
@@ -470,7 +470,7 @@ class PhysicalStageDExecutor:
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     def map_projection(self) -> dict[str, Any]:
-        snapshot = self.snapshot(self._mission_id or "stage-d-map")
+        snapshot = self.snapshot(self._mission_id or "adaptive-mission-map")
         pose = snapshot.get("pose", {})
         return {
             "available": all(
@@ -478,7 +478,7 @@ class PhysicalStageDExecutor:
                 for name in ("x_m", "y_m", "yaw_deg")
             ),
             "fixture_only": False,
-            "source": "authoritative-live-stage-d-snapshot",
+            "source": "authoritative-live-adaptive-mission-snapshot",
             "frame": pose.get("frame", "map"),
             "rover": dict(pose),
             "goal_region": None,
@@ -498,9 +498,9 @@ class PhysicalStageDExecutor:
             },
         }
 
-    def _route_request(self, intent: StageDIntent) -> LiveRouteRequest:
+    def _route_request(self, intent: AdaptiveMissionIntent) -> LiveRouteRequest:
         correlation = (
-            f"{self._mission_id}:stage-d-intent:{intent.revision}"
+            f"{self._mission_id}:adaptive-mission-intent:{intent.revision}"
         )
         if intent.action == "move_distance":
             arguments = {
@@ -536,7 +536,7 @@ class PhysicalStageDExecutor:
 
     def _terminal_result(
         self,
-        intent: StageDIntent,
+        intent: AdaptiveMissionIntent,
         request: LiveRouteRequest,
         result: Mapping[str, Any],
         started: float,
@@ -649,7 +649,7 @@ class PhysicalStageDExecutor:
 
     def _nonmotion_result(
         self,
-        intent: StageDIntent,
+        intent: AdaptiveMissionIntent,
         outcome: str,
         reason: str,
         snapshot: Mapping[str, Any],
@@ -684,9 +684,9 @@ class PhysicalStageDExecutor:
 
 
 def _movement_from_supervision(
-    intent: StageDIntent,
+    intent: AdaptiveMissionIntent,
     supervision: Mapping[str, Any],
-    limits: StageDLimits,
+    limits: AdaptiveMissionLimits,
 ) -> MovementDecision:
     requested = _mapping(supervision.get("requested"))
     supervised = _mapping(supervision.get("supervised"))
@@ -766,7 +766,7 @@ def _nonnegative_int(value: Any) -> int:
 
 
 def _movement_within_limits(
-    movement: MovementDecision, limits: StageDLimits
+    movement: MovementDecision, limits: AdaptiveMissionLimits
 ) -> bool:
     epsilon = 1e-9
     return bool(
@@ -784,7 +784,7 @@ def _movement_within_limits(
 def _required_sha(value: str, name: str) -> str:
     result = str(value).strip()
     if not result or result.lower() == "unknown":
-        raise MissionValidationError(f"physical Stage D {name} is required")
+        raise MissionValidationError(f"physical Adaptive mission {name} is required")
     return result
 
 

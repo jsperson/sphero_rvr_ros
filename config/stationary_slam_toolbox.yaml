@@ -7,7 +7,7 @@ slam_toolbox:
     scan_topic: /scan
     mode: mapping
 
-    # Stage C is physically stationary. An explicit static odom -> base_link
+    # Stationary perception is physically stationary. An explicit static odom -> base_link
     # transform is supplied by stationary_perception.launch.py; no rover driver
     # or wheel odometry exists in this graph.
     debug_logging: false

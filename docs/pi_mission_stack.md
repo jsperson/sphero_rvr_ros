@@ -18,8 +18,8 @@ browser
 Planning credentials, proposal persistence, approval identity, and the exact
 digest gate stay on the Pi. The browser does not receive OAuth material and has
 no ROS, serial, motor, or OpenAI route. The deployed owner is intentionally
-proposal-only: `RVR_STAGE_D_ENABLED=false` and
-`live_execution_enabled=false`, so no Stage D controller or route executor is
+proposal-only: `RVR_ADAPTIVE_MISSION_ENABLED=false` and
+`live_execution_enabled=false`, so no Adaptive mission controller or route executor is
 instantiated, and the two systemd units start no motor-capable process.
 
 ## Deployment layout
@@ -85,7 +85,7 @@ RVR_SOURCE_SHA=<exact-reviewed-sha>
 RVR_DEPLOYED_SHA=<same-exact-sha>
 RVR_LIVE_EXECUTION_ENABLED=false
 RVR_LIVE_EXECUTION_REVIEWED_SHA=
-RVR_STAGE_D_ENABLED=false
+RVR_ADAPTIVE_MISSION_ENABLED=false
 RVR_WEB_PORT=8765
 RVR_WEB_ORIGIN=https://sphero-pi-2.tailab4000.ts.net
 ```
@@ -170,10 +170,10 @@ and environment file.
 
 ## Attended physical execution gate
 
-Stage D semantic movement uses the dedicated composed graph:
+Adaptive mission semantic movement uses the dedicated composed graph:
 
 ```bash
-ros2 launch sphero_rvr_driver stage_d_perception.launch.py
+ros2 launch sphero_rvr_driver adaptive_mission_perception.launch.py
 ```
 
 That command is the safe sensor-only default: `start_rvr=false` and
@@ -184,7 +184,7 @@ be inspected without a rover driver. The semantic producer publishes no
 
 Only an attended, exact-SHA-reviewed physical session may additionally set
 `start_rvr:=true start_live_route_runner:=true`. The composed graph still routes
-typed Stage D intents through `live_route_runner → /cmd_vel →
+typed Adaptive mission intents through `live_route_runner → /cmd_vel →
 lidar_collision_stop_supervisor → /cmd_vel_motor`. The mission service receives
 camera, localization, and semantic-map status on its existing Mission API
 topics. It withholds semantic tracks from the planner unless camera,
@@ -214,7 +214,7 @@ stamps must advance monotonically to reject frozen/replayed scans; and a 0.75 s
 source-stamp sanity ceiling rejects abnormally delayed acquisition. Both ages
 are reported in collision diagnostics.
 
-The next exact-SHA real-OAuth Stage D run proved the physical controller seam at
+The next exact-SHA real-OAuth Adaptive mission run proved the physical controller seam at
 the installed 0.10 m/s ceiling but failed closed on settled target error:
 0.138780 m for a requested 0.10 m, with matched 600/604 encoder counts,
 0.211-degree heading change, collision `CLEAR`, and final zero output. The bag
@@ -227,7 +227,7 @@ still requires a new operator-attended 10 cm revalidation at the new exact SHA
 before the turn stage.
 
 The exact-SHA `a65c50ff2c30a114025d570b04ed66f879774eff` revalidation passed
-the real browser/OAuth Stage D loop. The model selected a 0.10 m
+the real browser/OAuth Adaptive mission loop. The model selected a 0.10 m
 `move_distance`, the route runner requested zero at 0.082646 m, and the rover
 settled at 0.090715 m after 0.008069 m of additional coast. Terminal evidence
 reported `target_reached`, `terminal_settled=true`, 0.600 s settle duration,
@@ -235,7 +235,7 @@ reported `target_reached`, `terminal_settled=true`, 0.600 s settle duration,
 zero motor output. The updated world snapshot then caused a second real provider
 call to choose `stop`, completing the mission with two distinct revisions.
 
-The subsequent attended 45 degree Stage D turn failed closed at the same SHA.
+The subsequent attended 45 degree Adaptive mission turn failed closed at the same SHA.
 The bounded request and collision-supervised command both remained 0.35 rad/s,
 but authoritative odometry measured 3.21 rad/s of yaw. Zero was requested at
 43.256 degrees; the next 10 Hz sample had already reached 58.430 degrees and the
@@ -277,7 +277,7 @@ mission failed closed as `target_error` with a 24.283 degree error, collision
 Independent STOP, two unchanged encoder samples, relock, process cleanup, and
 restart preservation of the terminal result all passed. The sealed evidence is
 under
-`/home/jsperson/rvr_runs/stage_d_turn45_correction_940e850_20260724T182000Z`.
+`/home/jsperson/rvr_runs/adaptive_mission_turn45_correction_940e850_20260724T182000Z`.
 
 The exact-SHA `a0edb78620ab7ae8ddc332e95a746dd4c47a6581` repeat showed
 that the bounded pulses were effective but stopped just outside the then-current
@@ -289,7 +289,7 @@ outside the then-current 5 degree gate, so the mission truthfully failed
 both final command topics were zero, independent STOP and stationary encoder
 checks passed, and restart preserved `auto_resume=false`. The sealed evidence
 is under
-`/home/jsperson/rvr_runs/stage_d_turn45_pulse_a0edb78_20260724T191500Z`.
+`/home/jsperson/rvr_runs/adaptive_mission_turn45_pulse_a0edb78_20260724T191500Z`.
 
 That bag also found a control-period boundary error: the second nominal 0.05
 second correction was refreshed once because the next timer tick arrived at
@@ -309,7 +309,7 @@ measurement is within that threshold. This changes only terminal turn
 precision; collision, freshness, STOP/ESTOP, speed, timeout, cancellation, and
 lease gates remain fail-closed.
 
-The exact-SHA `45ae1adc3942850bd43b9a31679869d3339d309a` Stage D
+The exact-SHA `45ae1adc3942850bd43b9a31679869d3339d309a` Adaptive mission
 capability session then exercised the complete physical loop. A first approved
 mission completed `observe` and a 0.194449 m translation; the real provider's
 third revision proposed a 30-degree turn, but a contemporaneous
@@ -317,7 +317,7 @@ third revision proposed a 30-degree turn, but a contemporaneous
 requested and supervised motion both zero. Later `CLEAR` evidence did not
 resume the terminal mission. Independent STOP, stationary encoder samples,
 relock, cleanup, and restart preservation passed. Its sealed evidence is
-`/home/jsperson/rvr_runs/stage_d_capability_45ae1ad_20260724T203000Z`.
+`/home/jsperson/rvr_runs/adaptive_mission_capability_45ae1ad_20260724T203000Z`.
 
 A separately approved retry completed four real
 `openai-codex-oauth/gpt-5.6-sol` decisions:
@@ -331,7 +331,7 @@ intents, and the terminal progress recorded four intents, one observation,
 prompt, exact SHAs, proposal digest, limits, safety policy, and 15-minute lease.
 Independent STOP, two zero motor samples, unchanged encoder samples, relock,
 restart/no-resume, and process cleanup passed. Its sealed evidence is
-`/home/jsperson/rvr_runs/stage_d_capability_retry_45ae1ad_20260724T204000Z`.
+`/home/jsperson/rvr_runs/adaptive_mission_capability_retry_45ae1ad_20260724T204000Z`.
 
 While Scott is present, prepare the supervised ROS graph and verify fresh odom,
 collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, route-runner request/status graph
@@ -369,16 +369,16 @@ multi-step prompt, or materially different stage starts a new attended series.
 Follow `docs/motion_calibration.md` and stop on missing, stale, or inconsistent
 evidence.
 
-### Stage D attended extension
+### Adaptive mission attended extension
 
-Do not select Stage D during the straight, turn, or composed-route calibration
+Do not select Adaptive mission during the straight, turn, or composed-route calibration
 series. After those gates and the attended collision exercise pass, a separate
-reviewed Stage D session also sets `RVR_STAGE_D_ENABLED=true`. The operator
+reviewed Adaptive mission session also sets `RVR_ADAPTIVE_MISSION_ENABLED=true`. The operator
 reviews “Explore the room” as an adaptive 15-minute lease and approves once;
 subsequent intents do not ask again. The page must show every snapshot,
 rationale, requested/supervised movement, and revision. STOP, ESTOP, collision,
 stale evidence, cancellation, timeout, provider loss, or restart ends that lease
-without resumption. Relock both `RVR_STAGE_D_ENABLED` and
+without resumption. Relock both `RVR_ADAPTIVE_MISSION_ENABLED` and
 `RVR_LIVE_EXECUTION_ENABLED` immediately after the attended run.
 
 ### Exact attended procedure

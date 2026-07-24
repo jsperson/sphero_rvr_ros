@@ -47,16 +47,16 @@ from .rolling_replay import (
     RollingReplayEngine,
     canonical_digest,
 )
-from .stage_d_controller import (
-    STAGE_D_PROPOSAL_SCHEMA,
-    CodexOAuthStageDIntentProvider,
-    ReplayStageDExecutor,
-    StageDApprovalEnvelope,
-    StageDController,
-    StageDExecutor,
-    StageDIntent,
-    StageDIntentProvider,
-    StageDLimits,
+from .adaptive_mission_controller import (
+    ADAPTIVE_MISSION_PROPOSAL_SCHEMA,
+    CodexOAuthAdaptiveMissionIntentProvider,
+    ReplayAdaptiveMissionExecutor,
+    AdaptiveMissionApprovalEnvelope,
+    AdaptiveMissionController,
+    AdaptiveMissionExecutor,
+    AdaptiveMissionIntent,
+    AdaptiveMissionIntentProvider,
+    AdaptiveMissionLimits,
     validate_world_snapshot,
 )
 
@@ -65,8 +65,9 @@ MAX_REQUEST_BYTES = 64 * 1024
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 TERMINAL_ARTIFACT_PATH = "/api/web/artifacts/terminal-result"
-STATIONARY_SENSOR_CONTROL_PATH = "/api/web/stationary-sensors"
-STATIONARY_SENSOR_UNIT = "rvr-stationary-perception.service"
+TELEMETRY_CONTROL_PATH = "/api/web/telemetry"
+TELEMETRY_UNIT = "rvr-telemetry.service"
+ADAPTIVE_MISSION_UNIT = "rvr-adaptive-mission.service"
 
 
 class MissionWebError(ValueError):
@@ -110,8 +111,8 @@ class RollingReplayScenario(str, Enum):
     LLM_DRIVING = "rolling_llm_replay"
 
 
-class StageDScenario(str, Enum):
-    EXPLORE = "stage_d_explore"
+class AdaptiveMissionScenario(str, Enum):
+    EXPLORE = "adaptive_mission_explore"
 
 
 TERMINAL_STATES = {
@@ -167,10 +168,10 @@ ROLLING_REPLAY_SCENARIOS: tuple[ScenarioDefinition, ...] = (
     ),
 )
 
-STAGE_D_SCENARIOS: tuple[ScenarioDefinition, ...] = (
+ADAPTIVE_MISSION_SCENARIOS: tuple[ScenarioDefinition, ...] = (
     ScenarioDefinition(
-        StageDScenario.EXPLORE,
-        "Stage D adaptive exploration",
+        AdaptiveMissionScenario.EXPLORE,
+        "Adaptive room exploration",
         "One approved 15-minute lease with a real OAuth planner choosing one bounded intent from every updated snapshot.",
     ),
 )
@@ -300,8 +301,8 @@ class MissionWebAdapter(Protocol):
     def cancel(self) -> Mapping[str, Any]: ...
 
 
-class StationarySensorControl(Protocol):
-    """Bounded control for the fixed no-motion stationary perception unit."""
+class TelemetryControl(Protocol):
+    """Bounded camera/lidar control with no path that can start motion."""
 
     def status(self) -> Mapping[str, Any]: ...
 
@@ -313,13 +314,13 @@ class StationarySensorControl(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
-class SystemdStationarySensorControl:
-    """Start or stop only the installed Stage C stationary sensor unit."""
+class SystemdTelemetryControl:
+    """Start no-motion telemetry or stop every installed telemetry owner."""
 
-    def __init__(self, unit: str = STATIONARY_SENSOR_UNIT) -> None:
-        if str(unit).strip() != STATIONARY_SENSOR_UNIT:
-            raise MissionWebError("only the stationary perception service may be controlled")
-        self.unit = STATIONARY_SENSOR_UNIT
+    def __init__(self, unit: str = TELEMETRY_UNIT) -> None:
+        if str(unit).strip() != TELEMETRY_UNIT:
+            raise MissionWebError("only the fixed telemetry service may be controlled")
+        self.unit = TELEMETRY_UNIT
         self._lock = threading.RLock()
         self._verified_stopped: Optional[bool] = None
         self._degraded_detail = ""
@@ -352,7 +353,7 @@ class SystemdStationarySensorControl:
                     "active": False,
                     "transitioning": False,
                     "state": "unavailable",
-                    "detail": f"Unable to query stationary sensors: {exc}",
+                    "detail": f"Unable to query telemetry: {exc}",
                     "unit": self.unit,
                 }
             properties = {}
@@ -378,7 +379,7 @@ class SystemdStationarySensorControl:
             state = active_state if available else "unavailable"
             detail = f"{active_state} / {sub_state}"
             if available and active_state == "failed":
-                detail = f"Stationary sensor unit failed ({result or 'unknown result'})."
+                detail = f"Telemetry unit failed ({result or 'unknown result'})."
             if available and self._degraded_detail and active_state != "active":
                 state = "degraded"
                 detail = self._degraded_detail
@@ -387,7 +388,7 @@ class SystemdStationarySensorControl:
             elif not available:
                 detail = (
                     str(completed.stderr).strip()
-                    or "Stationary sensor service is not installed."
+                    or "Telemetry service is not installed."
                 )
             return {
                 "available": available,
@@ -408,16 +409,27 @@ class SystemdStationarySensorControl:
         authority_snapshot: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         with self._lock:
-            if active and not _stationary_sensor_start_permitted(authority_snapshot):
+            if active and not _telemetry_start_permitted(authority_snapshot):
                 raise MissionWebError(
-                    "stationary sensors may start only while physical execution and motion authority are disabled"
+                    "telemetry may start only while physical execution and motion authority are disabled"
                 )
             if active:
-                _assert_stationary_no_motion_runtime()
+                _assert_telemetry_no_motion_runtime()
             action = "start" if active else "stop"
+            command = (
+                ["systemctl", "--user", "start", self.unit]
+                if active
+                else [
+                    "systemctl",
+                    "--user",
+                    "stop",
+                    ADAPTIVE_MISSION_UNIT,
+                    self.unit,
+                ]
+            )
             try:
                 completed = subprocess.run(
-                    ["systemctl", "--user", action, self.unit],
+                    command,
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -430,7 +442,7 @@ class SystemdStationarySensorControl:
                         "Shutdown timed out or failed before lifecycle cleanup "
                         f"could be verified: {exc}"
                     )
-                raise MissionWebError(f"unable to {action} stationary sensors: {exc}") from exc
+                raise MissionWebError(f"unable to {action} telemetry: {exc}") from exc
             if completed.returncode != 0:
                 detail = str(completed.stderr).strip() or str(completed.stdout).strip()
                 if not active:
@@ -440,7 +452,7 @@ class SystemdStationarySensorControl:
                         f"{detail or 'systemd request failed'}"
                     )
                 raise MissionWebError(
-                    f"unable to {action} stationary sensors: {detail or 'systemd request failed'}"
+                    f"unable to {action} telemetry: {detail or 'systemd request failed'}"
                 )
             status = dict(self.status())
             expected_state = "active" if active else "inactive"
@@ -455,14 +467,14 @@ class SystemdStationarySensorControl:
                         f"({status.get('detail', 'unknown state')})."
                     )
                 raise MissionWebError(
-                    f"stationary sensors did not reach the requested {'active' if active else 'inactive'} state"
+                    f"telemetry did not reach the requested {'active' if active else 'inactive'} state"
                 )
             if active:
                 self._verified_stopped = False
                 self._degraded_detail = ""
                 return status
             try:
-                _assert_stationary_shutdown_complete()
+                _assert_telemetry_shutdown_complete()
             except MissionWebError as exc:
                 self._verified_stopped = False
                 self._degraded_detail = (
@@ -478,11 +490,11 @@ class SystemdStationarySensorControl:
         with self._lock:
             self._verified_stopped = False
             self._degraded_detail = str(detail).strip() or (
-                "Stationary sensor lifecycle is degraded and shutdown is unverified."
+                "Telemetry lifecycle is degraded and shutdown is unverified."
             )
 
 
-def _assert_stationary_shutdown_complete(*, timeout_s: float = 5.0) -> None:
+def _assert_telemetry_shutdown_complete(*, timeout_s: float = 5.0) -> None:
     """Require the fixed sensor launch, descendants, and device handle to be gone."""
 
     deadline = time.monotonic() + float(timeout_s)
@@ -518,6 +530,7 @@ def _assert_stationary_shutdown_complete(*, timeout_s: float = 5.0) -> None:
             "camera_node",
             "async_slam_toolbox_node",
             "stationary_perception.launch.py",
+            "adaptive_mission_perception.launch.py",
             "/sphero_rvr_driver/stationary_perception ",
         )
         conflicts = [
@@ -538,20 +551,23 @@ def _assert_stationary_shutdown_complete(*, timeout_s: float = 5.0) -> None:
         time.sleep(0.1)
 
 
-def _stationary_sensor_start_permitted(snapshot: Mapping[str, Any]) -> bool:
+def _telemetry_start_permitted(snapshot: Mapping[str, Any]) -> bool:
     adapter = snapshot.get("adapter", {})
     if not isinstance(adapter, Mapping):
         return False
     return bool(
         not adapter.get("fixture_only", True)
-        and adapter.get("stationary_perception", False)
+        and (
+            adapter.get("stationary_perception", False)
+            or adapter.get("adaptive_mission", False)
+        )
         and not adapter.get("live_execution_enabled", False)
         and adapter.get("motion_authority") is False
         and adapter.get("physical_execution_enabled") is False
     )
 
 
-def _assert_stationary_no_motion_runtime() -> None:
+def _assert_telemetry_no_motion_runtime() -> None:
     """Reject fixed-odom sensing when a motor-capable runtime may be present."""
 
     try:
@@ -588,7 +604,7 @@ def _assert_stationary_no_motion_runtime() -> None:
     ]
     if conflicts:
         raise MissionWebError(
-            "stationary sensors refused because a driver, route, or motion process is present"
+            "telemetry refused because a driver, route, or motion process is present"
         )
     try:
         serial_owner = subprocess.run(
@@ -603,7 +619,7 @@ def _assert_stationary_no_motion_runtime() -> None:
         raise MissionWebError(f"unable to verify rover serial ownership: {exc}") from exc
     if serial_owner.returncode == 0:
         raise MissionWebError(
-            "stationary sensors refused because the rover serial device has an owner"
+            "telemetry refused because the rover serial device has an owner"
         )
     if serial_owner.returncode not in {1}:
         detail = str(serial_owner.stderr).strip() or "serial ownership check failed"
@@ -832,7 +848,7 @@ class MockReplayMissionAdapter:
 
 
 class RollingReplayMissionAdapter:
-    """Persistent replay-only web adapter for the Stage B vertical slice."""
+    """Persistent replay-only web adapter for the Rolling replay vertical slice."""
 
     mode = "rolling-llm-replay"
     live_execution_enabled = False
@@ -1171,26 +1187,26 @@ class RollingReplayMissionAdapter:
         }
 
 
-class StageDMissionAdapter:
-    """Persistent Stage D replay using the physical executor protocol boundary."""
+class AdaptiveMissionAdapter:
+    """Persistent Adaptive mission replay using the physical executor protocol boundary."""
 
-    mode = "stage-d-replay"
+    mode = "adaptive-mission-replay"
     live_execution_enabled = False
     direct_ros_commands_allowed = False
     credentials_accepted = False
 
     def __init__(
         self,
-        provider: StageDIntentProvider,
+        provider: AdaptiveMissionIntentProvider,
         *,
         database: str | Path = ":memory:",
-        source_sha: str = "stage-d-local",
+        source_sha: str = "adaptive-mission-local",
         deployed_sha: Optional[str] = None,
-        session_id: str = "stage-d-web",
+        session_id: str = "adaptive-mission-web",
         operator: str = "loopback-local-operator",
         allow_loopback_test_approval: bool = False,
-        limits: Optional[StageDLimits] = None,
-        executor_factory: Optional[Callable[[], StageDExecutor]] = None,
+        limits: Optional[AdaptiveMissionLimits] = None,
+        executor_factory: Optional[Callable[[], AdaptiveMissionExecutor]] = None,
     ) -> None:
         self.provider = provider
         self.source_sha = str(source_sha).strip()
@@ -1198,15 +1214,15 @@ class StageDMissionAdapter:
         self.session_id = str(session_id).strip()
         self.operator = str(operator).strip()
         self.allow_loopback_test_approval = bool(allow_loopback_test_approval)
-        self.limits = limits or StageDLimits()
+        self.limits = limits or AdaptiveMissionLimits()
         if not all(
             (self.source_sha, self.deployed_sha, self.session_id, self.operator)
         ):
             raise MissionWebError(
-                "Stage D source/deployed SHAs, session, and operator are required"
+                "adaptive mission source/deployed SHAs, session, and operator are required"
             )
         self._executor_factory = executor_factory or (
-            lambda: ReplayStageDExecutor(limits=self.limits)
+            lambda: ReplayAdaptiveMissionExecutor(limits=self.limits)
         )
         self._lock = threading.RLock()
         self._request_context = threading.local()
@@ -1218,12 +1234,12 @@ class StageDMissionAdapter:
             live_execution_enabled=False,
         )
         self._mission_id: Optional[str] = None
-        self._executor: Optional[StageDExecutor] = None
-        self._controller: Optional[StageDController] = None
+        self._executor: Optional[AdaptiveMissionExecutor] = None
+        self._controller: Optional[AdaptiveMissionController] = None
         self._proposal: Optional[dict[str, Any]] = None
         self._staged_snapshot: Optional[dict[str, Any]] = None
         self._staged_raw_intent: Optional[dict[str, Any]] = None
-        self._staged_intent: Optional[StageDIntent] = None
+        self._staged_intent: Optional[AdaptiveMissionIntent] = None
         self._planning_error = ""
 
     def set_request_identity(
@@ -1248,7 +1264,7 @@ class StageDMissionAdapter:
         if self.allow_loopback_test_approval:
             return self.operator, "explicit-loopback-test-mode"
         raise MissionWebError(
-            "Stage D approval requires a server-authenticated Tailscale identity"
+            "adaptive mission approval requires a server-authenticated Tailscale identity"
         )
 
     def close(self) -> None:
@@ -1259,15 +1275,15 @@ class StageDMissionAdapter:
             self._service.close()
 
     def scenarios(self) -> Sequence[ScenarioDefinition]:
-        return STAGE_D_SCENARIOS
+        return ADAPTIVE_MISSION_SCENARIOS
 
     def snapshot(self) -> Mapping[str, Any]:
         with self._lock:
             return self._snapshot_unlocked()
 
     def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
-        if str(scenario) != StageDScenario.EXPLORE.value:
-            raise MissionWebError("Stage D accepts only adaptive exploration")
+        if str(scenario) != AdaptiveMissionScenario.EXPLORE.value:
+            raise MissionWebError("adaptive mission accepts only adaptive exploration")
         objective = str(prompt).strip()
         if not objective:
             raise MissionWebError("mission prompt is required")
@@ -1276,7 +1292,7 @@ class StageDMissionAdapter:
                 self._controller.close()
             self._controller = None
             self._executor = self._executor_factory()
-            mission_id = f"stage-d-{uuid.uuid4().hex}"
+            mission_id = f"adaptive-mission-{uuid.uuid4().hex}"
             self._mission_id = mission_id
             self._proposal = None
             self._staged_raw_intent = None
@@ -1297,7 +1313,7 @@ class StageDMissionAdapter:
                     require_motion=False,
                 )
                 raw = dict(self.provider.choose(objective, staged_snapshot))
-                staged_intent = StageDIntent.validated(
+                staged_intent = AdaptiveMissionIntent.validated(
                     raw,
                     revision=1,
                     snapshot=staged_snapshot,
@@ -1316,9 +1332,9 @@ class StageDMissionAdapter:
                 return self._snapshot_unlocked()
             self._staged_raw_intent = json.loads(json.dumps(raw))
             self._staged_intent = staged_intent
-            envelope = StageDApprovalEnvelope(
+            envelope = AdaptiveMissionApprovalEnvelope(
                 mission_id=mission_id,
-                lease_id=f"stage-d-lease-{uuid.uuid4().hex}",
+                lease_id=f"adaptive-mission-lease-{uuid.uuid4().hex}",
                 prompt=objective,
                 interpreted_objective=staged_intent.interpreted_objective,
                 source_sha=self.source_sha,
@@ -1332,8 +1348,8 @@ class StageDMissionAdapter:
                 limits=self.limits,
             )
             self._proposal = envelope.proposal()
-            if self._proposal["schema"] != STAGE_D_PROPOSAL_SCHEMA:
-                raise MissionWebError("Stage D proposal construction failed")
+            if self._proposal["schema"] != ADAPTIVE_MISSION_PROPOSAL_SCHEMA:
+                raise MissionWebError("adaptive mission proposal construction failed")
             self._service.record_rolling_replay_proposal(
                 mission_id, self._proposal
             )
@@ -1354,13 +1370,13 @@ class StageDMissionAdapter:
                 or self._staged_snapshot is None
                 or self._staged_raw_intent is None
             ):
-                raise MissionWebError("a Stage D proposal is required before approval")
+                raise MissionWebError("an adaptive mission proposal is required before approval")
             if str(supplied_approval).strip() != self._approval_phrase():
                 raise MissionWebError(
-                    "Stage D approval phrase does not match the current proposal"
+                    "adaptive mission approval phrase does not match the current proposal"
                 )
             approved_at = time.time()
-            first_intent = StageDIntent.validated(
+            first_intent = AdaptiveMissionIntent.validated(
                 self._staged_raw_intent,
                 revision=1,
                 snapshot=self._staged_snapshot,
@@ -1377,7 +1393,7 @@ class StageDMissionAdapter:
                 authentication_source=authentication_source,
                 authenticated=True,
             )
-            self._controller = StageDController(
+            self._controller = AdaptiveMissionController(
                 mission_id=self._mission_id,
                 prompt=str(self._proposal["prompt"]),
                 proposal_digest=str(self._proposal["proposal_digest"]),
@@ -1401,7 +1417,7 @@ class StageDMissionAdapter:
     def cancel(self) -> Mapping[str, Any]:
         with self._lock:
             if self._mission_id is None:
-                raise MissionWebError("a Stage D mission is required")
+                raise MissionWebError("a adaptive mission is required")
             status = str(
                 self._service.prompt_status(self._mission_id).get("status", "")
             )
@@ -1410,11 +1426,11 @@ class StageDMissionAdapter:
             elif status == "proposed":
                 self._service.cancel_prompt_mission(
                     self._mission_id,
-                    reason="authenticated Stage D operator cancelled mission",
+                    reason="authenticated Adaptive mission operator cancelled mission",
                 )
             else:
                 raise MissionWebError(
-                    "only a proposed or running Stage D mission can be cancelled"
+                    "only a proposed or running adaptive mission can be cancelled"
                 )
             return self._snapshot_unlocked()
 
@@ -1423,11 +1439,11 @@ class StageDMissionAdapter:
     ) -> None:
         mission_id = self._mission_id
         if mission_id is None:
-            raise MissionWebError("Stage D mission identity is unavailable")
+            raise MissionWebError("adaptive mission identity is unavailable")
         if str(kind) == "terminal":
             result = projection.get("result", {})
             if not isinstance(result, Mapping):
-                raise MissionWebError("Stage D terminal result is unavailable")
+                raise MissionWebError("Adaptive mission terminal result is unavailable")
             self._service.finish_rolling_replay_mission(
                 mission_id,
                 status=str(projection.get("status", "failed")),
@@ -1455,7 +1471,7 @@ class StageDMissionAdapter:
     def _approval_phrase(self) -> str:
         if self._proposal is None:
             return ""
-        return f"APPROVE STAGE D {self._proposal['proposal_digest']}"
+        return f"APPROVE ADAPTIVE MISSION {self._proposal['proposal_digest']}"
 
     def _snapshot_unlocked(self) -> dict[str, Any]:
         mission = (
@@ -1509,7 +1525,7 @@ class StageDMissionAdapter:
         staged_active = (
             None if self._staged_intent is None else self._staged_intent.to_json_dict()
         )
-        stage_events = (
+        proposal_events = (
             []
             if self._staged_intent is None
             else [
@@ -1524,7 +1540,7 @@ class StageDMissionAdapter:
             ]
         )
         if projection is not None:
-            stage_events = list(projection.get("events", []))
+            proposal_events = list(projection.get("events", []))
         map_payload = (
             getattr(self._executor, "map_projection")()
             if self._executor is not None
@@ -1532,7 +1548,7 @@ class StageDMissionAdapter:
             else {
                 "available": False,
                 "fixture_only": False,
-                "unavailable_reason": "Stage D executor map unavailable",
+                "unavailable_reason": "adaptive mission executor map unavailable",
             }
         )
         mission_lease = (
@@ -1552,7 +1568,7 @@ class StageDMissionAdapter:
                 "mode": self.mode,
                 "fixture_only": True,
                 "rolling_replay": True,
-                "stage_d": True,
+                "adaptive_mission": True,
                 "real_llm_provider": self.provider.provider_id
                 == "openai-codex-oauth",
                 "provider_id": self.provider.provider_id,
@@ -1566,7 +1582,7 @@ class StageDMissionAdapter:
                 "deployed_sha": self.deployed_sha,
                 "approval_authentication": authentication_source,
             },
-            "scenario": StageDScenario.EXPLORE.value,
+            "scenario": AdaptiveMissionScenario.EXPLORE.value,
             "proposal": self._proposal,
             "approval": {
                 "required": self._proposal is not None,
@@ -1636,7 +1652,7 @@ class StageDMissionAdapter:
                 "independent_robot_safety": True,
                 "browser_is_sole_safety_mechanism": False,
             },
-            "events": stage_events,
+            "events": proposal_events,
             "map": map_payload,
             "rolling": {
                 "world_snapshot": world or None,
@@ -1711,12 +1727,12 @@ class LiveMissionWebAdapter:
         self.stationary_perception_enabled = bool(
             service.get("stationary_perception_enabled", False)
         )
-        self.stage_d_enabled = bool(service.get("stage_d_enabled", False))
+        self.adaptive_mission_enabled = bool(service.get("adaptive_mission_enabled", False))
         self.mode = (
             "live/stationary-perception"
             if self.stationary_perception_enabled
-            else "live/stage-d"
-            if self.stage_d_enabled
+            else "live/adaptive-mission"
+            if self.adaptive_mission_enabled
             else "live"
             if self.live_execution_enabled
             else "live/proposal-only"
@@ -1760,14 +1776,14 @@ class LiveMissionWebAdapter:
             self.stationary_perception_enabled = bool(
                 self._service_snapshot.get("stationary_perception_enabled", False)
             )
-            self.stage_d_enabled = bool(
-                self._service_snapshot.get("stage_d_enabled", False)
+            self.adaptive_mission_enabled = bool(
+                self._service_snapshot.get("adaptive_mission_enabled", False)
             )
             self.mode = (
                 "live/stationary-perception"
                 if self.stationary_perception_enabled
-                else "live/stage-d"
-                if self.stage_d_enabled
+                else "live/adaptive-mission"
+                if self.adaptive_mission_enabled
                 else "live"
                 if self.live_execution_enabled
                 else "live/proposal-only"
@@ -1818,14 +1834,14 @@ class LiveMissionWebAdapter:
                         "APPROVE STATIONARY PERCEPTION "
                         f"{str(proposal_payload.get('proposal_digest', ''))}"
                     )
-                elif proposal_schema == STAGE_D_PROPOSAL_SCHEMA:
+                elif proposal_schema == ADAPTIVE_MISSION_PROPOSAL_SCHEMA:
                     if not self._operator_authenticated():
                         raise MissionWebError(
-                            "physical Stage D approval requires an authenticated "
+                            "physical adaptive mission approval requires an authenticated "
                             "Tailscale request"
                         )
                     server_approval = (
-                        "APPROVE STAGE D "
+                        "APPROVE ADAPTIVE MISSION "
                         f"{str(proposal_payload.get('proposal_digest', ''))}"
                     )
                 else:
@@ -1834,7 +1850,7 @@ class LiveMissionWebAdapter:
                     )
                 approval_kwargs = (
                     {"authentication_source": "tailscale-serve"}
-                    if proposal_schema == STAGE_D_PROPOSAL_SCHEMA
+                    if proposal_schema == ADAPTIVE_MISSION_PROPOSAL_SCHEMA
                     else {}
                 )
                 snapshot = self.client.approve_prompt(
@@ -1902,18 +1918,18 @@ class LiveMissionWebAdapter:
                 and required_fresh
             )
             or (
-                self.stage_d_enabled
+                self.adaptive_mission_enabled
                 and self.live_execution_enabled
                 and isinstance(
-                    self._service_snapshot.get("stage_d_readiness"),
+                    self._service_snapshot.get("adaptive_mission_readiness"),
                     Mapping,
                 )
-                and self._service_snapshot["stage_d_readiness"].get("ready")
+                and self._service_snapshot["adaptive_mission_readiness"].get("ready")
                 is True
             )
             or (
                 self.live_execution_enabled
-                and not self.stage_d_enabled
+                and not self.adaptive_mission_enabled
                 and required_fresh
                 and str(safety.get("collision_state", "UNKNOWN")).upper() == "CLEAR"
                 and stop_state == "READY"
@@ -1937,8 +1953,8 @@ class LiveMissionWebAdapter:
             result = mission.get("result", {}) if isinstance(mission.get("result", {}), Mapping) else {}
             mission_id = str(mission.get("mission_id", ""))
             approval = mission.get("approval", {}) if isinstance(mission.get("approval", {}), Mapping) else {}
-        stage_d_projection_enabled = self.stage_d_enabled or any(
-            str(payload.get("schema", "")).startswith("sphero_rvr.stage_d_")
+        adaptive_mission_projection_enabled = self.adaptive_mission_enabled or any(
+            str(payload.get("schema", "")).startswith("sphero_rvr.adaptive_mission_")
             for payload in (proposal, result)
         )
 
@@ -1988,7 +2004,7 @@ class LiveMissionWebAdapter:
                 "boundary": "Pi-local MissionService Unix socket",
                 **(
                     {
-                        "stage_d": True,
+                        "adaptive_mission": True,
                         "rolling_replay": True,
                         "real_llm_provider": self._service_snapshot.get(
                             "provider_id"
@@ -2006,7 +2022,7 @@ class LiveMissionWebAdapter:
                         "physical_execution_enabled": self.live_execution_enabled,
                         "motion_authority": False,
                     }
-                    if stage_d_projection_enabled
+                    if adaptive_mission_projection_enabled
                     else {}
                 ),
                 **(
@@ -2041,7 +2057,7 @@ class LiveMissionWebAdapter:
                 "server_digest_bound": True,
                 "simulation_only": False,
                 "stationary_perception_only": self.stationary_perception_enabled,
-                "stage_d": stage_d_projection_enabled,
+                "adaptive_mission": adaptive_mission_projection_enabled,
                 "authenticated": bool(approval.get("authenticated", False)),
                 "authenticated_operator": str(approval.get("operator", "")),
                 "authentication_source": str(
@@ -2049,7 +2065,7 @@ class LiveMissionWebAdapter:
                 ),
                 "mission_lease": (
                     result.get("mission_lease", {})
-                    if stage_d_projection_enabled
+                    if adaptive_mission_projection_enabled
                     and isinstance(result.get("mission_lease"), Mapping)
                     else {}
                 ),
@@ -2111,7 +2127,7 @@ class LiveMissionWebAdapter:
             "camera_preview": _live_camera_preview(live_evidence),
             "rolling": (
                 _stationary_projection(result)
-                if self.stationary_perception_enabled or stage_d_projection_enabled
+                if self.stationary_perception_enabled or adaptive_mission_projection_enabled
                 else {}
             ),
         }
@@ -2460,7 +2476,7 @@ def handle_mission_web_request(
     path: str,
     body: str,
     adapter: MissionWebAdapter,
-    sensor_control: Optional[StationarySensorControl] = None,
+    telemetry_control: Optional[TelemetryControl] = None,
 ) -> MissionWebResponse:
     """Dependency-free router used by tests and the local HTTP wrapper."""
 
@@ -2477,7 +2493,7 @@ def handle_mission_web_request(
         if normalized_path == "/favicon.ico":
             return MissionWebResponse(204, "image/x-icon", "")
         if normalized_path == "/api/web/state":
-            return _json_response(200, _with_sensor_control(adapter.snapshot(), sensor_control))
+            return _json_response(200, _with_telemetry_control(adapter.snapshot(), telemetry_control))
         if normalized_path == "/api/web/scenarios":
             return _json_response(200, {"scenarios": [item.to_json_dict() for item in adapter.scenarios()]})
         if normalized_path == TERMINAL_ARTIFACT_PATH:
@@ -2514,21 +2530,21 @@ def handle_mission_web_request(
         result = adapter.advance()
     elif normalized_path == "/api/web/mission/cancel":
         result = adapter.cancel()
-    elif normalized_path == STATIONARY_SENSOR_CONTROL_PATH:
-        if sensor_control is None:
-            raise MissionWebError("stationary sensor control is not available")
+    elif normalized_path == TELEMETRY_CONTROL_PATH:
+        if telemetry_control is None:
+            raise MissionWebError("telemetry control is not available")
         if "active" not in payload or not isinstance(payload["active"], bool):
-            raise MissionWebError("stationary sensor request requires a boolean active value")
+            raise MissionWebError("telemetry request requires a boolean active value")
         authority_snapshot = adapter.snapshot()
-        sensor_control.set_active(
+        telemetry_control.set_active(
             bool(payload["active"]),
             authority_snapshot=authority_snapshot,
         )
         if not bool(payload["active"]):
             try:
-                _wait_for_stationary_evidence_stale(adapter)
+                _wait_for_telemetry_evidence_stale(adapter)
             except MissionWebError as exc:
-                mark_degraded = getattr(sensor_control, "mark_degraded", None)
+                mark_degraded = getattr(telemetry_control, "mark_degraded", None)
                 if callable(mark_degraded):
                     mark_degraded(
                         "Shutdown degraded; sensor processes stopped but authoritative "
@@ -2538,10 +2554,10 @@ def handle_mission_web_request(
         result = adapter.snapshot()
     else:
         raise MissionWebError(f"POST route is not exposed: {normalized_path}")
-    return _json_response(200, _with_sensor_control(result, sensor_control))
+    return _json_response(200, _with_telemetry_control(result, telemetry_control))
 
 
-def _wait_for_stationary_evidence_stale(
+def _wait_for_telemetry_evidence_stale(
     adapter: MissionWebAdapter,
     *,
     timeout_s: float = 3.0,
@@ -2563,30 +2579,30 @@ def _wait_for_stationary_evidence_stale(
             return
         if time.monotonic() >= deadline:
             raise MissionWebError(
-                "stationary sensors stopped, but live map or camera evidence "
+                "telemetry stopped, but live map or camera evidence "
                 "remained fresh past the bounded shutdown period"
             )
         time.sleep(0.1)
 
 
-def _with_sensor_control(
+def _with_telemetry_control(
     snapshot: Mapping[str, Any],
-    sensor_control: Optional[StationarySensorControl],
+    telemetry_control: Optional[TelemetryControl],
 ) -> dict[str, Any]:
     result = dict(snapshot)
-    if sensor_control is None:
+    if telemetry_control is None:
         status: dict[str, Any] = {
             "available": False,
             "active": False,
             "transitioning": False,
             "state": "unavailable",
-            "detail": "Stationary sensor control is not configured.",
-            "unit": STATIONARY_SENSOR_UNIT,
+            "detail": "Telemetry control is not configured.",
+            "unit": TELEMETRY_UNIT,
         }
     else:
-        status = dict(sensor_control.status())
-    status["start_permitted"] = _stationary_sensor_start_permitted(snapshot)
-    result["sensor_control"] = status
+        status = dict(telemetry_control.status())
+    status["start_permitted"] = _telemetry_start_permitted(snapshot)
+    result["telemetry_control"] = status
     return result
 
 
@@ -2650,7 +2666,7 @@ class _MissionWebHttpHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, body: str) -> None:
         adapter = getattr(self.server, "mission_web_adapter")
-        sensor_control = getattr(self.server, "stationary_sensor_control", None)
+        telemetry_control = getattr(self.server, "telemetry_control", None)
         set_identity = getattr(adapter, "set_request_identity", None)
         clear_identity = getattr(adapter, "clear_request_identity", None)
         if callable(set_identity) and self.command == "POST":
@@ -2668,7 +2684,7 @@ class _MissionWebHttpHandler(BaseHTTPRequestHandler):
                 self.path,
                 body,
                 adapter,
-                sensor_control,
+                telemetry_control,
             )
         except (MissionWebError, UnicodeDecodeError) as exc:
             self._send_error(400, str(exc))
@@ -2709,13 +2725,13 @@ def make_server(
     port: int = DEFAULT_PORT,
     *,
     adapter: Optional[MissionWebAdapter] = None,
-    sensor_control: Optional[StationarySensorControl] = None,
+    telemetry_control: Optional[TelemetryControl] = None,
     allowed_origin: Optional[str] = None,
     require_tailscale_identity: bool = False,
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, int(port)), _MissionWebHttpHandler)
     setattr(server, "mission_web_adapter", adapter or MockReplayMissionAdapter())
-    setattr(server, "stationary_sensor_control", sensor_control)
+    setattr(server, "telemetry_control", telemetry_control)
     setattr(server, "enforce_same_origin", allowed_origin is not None)
     setattr(server, "allowed_origin", "" if allowed_origin is None else str(allowed_origin).rstrip("/"))
     setattr(server, "require_tailscale_identity", bool(require_tailscale_identity))
@@ -2728,7 +2744,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
         "--mode",
-        choices=("mock", "live", "rolling-replay", "stage-d-replay"),
+        choices=("mock", "live", "rolling-replay", "adaptive-mission-replay"),
         default="mock",
     )
     parser.add_argument(
@@ -2743,14 +2759,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help=(
             "Exact authenticated HTTPS origin required for live and served "
-            "Stage D POST requests"
+            "Adaptive mission POST requests"
         ),
     )
     parser.add_argument(
         "--allow-loopback-test-approval",
         action="store_true",
         help=(
-            "Allow an explicitly unauthenticated loopback-only Stage D replay "
+            "Allow an explicitly unauthenticated loopback-only Adaptive mission replay "
             "approval for browser/testing; never use for a served operator console"
         ),
     )
@@ -2768,9 +2784,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("the mission web service may bind only to a loopback host")
-    if args.allow_loopback_test_approval and args.mode != "stage-d-replay":
+    if args.allow_loopback_test_approval and args.mode != "adaptive-mission-replay":
         parser.error(
-            "--allow-loopback-test-approval is valid only in stage-d-replay mode"
+            "--allow-loopback-test-approval is valid only in adaptive-mission-replay mode"
         )
     if args.mode == "live":
         if not args.public_origin:
@@ -2779,7 +2795,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # Stationary checkpoints deliberately retain exact world snapshots and
             # can exceed the generic command-response ceiling during a sustained
             # live run. Keep the browser boundary finite while allowing the
-            # evidence-rich Stage C result to remain visible through termination.
+            # evidence-rich Stationary perception result to remain visible through termination.
             MissionServiceClient(
                 args.mission_socket,
                 max_response_bytes=128_000_000,
@@ -2788,7 +2804,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             operator=args.operator,
         )
         allowed_origin = args.public_origin
-        sensor_control: Optional[StationarySensorControl] = SystemdStationarySensorControl()
+        telemetry_control: Optional[TelemetryControl] = SystemdTelemetryControl()
     elif args.mode == "rolling-replay":
         adapter = RollingReplayMissionAdapter(
             CodexOAuthRollingIntentProvider(
@@ -2799,19 +2815,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             source_sha=_local_source_sha(),
         )
         allowed_origin = None
-        sensor_control = None
-    elif args.mode == "stage-d-replay":
+        telemetry_control = None
+    elif args.mode == "adaptive-mission-replay":
         if args.allow_loopback_test_approval and args.public_origin:
             parser.error(
-                "Stage D loopback test approval cannot be combined with --public-origin"
+                "Adaptive mission loopback test approval cannot be combined with --public-origin"
             )
         if not args.allow_loopback_test_approval and not args.public_origin:
             parser.error(
-                "stage-d-replay requires --public-origin unless "
+                "adaptive-mission-replay requires --public-origin unless "
                 "--allow-loopback-test-approval is explicitly selected"
             )
-        adapter = StageDMissionAdapter(
-            CodexOAuthStageDIntentProvider(
+        adapter = AdaptiveMissionAdapter(
+            CodexOAuthAdaptiveMissionIntentProvider(
                 model=args.replay_model,
                 reasoning_effort=args.replay_reasoning_effort,
             ),
@@ -2823,21 +2839,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         allowed_origin = (
             None if args.allow_loopback_test_approval else args.public_origin
         )
-        sensor_control = None
+        telemetry_control = None
     else:
         adapter = MockReplayMissionAdapter()
         allowed_origin = None
-        sensor_control = None
+        telemetry_control = None
     server = make_server(
         args.host,
         args.port,
         adapter=adapter,
-        sensor_control=sensor_control,
+        telemetry_control=telemetry_control,
         allowed_origin=allowed_origin,
         require_tailscale_identity=(
             args.mode == "live"
             or (
-                args.mode == "stage-d-replay"
+                args.mode == "adaptive-mission-replay"
                 and not args.allow_loopback_test_approval
             )
         ),
@@ -2912,8 +2928,8 @@ _INDEX_HTML = r'''<!doctype html>
     .safety-cell strong { display:block; margin-top:.2rem; overflow-wrap:anywhere; font-size:.76rem; line-height:1.25; }
     .safety-cell.warning { border-color:#91652d; background:#2b2112; }
     .safety-cell.unsafe { border-color:#91414a; background:#31191e; }
-    .sensor-control button { width:100%; margin-top:.28rem; padding:.32rem .42rem; border:1px solid #40617a; border-radius:.42rem; color:var(--ink); background:#182a3d; font-size:.7rem; font-weight:800; }
-    .sensor-control small { display:block; margin-top:.22rem; color:var(--muted); font-size:.62rem; line-height:1.25; }
+    .telemetry-control button { width:100%; margin-top:.28rem; padding:.32rem .42rem; border:1px solid #40617a; border-radius:.42rem; color:var(--ink); background:#182a3d; font-size:.7rem; font-weight:800; }
+    .telemetry-control small { display:block; margin-top:.22rem; color:var(--muted); font-size:.62rem; line-height:1.25; }
     .workspace { display:grid; grid-template-columns:minmax(0,2.35fr) minmax(320px,.75fr); gap:.75rem; align-items:start; min-width:0; }
     .visual-column, .ops-sidebar { display:grid; gap:.75rem; min-width:0; }
     .ops-sidebar { position:sticky; top:4.15rem; max-height:calc(100vh - 4.8rem); overflow-y:auto; overscroll-behavior:contain; padding-right:.15rem; scrollbar-width:thin; }
@@ -2979,6 +2995,12 @@ _INDEX_HTML = r'''<!doctype html>
     .event-list li { position:relative; padding-left:1.2rem; color:#cad7d7; font-size:.8rem; line-height:1.35; }
     .event-list li::before { content:""; position:absolute; left:.1rem; top:.35rem; width:.45rem; height:.45rem; border-radius:50%; background:var(--blue); }
     .event-list small { display:block; color:var(--muted); margin-bottom:.12rem; }
+    .mission-log { list-style:none; margin:0; padding:0; display:grid; gap:.55rem; max-height:32rem; overflow:auto; }
+    .mission-log li { padding:.62rem .7rem; border-left:3px solid var(--blue); border-radius:.3rem .6rem .6rem .3rem; background:#081724; color:#d2dddd; font-size:.78rem; line-height:1.42; }
+    .mission-log li.intent { border-left-color:var(--teal); }
+    .mission-log li.warning { border-left-color:var(--amber); }
+    .mission-log li.terminal-log { border-left-color:var(--red); }
+    .mission-log small { display:block; margin-bottom:.16rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; font-size:.62rem; }
     .rolling-grid { display:grid; gap:.6rem; grid-template-columns:repeat(2,minmax(0,1fr)); }
     .rolling-card { min-width:0; padding:.65rem; border:1px solid #294258; border-radius:.65rem; background:#071421; }
     .rolling-card span { display:block; color:var(--muted); font-size:.67rem; text-transform:uppercase; letter-spacing:.06em; }
@@ -3029,10 +3051,10 @@ _INDEX_HTML = r'''<!doctype html>
       <div class="safety-cell"><span>Forward corridor</span><strong id="safety-corridor">UNAVAILABLE</strong></div>
       <div class="safety-cell"><span>Projected path</span><strong id="safety-trajectory">UNAVAILABLE</strong></div>
       <div class="safety-cell"><span>Telemetry</span><strong id="safety-telemetry">FRESH</strong></div>
-      <div class="safety-cell sensor-control" id="sensor-control" hidden>
-        <span>Telemetry + camera</span>
-        <button id="sensors-toggle" type="button" aria-pressed="false" disabled>Turn sensors on</button>
-        <small id="sensors-status" role="status">Control unavailable</small>
+      <div class="safety-cell telemetry-control" id="telemetry-control" hidden>
+        <span>Camera + lidar</span>
+        <button id="telemetry-toggle" type="button" aria-pressed="false" disabled>Turn telemetry on</button>
+        <small id="telemetry-status" role="status">Control unavailable</small>
       </div>
       <div class="safety-cell"><span>STOP</span><strong id="safety-stop">READY</strong></div>
       <div class="safety-cell"><span>ESTOP</span><strong id="safety-estop">CLEAR</strong></div>
@@ -3083,6 +3105,7 @@ _INDEX_HTML = r'''<!doctype html>
           <div class="panel-heading"><h2 id="status-heading">Mission status</h2><span class="terminal" id="terminal-reason"></span></div>
           <div class="status-line"><div class="state" id="mission-state" data-testid="mission-state">READY</div><div class="hint" id="progress-label">0% complete</div></div>
           <progress id="mission-progress" max="100" value="0"></progress>
+          <p class="hint" id="mission-status-detail">Waiting for an instruction.</p>
         </section>
         <section class="panel" aria-labelledby="mission-heading">
           <h2 id="mission-heading">Mission prompt</h2>
@@ -3099,24 +3122,18 @@ _INDEX_HTML = r'''<!doctype html>
           <p class="hint" id="approval-hint">Approval is digest-bound and authorizes only the mock adapter.</p>
           <p class="hint" id="approval-state" role="status" aria-live="polite"></p>
           <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
+          <code class="digest" id="approval-required-phrase" hidden></code>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
           <div class="actions">
             <button class="primary" id="approve" data-testid="approve" type="button" aria-describedby="approval-hint approval-state" disabled>Approve simulation</button>
             <button class="danger" id="cancel" data-testid="cancel" type="button" aria-describedby="request-status request-error" disabled>Cancel mission</button>
           </div>
         </section>
-        <section class="panel" id="rolling-intent-panel" hidden>
-          <h2 id="rolling-intent-heading">Current finite leased intent</h2>
-          <div id="rolling-intent" class="empty">No validated intent yet.</div>
-        </section>
-        <section class="panel" aria-labelledby="proposal-heading">
-          <h2 id="proposal-heading">LLM proposal</h2>
-          <div id="proposal-view" class="empty">Submit a mission to see a typed route proposal or rejection.</div>
-        </section>
-        <section class="panel" id="rolling-loop-panel" hidden>
-          <h2 id="rolling-loop-heading">Asynchronous LLM loop</h2>
-          <div class="rolling-grid" id="rolling-metrics"></div>
-          <div class="revision-list" id="rolling-revisions"></div>
+        <section class="panel" aria-labelledby="mission-log-heading">
+          <h2 id="mission-log-heading">Mission log</h2>
+          <ol class="mission-log" id="mission-log" aria-live="polite">
+            <li class="empty">No mission activity yet.</li>
+          </ol>
         </section>
         <details class="panel" id="rolling-world-panel" hidden>
           <summary>Fresh world snapshot &amp; detections</summary>
@@ -3146,7 +3163,7 @@ _INDEX_HTML = r'''<!doctype html>
     let timer = null;
     let hydratedMissionId = null;
     let promptDirty = false;
-    let sensorRequestInFlight = false;
+    let telemetryRequestInFlight = false;
     let missionRequestInFlight = '';
     let pollConnectionError = false;
 
@@ -3188,34 +3205,38 @@ _INDEX_HTML = r'''<!doctype html>
 
     function shouldContinuouslyPoll(snapshot) {
       return !snapshot.adapter.fixture_only
-        && (!snapshot.mission.terminal || Boolean(snapshot.adapter.stationary_perception));
+        && (!snapshot.mission.terminal
+          || Boolean(snapshot.adapter.stationary_perception)
+          || Boolean(snapshot.adapter.adaptive_mission));
     }
 
-    function renderSensorControl(snapshot) {
+    function renderTelemetryControl(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const panel = $('sensor-control');
-      const button = $('sensors-toggle');
-      const label = $('sensors-status');
-      const control = snapshot.sensor_control || {};
-      panel.hidden = !stationary;
-      if (!stationary) return;
-      const active = Boolean(control.active);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
+      const controllable = !snapshot.adapter.fixture_only && (stationary || adaptiveMission);
+      const panel = $('telemetry-control');
+      const button = $('telemetry-toggle');
+      const label = $('telemetry-status');
+      const control = snapshot.telemetry_control || {};
+      panel.hidden = !controllable;
+      if (!controllable) return;
+      const active = Boolean(control.active || snapshot.safety.telemetry_fresh);
       const degraded = ['failed', 'degraded'].includes(String(control.state || '').toLowerCase());
-      const transitioning = sensorRequestInFlight || Boolean(control.transitioning);
+      const transitioning = telemetryRequestInFlight || Boolean(control.transitioning);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
-      button.setAttribute('aria-describedby', 'sensors-status');
+      button.setAttribute('aria-describedby', 'telemetry-status');
       button.textContent = transitioning
         ? (active ? 'Stopping…' : 'Starting…')
-        : (active ? 'Turn sensors off' : 'Turn sensors on');
+        : (active ? 'Turn telemetry off' : 'Turn telemetry on');
       button.disabled = transitioning
         || Boolean(missionRequestInFlight)
         || !control.available
         || degraded
         || (!active && !control.start_permitted);
       label.textContent = transitioning
-        ? (active ? 'Stopping stationary sensors' : 'Starting stationary sensors')
+        ? (active ? 'Stopping telemetry' : 'Starting telemetry')
         : degraded
-          ? (control.detail || 'Sensor lifecycle is degraded; shutdown is not verified')
+          ? (control.detail || 'Telemetry lifecycle is degraded; shutdown is not verified')
         : active
           ? (snapshot.safety.telemetry_fresh ? 'On · data fresh' : 'On · waiting for fresh data')
           : control.verified_stopped
@@ -3231,29 +3252,29 @@ _INDEX_HTML = r'''<!doctype html>
 
     function renderActionState(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const stageD = Boolean(snapshot.adapter.stage_d);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
       const cancelBusy = missionRequestInFlight === 'cancel';
-      $('propose').disabled = Boolean(missionRequestInFlight) || sensorRequestInFlight;
+      $('propose').disabled = Boolean(missionRequestInFlight) || telemetryRequestInFlight;
       $('propose').textContent = proposalBusy ? 'Generating proposal…' : 'Generate proposal';
       $('approve').disabled = Boolean(missionRequestInFlight)
-        || sensorRequestInFlight
+        || telemetryRequestInFlight
         || snapshot.mission.state !== 'PROPOSED'
         || !snapshot.approval.enabled;
       $('approve').textContent = approvalBusy
         ? (stationary ? 'Starting stationary perception…' : 'Confirming…')
         : stationary ? 'Start stationary perception'
-        : stageD ? 'Approve 15-minute lease'
+        : adaptiveMission ? 'Approve 15-minute lease'
         : snapshot.adapter.rolling_replay ? 'Start rolling replay'
         : !snapshot.adapter.fixture_only ? 'Approve and run'
         : 'Approve simulation';
       $('cancel').disabled = Boolean(missionRequestInFlight)
-        || sensorRequestInFlight
+        || telemetryRequestInFlight
         || !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       $('cancel').textContent = cancelBusy ? 'Cancelling…' : 'Cancel mission';
       if (stationary) {
-        const sensor = snapshot.sensor_control || {};
+        const sensor = snapshot.telemetry_control || {};
         $('approval-state').textContent = approvalBusy
           ? 'Confirming the exact persisted proposal and starting only the leased observation-intent loop.'
           : snapshot.mission.state !== 'PROPOSED'
@@ -3265,7 +3286,7 @@ _INDEX_HTML = r'''<!doctype html>
                 : snapshot.approval.enabled
                   ? 'Ready: this starts stationary snapshots and leased LLM observation intent only.'
                   : 'Disabled: the authoritative stationary-perception prerequisites are not ready.';
-      } else if (stageD) {
+      } else if (adaptiveMission) {
         $('approval-state').textContent = approvalBusy
           ? 'Binding the prompt, SHAs, lease, speed ceilings, safety policy, starting snapshot, and first intent.'
           : snapshot.mission.state === 'PROPOSED'
@@ -3298,17 +3319,17 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const live = !snapshot.adapter.fixture_only;
       const rollingReplay = Boolean(snapshot.adapter.rolling_replay);
-      const stageD = Boolean(snapshot.adapter.stage_d);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const execution = live && snapshot.adapter.live_execution_enabled;
-      const physicalStageD = stageD && live;
+      const physicalAdaptiveMission = adaptiveMission && live;
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
-      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalStageD ? (execution ? 'LIVE STAGE D — SUPERVISED PHYSICAL EXECUTION' : 'LIVE STAGE D — PHYSICAL EXECUTION LOCKED') : stageD ? 'STAGE D CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
-      $('scenario-label').textContent = stationary ? 'Stationary sensor target' : physicalStageD ? 'Pi Stage D controller' : stageD ? 'Controller target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
-      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : stageD ? 'Stage D mission lease' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : stageD ? (physicalStageD && !execution ? 'The reviewed Pi deployment has Stage D physical execution locked; proposals remain non-executable.' : 'One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the 15-minute lease ends. Every intent remains bounded.') : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
-      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalStageD ? 'The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, 15-minute lease, speed ceilings, and safety policy. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.' : stageD ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
+      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — SUPERVISED PHYSICAL EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
+      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
+      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : 'One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the 15-minute lease ends. Every intent remains bounded.') : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? 'The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, 15-minute lease, speed ceilings, and safety policy. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.' : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -3349,23 +3370,14 @@ _INDEX_HTML = r'''<!doctype html>
       setSafetyTone('safety-stop', ['READY','CLEAR'].includes(stopState) ? '' : stopState === 'UNKNOWN' ? 'warning' : 'unsafe');
       setSafetyTone('safety-estop', estopState === 'CLEAR' ? '' : estopState === 'UNKNOWN' ? 'warning' : 'unsafe');
       setSafetyTone('safety-authority', execution ? 'unsafe' : stationary || rollingReplay || live ? 'warning' : '');
-      renderSensorControl(snapshot);
+      renderTelemetryControl(snapshot);
       $('approval-input').hidden = live;
       $('approval-input-label').hidden = live;
+      $('approval-required-phrase').hidden = live || !proposal;
+      $('approval-required-phrase').textContent = live
+        ? ''
+        : (snapshot.approval.required_phrase || 'Not approvable');
       $('approval-input').disabled = live || snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
-      if (proposal) {
-        const segments = (proposal.segments || []).map((segment, index) => `<div class="segment"><span>${index + 1}. <code>${escapeHtml(segment.tool_id)}</code></span><strong>${escapeHtml(JSON.stringify(segment.arguments))}</strong></div>`).join('');
-        const limits = Object.entries(proposal.limits).map(([key,value]) => `<span class="chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join('');
-        const decisionClass = proposal.decision === 'reject' ? ' rejected' : '';
-        $('proposal-view').className = decisionClass;
-        const approvalAudit = live ? `<p class="hint">The Pi records the exact route you confirmed.</p><details><summary>Technical approval audit</summary><code class="digest">${escapeHtml(proposal.proposal_digest)}</code></details>` : `<p class="field-label">Approval digest</p><code class="digest">${escapeHtml(proposal.proposal_digest)}</code><p class="field-label">Required phrase</p><code class="digest">${escapeHtml(snapshot.approval.required_phrase || 'Not approvable')}</code>`;
-        const objective = proposal.interpreted_objective ? `<p class="field-label">Interpreted objective</p><p>${escapeHtml(proposal.interpreted_objective)}</p>` : '';
-        const firstIntent = proposal.first_intent ? `<p class="field-label">First proposed intent</p><div class="segment"><span><code>${escapeHtml(proposal.first_intent.action)}</code></span><strong>${escapeHtml(proposal.first_intent.rationale)}</strong></div>` : '';
-        $('proposal-view').innerHTML = `<div class="plan-meta"><div class="meta"><span>Decision</span><strong>${escapeHtml(proposal.decision)}</strong></div><div class="meta"><span>Model</span><strong>${escapeHtml(proposal.provider_id)}/${escapeHtml(proposal.model_id)}</strong></div></div><p>${escapeHtml(proposal.summary)}</p>${objective}${firstIntent}${segments}<div class="limits">${limits}</div>${approvalAudit}`;
-      } else {
-        $('proposal-view').className = 'empty';
-        $('proposal-view').textContent = 'Submit a mission to see a typed route proposal or rejection.';
-      }
       const events = snapshot.events || [];
       $('event-list').innerHTML = events.length ? events.map((event) => `<li><small>#${event.sequence} · ${escapeHtml(event.event_type)}</small>${escapeHtml(event.message)}</li>`).join('') : '<li class="empty">No mission events yet.</li>';
       const result = snapshot.mission.result || {};
@@ -3379,6 +3391,7 @@ _INDEX_HTML = r'''<!doctype html>
       }
       $('artifact-list').innerHTML = artifacts.map((artifact) => `<li><a href="${escapeHtml(artifact.href)}" target="_blank" rel="noopener">${escapeHtml(artifact.label)}</a> <span class="hint">${escapeHtml(artifact.media_type)}</span></li>`).join('');
       $('terminal-panel').open = Boolean(snapshot.mission.terminal);
+      renderMissionLog(snapshot);
       renderRolling(snapshot);
       renderMap(snapshot.map, snapshot);
       renderCamera(snapshot);
@@ -3389,70 +3402,90 @@ _INDEX_HTML = r'''<!doctype html>
       }
     }
 
+    function renderMissionLog(snapshot) {
+      const proposal = snapshot.proposal || null;
+      const rolling = snapshot.rolling || {};
+      const intent = rolling.active_intent || null;
+      const entries = [];
+      if (proposal) {
+        const model = [proposal.provider_id, proposal.model_id].filter(Boolean).join('/');
+        const objective = proposal.interpreted_objective || proposal.summary || 'Objective interpreted.';
+        entries.push({
+          tone: proposal.decision === 'reject' ? 'warning' : '',
+          label: `LLM ${proposal.decision || 'proposal'}${model ? ` · ${model}` : ''}`,
+          message: objective,
+        });
+        if (proposal.first_intent) {
+          const first = proposal.first_intent;
+          entries.push({
+            tone: 'intent',
+            label: `First intent · ${first.action}`,
+            message: `${first.rationale || ''} · ${Number(first.distance_m || 0).toFixed(2)} m · ${Number(first.angle_deg || 0).toFixed(1)}°`,
+          });
+        }
+        const limits = proposal.limits || {};
+        if (Object.keys(limits).length) {
+          entries.push({
+            tone: '',
+            label: 'Mission lease and limits',
+            message: Object.entries(limits).map(([key, value]) => `${key}=${value}`).join(' · '),
+          });
+        }
+      }
+      for (const event of (snapshot.events || [])) {
+        entries.push({
+          tone: ['blocked','failed','rejected','cancelled','stopped','estopped'].includes(String(event.event_type || '').toLowerCase()) ? 'warning' : '',
+          label: `#${event.sequence} · ${event.event_type}`,
+          message: event.message,
+        });
+      }
+      for (const revision of (rolling.intent_revisions || [])) {
+        const execution = revision.execution || {};
+        const movement = execution.movement || {};
+        entries.push({
+          tone: 'intent',
+          label: `Revision ${revision.revision} · ${revision.action} · ${execution.outcome || 'pending'}`,
+          message: `${revision.rationale || ''} · requested ${JSON.stringify(movement.requested || {})} → supervised ${JSON.stringify(movement.supervised || {})}`,
+        });
+      }
+      if (intent) {
+        entries.push({
+          tone: 'intent',
+          label: `Active intent · revision ${intent.revision} · ${intent.action}`,
+          message: `${intent.rationale || ''} · lease ${intent.lease_s || 0}s · snapshot ${String(intent.snapshot_id || '').slice(0, 12)}`,
+        });
+      }
+      if (snapshot.mission.terminal) {
+        entries.push({
+          tone: 'terminal-log',
+          label: `Terminal · ${snapshot.mission.state}`,
+          message: snapshot.mission.terminal_reason || 'Terminal evidence recorded.',
+        });
+      }
+      $('mission-log').innerHTML = entries.length
+        ? entries.map((entry) => `<li class="${escapeHtml(entry.tone)}"><small>${escapeHtml(entry.label)}</small>${escapeHtml(entry.message)}</li>`).join('')
+        : '<li class="empty">No mission activity yet.</li>';
+      $('mission-log').scrollTop = $('mission-log').scrollHeight;
+      $('mission-status-detail').textContent = intent
+        ? `${intent.action} — ${intent.rationale || 'validated intent active'}`
+        : snapshot.mission.terminal
+          ? (snapshot.mission.terminal_reason || 'Terminal evidence recorded.')
+          : snapshot.mission.state === 'PLANNING'
+            ? 'The LLM is choosing the next bounded intent.'
+            : snapshot.mission.state === 'PROPOSED'
+              ? 'Proposal ready for one authenticated mission-lease approval.'
+              : 'Waiting for the next mission action.';
+    }
+
     function renderRolling(snapshot) {
       const enabled = Boolean(snapshot.adapter.rolling_replay);
       const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const stageD = Boolean(snapshot.adapter.stage_d);
-      $('rolling-intent-panel').hidden = !enabled;
-      $('rolling-loop-panel').hidden = !enabled;
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
       $('rolling-world-panel').hidden = !enabled;
       if (!enabled) return;
-      $('rolling-intent-heading').textContent = stageD ? 'Current leased Stage D intent' : 'Current finite leased intent';
-      $('rolling-loop-heading').textContent = stageD ? 'Closed-loop LLM revisions' : 'Asynchronous LLM loop';
       const rolling = snapshot.rolling || {};
-      const intent = rolling.active_intent;
-      if (intent) {
-        $('rolling-intent').className = '';
-        $('rolling-intent').innerHTML = stageD
-          ? `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Intent lease</span><strong>${escapeHtml(intent.lease_s)} s · timeout ${escapeHtml(intent.timeout_s)} s</strong></div><div class="rolling-card"><span>Action</span><strong>${escapeHtml(intent.action)}</strong></div><div class="rolling-card"><span>Bounded target</span><strong>${Number(intent.distance_m).toFixed(2)} m · ${Number(intent.angle_deg).toFixed(1)}°</strong></div><div class="rolling-card"><span>Mission lease remaining</span><strong>${Number((rolling.mission_lease || {}).remaining_s || 0).toFixed(1)} s</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)} · deterministic validation required</code>`
-          : stationary
-          ? `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Action</span><strong>${escapeHtml(intent.action)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint recommendation</span><strong>${escapeHtml(intent.viewpoint_recommendation)}</strong></div><div class="rolling-card"><span>Search targets</span><strong>${escapeHtml((intent.search_targets || []).join(', '))}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)} · motion_authority=false</code>`
-          : `<div class="rolling-grid"><div class="rolling-card"><span>Revision</span><strong>#${escapeHtml(intent.revision)}</strong></div><div class="rolling-card"><span>Lease</span><strong>${escapeHtml(intent.lease_s)} s · expires ${Number(intent.expires_at_s).toFixed(1)}</strong></div><div class="rolling-card"><span>Steering / speed</span><strong>${Number(intent.steering).toFixed(2)} · ${Number(intent.speed_limit_mps).toFixed(2)} m/s</strong></div><div class="rolling-card"><span>Safe corridor</span><strong>${escapeHtml(intent.safe_corridor)}</strong></div><div class="rolling-card"><span>Observation focus</span><strong>${escapeHtml(intent.observation_focus)}</strong></div><div class="rolling-card"><span>Viewpoint</span><strong>${escapeHtml(intent.viewpoint)}</strong></div></div><p>${escapeHtml(intent.rationale)}</p><code class="digest">snapshot ${escapeHtml(intent.snapshot_id)}</code>`;
-      } else {
-        $('rolling-intent').className = 'empty';
-        $('rolling-intent').textContent = rolling.inference && rolling.inference.in_flight ? 'First LLM intent is being produced while replay perception updates.' : 'No validated intent yet.';
-      }
-      const inference = rolling.inference || {};
-      const metrics = rolling.metrics || {};
-      const rollingWorld = rolling.world_snapshot || {};
-      const rollingObservations = rollingWorld.observations || {};
-      const rollingPerception = rollingObservations.perception || {};
-      const recognizedObjects = Array.isArray(rollingObservations.recognized_objects) ? rollingObservations.recognized_objects : [];
-      const recognizedFaces = Array.isArray(rollingObservations.recognized_faces) ? rollingObservations.recognized_faces : [];
-      const unknownFaces = Array.isArray(rollingObservations.unknown_faces) ? rollingObservations.unknown_faces : [];
-      const metricItems = stageD ? [
-        ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
-        ['Intent revisions', metrics.intent_revision_count || 0],
-        ['Completed intents', metrics.completed_intents || 0],
-        ['Cumulative translation', `${Number(metrics.cumulative_translation_m || 0).toFixed(2)} m · no lease-local cap`],
-        ['Cumulative rotation', `${Number(metrics.cumulative_rotation_deg || 0).toFixed(1)}° · no lease-local cap`],
-        ['Provider calls', `${inference.provider_calls_completed || 0} / ${inference.provider_calls_started || 0}`],
-        ['Semantic perception', rollingPerception.available ? 'FRESH + LOCALIZED' : 'UNAVAILABLE / STALE'],
-        ['Objects / known / unknown faces', `${recognizedObjects.length} / ${recognizedFaces.length} / ${unknownFaces.length}`],
-      ] : stationary ? [
-        ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
-        ['Intent revisions', metrics.intent_revision_count || 0],
-        ['Sensor updates during LLM', metrics.sensor_updates_while_llm_in_flight || 0],
-        ['Camera / lidar updates', `${metrics.camera_updates || 0} / ${metrics.lidar_updates || 0}`],
-        ['Semantic-map updates', metrics.semantic_map_updates || 0],
-        ['Enrolled / unknown faces', `${metrics.enrolled_face_track_count || 0} / ${metrics.unknown_face_track_count || 0}`],
-      ] : [
-        ['LLM state', inference.in_flight ? `CALL ${inference.call} IN FLIGHT` : 'IDLE'],
-        ['Intent revisions', metrics.intent_revision_count || 0],
-        ['Motion ticks during LLM', metrics.motion_updates_while_llm_in_flight || 0],
-        ['Artificial zero gaps', metrics.artificial_zero_motion_gaps || 0],
-        ['Perception / map updates', `${metrics.perception_updates || 0} / ${metrics.semantic_map_updates || 0}`],
-        ['Object / face tracking', `${metrics.continuous_object_tracking ? 'continuous' : 'warming'} / ${metrics.continuous_face_tracking ? 'continuous' : 'warming'}`],
-      ];
-      $('rolling-metrics').innerHTML = metricItems.map(([label,value], index) => `<div class="rolling-card"><span>${escapeHtml(label)}</span><strong class="${index === 0 && inference.in_flight ? 'in-flight' : ''}">${escapeHtml(value)}</strong></div>`).join('');
-      const revisions = rolling.intent_revisions || [];
-      $('rolling-revisions').innerHTML = revisions.length ? revisions.slice().reverse().map((item) => stageD
-        ? `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml((item.execution || {}).outcome || 'pending')}</small><strong>${escapeHtml(item.action)} · ${Number(item.distance_m).toFixed(2)} m · ${Number(item.angle_deg).toFixed(1)}°</strong><br>${escapeHtml(item.rationale)}<br><code class="digest">requested ${escapeHtml(JSON.stringify((((item.execution || {}).movement || {}).requested || {})))} → supervised ${escapeHtml(JSON.stringify((((item.execution || {}).movement || {}).supervised || {})))}</code></div>`
-        : stationary
-        ? `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.sensor_updates_during_call)} live sensor updates during call</small><strong>${escapeHtml(item.action)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint_recommendation)}</strong><br>${escapeHtml(item.rationale)}</div>`
-        : `<div class="revision"><small>Revision ${escapeHtml(item.revision)} · snapshot ${escapeHtml(String(item.snapshot_id).slice(0,12))} · ${escapeHtml(item.movement_updates_during_call)} replay updates during call</small><strong>${Number(item.steering).toFixed(2)} steering · ${escapeHtml(item.safe_corridor)} · ${escapeHtml(item.observation_focus)} / ${escapeHtml(item.viewpoint)}</strong><br>${escapeHtml(item.rationale)}</div>`).join('') : '<p class="empty">No completed LLM revisions yet.</p>';
       const world = rolling.world_snapshot || {};
-      const visible = stageD ? {
+      const visible = adaptiveMission ? {
         snapshot_id: world.snapshot_id,
         version: world.version,
         pose: world.pose,
@@ -3651,7 +3684,7 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     async function propose() {
-      if (missionRequestInFlight || sensorRequestInFlight) return;
+      if (missionRequestInFlight || telemetryRequestInFlight) return;
       if (!current || current.adapter.fixture_only) stopTimer();
       missionRequestInFlight = 'proposal';
       $('request-error').textContent = '';
@@ -3679,12 +3712,14 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     async function approve() {
-      if (missionRequestInFlight || sensorRequestInFlight) return;
+      if (missionRequestInFlight || telemetryRequestInFlight) return;
       missionRequestInFlight = 'approval';
       $('request-error').textContent = '';
       $('request-status').textContent = current && current.adapter.stationary_perception
         ? 'Starting stationary snapshots and the leased LLM observation-intent loop…'
-        : 'Confirming the exact persisted proposal…';
+        : current && current.adapter.adaptive_mission
+          ? 'Starting the leased LLM movement loop from fresh telemetry…'
+          : 'Confirming the exact persisted proposal…';
       if (current) renderActionState(current);
       try {
         const body = current && !current.adapter.fixture_only
@@ -3706,7 +3741,7 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     async function cancelMission() {
-      if (missionRequestInFlight || sensorRequestInFlight) return;
+      if (missionRequestInFlight || telemetryRequestInFlight) return;
       stopTimer();
       missionRequestInFlight = 'cancel';
       $('request-error').textContent = '';
@@ -3728,33 +3763,37 @@ _INDEX_HTML = r'''<!doctype html>
       }
     }
 
-    async function toggleSensors() {
-      if (!current || sensorRequestInFlight || missionRequestInFlight) return;
-      sensorRequestInFlight = true;
+    async function toggleTelemetry() {
+      if (!current || telemetryRequestInFlight || missionRequestInFlight) return;
+      const currentlyActive = Boolean(
+        (current.telemetry_control && current.telemetry_control.active)
+        || (current.safety && current.safety.telemetry_fresh)
+      );
+      telemetryRequestInFlight = true;
       $('request-error').textContent = '';
-      $('request-status').textContent = current.sensor_control && current.sensor_control.active
-        ? 'Stopping the LIDAR motor, camera, and stationary sensor processes…'
-        : 'Starting the fixed no-motion stationary sensor unit after safety preflight…';
-      renderSensorControl(current);
+      $('request-status').textContent = currentlyActive
+        ? 'Stopping the LIDAR motor, camera, and telemetry processes…'
+        : 'Starting the fixed no-motion telemetry unit after safety preflight…';
+      renderTelemetryControl(current);
       renderActionState(current);
       try {
-        const active = !Boolean(current.sensor_control && current.sensor_control.active);
-        const snapshot = await api('/api/web/stationary-sensors', {
+        const active = !currentlyActive;
+        const snapshot = await api('/api/web/telemetry', {
           method:'POST',
           body:JSON.stringify({active}),
         });
-        sensorRequestInFlight = false;
+        telemetryRequestInFlight = false;
         render(snapshot);
-        $('request-status').textContent = snapshot.sensor_control.active
+        $('request-status').textContent = snapshot.telemetry_control.active
           ? 'Telemetry + camera started. Waiting for all authoritative evidence to become fresh.'
           : 'Telemetry + camera stopped and lifecycle cleanup verified; retained evidence is marked stale.';
         if (shouldContinuouslyPoll(snapshot)) startTimer();
       } catch (error) {
-        sensorRequestInFlight = false;
-        renderSensorControl(current);
+        telemetryRequestInFlight = false;
+        renderTelemetryControl(current);
         renderActionState(current);
         $('request-status').textContent = '';
-        $('request-error').textContent = `Sensor lifecycle failed: ${error.message}`;
+        $('request-error').textContent = `Telemetry lifecycle failed: ${error.message}`;
       }
     }
 
@@ -3783,7 +3822,7 @@ _INDEX_HTML = r'''<!doctype html>
     $('propose').addEventListener('click', propose);
     $('approve').addEventListener('click', approve);
     $('cancel').addEventListener('click', cancelMission);
-    $('sensors-toggle').addEventListener('click', toggleSensors);
+    $('telemetry-toggle').addEventListener('click', toggleTelemetry);
     $('mission-prompt').addEventListener('input', () => { promptDirty = true; });
     Promise.all([loadScenarios(), api('/api/web/state')]).then(([,snapshot]) => {
       render(snapshot);

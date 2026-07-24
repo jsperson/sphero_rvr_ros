@@ -9,11 +9,11 @@ import pytest
 from sphero_rvr_driver.live_mission_service import LiveStateCache
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_service import MissionService
-from sphero_rvr_driver.stage_d_live_controller import StageDLiveMissionController
-from sphero_rvr_driver.stage_d_physical import PhysicalStageDExecutor
+from sphero_rvr_driver.adaptive_mission_live_controller import LiveAdaptiveMissionController
+from sphero_rvr_driver.adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
 
 
-SHA = "reviewed-stage-d-live-sha"
+SHA = "reviewed-adaptive-mission-live-sha"
 PROMPT = "Explore the room, revise after every observation, and stop safely."
 
 
@@ -75,8 +75,8 @@ def _raw(
 
 
 class SequenceProvider:
-    provider_id = "injected-stage-d-provider"
-    model_id = "deterministic-stage-d-model"
+    provider_id = "injected-adaptive-mission-provider"
+    model_id = "deterministic-adaptive-mission-model"
     reasoning_effort = "fixture"
 
     def __init__(self, actions: list[tuple[str, float]]) -> None:
@@ -186,14 +186,14 @@ def _build(
     transport: Optional[FakeRouteTransport] = None,
 ):
     service = MissionService(
-        tmp_path / "stage-d-live.sqlite3",
+        tmp_path / "adaptive-mission-live.sqlite3",
         source_sha=SHA,
         deployed_sha=SHA,
         mode="live",
         live_execution_enabled=True,
     )
     route_transport = transport or FakeRouteTransport()
-    executor = PhysicalStageDExecutor(
+    executor = PhysicalAdaptiveMissionExecutor(
         cache or _cache(),
         source_sha=SHA,
         deployed_sha=SHA,
@@ -201,7 +201,7 @@ def _build(
         execution_enabled=True,
         transport=route_transport,
     )
-    controller = StageDLiveMissionController(
+    controller = LiveAdaptiveMissionController(
         service,
         provider,
         executor,
@@ -211,7 +211,7 @@ def _build(
 
 
 def _wait_status(
-    controller: StageDLiveMissionController,
+    controller: LiveAdaptiveMissionController,
     mission_id: str,
     expected: set[str],
     *,
@@ -229,18 +229,18 @@ def _wait_status(
 
 
 def _approve(
-    controller: StageDLiveMissionController, proposed: Mapping[str, Any]
+    controller: LiveAdaptiveMissionController, proposed: Mapping[str, Any]
 ) -> dict[str, Any]:
     digest = str(proposed["proposal_digest"])
     return controller.approve(
         str(proposed["mission_id"]),
-        supplied_approval=f"APPROVE STAGE D {digest}",
+        supplied_approval=f"APPROVE ADAPTIVE MISSION {digest}",
         operator="scott@example.com",
         authentication_source="tailscale-serve",
     )
 
 
-def test_live_stage_d_replans_through_one_authenticated_lease(tmp_path) -> None:
+def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path) -> None:
     provider = SequenceProvider(
         [
             ("move_distance", 0.25),
@@ -253,8 +253,8 @@ def test_live_stage_d_replans_through_one_authenticated_lease(tmp_path) -> None:
     try:
         submitted = controller.submit(
             PROMPT,
-            session_id="stage-d-session",
-            mission_id="stage-d-live-replan",
+            session_id="adaptive-mission-session",
+            mission_id="adaptive-mission-live-replan",
         )
         proposed = _wait_status(
             controller, submitted["mission_id"], {"proposed"}
@@ -275,7 +275,7 @@ def test_live_stage_d_replans_through_one_authenticated_lease(tmp_path) -> None:
             controller.approve(
                 submitted["mission_id"],
                 supplied_approval=(
-                    f"APPROVE STAGE D {proposed['proposal_digest']}"
+                    f"APPROVE ADAPTIVE MISSION {proposed['proposal_digest']}"
                 ),
                 operator="scott@example.com",
                 authentication_source="loopback",
@@ -316,7 +316,7 @@ def test_live_stage_d_replans_through_one_authenticated_lease(tmp_path) -> None:
     ("stale", "stop", "reason"),
     ((True, False, "scan_fresh"), (False, True, "collision_state")),
 )
-def test_live_stage_d_readiness_vetoes_stale_or_stop_evidence(
+def test_live_adaptive_mission_readiness_vetoes_stale_or_stop_evidence(
     tmp_path, stale: bool, stop: bool, reason: str
 ) -> None:
     provider = SequenceProvider([("move_distance", 0.10)])
@@ -327,8 +327,8 @@ def test_live_stage_d_readiness_vetoes_stale_or_stop_evidence(
     try:
         submitted = controller.submit(
             PROMPT,
-            session_id=f"stage-d-{reason}",
-            mission_id=f"stage-d-veto-{reason}",
+            session_id=f"adaptive-mission-{reason}",
+            mission_id=f"adaptive-mission-veto-{reason}",
         )
         proposed = _wait_status(
             controller, submitted["mission_id"], {"proposed"}
@@ -354,7 +354,7 @@ def test_live_stage_d_readiness_vetoes_stale_or_stop_evidence(
     assert transport.requests == []
 
 
-def test_live_stage_d_cancel_waits_for_correlated_settled_terminal(tmp_path) -> None:
+def test_live_adaptive_mission_cancel_waits_for_correlated_settled_terminal(tmp_path) -> None:
     provider = SequenceProvider([("move_distance", 0.10), ("stop", 0.0)])
     transport = FakeRouteTransport(block=True)
     service, controller, _ = _build(
@@ -363,8 +363,8 @@ def test_live_stage_d_cancel_waits_for_correlated_settled_terminal(tmp_path) -> 
     try:
         submitted = controller.submit(
             PROMPT,
-            session_id="stage-d-cancel",
-            mission_id="stage-d-live-cancel",
+            session_id="adaptive-mission-cancel",
+            mission_id="adaptive-mission-live-cancel",
         )
         proposed = _wait_status(
             controller, submitted["mission_id"], {"proposed"}
@@ -388,7 +388,7 @@ def test_live_stage_d_cancel_waits_for_correlated_settled_terminal(tmp_path) -> 
     assert movement["supervised"]["linear_mps"] == 0.0
 
 
-def test_live_stage_d_uncorrelated_terminal_fails_closed(tmp_path) -> None:
+def test_live_adaptive_mission_uncorrelated_terminal_fails_closed(tmp_path) -> None:
     provider = SequenceProvider([("move_distance", 0.10)])
     service, controller, _ = _build(
         tmp_path,
@@ -398,8 +398,8 @@ def test_live_stage_d_uncorrelated_terminal_fails_closed(tmp_path) -> None:
     try:
         submitted = controller.submit(
             PROMPT,
-            session_id="stage-d-correlation",
-            mission_id="stage-d-live-correlation",
+            session_id="adaptive-mission-correlation",
+            mission_id="adaptive-mission-live-correlation",
         )
         proposed = _wait_status(
             controller, submitted["mission_id"], {"proposed"}
@@ -421,24 +421,24 @@ def test_live_stage_d_uncorrelated_terminal_fails_closed(tmp_path) -> None:
     )
 
 
-def test_live_stage_d_restart_never_resumes_approved_mission(tmp_path) -> None:
-    database = tmp_path / "stage-d-live.sqlite3"
+def test_live_adaptive_mission_restart_never_resumes_approved_mission(tmp_path) -> None:
+    database = tmp_path / "adaptive-mission-live.sqlite3"
     provider = SequenceProvider([("observe", 0.0)])
     service, controller, _ = _build(tmp_path, provider)
-    mission_id = "stage-d-live-restart"
+    mission_id = "adaptive-mission-live-restart"
     try:
         submitted = controller.submit(
             PROMPT,
-            session_id="stage-d-restart",
+            session_id="adaptive-mission-restart",
             mission_id=mission_id,
         )
         proposed = _wait_status(
             controller, submitted["mission_id"], {"proposed"}
         )
-        service.approve_stage_d_mission(
+        service.approve_adaptive_mission(
             mission_id,
             supplied_approval=(
-                f"APPROVE STAGE D {proposed['proposal_digest']}"
+                f"APPROVE ADAPTIVE MISSION {proposed['proposal_digest']}"
             ),
             operator="scott@example.com",
             authentication_source="tailscale-serve",

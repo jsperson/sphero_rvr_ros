@@ -33,10 +33,10 @@ def generate_launch_description():
                 "camera_info_url",
                 default_value=(
                     "file:///home/jsperson/.ros/camera_info/"
-                    "rvr_pi_camera3_stagec_800x600.yaml"
+                    "rvr_pi_camera3_800x600.yaml"
                 ),
                 description=(
-                    "Stage C runtime copy of the measured calibration with the "
+                    "Stationary perception runtime copy of the measured calibration with the "
                     "current camera_ros device name."
                 ),
             ),

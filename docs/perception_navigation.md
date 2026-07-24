@@ -81,14 +81,14 @@ fixed-wall lidar, and per-track artifacts:
 
 ```bash
 ros2 run sphero_rvr_driver rvr_perception_navigation_replay \
-  artifacts/perception_navigation_stage1/turn_attempt_5_replay.json
+  artifacts/perception_navigation_replay/turn_attempt_5_replay.json
 ```
 
 Developer-host equivalent:
 
 ```bash
 PYTHONPATH=src python3 -m sphero_rvr_driver.perception_navigation \
-  artifacts/perception_navigation_stage1/turn_attempt_5_replay.json
+  artifacts/perception_navigation_replay/turn_attempt_5_replay.json
 ```
 
 The result is explicitly `motion_authority=false` and

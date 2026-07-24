@@ -390,8 +390,8 @@ def test_controller_persists_stationary_proposal_and_never_grants_execution(
     _update_live_sources(cache, 1)
     service = MissionService(
         tmp_path / "stationary.sqlite3",
-        source_sha="stage-c-source",
-        deployed_sha="stage-c-source",
+        source_sha="stationary-perception-source",
+        deployed_sha="stationary-perception-source",
         mode="live",
         live_execution_enabled=False,
     )
@@ -403,7 +403,7 @@ def test_controller_persists_stationary_proposal_and_never_grants_execution(
         max_source_age_s=1.0,
     )
     try:
-        proposed = controller.submit(MISSION, session_id="stage-c-browser")
+        proposed = controller.submit(MISSION, session_id="stationary-perception-browser")
         proposal = proposed["proposal"]
         assert proposed["status"] == "proposed"
         assert proposal["segments"] == []
@@ -488,6 +488,7 @@ def test_stationary_launch_and_browser_have_no_motion_surface() -> None:
     assert "serial.Serial(" not in node_text
     assert "import sphero_sdk" not in node_text
     assert "LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY" in html
-    assert "Sensor updates during LLM" in html
+    assert "Mission log" in html
+    assert "Turn telemetry off" in html
     assert "Latest rover camera evidence" in html
     assert "The console will not substitute a fixture for a missing image source." in html

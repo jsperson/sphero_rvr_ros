@@ -436,18 +436,18 @@ def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> No
     assert "RVR_ROS_WORKSPACE=replace-with-absolute-mission-stack-workspace" in environment
     assert "RVR_LIVE_EXECUTION_ENABLED=false" in environment
     assert "RVR_LIVE_EXECUTION_REVIEWED_SHA=" in environment
-    assert "RVR_STAGE_D_ENABLED=false" in environment
+    assert "RVR_ADAPTIVE_MISSION_ENABLED=false" in environment
     assert "RVR_PLANNING_MAX_MOTION_CALLS=3" in environment
     assert "RVR_PLANNING_MAX_TRANSLATION_M=0.5" in environment
     assert "RVR_PLANNING_MAX_TRANSLATION_PER_CALL_M=0.5" in environment
     assert "RVR_PLANNING_MAX_RUNTIME_S=45.0" in environment
     assert '${RVR_LIVE_EXECUTION_ENABLED:-false}' in mission_unit
     assert '${RVR_LIVE_EXECUTION_REVIEWED_SHA:-disabled}' in mission_unit
-    assert '${RVR_STAGE_D_ENABLED:-false}' in mission_unit
+    assert '${RVR_ADAPTIVE_MISSION_ENABLED:-false}' in mission_unit
     assert '${RVR_PLANNING_MAX_MOTION_CALLS:-3}' in mission_unit
     mission_config = (REPO_ROOT / "config/mission_service.yaml").read_text()
     assert "live_execution_enabled: false" in mission_config
-    assert "stage_d_enabled: false" in mission_config
+    assert "adaptive_mission_enabled: false" in mission_config
     assert "planning_max_motion_calls: 3" in mission_config
     assert "planning_max_translation_per_call_m: 0.5" in mission_config
     assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in mission_unit
