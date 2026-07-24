@@ -31,6 +31,14 @@ class DiagnosticTelemetry:
     battery: Optional[BatterySnapshot] = None
     battery_voltage_state: Optional[str] = None
     motor_fault: Optional[bool] = None
+    motor_stall_event_count: int = 0
+    last_motor_stall_index: Optional[int] = None
+    last_motor_stall_active: Optional[bool] = None
+    left_motor_temperature_c: Optional[float] = None
+    left_motor_thermal_status: Optional[int] = None
+    right_motor_temperature_c: Optional[float] = None
+    right_motor_thermal_status: Optional[int] = None
+    motor_diagnostics_notification_enabled: bool = False
     firmware_version: Optional[str] = None
     board_revision: Optional[int] = None
     processor_name: Optional[str] = None
@@ -68,6 +76,24 @@ def diagnostic_key_values(
                 "angular_rad_s": f"{state.latest_velocity.angular_rad_s:.3f}",
             }
         )
+    values["motor_transport_write_count"] = str(state.motor_transport_write_count)
+    values["motion_transport_write_count"] = str(
+        state.motion_transport_write_count
+    )
+    if state.last_motor_command_id is not None:
+        values["last_motor_command_id"] = f"0x{state.last_motor_command_id:02x}"
+    if state.last_motor_sequence_id is not None:
+        values["last_motor_sequence_id"] = str(state.last_motor_sequence_id)
+    if state.last_motor_payload_hex is not None:
+        values["last_motor_payload_hex"] = state.last_motor_payload_hex
+    if state.last_motor_transport_write_epoch_s is not None:
+        values["last_motor_transport_write_epoch_s"] = (
+            f"{state.last_motor_transport_write_epoch_s:.6f}"
+        )
+    if state.last_motion_transport_write_epoch_s is not None:
+        values["last_motion_transport_write_epoch_s"] = (
+            f"{state.last_motion_transport_write_epoch_s:.6f}"
+        )
     if telemetry is None:
         return values
     if telemetry.battery is not None:
@@ -78,6 +104,32 @@ def diagnostic_key_values(
         values["battery_voltage_state"] = telemetry.battery_voltage_state
     if telemetry.motor_fault is not None:
         values["motor_fault"] = str(telemetry.motor_fault).lower()
+    values["motor_stall_event_count"] = str(telemetry.motor_stall_event_count)
+    if telemetry.last_motor_stall_index is not None:
+        values["last_motor_stall_index"] = str(telemetry.last_motor_stall_index)
+    if telemetry.last_motor_stall_active is not None:
+        values["last_motor_stall_active"] = str(
+            telemetry.last_motor_stall_active
+        ).lower()
+    if telemetry.left_motor_temperature_c is not None:
+        values["left_motor_temperature_c"] = (
+            f"{telemetry.left_motor_temperature_c:.3f}"
+        )
+    if telemetry.left_motor_thermal_status is not None:
+        values["left_motor_thermal_status"] = str(
+            telemetry.left_motor_thermal_status
+        )
+    if telemetry.right_motor_temperature_c is not None:
+        values["right_motor_temperature_c"] = (
+            f"{telemetry.right_motor_temperature_c:.3f}"
+        )
+    if telemetry.right_motor_thermal_status is not None:
+        values["right_motor_thermal_status"] = str(
+            telemetry.right_motor_thermal_status
+        )
+    values["motor_diagnostics_notification_enabled"] = str(
+        telemetry.motor_diagnostics_notification_enabled
+    ).lower()
     if telemetry.firmware_version is not None:
         values["firmware_version"] = telemetry.firmware_version
     if telemetry.board_revision is not None:

@@ -51,6 +51,12 @@ async def main_async() -> int:
     parser.add_argument("--max-linear", type=float, default=0.10, help="driver max_linear_mps used for mapping")
     parser.add_argument("--max-angular", type=float, default=0.4)
     parser.add_argument("--max-duty", type=int, default=32, help="driver raw motor duty cap for calibration")
+    parser.add_argument(
+        "--control-mode",
+        choices=(RVRDriver.VELOCITY_CONTROL_RAW_MOTOR, RVRDriver.VELOCITY_CONTROL_NATIVE_RC_SI),
+        default=RVRDriver.VELOCITY_CONTROL_RAW_MOTOR,
+        help="packet backend; raw_motor is the measured ground-calibration path",
+    )
     parser.add_argument("--command-timeout", type=float, default=0.25)
     parser.add_argument("--control-period", type=float, default=0.05)
     parser.add_argument("--settle", type=float, default=0.50)
@@ -71,7 +77,7 @@ async def main_async() -> int:
         "pulse_config "
         f"linear={args.linear:.4f}m/s duration={args.duration:.3f}s "
         f"max_linear={args.max_linear:.3f}m/s max_duty={args.max_duty} "
-        f"command_timeout={args.command_timeout:.3f}s"
+        f"control_mode={args.control_mode} command_timeout={args.command_timeout:.3f}s"
     )
     print(f"nominal_distance_m={args.linear * args.duration:.4f}")
     if actual_distance_m is not None:
@@ -85,6 +91,9 @@ async def main_async() -> int:
         max_linear_mps=args.max_linear,
         max_angular_rad_s=args.max_angular,
         max_raw_motor_duty=args.max_duty,
+        max_linear_raw_motor_duty=args.max_duty,
+        max_angular_raw_motor_duty=args.max_duty,
+        velocity_control_mode=args.control_mode,
     )
 
     await driver.connect()

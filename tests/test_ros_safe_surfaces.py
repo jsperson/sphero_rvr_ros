@@ -56,11 +56,26 @@ def test_diagnostic_key_values_include_safe_telemetry_without_identifiers():
             latest_velocity=VelocityCommand(0.1, -0.2),
             fail_safe_active=True,
             fail_safe_reason="safe stop delivery failed",
+            motor_transport_write_count=12,
+            motion_transport_write_count=10,
+            last_motor_command_id=0x01,
+            last_motor_sequence_id=42,
+            last_motor_payload_hex="02df01df",
+            last_motor_transport_write_epoch_s=123.5,
+            last_motion_transport_write_epoch_s=123.4,
         ),
         DiagnosticTelemetry(
             battery=BatterySnapshot(percentage=42, voltage=7.4),
             battery_voltage_state="low",
             motor_fault=True,
+            motor_stall_event_count=2,
+            last_motor_stall_index=1,
+            last_motor_stall_active=True,
+            left_motor_temperature_c=41.25,
+            left_motor_thermal_status=0,
+            right_motor_temperature_c=42.5,
+            right_motor_thermal_status=1,
+            motor_diagnostics_notification_enabled=True,
             firmware_version="1.2.3",
             board_revision=7,
             processor_name="nRF52840",
@@ -78,6 +93,21 @@ def test_diagnostic_key_values_include_safe_telemetry_without_identifiers():
     assert fields["battery_voltage"] == "7.400"
     assert fields["battery_voltage_state"] == "low"
     assert fields["motor_fault"] == "true"
+    assert fields["motor_transport_write_count"] == "12"
+    assert fields["motion_transport_write_count"] == "10"
+    assert fields["last_motor_command_id"] == "0x01"
+    assert fields["last_motor_sequence_id"] == "42"
+    assert fields["last_motor_payload_hex"] == "02df01df"
+    assert fields["last_motor_transport_write_epoch_s"] == "123.500000"
+    assert fields["last_motion_transport_write_epoch_s"] == "123.400000"
+    assert fields["motor_stall_event_count"] == "2"
+    assert fields["last_motor_stall_index"] == "1"
+    assert fields["last_motor_stall_active"] == "true"
+    assert fields["left_motor_temperature_c"] == "41.250"
+    assert fields["left_motor_thermal_status"] == "0"
+    assert fields["right_motor_temperature_c"] == "42.500"
+    assert fields["right_motor_thermal_status"] == "1"
+    assert fields["motor_diagnostics_notification_enabled"] == "true"
     assert fields["firmware_version"] == "1.2.3"
     assert fields["board_revision"] == "7"
     assert fields["processor_name"] == "nRF52840"
@@ -115,7 +145,7 @@ def test_node_config_declares_safe_surface_defaults():
 
     assert config.odom_publish_period == 0.1
     assert config.odom_counts_per_meter == 4337.768
-    assert config.odom_wheel_track_m == 0.18
+    assert config.odom_wheel_track_m == 0.2507
     assert config.odom_frame_id == "odom"
     assert config.base_frame_id == "base_link"
     assert config.odom_publish_tf is True
@@ -125,3 +155,4 @@ def test_node_config_declares_safe_surface_defaults():
     assert config.odom_twist_angular_covariance == 0.50
     assert config.ambient_light_publish_period == 2.0
     assert config.diagnostics_metadata_period == 30.0
+    assert config.motor_diagnostics_poll_period == 0.5

@@ -1,0 +1,16 @@
+[Unit]
+Description=Sphero RVR persistent mission service (execution default off)
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/sphero_rvr/mission-stack.env
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source "$RVR_ROS_WORKSPACE/install/setup.bash" && exec ros2 run sphero_rvr_driver live_mission_service --ros-args --params-file "$RVR_ROS_WORKSPACE/install/sphero_rvr_driver/share/sphero_rvr_driver/config/mission_service.yaml" -p source_sha:="$RVR_SOURCE_SHA" -p deployed_sha:="$RVR_DEPLOYED_SHA" -p stationary_perception_enabled:="${RVR_STATIONARY_PERCEPTION_ENABLED:-false}" -p live_execution_enabled:="${RVR_LIVE_EXECUTION_ENABLED:-false}" -p live_execution_reviewed_sha:="${RVR_LIVE_EXECUTION_REVIEWED_SHA:-disabled}" -p planning_max_motion_calls:="${RVR_PLANNING_MAX_MOTION_CALLS:-3}" -p planning_max_translation_m:="${RVR_PLANNING_MAX_TRANSLATION_M:-0.5}" -p planning_max_translation_per_call_m:="${RVR_PLANNING_MAX_TRANSLATION_PER_CALL_M:-0.5}" -p planning_max_abs_turn_deg:="${RVR_PLANNING_MAX_ABS_TURN_DEG:-180.0}" -p planning_max_runtime_s:="${RVR_PLANNING_MAX_RUNTIME_S:-45.0}" -p planning_linear_speed_mps:="${RVR_PLANNING_LINEAR_SPEED_MPS:-0.08}" -p planning_angular_speed_deg_s:="${RVR_PLANNING_ANGULAR_SPEED_DEG_S:-30.0}"'
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=135
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

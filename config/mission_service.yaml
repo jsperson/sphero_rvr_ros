@@ -1,0 +1,45 @@
+live_mission_service:
+  ros__parameters:
+    database_path: ~/.local/state/sphero_rvr/missions.sqlite3
+    socket_path: ~/.local/state/sphero_rvr/mission-service.sock
+    odom_topic: /odom
+    collision_state_topic: /collision_stop/state
+    control_state_topic: /mission_api/v2/control_state
+    route_request_topic: /mission_api/v2/live_route/request
+    route_status_topic: /mission_api/v2/live_route/status
+    route_cancel_service: live_route/cancel
+    camera_status_topic: /mission_api/v2/camera/status
+    lidar_status_topic: /mission_api/v2/lidar/status
+    localization_status_topic: /mission_api/v2/localization/status
+    semantic_map_status_topic: /mission_api/v2/map/status
+    capability_status_topic: /mission_api/v2/service/status
+    status_service: /mission_api/v2/service/read_status
+    publish_period_s: 0.5
+    max_source_age_s: 1.0
+    max_binding_age_s: 2.0
+    planning_enabled: true
+    # Stage C swaps the route planner for live stationary observation intent.
+    # The node rejects this mode if live execution authority is enabled.
+    stationary_perception_enabled: false
+    stationary_perception_tick_s: 0.2
+    stationary_perception_max_source_age_s: 1.5
+    planning_model: gpt-5.6-sol
+    planning_reasoning_effort: high
+    # Pi-owned LLM motion envelope. Calibration defaults stay conservative.
+    # Attended room driving can be intentionally widened without changing code,
+    # but PromptDriveLimits still enforces 8 calls / 2 m / 0.75 m per call /
+    # 120 s and the fixed Mission API speed ceilings.
+    planning_max_motion_calls: 3
+    planning_max_translation_m: 0.5
+    planning_max_translation_per_call_m: 0.5
+    planning_max_abs_turn_deg: 180.0
+    planning_max_runtime_s: 45.0
+    planning_linear_speed_mps: 0.08
+    planning_angular_speed_deg_s: 30.0
+    # Physical authority remains absent unless both fields are explicitly
+    # overridden and the reviewed SHA exactly matches source and deployed SHAs.
+    live_execution_enabled: false
+    live_execution_reviewed_sha: ""
+    approval_ttl_s: 60.0
+    route_graph_timeout_s: 5.0
+    route_cleanup_timeout_s: 3.0

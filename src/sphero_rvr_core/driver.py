@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from .command_queue import CommandPriority, PriorityCommandQueue
@@ -29,6 +30,11 @@ class _StaleMotionCommand(RuntimeError):
 
 
 class RVRDriver:
+    VELOCITY_CONTROL_RAW_MOTOR = "raw_motor"
+    VELOCITY_CONTROL_NATIVE_RC_SI = "native_rc_si"
+    _VELOCITY_CONTROL_MODES = frozenset(
+        {VELOCITY_CONTROL_RAW_MOTOR, VELOCITY_CONTROL_NATIVE_RC_SI}
+    )
     _MOTOR_CAPABLE_COMMAND_IDS = frozenset(
         {
             RVRCommands.CID_RAW_MOTORS,
@@ -57,6 +63,7 @@ class RVRDriver:
         max_raw_motor_duty: int = 64,
         max_linear_raw_motor_duty: Optional[int] = None,
         max_angular_raw_motor_duty: Optional[int] = None,
+        velocity_control_mode: str = VELOCITY_CONTROL_NATIVE_RC_SI,
         safe_stop_attempts: int = 2,
         safe_stop_retry_delay: float = 0.02,
         safety_dispatch_timeout_s: float = 0.10,
@@ -86,6 +93,13 @@ class RVRDriver:
                 int(max_angular_raw_motor_duty if max_angular_raw_motor_duty is not None else self._max_raw_motor_duty),
             ),
         )
+        normalized_control_mode = str(velocity_control_mode).strip().lower()
+        if normalized_control_mode not in self._VELOCITY_CONTROL_MODES:
+            raise ValueError(
+                "velocity_control_mode must be one of: "
+                + ", ".join(sorted(self._VELOCITY_CONTROL_MODES))
+            )
+        self._velocity_control_mode = normalized_control_mode
         self._desired_velocity: Optional[VelocityCommand] = None
         self._last_velocity_update: Optional[float] = None
         self._connected = False
@@ -95,6 +109,13 @@ class RVRDriver:
         self._fail_safe_reason: Optional[str] = None
         self._control_task: Optional[asyncio.Task] = None
         self._sequence_id = 0
+        self._motor_transport_write_count = 0
+        self._motion_transport_write_count = 0
+        self._last_motor_command_id: Optional[int] = None
+        self._last_motor_sequence_id: Optional[int] = None
+        self._last_motor_payload_hex: Optional[str] = None
+        self._last_motor_transport_write_epoch_s: Optional[float] = None
+        self._last_motion_transport_write_epoch_s: Optional[float] = None
 
     async def connect(self) -> None:
         await self._dispatcher.start()
@@ -124,11 +145,22 @@ class RVRDriver:
         self._raise_if_emergency_stopped()
         if self._fail_safe_active:
             raise RuntimeError("fail-safe fault active; clear safe stop before driving")
-        self._desired_velocity = clamp_velocity(
+        velocity = clamp_velocity(
             VelocityCommand(linear_mps, angular_rad_s),
             max_linear_mps=self._max_linear_mps,
             max_angular_rad_s=self._max_angular_rad_s,
         )
+        if velocity.linear_mps == 0.0 and velocity.angular_rad_s == 0.0:
+            # A zero Twist is the terminal command used by every supervised
+            # motion controller.  Do not translate it into a slew-enabled RC
+            # command: that can leave unloaded tracks coasting after the route
+            # has already reported completion.  Transition once through the
+            # validated immediate stop path, which also invalidates queued
+            # motor packets; repeated idle zeros remain transport-silent.
+            if self._desired_velocity is not None:
+                await self.stop()
+            return
+        self._desired_velocity = velocity
         self._last_velocity_update = now_seconds()
 
     async def stop(self) -> None:
@@ -464,6 +496,13 @@ class RVRDriver:
             latest_velocity=self._desired_velocity,
             fail_safe_active=self._fail_safe_active,
             fail_safe_reason=self._fail_safe_reason,
+            motor_transport_write_count=self._motor_transport_write_count,
+            motion_transport_write_count=self._motion_transport_write_count,
+            last_motor_command_id=self._last_motor_command_id,
+            last_motor_sequence_id=self._last_motor_sequence_id,
+            last_motor_payload_hex=self._last_motor_payload_hex,
+            last_motor_transport_write_epoch_s=self._last_motor_transport_write_epoch_s,
+            last_motion_transport_write_epoch_s=self._last_motion_transport_write_epoch_s,
         )
 
     def _subscribe(
@@ -492,14 +531,35 @@ class RVRDriver:
                 continue
             stop_sent_for_stale = False
             velocity = self._desired_velocity
+            motion_generation = self._motion_generation
             linear_fraction = velocity.linear_mps / self._max_linear_mps if self._max_linear_mps else 0.0
             angular_fraction = velocity.angular_rad_s / self._max_angular_rad_s if self._max_angular_rad_s else 0.0
+            if self._velocity_control_mode == self.VELOCITY_CONTROL_RAW_MOTOR:
+                # This is the physically measured ROS mission backend.  Both
+                # requested components are normalized against their configured
+                # maxima and then mapped through independently bounded raw-duty
+                # caps.  Unlike native RC-SI, these caps were present during the
+                # June 24 floor calibration and make short-run calibration
+                # packets explicit and reproducible.
+                await self._send_from_control_loop(
+                    lambda seq: self.commands.drive_rc(
+                        seq,
+                        linear_fraction,
+                        angular_fraction,
+                        max_speed=self._max_raw_motor_duty,
+                        max_linear_speed=self._max_linear_raw_motor_duty,
+                        max_angular_speed=self._max_angular_raw_motor_duty,
+                    ),
+                    motion_generation=motion_generation,
+                )
+                continue
             if abs(angular_fraction) > 0.0:
                 if abs(linear_fraction) <= 0.05:
                     # Explicit skid-steer pivot: one tread reverse, the other forward.
-                    tank = 127 if angular_fraction > 0 else -127
+                    tank = int(round(max(-1.0, min(1.0, angular_fraction)) * 127))
                     await self._send_from_control_loop(
-                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank)
+                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
+                        motion_generation=motion_generation,
                     )
                     continue
 
@@ -519,7 +579,8 @@ class RVRDriver:
                 left_i = int(round(left * 127))
                 right_i = int(round(right * 127))
                 await self._send_from_control_loop(
-                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i)
+                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i),
+                    motion_generation=motion_generation,
                 )
                 continue
             await self._send_from_control_loop(
@@ -528,12 +589,18 @@ class RVRDriver:
                     yaw_angular_velocity=velocity.angular_rad_s,
                     linear_velocity=velocity.linear_mps,
                     flags=1,  # RC slew linear velocity for smoother straight teleop.
-                )
+                ),
+                motion_generation=motion_generation,
             )
 
-    async def _send_from_control_loop(self, packet_factory) -> None:
+    async def _send_from_control_loop(self, packet_factory, *, motion_generation: int) -> None:
         try:
-            await self._send(packet_factory, CommandPriority.NORMAL, motor_capable=True)
+            await self._send(
+                packet_factory,
+                CommandPriority.NORMAL,
+                motor_capable=True,
+                expected_motion_generation=motion_generation,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -569,11 +636,24 @@ class RVRDriver:
             self._fail_safe_active = True
             self._fail_safe_reason = f"{reason}: {last_exc}"
 
-    async def _send(self, packet_factory, priority: CommandPriority, *, motor_capable: bool = False):
+    async def _send(
+        self,
+        packet_factory,
+        priority: CommandPriority,
+        *,
+        motor_capable: bool = False,
+        expected_motion_generation: Optional[int] = None,
+    ):
         sequence_id = self._next_sequence_id()
         packet = packet_factory(sequence_id)
         motor_capable = motor_capable or self._is_motor_capable_packet(packet)
-        generation = self._motion_generation if motor_capable else None
+        generation = None
+        if motor_capable:
+            generation = (
+                self._motion_generation
+                if expected_motion_generation is None
+                else int(expected_motion_generation)
+            )
         if motor_capable:
             self._raise_if_emergency_stopped()
         expects_response = packet.flags & (FLAG_REQUEST_RESPONSE | FLAG_REQUEST_ERROR_ONLY)
@@ -591,6 +671,7 @@ class RVRDriver:
         packet = packet_factory(sequence_id)
         try:
             await asyncio.wait_for(self._dispatcher.send(packet), timeout=self._safety_dispatch_timeout_s)
+            self._record_motor_transport_write(packet)
         except asyncio.TimeoutError as exc:
             self._fail_safe_active = True
             self._fail_safe_reason = "safety stop dispatch exceeded software budget"
@@ -605,10 +686,37 @@ class RVRDriver:
             before_write = lambda: self._raise_if_motion_dispatch_blocked(motion_generation)
         try:
             if expects_response:
-                return await self._dispatcher.request(packet, before_write=before_write)
-            return await self._dispatcher.send(packet, before_write=before_write)
+                result = await self._dispatcher.request(packet, before_write=before_write)
+            else:
+                result = await self._dispatcher.send(packet, before_write=before_write)
+            if motion_generation is not None:
+                self._record_motor_transport_write(packet)
+            return result
         except _StaleMotionCommand:
             return None
+
+    def _record_motor_transport_write(self, packet) -> None:
+        """Record successful host transport writes without implying firmware ACK.
+
+        Raw motor commands are fire-and-forget in the RVR protocol. Reaching
+        this method proves that the transport write completed; it does not
+        prove that the MCU accepted or applied the command.
+        """
+        if not self._is_motor_capable_packet(packet):
+            return
+        written_at = time.time()
+        self._motor_transport_write_count += 1
+        self._last_motor_command_id = int(packet.command_id)
+        self._last_motor_sequence_id = int(packet.sequence_id)
+        self._last_motor_payload_hex = packet.payload.hex()
+        self._last_motor_transport_write_epoch_s = written_at
+        is_motion_raw_motor = (
+            packet.command_id == RVRCommands.CID_RAW_MOTORS
+            and packet.payload != b"\x00\x00\x00\x00"
+        )
+        if packet.command_id != RVRCommands.CID_RAW_MOTORS or is_motion_raw_motor:
+            self._motion_transport_write_count += 1
+            self._last_motion_transport_write_epoch_s = written_at
 
     def _invalidate_motion_commands(self) -> None:
         self._motion_generation += 1

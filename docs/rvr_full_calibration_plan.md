@@ -10,7 +10,13 @@ Known from first-pass floor calibration:
 
 - Initial straight-line encoder scale: `odom_counts_per_meter: 4337.768`.
 - Test conditions: `linear=0.05`, `duration=1.00`, `max-duty=128`.
-- Current config still defaults to placeholder `odom_counts_per_meter: 1000.0` and `odom_wheel_track_m: 0.18` in `config/rvr.yaml`.
+- Current config uses the straight-run estimate `odom_counts_per_meter: 4337.768`
+  and the explicitly reviewed attempt-2 lidar estimate
+  `odom_wheel_track_m: 0.2507` in `config/rvr.yaml`. The track value remains
+  provisional until a restrained turn confirmation.
+- ROS mission velocity currently uses the explicit `raw_motor` backend; native
+  RC-SI is diagnostic-only. The June 24 scale does not transfer between packet
+  backends.
 - Odometry currently uses only left/right encoder deltas and a differential-drive/skid-steer approximation:
   - `left_m = left_delta / odom_counts_per_meter`
   - `right_m = right_delta / odom_counts_per_meter`
@@ -79,9 +85,10 @@ Goal: prove the software stack, config, topics, and lidar bench setup are sane b
 Run locally or on the Pi as appropriate:
 
 ```bash
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests/test_odometry.py tests/test_ros_safe_surfaces.py tests/test_ros_node_config.py -q
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m pytest tests -q
-PYTHONPATH=src /tmp/sphero-rvr-ros-test/bin/python -m compileall -q src
+python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
+  tests/test_odometry.py tests/test_ros_safe_surfaces.py tests/test_ros_node_config.py
+python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv
+PYTHONPATH=src python3 -m compileall -q src
 git diff --check
 ```
 

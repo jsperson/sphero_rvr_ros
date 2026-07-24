@@ -19,6 +19,8 @@ EXPECTED_DATA_FILES = {
         "launch/lidar.launch.py",
         "launch/mapping.launch.py",
         "launch/camera.launch.py",
+        "launch/mission_service.launch.py",
+        "launch/stationary_perception.launch.py",
     },
     "share/sphero_rvr_driver/config": {
         "config/rvr.yaml",
@@ -26,6 +28,9 @@ EXPECTED_DATA_FILES = {
         "config/lidar.yaml",
         "config/slam_toolbox.yaml",
         "config/camera.yaml",
+        "config/mission_service.yaml",
+        "config/mission-stack.env.example",
+        "config/stationary_slam_toolbox.yaml",
     },
     "share/sphero_rvr_driver/scripts": {
         "scripts/install-rvr-pi",
@@ -34,6 +39,9 @@ EXPECTED_DATA_FILES = {
         "scripts/rvr-shoe-detector-eval",
         "scripts/rvr-slam-replay-plan",
         "scripts/rvr_motion_calibration.py",
+        "scripts/analyze_ground_calibration.py",
+        "scripts/aggregate_ground_calibration.py",
+        "scripts/install-rvr-mission-stack-services",
     },
     "share/sphero_rvr_driver/docs": {
         "docs/mapping.md",
@@ -49,6 +57,13 @@ EXPECTED_DATA_FILES = {
         "docs/mission_planner.md",
         "docs/rvr_mcp_server.md",
         "docs/mission_observability.md",
+        "docs/mission_web.md",
+        "docs/mission_service.md",
+        "docs/pi_mission_stack.md",
+        "docs/lidar_motion_validation.md",
+        "docs/perception_navigation.md",
+        "docs/rolling_replay.md",
+        "docs/stationary_perception.md",
         "docs/semantic_map_artifacts.md",
         "docs/supervised_coordinator.md",
         "docs/vertical_slice_capability_matrix.md",
@@ -58,6 +73,11 @@ EXPECTED_DATA_FILES = {
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
+    },
+    "share/sphero_rvr_driver/systemd/user": {
+        "systemd/user/rvr-mission-service.service",
+        "systemd/user/rvr-mission-web.service",
+        "systemd/user/rvr-stationary-perception.service",
     },
 }
 
@@ -165,6 +185,9 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "docs/camera_lidar_calibration.md",
         "docs/lidar_collision_stop_supervisor.md",
         "docs/mission_observability.md",
+        "docs/mission_web.md",
+        "docs/pi_mission_stack.md",
+        "docs/lidar_motion_validation.md",
         "docs/mission_api.md",
         "docs/mission_controls.md",
         "docs/mission_language.md",
@@ -184,7 +207,7 @@ def test_readme_documents_installed_lidar_mapping_package_data() -> None:
         "launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`",
         "config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`",
         "helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`",
-        "console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, and `rvr_mcp_server`",
+        "console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, `rvr_mcp_server`, `rvr_mission_web`, and `rvr_lidar_motion_validation`",
         "LLM planner over allowlisted `mission_api.v2` rover tools",
     ]:
         assert token in readme
@@ -222,7 +245,19 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_shoe_map_project = sphero_rvr_driver.shoe_map_projection:main",
         "rvr_semantic_map_artifacts = sphero_rvr_driver.semantic_map_artifacts:main",
         "rvr_mcp_server = sphero_rvr_driver.rvr_mcp_server:main",
+        "rvr_mission_web = sphero_rvr_driver.mission_web:main",
+        "live_mission_service = sphero_rvr_driver.live_mission_service_node:main",
+        "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
+        "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
     } <= console_scripts
+
+    lidar_validation = (
+        REPO_ROOT / "docs" / "lidar_motion_validation.md"
+    ).read_text()
+    assert (
+        "ros2 run sphero_rvr_driver rvr_lidar_motion_validation"
+        in lidar_validation
+    )
 
 
 def test_lidar_collision_stop_design_links_current_ros_contract() -> None:

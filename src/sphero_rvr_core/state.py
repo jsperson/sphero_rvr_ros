@@ -17,3 +17,10 @@ class RVRState:
     latest_velocity: Optional[VelocityCommand] = None
     fail_safe_active: bool = False
     fail_safe_reason: Optional[str] = None
+    motor_transport_write_count: int = 0
+    motion_transport_write_count: int = 0
+    last_motor_command_id: Optional[int] = None
+    last_motor_sequence_id: Optional[int] = None
+    last_motor_payload_hex: Optional[str] = None
+    last_motor_transport_write_epoch_s: Optional[float] = None
+    last_motion_transport_write_epoch_s: Optional[float] = None

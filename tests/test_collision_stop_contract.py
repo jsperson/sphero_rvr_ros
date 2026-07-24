@@ -77,6 +77,10 @@ def test_supervised_launch_remaps_driver_away_from_public_cmd_vel_and_private_se
     assert "lidar_collision_stop_supervisor" in source
     assert "collision_stop.yaml" in source
     assert "condition=IfCondition(start_supervisor)" in source
+    assert '"front_slow_min_angle_deg"' in source
+    assert '"front_slow_max_angle_deg"' in source
+    assert "ParameterValue" in source
+    assert "Startup-only forward slow-corridor" in source
 
 
 def test_mapping_motor_capable_launch_uses_supervised_graph_by_default():
@@ -129,6 +133,25 @@ def test_collision_stop_node_uses_real_tf_lookup_and_truthful_diagnostics():
     assert "tf_reason" in source
     assert "base_frame" in source
     assert "tf_timeout_s" in source
+    assert "nearest_front_slow_m" in source
+    assert "front_slow_min_angle_deg" in source
+    assert "front_slow_max_angle_deg" in source
+
+
+def test_collision_stop_node_exposes_all_side_sector_boundaries_as_ros_parameters():
+    source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py").read_text()
+    config = (REPO_ROOT / "config" / "collision_stop.yaml").read_text()
+
+    for name in (
+        "left_spin_min_angle_deg",
+        "left_spin_max_angle_deg",
+        "right_spin_min_angle_deg",
+        "right_spin_max_angle_deg",
+        "trajectory_clearance_margin_m",
+    ):
+        assert f'"{name}": defaults.{name}' in source
+        assert f'{name}=float(self.get_parameter("{name}").value)' in source
+        assert f"{name}:" in config
 
 
 def test_collision_stop_public_services_do_not_spin_nested_executor():

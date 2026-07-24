@@ -9,15 +9,22 @@ sphero_rvr_driver:
     max_raw_motor_duty: 160
     max_linear_raw_motor_duty: 64
     max_angular_raw_motor_duty: 255
+    # ROS missions use the physically measured raw-duty backend. The optional
+    # native_rc_si backend remains available for isolated diagnostics only.
+    velocity_control_mode: raw_motor
     battery_publish_period: 5.0
     temperature_publish_period: 2.0
     diagnostics_publish_period: 1.0
     diagnostics_metadata_period: 30.0
+    # Capture motor protection and under-load voltage quickly enough to explain
+    # a short attended pivot without changing motion authority.
+    motor_diagnostics_poll_period: 0.5
     ambient_light_publish_period: 2.0
     odom_publish_period: 0.1
-    # Encoder odometry is a rough mapping/localization aid. Tune these from live measurements.
+    # Encoder odometry is a rough mapping/localization aid. The effective
+    # skid-steer track is evidence-derived and still requires confirmation.
     odom_counts_per_meter: 4337.768
-    odom_wheel_track_m: 0.18
+    odom_wheel_track_m: 0.2507
     odom_frame_id: odom
     base_frame_id: base_link
     odom_publish_tf: true

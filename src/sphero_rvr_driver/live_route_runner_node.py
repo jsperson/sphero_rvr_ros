@@ -18,6 +18,7 @@ from .live_route_runner import (
     LiveRouteRequest,
     LiveRouteRunner,
     LiveRouteState,
+    TrackEncoderState,
     _normalize_exception_terminal,
     route_request_from_json,
 )
@@ -45,6 +46,48 @@ def _odom_state(msg: Any) -> Optional[OdomMotionState]:
             y_m=float(position.y),
             yaw_rad=yaw,
         )
+    except Exception:
+        return None
+
+
+def _encoder_state(raw: Any) -> Optional[TrackEncoderState]:
+    try:
+        payload = json.loads(str(raw))
+        if not isinstance(payload, dict) or payload.get("schema") != "sphero_rvr.encoder_counts.v1":
+            return None
+        stamp = float(payload["stamp"])
+        counts_per_meter = float(payload["counts_per_meter"])
+        left = payload["left_count"]
+        right = payload["right_count"]
+        if not math.isfinite(stamp) or stamp < 0.0:
+            return None
+        if not math.isfinite(counts_per_meter) or counts_per_meter <= 0.0:
+            return None
+        if isinstance(left, bool) or isinstance(right, bool):
+            return None
+        if not isinstance(left, int) or not isinstance(right, int):
+            return None
+        return TrackEncoderState(stamp, left, right, counts_per_meter)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _collision_state_value(raw: Any) -> Optional[str]:
+    """Parse the supervisor's state token from JSON or its diagnostic text."""
+
+    state = raw
+    try:
+        payload = json.loads(str(raw))
+        if isinstance(payload, dict):
+            state = payload.get("state", payload.get("collision_state"))
+        else:
+            state = payload
+    except Exception:
+        pass
+    tokens = str(state).strip().split(maxsplit=1) if state is not None else []
+    token = tokens[0] if tokens else ""
+    try:
+        return CollisionState(token.upper()).value
     except Exception:
         return None
 
@@ -80,6 +123,7 @@ def main(args=None):
             self._latest_request: Optional[LiveRouteRequest] = None
             self._latest_scan: Optional[ScanInput] = None
             self._latest_odom: Optional[OdomMotionState] = None
+            self._latest_encoder_counts: Optional[TrackEncoderState] = None
             self._collision_state: Optional[str] = None
             self._collision_received_at: Optional[float] = None
             self._stop = False
@@ -93,6 +137,7 @@ def main(args=None):
             self.create_subscription(String, str(self.get_parameter("route_request_topic").value), self._on_route_request, 10)
             self.create_subscription(LaserScan, str(self.get_parameter("scan_topic").value), self._on_scan, 10)
             self.create_subscription(Odometry, str(self.get_parameter("odom_topic").value), self._on_odom, 10)
+            self.create_subscription(String, str(self.get_parameter("encoder_counts_topic").value), self._on_encoder_counts, 10)
             self.create_subscription(String, str(self.get_parameter("collision_state_topic").value), self._on_collision_state, 10)
             self.create_subscription(String, str(self.get_parameter("stop_state_topic").value), self._on_stop_state, 10)
             self.create_service(Trigger, "live_route/cancel", self._on_cancel)
@@ -108,6 +153,7 @@ def main(args=None):
                 "cmd_vel_topic": "/cmd_vel",
                 "scan_topic": "/scan",
                 "odom_topic": "/odom",
+                "encoder_counts_topic": "/encoder_counts",
                 "collision_state_topic": "/collision_stop/state",
                 "stop_state_topic": "/mission_api/v2/control_state",
                 "control_period_s": 0.05,
@@ -125,8 +171,17 @@ def main(args=None):
                 "min_translation_cap_m": 0.01,
                 "max_translation_segment_m": 0.75,
                 "collision_state_max_age_s": scan_defaults.max_scan_age_s,
+                "track_counts_per_meter": 4337.768,
+                "terminal_settle_time_s": 0.50,
+                "terminal_settle_timeout_s": 2.0,
+                "terminal_settle_distance_m": 0.005,
+                "terminal_settle_angle_rad": math.radians(1.0),
+                "terminal_settle_encoder_counts": 8,
+                "max_terminal_distance_error_m": 0.03,
+                "max_terminal_angle_error_rad": math.radians(5.0),
                 "distance_tolerance_m": odom_defaults.distance_tolerance_m,
                 "angle_tolerance_rad": odom_defaults.angle_tolerance_rad,
+                "max_turn_speed_rad_s": odom_defaults.max_turn_speed_rad_s,
                 "heading_kp": odom_defaults.heading_kp,
                 "max_heading_correction_rad_s": odom_defaults.max_heading_correction_rad_s,
                 "max_sample_age_s": odom_defaults.max_sample_age_s,
@@ -141,6 +196,7 @@ def main(args=None):
             odom = MotionPrimitiveConfig(
                 distance_tolerance_m=float(self.get_parameter("distance_tolerance_m").value),
                 angle_tolerance_rad=float(self.get_parameter("angle_tolerance_rad").value),
+                max_turn_speed_rad_s=float(self.get_parameter("max_turn_speed_rad_s").value),
                 heading_kp=float(self.get_parameter("heading_kp").value),
                 max_heading_correction_rad_s=float(self.get_parameter("max_heading_correction_rad_s").value),
                 max_sample_age_s=float(self.get_parameter("max_sample_age_s").value),
@@ -167,6 +223,14 @@ def main(args=None):
                 min_translation_cap_m=float(self.get_parameter("min_translation_cap_m").value),
                 max_translation_segment_m=float(self.get_parameter("max_translation_segment_m").value),
                 collision_state_max_age_s=float(self.get_parameter("collision_state_max_age_s").value),
+                track_counts_per_meter=float(self.get_parameter("track_counts_per_meter").value),
+                terminal_settle_time_s=float(self.get_parameter("terminal_settle_time_s").value),
+                terminal_settle_timeout_s=float(self.get_parameter("terminal_settle_timeout_s").value),
+                terminal_settle_distance_m=float(self.get_parameter("terminal_settle_distance_m").value),
+                terminal_settle_angle_rad=float(self.get_parameter("terminal_settle_angle_rad").value),
+                terminal_settle_encoder_counts=int(self.get_parameter("terminal_settle_encoder_counts").value),
+                max_terminal_distance_error_m=float(self.get_parameter("max_terminal_distance_error_m").value),
+                max_terminal_angle_error_rad=float(self.get_parameter("max_terminal_angle_error_rad").value),
             )
 
         def _supervisor_cmd_topic(self) -> str:
@@ -234,21 +298,14 @@ def main(args=None):
         def _on_odom(self, msg) -> None:
             self._latest_odom = _odom_state(msg)
 
+        def _on_encoder_counts(self, msg) -> None:
+            self._latest_encoder_counts = _encoder_state(getattr(msg, "data", None))
+
         def _on_collision_state(self, msg) -> None:
-            state = None
-            try:
-                payload = json.loads(str(msg.data))
-                if isinstance(payload, dict):
-                    state = payload.get("state", payload.get("collision_state"))
-                else:
-                    state = payload
-            except Exception:
-                state = getattr(msg, "data", None)
-            try:
-                self._collision_state = CollisionState(str(state).upper()).value
+            self._collision_state = _collision_state_value(getattr(msg, "data", None))
+            if self._collision_state is not None:
                 self._collision_received_at = self._now_seconds()
-            except Exception:
-                self._collision_state = None
+            else:
                 self._collision_received_at = None
 
         def _on_stop_state(self, msg) -> None:
@@ -298,6 +355,7 @@ def main(args=None):
                 stop=self._stop,
                 estop=self._estop,
                 cancel=self._cancel,
+                encoder_counts=self._latest_encoder_counts,
             )
 
         def _publish_command(self, command) -> None:
@@ -346,6 +404,15 @@ def main(args=None):
                 KeyValue(key="terminal_reason", value=manifest.terminal_reason),
                 KeyValue(key="measured_distance_m", value=f"{manifest.measured_distance_m:.3f}"),
                 KeyValue(key="measured_angle_deg", value=f"{manifest.measured_angle_deg:.3f}"),
+                KeyValue(key="final_heading_deg", value=str(manifest.final_heading_deg)),
+                KeyValue(key="encoder_start_stamp", value=str(manifest.encoder_start_stamp)),
+                KeyValue(key="encoder_final_stamp", value=str(manifest.encoder_final_stamp)),
+                KeyValue(key="left_encoder_delta_counts", value=str(manifest.left_encoder_delta_counts)),
+                KeyValue(key="right_encoder_delta_counts", value=str(manifest.right_encoder_delta_counts)),
+                KeyValue(key="left_track_distance_m", value=str(manifest.left_track_distance_m)),
+                KeyValue(key="right_track_distance_m", value=str(manifest.right_track_distance_m)),
+                KeyValue(key="terminal_settled", value=str(manifest.terminal_settled).lower()),
+                KeyValue(key="terminal_settle_duration_s", value=str(manifest.terminal_settle_duration_s)),
                 KeyValue(key="collision_state", value=manifest.collision_state),
                 KeyValue(key="source_sha", value=manifest.source_sha),
             ]

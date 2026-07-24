@@ -95,6 +95,7 @@ class CollisionStopConfig:
     stop_distance_m: float = 0.35
     slow_distance_m: float = 0.60
     reverse_stop_distance_m: float = 0.25
+    trajectory_clearance_margin_m: float = 0.02
     measured_stop_time_s: float = 0.50
     braking_distance_margin_m: float = 0.02
     release_distance_m: float = 0.45
@@ -127,6 +128,19 @@ class CollisionStopConfig:
             raise ValueError("measured_stop_time_s must be non-negative")
         if self.braking_distance_margin_m < 0.0:
             raise ValueError("braking_distance_margin_m must be non-negative")
+        if (
+            not math.isfinite(self.trajectory_clearance_margin_m)
+            or self.trajectory_clearance_margin_m < 0.0
+        ):
+            raise ValueError("trajectory_clearance_margin_m must be finite and non-negative")
+        for name, extent in (
+            ("footprint_front_m", self.footprint_front_m),
+            ("footprint_rear_m", self.footprint_rear_m),
+            ("footprint_left_m", self.footprint_left_m),
+            ("footprint_right_m", self.footprint_right_m),
+        ):
+            if not math.isfinite(extent) or extent <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
         if not (0.0 <= self.min_forward_scale <= 1.0):
             raise ValueError("min_forward_scale must be between 0 and 1")
 
@@ -159,6 +173,18 @@ class ScanEvaluation:
 
 
 @dataclass(frozen=True)
+class TrajectoryCheck:
+    """Result of sweeping the configured footprint along a bounded command."""
+
+    blocked: bool
+    horizon_s: float
+    minimum_clearance_m: Optional[float]
+    collision_time_s: Optional[float] = None
+    collision_point_x_m: Optional[float] = None
+    collision_point_y_m: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class ArbitrationDecision:
     state: CollisionState
     previous_state: CollisionState
@@ -169,6 +195,7 @@ class ArbitrationDecision:
         default_factory=lambda: ScanHealth(False, "missing_scan", None, 0, 0, "")
     )
     nearest: Mapping[str, Optional[float]] = field(default_factory=dict)
+    trajectory: Optional[TrajectoryCheck] = None
     scale: float = 0.0
     reset_required: bool = False
 
@@ -332,6 +359,108 @@ def _normalize_degrees(angle_deg: float) -> float:
     return ((angle_deg + 180.0) % 360.0) - 180.0
 
 
+def evaluate_projected_trajectory(
+    scan: ScanInput,
+    config: CollisionStopConfig,
+    command: TwistCommand,
+) -> TrajectoryCheck:
+    """Project a bounded command and test its swept rectangular footprint.
+
+    The horizon covers the time before a stale command is suppressed plus the
+    measured stopping interval.  A scan point blocks only when it enters the
+    footprint expanded by the configured clearance margin at a sampled pose.
+    This keeps turn safety tied to the actual trajectory instead of treating an
+    entire side sector as occupied.
+    """
+
+    horizon_s = config.requested_cmd_timeout_s + config.measured_stop_time_s
+    transform, tf_available, _ = _resolve_scan_transform(scan, config)
+    if not tf_available:
+        return TrajectoryCheck(True, horizon_s, None, collision_time_s=0.0)
+
+    points = _valid_base_points(scan, config, transform)
+    if not points:
+        return TrajectoryCheck(True, horizon_s, None, collision_time_s=0.0)
+
+    linear_x = float(command.linear_x)
+    angular_z = float(command.angular_z)
+    linear_steps = math.ceil(abs(linear_x) * horizon_s / 0.01)
+    angular_steps = math.ceil(abs(angular_z) * horizon_s / math.radians(2.0))
+    step_count = max(1, linear_steps, angular_steps)
+
+    margin = config.trajectory_clearance_margin_m
+    front = config.footprint_front_m + margin
+    rear = config.footprint_rear_m + margin
+    left = config.footprint_left_m + margin
+    right = config.footprint_right_m + margin
+    minimum_clearance = math.inf
+
+    for step in range(step_count + 1):
+        elapsed_s = horizon_s * step / step_count
+        pose_x, pose_y, pose_yaw = _constant_twist_pose(
+            linear_x,
+            angular_z,
+            elapsed_s,
+        )
+        cos_yaw = math.cos(pose_yaw)
+        sin_yaw = math.sin(pose_yaw)
+        for point_x, point_y in points:
+            dx = point_x - pose_x
+            dy = point_y - pose_y
+            local_x = cos_yaw * dx + sin_yaw * dy
+            local_y = -sin_yaw * dx + cos_yaw * dy
+            outside_x = max(local_x - front, -rear - local_x, 0.0)
+            outside_y = max(local_y - left, -right - local_y, 0.0)
+            clearance = math.hypot(outside_x, outside_y)
+            minimum_clearance = min(minimum_clearance, clearance)
+            if clearance <= 0.0:
+                return TrajectoryCheck(
+                    True,
+                    horizon_s,
+                    0.0,
+                    collision_time_s=elapsed_s,
+                    collision_point_x_m=point_x,
+                    collision_point_y_m=point_y,
+                )
+
+    return TrajectoryCheck(
+        False,
+        horizon_s,
+        minimum_clearance if math.isfinite(minimum_clearance) else None,
+    )
+
+
+def _valid_base_points(
+    scan: ScanInput,
+    config: CollisionStopConfig,
+    transform_to_base: Transform2D,
+) -> tuple[tuple[float, float], ...]:
+    min_range = max(float(scan.range_min), config.min_range_m)
+    max_range = min(float(scan.range_max), config.max_range_m)
+    points: list[tuple[float, float]] = []
+    for index, raw_value in enumerate(scan.ranges):
+        value = _valid_range(raw_value, min_range=min_range, max_range=max_range)
+        if value is None:
+            continue
+        angle = scan.angle_min + index * scan.angle_increment
+        point_x = value * math.cos(angle)
+        point_y = value * math.sin(angle)
+        points.append(transform_to_base.transform_point(point_x, point_y))
+    return tuple(points)
+
+
+def _constant_twist_pose(
+    linear_x: float,
+    angular_z: float,
+    elapsed_s: float,
+) -> tuple[float, float, float]:
+    yaw = angular_z * elapsed_s
+    if abs(angular_z) <= 1e-9:
+        return linear_x * elapsed_s, 0.0, 0.0
+    radius = linear_x / angular_z
+    return radius * math.sin(yaw), radius * (1.0 - math.cos(yaw)), yaw
+
+
 class CollisionStopSupervisor:
     def __init__(self, config: CollisionStopConfig, *, now: float = 0.0):
         self.config = config
@@ -448,7 +577,7 @@ class CollisionStopSupervisor:
 
         front_stop_distance = self._front_stop_distance(bounded)
         rear_stop_distance = self._rear_stop_distance(bounded)
-        turn_stop_distance = self._turn_stop_distance(bounded)
+        trajectory_check: Optional[TrajectoryCheck] = None
 
         if bounded.linear_x > 0.0 and _within(front, front_stop_distance):
             self._clear_since = None
@@ -456,19 +585,56 @@ class CollisionStopSupervisor:
         if bounded.linear_x < 0.0 and _within(rear, rear_stop_distance):
             output = TwistCommand(0.0, bounded.angular_z)
             return self._decision(CollisionState.SLOW, "rear_hold", output, command, health, nearest)
-        if bounded.angular_z > 0.0 and _within(left, turn_stop_distance):
-            bounded = TwistCommand(bounded.linear_x, 0.0)
-            reason = "left_turn_blocked"
-        if bounded.angular_z < 0.0 and _within(right, turn_stop_distance):
-            bounded = TwistCommand(bounded.linear_x, 0.0)
-            reason = "right_turn_blocked"
+        if bounded.linear_x != 0.0 or bounded.angular_z != 0.0:
+            trajectory_check = evaluate_projected_trajectory(
+                self._latest_scan,
+                self.config,
+                bounded,
+            )
+            if trajectory_check.blocked:
+                if bounded.angular_z > 0.0:
+                    reason = "left_trajectory_blocked"
+                elif bounded.angular_z < 0.0:
+                    reason = "right_trajectory_blocked"
+                elif bounded.linear_x > 0.0:
+                    reason = "forward_trajectory_blocked"
+                else:
+                    reason = "reverse_trajectory_blocked"
+                return self._decision(
+                    CollisionState.SLOW,
+                    reason,
+                    TwistCommand(),
+                    command,
+                    health,
+                    nearest,
+                    trajectory=trajectory_check,
+                )
         if bounded.linear_x > 0.0 and front_slow is not None and front_slow < self.config.slow_distance_m:
             scale = self._forward_scale(front_slow)
             output = TwistCommand(bounded.linear_x * scale, bounded.angular_z)
             state = CollisionState.SLOW if output.linear_x > 0.0 else CollisionState.STOPPED
-            return self._decision(state, "front_slow", output, command, health, nearest, scale=scale, reset_required=state is CollisionState.STOPPED)
+            return self._decision(
+                state,
+                "front_slow",
+                output,
+                command,
+                health,
+                nearest,
+                trajectory=trajectory_check,
+                scale=scale,
+                reset_required=state is CollisionState.STOPPED,
+            )
         state = CollisionState.CLEAR if reason in {"command", "scan", "tick", "stale_command", "reset_check", "clear_estop", "clear_estop_noop"} else CollisionState.SLOW
-        return self._decision(state, reason, bounded, command, health, nearest, scale=1.0)
+        return self._decision(
+            state,
+            reason,
+            bounded,
+            command,
+            health,
+            nearest,
+            trajectory=trajectory_check,
+            scale=1.0,
+        )
 
     def _current_scan_eval(self, now: float) -> ScanEvaluation:
         if self._latest_scan is None:
@@ -503,11 +669,6 @@ class CollisionStopSupervisor:
         dynamic = self.config.footprint_rear_m + self.config.payload_margin_m + self._braking_distance(command.linear_x)
         return max(self.config.reverse_stop_distance_m, dynamic)
 
-    def _turn_stop_distance(self, command: TwistCommand) -> float:
-        lateral_extent = max(self.config.footprint_left_m, self.config.footprint_right_m)
-        dynamic = lateral_extent + self.config.payload_margin_m + self._braking_distance(command.angular_z)
-        return max(self.config.stop_distance_m, dynamic)
-
     def _braking_distance(self, speed: float) -> float:
         return abs(float(speed)) * self.config.measured_stop_time_s + self.config.braking_distance_margin_m
 
@@ -525,6 +686,7 @@ class CollisionStopSupervisor:
         health: ScanHealth,
         nearest: Mapping[str, Optional[float]],
         *,
+        trajectory: Optional[TrajectoryCheck] = None,
         scale: float = 0.0,
         reset_required: bool = False,
     ) -> ArbitrationDecision:
@@ -539,6 +701,7 @@ class CollisionStopSupervisor:
             requested=requested,
             scan_health=health,
             nearest=dict(nearest),
+            trajectory=trajectory,
             scale=scale,
             reset_required=reset_required,
         )

@@ -2,8 +2,8 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -30,8 +30,42 @@ def generate_launch_description():
     camera_roll = LaunchConfiguration("camera_roll")
     camera_pitch = LaunchConfiguration("camera_pitch")
     camera_yaw = LaunchConfiguration("camera_yaw")
+    rpi_libcamera_root = LaunchConfiguration("rpi_libcamera_root")
+    camera_ros_prefix = LaunchConfiguration("camera_ros_prefix")
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "rpi_libcamera_root",
+            default_value="/home/jsperson/.local/rpi-libcamera",
+            description="Pinned PiSP-capable Raspberry Pi libcamera installation.",
+        ),
+        DeclareLaunchArgument(
+            "camera_ros_prefix",
+            default_value="/home/jsperson/ros2_ws/install/camera_ros",
+            description="camera_ros build linked to the pinned PiSP libcamera.",
+        ),
+        SetEnvironmentVariable(
+            "AMENT_PREFIX_PATH",
+            [
+                camera_ros_prefix,
+                ":",
+                EnvironmentVariable("AMENT_PREFIX_PATH"),
+            ],
+        ),
+        SetEnvironmentVariable(
+            "PATH",
+            [rpi_libcamera_root, "/bin:", EnvironmentVariable("PATH")],
+        ),
+        SetEnvironmentVariable(
+            "LD_LIBRARY_PATH",
+            [
+                rpi_libcamera_root,
+                "/lib/aarch64-linux-gnu:",
+                camera_ros_prefix,
+                "/lib:",
+                EnvironmentVariable("LD_LIBRARY_PATH", default_value=""),
+            ],
+        ),
         DeclareLaunchArgument("width", default_value="800"),
         DeclareLaunchArgument("height", default_value="600"),
         DeclareLaunchArgument("format", default_value="BGR888"),

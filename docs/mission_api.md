@@ -118,6 +118,14 @@ Terminal runtime statuses are deterministic and auditable:
 
 A terminal result stops later tool execution. There is no “continue anyway” path because that is how tiny robots become tiny lawsuits with wheels.
 
+For live odometry routes, reaching the target threshold is not sufficient to
+produce `complete`. The deterministic runner first commands zero through the
+supervised path and waits for fresh pose/encoder evidence to remain settled. It
+returns `failed` with `motion_not_settled` when motion continues beyond the
+bounded settle timeout, or `target_error` when the final stationary measurement
+is outside the reviewed distance/angle bound. The model cannot select or weaken
+these bounds.
+
 ## Extension guide
 
 To add a capability:

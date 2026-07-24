@@ -93,6 +93,7 @@ class OdomMotionState:
 class MotionPrimitiveConfig:
     distance_tolerance_m: float = 0.01
     angle_tolerance_rad: float = math.radians(2.0)
+    max_turn_speed_rad_s: float = 0.35
     heading_kp: float = 1.5
     max_heading_correction_rad_s: float = 0.6
     max_sample_age_s: float = 0.30
@@ -105,6 +106,7 @@ class MotionPrimitiveConfig:
         for name in (
             "distance_tolerance_m",
             "angle_tolerance_rad",
+            "max_turn_speed_rad_s",
             "heading_kp",
             "max_heading_correction_rad_s",
             "max_sample_age_s",
@@ -223,7 +225,8 @@ class MotionPrimitiveController:
         current = self._require_state()
         sign = 1.0 if current.goal.target >= 0.0 else -1.0
         if current.goal.kind is MotionPrimitiveKind.TURN_ANGLE:
-            return TwistCommand(linear_x=0.0, angular_z=sign * current.goal.speed)
+            speed = min(current.goal.speed, self.config.max_turn_speed_rad_s)
+            return TwistCommand(linear_x=0.0, angular_z=sign * speed)
         heading_error = normalize_angle(float(state.yaw_rad) - float(current.start.yaw_rad))
         correction = max(
             -self.config.max_heading_correction_rad_s,

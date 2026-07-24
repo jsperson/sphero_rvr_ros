@@ -2,10 +2,15 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    RegisterEventHandler,
+    SetEnvironmentVariable,
+)
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -23,6 +28,7 @@ def generate_launch_description():
     laser_roll = LaunchConfiguration("laser_roll")
     laser_pitch = LaunchConfiguration("laser_pitch")
     laser_yaw = LaunchConfiguration("laser_yaw")
+    rplidar_ros_prefix = LaunchConfiguration("rplidar_ros_prefix")
 
     static_tf_node = Node(
         package="tf2_ros",
@@ -42,7 +48,7 @@ def generate_launch_description():
     )
     rplidar_node = Node(
         package="rplidar_ros",
-        executable="rplidar_node",
+        executable="rplidar_composition",
         name="rplidar_node",
         output="screen",
         parameters=[
@@ -56,6 +62,19 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "rplidar_ros_prefix",
+            default_value="/home/jsperson/ros2_ws/install/rplidar_ros",
+            description="Upstream C1-compatible rplidar_ros installation.",
+        ),
+        SetEnvironmentVariable(
+            "AMENT_PREFIX_PATH",
+            [
+                rplidar_ros_prefix,
+                ":",
+                EnvironmentVariable("AMENT_PREFIX_PATH"),
+            ],
+        ),
         DeclareLaunchArgument("serial_port", default_value="/dev/rplidar"),
         DeclareLaunchArgument("serial_baudrate", default_value="460800"),
         DeclareLaunchArgument("frame_id", default_value="laser"),

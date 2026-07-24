@@ -4,7 +4,11 @@ Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission fram
 
 The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
 
-The immediate MVP is narrower: enter a driving prompt, have a real model propose typed bounded distance/turn actions, explicitly approve the proposal, and execute measured movement through the live route runner and collision supervisor. The project does not yet claim this real-model-to-physical-rover chain has been proven.
+The active Milestone 1 slice is replay-only: enter one mission in the browser,
+let the real authenticated model repeatedly revise one finite leased
+navigation/observation intent, and keep simulated localization, perception,
+tracking, mapping, and movement running while each model call is in flight.
+Physical execution remains unavailable.
 
 ## Documentation map for operators and maintainers
 
@@ -28,6 +32,9 @@ The immediate MVP is narrower: enter a driving prompt, have a real model propose
 - [docs/mission_planner.md](docs/mission_planner.md) documents the ROS-free iterative LLM planner over allowlisted `mission_api.v2` rover tools, fake provider, first-party OpenAI `gpt-5.6` Responses default with bounded image observations, optional text-only OpenRouter/GLM compatibility, budgets, manifest, and the distinction from Hermes Kanban worker agents.
 - [docs/mission_observability.md](docs/mission_observability.md) documents the VS08A read-only responsive web/PWA mission observability surface over Mission API snapshots, mock/replay telemetry, event streaming, and final artifact links.
 - [docs/mission_controls.md](docs/mission_controls.md) documents the VS08B authenticated Mission API start/pause/cancel controls, physical start approval gate, audit log, and independent robot-side safety visibility.
+- [docs/mission_web.md](docs/mission_web.md) documents the first integrated map-driven mission console: prompt entry, typed proposal/rejection, digest-bound simulation approval, safety and event state, responsive SVG map, and seven mock/replay outcomes.
+- [docs/perception_navigation.md](docs/perception_navigation.md) defines the replay-first lidar-authoritative pose, quality, goal-region, short-horizon correction, tread-divergence, and fail-closed navigation contracts.
+- [docs/rolling_replay.md](docs/rolling_replay.md) documents the Milestone 1 rolling LLM replay loop, typed world/intent contracts, concurrency proof, browser evidence, and no-authority boundary.
 - [docs/semantic_map_artifacts.md](docs/semantic_map_artifacts.md) documents the VS06 final semantic map artifact generator: structured JSON, GeoJSON, annotated map image, coverage/uncertainty report, and mission summary.
 - [docs/supervised_coordinator.md](docs/supervised_coordinator.md) documents the deterministic supervised mapping/navigation coordinator contract above `range_motion`, including Mission API/read-only UI telemetry and fail-closed cancellation semantics.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
@@ -35,7 +42,7 @@ The immediate MVP is narrower: enter a driving prompt, have a real model propose
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
 
-Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`, `mission_planner.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/mission_api.md`, `docs/mission_language.md`, `docs/mission_planner.md`, `docs/rvr_mcp_server.md`, `docs/mission_observability.md`, `docs/mission_controls.md`, `docs/semantic_map_artifacts.md`, `docs/supervised_coordinator.md`, and `docs/shoe_map_projection.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`; console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, and `rvr_mcp_server`. The AI command layer now has an LLM planner and local-only MCP stdio adapter over allowlisted `mission_api.v2` rover tools for replay/mock supervision, not raw ROS motion.
+Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`, `mission_planner.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/mission_api.md`, `docs/mission_language.md`, `docs/mission_planner.md`, `docs/rvr_mcp_server.md`, `docs/mission_observability.md`, `docs/mission_controls.md`, `docs/mission_web.md`, `docs/rolling_replay.md`, `docs/semantic_map_artifacts.md`, `docs/supervised_coordinator.md`, `docs/lidar_motion_validation.md`, `docs/perception_navigation.md`, and `docs/shoe_map_projection.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`; console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, `rvr_mcp_server`, `rvr_mission_web`, and `rvr_lidar_motion_validation`. The replay-only `rvr_perception_navigation_replay` command has no ROS or motor authority. The AI command layer now has an LLM planner and local-only MCP stdio adapter over allowlisted `mission_api.v2` rover tools for replay/mock supervision, not raw ROS motion.
 
 ## Current base-driver status
 
@@ -159,16 +166,21 @@ See `docs/mapping.md`, `docs/slam_replay.md`, and `docs/lidar_collision_stop_sup
 
 The driver, lidar/camera calibration, collision boundary, replay SLAM, semantic artifacts, typed Mission API, and bounded LLM planner are foundations for the product rather than separate end states.
 
+The integrated no-motion stack now provides a durable Pi mission owner, real
+ChatGPT OAuth proposal planning, digest-bound approval records, and both replay
+and authenticated live/proposal-only web adapters. Physical execution remains
+locked off pending operator-gated measurement validation. See
+`docs/pi_mission_stack.md` for deployment and rollback.
+
 The active sequence is:
 
-1. real-LLM prompt-driven physical rover proof;
-2. persistent mission service with truthful live status;
-3. bounded durable submit/status/cancel clients;
-4. adaptive LLM exploration over validated candidate objectives;
-5. live observation, object detection, semantic projection, and coverage;
-6. supervised shoe-mapping vertical slice;
-7. map-driven conversational web interface;
-8. point-to-point navigation and a second semantic mission.
+1. deploy and validate the integrated proposal-only Pi web mission stack;
+2. resolve route-local versus absolute-odometry evidence and complete restrained,
+   digest-approved physical prompt stages;
+3. add adaptive LLM exploration over validated candidate objectives;
+4. bind live observation, object detection, semantic projection, and coverage;
+5. complete a shoe-mapping vertical slice;
+6. add point-to-point navigation and a second semantic mission.
 
 See [docs/product_direction.md](docs/product_direction.md) for the product contract. `STATUS.md` retains hardware history and the current implementation handoff.
 
@@ -178,6 +190,7 @@ The ROS adapter deliberately exposes only the safe subset selected in `docs/rvr_
 
 - routine motion stays on ordinary `/cmd_vel`, then passes through `lidar_collision_stop_supervisor` before the final `/cmd_vel_motor` driver sink in supervised motor-capable launches;
 - read-only telemetry is published as typed topics (`battery_state`, motor temperatures, `ambient_light`, `odom`) and diagnostics key-values;
+- short physical tests expose completed UART-write counters/payloads, motor stall/fault/thermal state, and 0.5-second load-voltage samples in diagnostics; raw-motor writes are fire-and-forget, so a completed host write is not represented as a firmware acknowledgment;
 - `reset_yaw` and `reset_locator` are explicit reference-frame reset services, not hidden side effects;
 - LEDs are limited to bounded `ColorRGBA` all-LED feedback plus `release_led_requests`; raw LED masks/palettes remain core-only;
 - raw motors, firmware/admin/update/factory operations, calibration flows, opaque streaming bytes, and identifier publishing remain out of the default ROS graph.
