@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -294,6 +295,8 @@ class SystemdStationarySensorControl:
             raise MissionWebError("only the stationary perception service may be controlled")
         self.unit = STATIONARY_SENSOR_UNIT
         self._lock = threading.RLock()
+        self._verified_stopped: Optional[bool] = None
+        self._degraded_detail = ""
 
     def status(self) -> Mapping[str, Any]:
         with self._lock:
@@ -306,6 +309,9 @@ class SystemdStationarySensorControl:
                         "--property=LoadState",
                         "--property=ActiveState",
                         "--property=SubState",
+                        "--property=Result",
+                        "--property=MainPID",
+                        "--property=ControlPID",
                         self.unit,
                     ],
                     text=True,
@@ -330,19 +336,42 @@ class SystemdStationarySensorControl:
                     properties[key.strip()] = value.strip()
             active_state = properties.get("ActiveState", "unknown").lower()
             sub_state = properties.get("SubState", "unknown").lower()
+            result = properties.get("Result", "unknown").lower()
             loaded = properties.get("LoadState", "not-found").lower() == "loaded"
             available = completed.returncode == 0 and loaded
-            detail = (
-                f"{active_state} / {sub_state}"
-                if available
-                else str(completed.stderr).strip() or "Stationary sensor service is not installed."
+            cleanly_inactive = (
+                active_state == "inactive"
+                and sub_state == "dead"
+                and result in {"success", ""}
+                and properties.get("MainPID", "0") == "0"
+                and properties.get("ControlPID", "0") == "0"
             )
+            if active_state == "active":
+                self._verified_stopped = False
+                self._degraded_detail = ""
+            state = active_state if available else "unavailable"
+            detail = f"{active_state} / {sub_state}"
+            if available and active_state == "failed":
+                detail = f"Stationary sensor unit failed ({result or 'unknown result'})."
+            if available and self._degraded_detail and active_state != "active":
+                state = "degraded"
+                detail = self._degraded_detail
+            elif available and cleanly_inactive and self._verified_stopped is None:
+                detail = "inactive / dead; physical motor stop has not been verified in this web session"
+            elif not available:
+                detail = (
+                    str(completed.stderr).strip()
+                    or "Stationary sensor service is not installed."
+                )
             return {
                 "available": available,
                 "active": active_state == "active",
                 "transitioning": active_state in {"activating", "deactivating", "reloading"},
-                "state": active_state if available else "unavailable",
+                "state": state,
                 "detail": detail,
+                "verified_stopped": bool(
+                    cleanly_inactive and self._verified_stopped is True
+                ),
                 "unit": self.unit,
             }
 
@@ -366,22 +395,121 @@ class SystemdStationarySensorControl:
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=20.0,
+                    timeout=20.0 if active else 30.0,
                     check=False,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
+                if not active:
+                    self.mark_degraded(
+                        "Shutdown timed out or failed before lifecycle cleanup "
+                        f"could be verified: {exc}"
+                    )
                 raise MissionWebError(f"unable to {action} stationary sensors: {exc}") from exc
             if completed.returncode != 0:
                 detail = str(completed.stderr).strip() or str(completed.stdout).strip()
+                if not active:
+                    self._verified_stopped = False
+                    self._degraded_detail = (
+                        "Shutdown failed; LIDAR motor and camera state are unverified: "
+                        f"{detail or 'systemd request failed'}"
+                    )
                 raise MissionWebError(
                     f"unable to {action} stationary sensors: {detail or 'systemd request failed'}"
                 )
             status = dict(self.status())
-            if bool(status.get("active", False)) != active:
+            expected_state = "active" if active else "inactive"
+            state_matches = bool(status.get("active", False)) == active
+            if not active:
+                state_matches = state_matches and str(status.get("state", "")) == expected_state
+            if not state_matches:
+                if not active:
+                    self._verified_stopped = False
+                    self._degraded_detail = (
+                        "Shutdown degraded; systemd did not reach inactive / dead "
+                        f"({status.get('detail', 'unknown state')})."
+                    )
                 raise MissionWebError(
                     f"stationary sensors did not reach the requested {'active' if active else 'inactive'} state"
                 )
-            return status
+            if active:
+                self._verified_stopped = False
+                self._degraded_detail = ""
+                return status
+            try:
+                _assert_stationary_shutdown_complete()
+            except MissionWebError as exc:
+                self._verified_stopped = False
+                self._degraded_detail = (
+                    "Shutdown degraded; LIDAR motor, camera, or perception cleanup "
+                    f"could not be verified: {exc}"
+                )
+                raise MissionWebError(self._degraded_detail) from exc
+            self._verified_stopped = True
+            self._degraded_detail = ""
+            return dict(self.status())
+
+    def mark_degraded(self, detail: str) -> None:
+        with self._lock:
+            self._verified_stopped = False
+            self._degraded_detail = str(detail).strip() or (
+                "Stationary sensor lifecycle is degraded and shutdown is unverified."
+            )
+
+
+def _assert_stationary_shutdown_complete(*, timeout_s: float = 5.0) -> None:
+    """Require the fixed sensor launch, descendants, and device handle to be gone."""
+
+    deadline = time.monotonic() + float(timeout_s)
+    last_detail = "shutdown verification did not run"
+    while True:
+        try:
+            processes = subprocess.run(
+                ["ps", "-eo", "pid=,args="],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3.0,
+                check=False,
+            )
+            lidar_owner = subprocess.run(
+                ["fuser", "/dev/rplidar"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise MissionWebError(f"unable to inspect sensor cleanup: {exc}") from exc
+        if processes.returncode != 0:
+            detail = str(processes.stderr).strip() or "process inspection failed"
+            raise MissionWebError(f"unable to inspect sensor cleanup: {detail}")
+        if lidar_owner.returncode not in {0, 1}:
+            detail = str(lidar_owner.stderr).strip() or "LIDAR ownership check failed"
+            raise MissionWebError(f"unable to inspect LIDAR ownership: {detail}")
+        forbidden = (
+            "rplidar_composition",
+            "camera_node",
+            "async_slam_toolbox_node",
+            "stationary_perception.launch.py",
+            "/sphero_rvr_driver/stationary_perception ",
+        )
+        conflicts = [
+            line.strip()
+            for line in str(processes.stdout).splitlines()
+            if any(token in line for token in forbidden)
+        ]
+        if not conflicts and lidar_owner.returncode == 1:
+            return
+        findings = []
+        if conflicts:
+            findings.append("sensor descendants remain")
+        if lidar_owner.returncode == 0:
+            findings.append("/dev/rplidar still has an owner")
+        last_detail = "; ".join(findings)
+        if time.monotonic() >= deadline:
+            raise MissionWebError(last_detail)
+        time.sleep(0.1)
 
 
 def _stationary_sensor_start_permitted(snapshot: Mapping[str, Any]) -> bool:
@@ -1732,10 +1860,49 @@ def handle_mission_web_request(
             bool(payload["active"]),
             authority_snapshot=authority_snapshot,
         )
+        if not bool(payload["active"]):
+            try:
+                _wait_for_stationary_evidence_stale(adapter)
+            except MissionWebError as exc:
+                mark_degraded = getattr(sensor_control, "mark_degraded", None)
+                if callable(mark_degraded):
+                    mark_degraded(
+                        "Shutdown degraded; sensor processes stopped but authoritative "
+                        f"evidence did not become stale: {exc}"
+                    )
+                raise
         result = adapter.snapshot()
     else:
         raise MissionWebError(f"POST route is not exposed: {normalized_path}")
     return _json_response(200, _with_sensor_control(result, sensor_control))
+
+
+def _wait_for_stationary_evidence_stale(
+    adapter: MissionWebAdapter,
+    *,
+    timeout_s: float = 3.0,
+) -> None:
+    """Do not acknowledge sensor-off while authoritative evidence is still fresh."""
+
+    deadline = time.monotonic() + float(timeout_s)
+    while True:
+        snapshot = adapter.snapshot()
+        safety = snapshot.get("safety", {})
+        camera = snapshot.get("camera_preview", {})
+        telemetry_fresh = bool(
+            isinstance(safety, Mapping) and safety.get("telemetry_fresh", False)
+        )
+        camera_fresh = bool(
+            isinstance(camera, Mapping) and camera.get("fresh", False)
+        )
+        if not telemetry_fresh and not camera_fresh:
+            return
+        if time.monotonic() >= deadline:
+            raise MissionWebError(
+                "stationary sensors stopped, but live map or camera evidence "
+                "remained fresh past the bounded shutdown period"
+            )
+        time.sleep(0.1)
 
 
 def _with_sensor_control(
@@ -2105,6 +2272,7 @@ _INDEX_HTML = r'''<!doctype html>
     .revision { border-left:3px solid var(--teal); padding:.6rem .7rem; border-radius:.25rem .6rem .6rem .25rem; background:#091827; font-size:.76rem; line-height:1.4; }
     .revision small { color:var(--muted); display:block; margin-bottom:.18rem; }
     .in-flight { color:var(--amber) !important; }
+    .request-status { min-height:1.2rem; color:#b8d8d3; font-size:.8rem; margin-top:.5rem; }
     .error { min-height:1.2rem; color:#ffaba5; font-size:.8rem; margin-top:.5rem; }
     .rejected { border-color:#7e3541; color:#ffd3d0; }
     details.panel { padding:0; }
@@ -2206,17 +2374,19 @@ _INDEX_HTML = r'''<!doctype html>
           <textarea id="mission-prompt" data-testid="mission-prompt">Explore this room, identify and map the shoes and any recognized people, inspect uncertain findings from another viewpoint, then stop safely.</textarea>
           <label class="field-label" for="scenario" id="scenario-label">Replay outcome</label>
           <select id="scenario" data-testid="scenario"></select>
-          <div class="actions"><button class="primary" id="propose" data-testid="propose">Generate proposal</button></div>
+          <div class="actions"><button class="primary" id="propose" data-testid="propose" type="button" aria-describedby="request-status request-error">Generate proposal</button></div>
+          <div class="request-status" id="request-status" role="status" aria-live="polite"></div>
           <div class="error" id="request-error" role="alert"></div>
         </section>
         <section class="panel" aria-labelledby="approval-heading">
           <h2 id="approval-heading">Simulation approval</h2>
           <p class="hint" id="approval-hint">Approval is digest-bound and authorizes only the mock adapter.</p>
+          <p class="hint" id="approval-state" role="status" aria-live="polite"></p>
           <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
           <div class="actions">
-            <button class="primary" id="approve" data-testid="approve" disabled>Approve simulation</button>
-            <button class="danger" id="cancel" data-testid="cancel" disabled>Cancel mission</button>
+            <button class="primary" id="approve" data-testid="approve" type="button" aria-describedby="approval-hint approval-state" disabled>Approve simulation</button>
+            <button class="danger" id="cancel" data-testid="cancel" type="button" aria-describedby="request-status request-error" disabled>Cancel mission</button>
           </div>
         </section>
         <section class="panel" id="rolling-intent-panel" hidden>
@@ -2261,6 +2431,8 @@ _INDEX_HTML = r'''<!doctype html>
     let hydratedMissionId = null;
     let promptDirty = false;
     let sensorRequestInFlight = false;
+    let missionRequestInFlight = '';
+    let pollConnectionError = false;
 
     async function api(path, options = {}) {
       const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
@@ -2312,23 +2484,74 @@ _INDEX_HTML = r'''<!doctype html>
       panel.hidden = !stationary;
       if (!stationary) return;
       const active = Boolean(control.active);
+      const degraded = ['failed', 'degraded'].includes(String(control.state || '').toLowerCase());
       const transitioning = sensorRequestInFlight || Boolean(control.transitioning);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.setAttribute('aria-describedby', 'sensors-status');
       button.textContent = transitioning
         ? (active ? 'Stopping…' : 'Starting…')
         : (active ? 'Turn sensors off' : 'Turn sensors on');
       button.disabled = transitioning
+        || Boolean(missionRequestInFlight)
         || !control.available
+        || degraded
         || (!active && !control.start_permitted);
       label.textContent = transitioning
         ? (active ? 'Stopping stationary sensors' : 'Starting stationary sensors')
+        : degraded
+          ? (control.detail || 'Sensor lifecycle is degraded; shutdown is not verified')
         : active
           ? (snapshot.safety.telemetry_fresh ? 'On · data fresh' : 'On · waiting for fresh data')
+          : control.verified_stopped
+            ? 'Off · motor, camera, and sensor processes verified stopped; retained evidence is stale'
+          : control.available && !control.start_permitted
+            ? 'Disabled · physical execution or motion authority is not safely locked'
           : control.available
-            ? 'Off · no live map or camera'
+            ? (control.detail || 'Inactive · physical motor stop is not verified')
             : (control.detail || 'Control unavailable');
       panel.classList.toggle('warning', !active || !snapshot.safety.telemetry_fresh);
-      panel.classList.toggle('unsafe', active && control.state === 'failed');
+      panel.classList.toggle('unsafe', degraded);
+    }
+
+    function renderActionState(snapshot) {
+      const stationary = Boolean(snapshot.adapter.stationary_perception);
+      const proposalBusy = missionRequestInFlight === 'proposal';
+      const approvalBusy = missionRequestInFlight === 'approval';
+      const cancelBusy = missionRequestInFlight === 'cancel';
+      $('propose').disabled = Boolean(missionRequestInFlight) || sensorRequestInFlight;
+      $('propose').textContent = proposalBusy ? 'Generating proposal…' : 'Generate proposal';
+      $('approve').disabled = Boolean(missionRequestInFlight)
+        || sensorRequestInFlight
+        || snapshot.mission.state !== 'PROPOSED'
+        || !snapshot.approval.enabled;
+      $('approve').textContent = approvalBusy
+        ? (stationary ? 'Starting stationary perception…' : 'Confirming…')
+        : stationary ? 'Start stationary perception'
+        : snapshot.adapter.rolling_replay ? 'Start rolling replay'
+        : !snapshot.adapter.fixture_only ? 'Approve and run'
+        : 'Approve simulation';
+      $('cancel').disabled = Boolean(missionRequestInFlight)
+        || sensorRequestInFlight
+        || !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
+      $('cancel').textContent = cancelBusy ? 'Cancelling…' : 'Cancel mission';
+      if (stationary) {
+        const sensor = snapshot.sensor_control || {};
+        $('approval-state').textContent = approvalBusy
+          ? 'Confirming the exact persisted proposal and starting only the leased observation-intent loop.'
+          : snapshot.mission.state !== 'PROPOSED'
+            ? 'Disabled: generate a stationary proposal first.'
+            : !sensor.active
+              ? 'Disabled: turn Telemetry + camera on first.'
+              : !snapshot.safety.telemetry_fresh
+                ? 'Disabled: waiting for fresh lidar, camera, localization, and semantic-map evidence.'
+                : snapshot.approval.enabled
+                  ? 'Ready: this starts stationary snapshots and leased LLM observation intent only.'
+                  : 'Disabled: the authoritative stationary-perception prerequisites are not ready.';
+      } else {
+        $('approval-state').textContent = approvalBusy
+          ? 'Confirming the exact persisted proposal.'
+          : '';
+      }
     }
 
     function render(snapshot) {
@@ -2350,7 +2573,6 @@ _INDEX_HTML = r'''<!doctype html>
       $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
       $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
       $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
-      $('approve').textContent = stationary ? 'Start stationary perception' : live ? 'Approve and run' : rollingReplay ? 'Start rolling replay' : 'Approve simulation';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -2392,11 +2614,9 @@ _INDEX_HTML = r'''<!doctype html>
       setSafetyTone('safety-estop', estopState === 'CLEAR' ? '' : estopState === 'UNKNOWN' ? 'warning' : 'unsafe');
       setSafetyTone('safety-authority', execution ? 'unsafe' : stationary || rollingReplay || live ? 'warning' : '');
       renderSensorControl(snapshot);
-      $('approve').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
       $('approval-input').hidden = live;
       $('approval-input-label').hidden = live;
       $('approval-input').disabled = live || snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
-      $('cancel').disabled = !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       if (proposal) {
         const segments = proposal.segments.map((segment, index) => `<div class="segment"><span>${index + 1}. <code>${escapeHtml(segment.tool_id)}</code></span><strong>${escapeHtml(JSON.stringify(segment.arguments))}</strong></div>`).join('');
         const limits = Object.entries(proposal.limits).map(([key,value]) => `<span class="chip">${escapeHtml(key)}: ${escapeHtml(value)}</span>`).join('');
@@ -2424,6 +2644,7 @@ _INDEX_HTML = r'''<!doctype html>
       renderRolling(snapshot);
       renderMap(snapshot.map, snapshot);
       renderCamera(snapshot);
+      renderActionState(snapshot);
       if (!shouldContinuouslyPoll(snapshot) && snapshot.mission.terminal && timer) {
         clearInterval(timer);
         timer = null;
@@ -2660,44 +2881,92 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     async function propose() {
-      stopTimer();
+      if (missionRequestInFlight || sensorRequestInFlight) return;
+      if (!current || current.adapter.fixture_only) stopTimer();
+      missionRequestInFlight = 'proposal';
       $('request-error').textContent = '';
+      $('request-status').textContent = 'Generating and persisting the proposal…';
+      if (current) renderActionState(current);
       try {
         const snapshot = await api('/api/web/mission/propose', {method:'POST', body:JSON.stringify({prompt:$('mission-prompt').value, scenario:$('scenario').value})});
         $('approval-input').value = '';
         promptDirty = false;
+        missionRequestInFlight = '';
         render(snapshot);
+        $('request-status').textContent = snapshot.mission.state === 'PLANNING'
+          ? 'Planning is in progress on the Pi. This page will keep polling for a proposal or actionable failure.'
+          : snapshot.proposal && snapshot.proposal.decision === 'reject'
+          ? `Proposal rejected: ${snapshot.proposal.summary || snapshot.mission.terminal_reason || 'No executable proposal was produced.'}`
+          : 'Proposal generated and persisted. Review its rationale and confirmation prerequisites below.';
         if (shouldContinuouslyPoll(snapshot)) startTimer();
-      } catch (error) { $('request-error').textContent = error.message; }
+      } catch (error) {
+        missionRequestInFlight = '';
+        if (current) renderActionState(current);
+        $('request-status').textContent = '';
+        $('request-error').textContent = `Proposal failed: ${error.message}`;
+        if (current && shouldContinuouslyPoll(current)) startTimer();
+      }
     }
 
     async function approve() {
+      if (missionRequestInFlight || sensorRequestInFlight) return;
+      missionRequestInFlight = 'approval';
       $('request-error').textContent = '';
+      $('request-status').textContent = current && current.adapter.stationary_perception
+        ? 'Starting stationary snapshots and the leased LLM observation-intent loop…'
+        : 'Confirming the exact persisted proposal…';
+      if (current) renderActionState(current);
       try {
         const body = current && !current.adapter.fixture_only
           ? {confirm_current_proposal:true}
           : {approval_phrase:$('approval-input').value};
         const snapshot = await api('/api/web/mission/approve', {method:'POST', body:JSON.stringify(body)});
+        missionRequestInFlight = '';
         render(snapshot);
+        $('request-status').textContent = snapshot.adapter.stationary_perception
+          ? 'Stationary perception is active. Physical execution and motion authority remain disabled.'
+          : 'Proposal confirmed.';
         startTimer();
-      } catch (error) { $('request-error').textContent = error.message; }
+      } catch (error) {
+        missionRequestInFlight = '';
+        if (current) renderActionState(current);
+        $('request-status').textContent = '';
+        $('request-error').textContent = `Confirmation failed: ${error.message}`;
+      }
     }
 
     async function cancelMission() {
+      if (missionRequestInFlight || sensorRequestInFlight) return;
       stopTimer();
+      missionRequestInFlight = 'cancel';
+      $('request-error').textContent = '';
+      $('request-status').textContent = 'Cancelling the current mission…';
+      if (current) renderActionState(current);
       try {
         const snapshot = await api('/api/web/mission/cancel', {method:'POST', body:'{}'});
+        missionRequestInFlight = '';
         render(snapshot);
+        $('request-status').textContent = 'Mission cancelled. No stationary intent or motion authority remains.';
         if (shouldContinuouslyPoll(snapshot)) startTimer();
       }
-      catch (error) { $('request-error').textContent = error.message; }
+      catch (error) {
+        missionRequestInFlight = '';
+        if (current) renderActionState(current);
+        $('request-status').textContent = '';
+        $('request-error').textContent = `Cancellation failed: ${error.message}`;
+        if (current && shouldContinuouslyPoll(current)) startTimer();
+      }
     }
 
     async function toggleSensors() {
-      if (!current || sensorRequestInFlight) return;
+      if (!current || sensorRequestInFlight || missionRequestInFlight) return;
       sensorRequestInFlight = true;
       $('request-error').textContent = '';
+      $('request-status').textContent = current.sensor_control && current.sensor_control.active
+        ? 'Stopping the LIDAR motor, camera, and stationary sensor processes…'
+        : 'Starting the fixed no-motion stationary sensor unit after safety preflight…';
       renderSensorControl(current);
+      renderActionState(current);
       try {
         const active = !Boolean(current.sensor_control && current.sensor_control.active);
         const snapshot = await api('/api/web/stationary-sensors', {
@@ -2706,11 +2975,16 @@ _INDEX_HTML = r'''<!doctype html>
         });
         sensorRequestInFlight = false;
         render(snapshot);
+        $('request-status').textContent = snapshot.sensor_control.active
+          ? 'Telemetry + camera started. Waiting for all authoritative evidence to become fresh.'
+          : 'Telemetry + camera stopped and lifecycle cleanup verified; retained evidence is marked stale.';
         if (shouldContinuouslyPoll(snapshot)) startTimer();
       } catch (error) {
         sensorRequestInFlight = false;
         renderSensorControl(current);
-        $('request-error').textContent = error.message;
+        renderActionState(current);
+        $('request-status').textContent = '';
+        $('request-error').textContent = `Sensor lifecycle failed: ${error.message}`;
       }
     }
 
@@ -2722,10 +2996,15 @@ _INDEX_HTML = r'''<!doctype html>
           render(livePoll
             ? await api('/api/web/state')
             : await api('/api/web/mission/advance', {method:'POST', body:'{}'}));
-          $('request-error').textContent = '';
+          if (pollConnectionError) {
+            pollConnectionError = false;
+            $('request-error').textContent = '';
+            $('request-status').textContent = 'Connection restored; authoritative polling resumed.';
+          }
         } catch (error) {
           if (!livePoll) stopTimer();
-          $('request-error').textContent = error.message;
+          pollConnectionError = true;
+          $('request-error').textContent = `Connection interrupted: ${error.message}. Retrying automatically…`;
         }
       }, 650);
     }

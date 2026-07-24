@@ -153,11 +153,23 @@ a driver, route/motion process, motion-topic publisher command, or rover UART
 owner is present. The unit contains lidar, Camera 3, stationary SLAM, tracking,
 and semantic perception only—no rover driver, route executor, serial transport,
 motor graph, or motion publisher. Sensor state and startup errors remain
-visible, and live stationary pages continue polling after a terminal mission so
-newly requested map and camera evidence can still appear. Read-only live
-polling also continues through a temporary Pi or network interruption and
-clears the connection error when authoritative state becomes reachable again;
-mock/replay mutation polling still stops on an error.
+visible. Shutdown first calls the fixed RPLidar `/stop_motor` service, then sends
+`SIGINT` through the ROS launch so the driver executes its motor-stop cleanup.
+The web request does not report a verified stop until systemd is inactive/dead,
+sensor descendants and the `/dev/rplidar` owner are gone, and authoritative map
+and camera evidence is no longer fresh. A timeout or failed postcondition remains
+visible as a degraded lifecycle error rather than `Off`; retained pixels and
+metadata are explicitly labeled stale.
+
+Proposal, stationary confirmation, cancellation, and sensor requests disable
+their controls while in flight and announce progress, success, or a specific
+error through live regions. A disabled stationary confirmation names the missing
+prerequisite: a proposal, the fixed sensor unit, or fresh lidar/camera/
+localization/semantic-map evidence. Live stationary pages continue polling after
+a terminal mission so newly requested map and camera evidence can still appear.
+Read-only live polling also continues through a temporary Pi or network
+interruption and clears the connection error when authoritative state becomes
+reachable again; mock/replay mutation polling still stops on an error.
 
 ## HTTP routes
 
