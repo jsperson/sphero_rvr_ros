@@ -204,6 +204,6 @@ def test_browser_bundle_renders_stage_b_evidence_panels() -> None:
 
     assert "Current finite leased intent" in html
     assert "Asynchronous LLM loop" in html
-    assert "Fresh world snapshot & detections" in html
+    assert "Fresh world snapshot &amp; detections" in html
     assert "Motion ticks during LLM" in html
     assert "ROLLING LLM REPLAY — NO MOTION AUTHORITY" in html

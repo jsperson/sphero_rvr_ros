@@ -377,10 +377,14 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
 
     assert bundle["manifest"]["display"] == "standalone"
     assert "RVR Test Console" in page
-    assert "@media (max-width:760px)" in page
+    assert "@media (max-width:1100px)" in page
     assert "grid-template-columns:minmax(0,1fr)" in page
     assert "[hidden] { display:none !important; }" in page
-    assert ".map-frame { min-height:0; }" in page
+    assert ".map-frame { min-height:0; aspect-ratio:4/3; }" in page
+    assert ".workspace { display:grid; grid-template-columns:minmax(0,2.35fr)" in page
+    assert ".ops-sidebar { position:sticky" in page
+    assert ".camera-frame { aspect-ratio:4/3; }" in page
+    assert "object-fit:contain" in page
     assert ".segment { flex-direction:column" in page
     assert 'data-testid="mission-prompt"' in page
     assert 'data-testid="scenario"' in page
@@ -404,11 +408,23 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "if (map.available === false)" in page
     assert "Unavailable layers:" in page
     assert "if (!snapshot.adapter.fixture_only && !snapshot.mission.terminal) startTimer();" in page
-    assert "const origin = map.bounds.origin" in page
+    assert "const origin = bounds.origin" in page
+    assert "STALE LOCALIZATION" in page
+    assert "STALE CAMERA EVIDENCE" in page
+    assert "CAMERA INTERRUPTED" in page
+    assert "Frame pixels not supplied" in page
+    assert "detection-box" in page
+    assert 'id="safety-authority"' in page
+    assert page.index('aria-label="Safety state"') < page.index('id="map-heading"')
+    assert page.index('id="map-heading"') < page.index('id="camera-heading"')
+    assert page.index('id="camera-heading"') < page.index('id="mission-heading"')
+    assert page.index('id="mission-heading"') < page.index('id="rolling-intent-panel"')
+    assert page.index('id="rolling-loop-panel"') < page.index('id="rolling-world-panel"')
     for token in (
         "Mission prompt",
         "LLM proposal",
-        "Room map",
+        "Live spatial map",
+        "Camera",
         "Mission status",
         "Event history",
         "Terminal evidence",
@@ -418,6 +434,53 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "artifact.href" in page
     for forbidden in ("localStorage", "sessionStorage", "OPENAI_API_KEY", "CODEX_API_KEY", "WebSocket("):
         assert forbidden not in page
+
+
+def test_live_camera_preview_preserves_truthful_frame_freshness_and_overlay_metadata() -> None:
+    client = FakeLiveMissionClient()
+    service = client.service_snapshot()
+    evidence = service["capabilities"]["query_status_telemetry@1.0"]["evidence"]
+    evidence["camera"] = {
+        "present": True,
+        "valid": True,
+        "fresh": False,
+        "age_s": 2.4,
+        "received_at_s": 1_772_000_001.0,
+        "source_timestamp_s": 1_772_000_000.5,
+        "error": "",
+        "value": {
+            "frame_id": "live-camera-00000042",
+            "stamp_s": 1_772_000_000.5,
+            "width": 800,
+            "height": 600,
+            "thumbnail_data_url": "data:image/jpeg;base64,ZmFrZQ==",
+            "uncertain_track_id": "track-uncertain",
+            "detections": [
+                {
+                    "detection_id": "detection-42",
+                    "track_id": "track-uncertain",
+                    "label": "possible_shoe",
+                    "confidence": 0.58,
+                    "bbox": {"x": 100, "y": 120, "width": 200, "height": 160},
+                }
+            ],
+            "tracks": [{"track_id": "track-uncertain", "uncertainty_m": 0.31}],
+        },
+    }
+    client.service_snapshot = lambda: service
+
+    snapshot = LiveMissionWebAdapter(client).snapshot()
+    camera = snapshot["camera_preview"]
+
+    assert camera["available"] is True
+    assert camera["fresh"] is False
+    assert camera["state"] == "stale"
+    assert camera["age_s"] == pytest.approx(2.4)
+    assert camera["frame_id"] == "live-camera-00000042"
+    assert camera["width"] == 800
+    assert camera["height"] == 600
+    assert camera["uncertain_track_id"] == "track-uncertain"
+    assert camera["detections"][0]["bbox"]["width"] == 200
 
 
 def test_http_wrapper_serves_complete_mock_flow_with_security_headers() -> None:

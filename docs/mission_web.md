@@ -8,6 +8,35 @@ and a responsive map in one page.
 The browser never talks to ROS, serial devices, motor controls, or OpenAI. Its only
 boundary is `MissionWebAdapter`.
 
+## Operations-console layout
+
+The interface treats spatial and visual evidence as the primary operating view.
+On desktop, a wide main column contains the live map and then the camera at the
+same width; the narrower operations sidebar scrolls independently. The safety
+strip remains above both columns. At tablet and mobile widths, the page becomes a
+single column in this order: safety state, map, camera, mission controls, current
+intent and LLM activity, then collapsed evidence and diagnostics. The page does
+not require horizontal scrolling.
+
+The map renders available occupancy or obstacle evidence, rover pose and heading,
+route and traveled path, goal, safe corridor, and semantic tracks with confidence
+and uncertainty. Localization state, quality, snapshot identity, source, and
+freshness are attached to the map. Stale, degraded, and unavailable spatial
+evidence receives a textual overlay as well as a status color.
+
+The camera preserves the supplied frame aspect ratio with `object-fit: contain`
+and overlays supplied detection boxes only when frame pixels and dimensions
+exist. Frame ID, source timestamp, receive timestamp, freshness, observation
+focus, viewpoint, and detections remain visible. Metadata-only replay evidence,
+an unavailable source, an interrupted stream, and a stale last frame are distinct
+states; the browser never invents pixels or detections.
+
+Safety state and active warnings are never placed in collapsed details. Mission
+status, prompt, submission, approval/cancel controls, current leased intent, and
+LLM activity remain in the operational flow. World snapshots, terminal evidence,
+event history, and lower-level authority diagnostics use collapsed disclosure
+panels so long histories do not displace the map and camera.
+
 ## Mock/replay mode
 
 Run locally from an editable development install:
@@ -143,6 +172,12 @@ objects. Live mode renders each layer only when it is supplied by fresh,
 authoritative mission-service data. Missing or stale semantic-map evidence is
 shown as unavailable; fixtures are never substituted into a live view. The map is
 only a visualization and does no browser-side inference or planning.
+
+Stage B rolling replay may include camera frame identity and detection metadata
+without image bytes. In that case the camera explicitly reports that pixels were
+not supplied while retaining the evidence timestamp and frame ID. Stage C live
+stationary perception may supply the latest JPEG preview and tracked detections
+through the same additive adapter fields.
 
 ## Installed Pi services
 

@@ -489,4 +489,5 @@ def test_stationary_launch_and_browser_have_no_motion_surface() -> None:
     assert "import sphero_sdk" not in node_text
     assert "LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY" in html
     assert "Sensor updates during LLM" in html
-    assert "Latest live stationary camera evidence" in html
+    assert "Latest rover camera evidence" in html
+    assert "The console will not substitute a fixture for a missing image source." in html

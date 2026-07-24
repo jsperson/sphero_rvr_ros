@@ -1215,17 +1215,50 @@ def _stationary_projection(result: Mapping[str, Any]) -> dict[str, Any]:
 def _live_camera_preview(live_evidence: Mapping[str, Any]) -> dict[str, Any]:
     camera = live_evidence.get("camera", {})
     if not isinstance(camera, Mapping):
-        return {"available": False}
+        return {
+            "available": False,
+            "present": False,
+            "valid": False,
+            "fresh": False,
+            "state": "unavailable",
+        }
     value = camera.get("value", {})
     if not isinstance(value, Mapping):
-        return {"available": False}
+        value = {}
     data_url = str(value.get("thumbnail_data_url", ""))
+    has_frame = data_url.startswith("data:image/jpeg;base64,")
+    present = bool(camera.get("present", bool(value)))
+    valid = bool(camera.get("valid", bool(value)))
+    fresh = bool(camera.get("fresh", False))
+    error = str(camera.get("error", "")).strip()
+    if error:
+        state = "interrupted"
+    elif has_frame and fresh:
+        state = "fresh"
+    elif has_frame:
+        state = "stale"
+    elif present:
+        state = "empty"
+    else:
+        state = "unavailable"
     return {
-        "available": bool(camera.get("fresh") and data_url.startswith("data:image/jpeg;base64,")),
+        "available": has_frame,
+        "present": present,
+        "valid": valid,
+        "fresh": fresh,
+        "state": state,
+        "error": error,
+        "age_s": camera.get("age_s"),
+        "received_at_s": camera.get("received_at_s"),
+        "source_timestamp_s": camera.get("source_timestamp_s"),
         "frame_id": str(value.get("frame_id", "")),
         "stamp_s": value.get("stamp_s"),
+        "width": value.get("width"),
+        "height": value.get("height"),
         "data_url": data_url,
         "detections": value.get("detections", []),
+        "tracks": value.get("tracks", []),
+        "uncertain_track_id": str(value.get("uncertain_track_id", "")),
     }
 
 
@@ -1739,34 +1772,41 @@ _INDEX_HTML = r'''<!doctype html>
   <link rel="manifest" href="/manifest.webmanifest">
   <title>__APP_NAME__</title>
   <style>
-    :root { color-scheme: dark; --ink:#ecf5f4; --muted:#91a9aa; --panel:#0e1b2b; --line:#21364a; --teal:#5de4c7; --amber:#ffca6b; --red:#ff7b72; --blue:#78a9ff; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#07111f; color:var(--ink); }
+    :root { color-scheme:dark; --ink:#edf5f5; --muted:#91a7ad; --panel:#0d1a28; --line:#294052; --teal:#65e0c2; --amber:#f4c36a; --red:#ff8179; --blue:#7da7f7; --slate:#64788c; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#07111b; color:var(--ink); }
     * { box-sizing:border-box; }
     [hidden] { display:none !important; }
-    body { margin:0; min-height:100vh; background:radial-gradient(circle at 15% -10%, #123952 0, transparent 34rem), #07111f; }
+    html { min-width:0; background:#07111b; }
+    body { margin:0; min-width:0; min-height:100vh; overflow-x:hidden; background:linear-gradient(180deg,#0a1825 0,#07111b 18rem); }
     button, textarea, select, input { font:inherit; }
     button { cursor:pointer; }
     button:disabled { cursor:not-allowed; opacity:.45; }
-    header { display:flex; justify-content:space-between; gap:1rem; align-items:center; padding:1.1rem clamp(1rem,3vw,2.5rem); border-bottom:1px solid var(--line); background:rgba(7,17,31,.88); position:sticky; top:0; z-index:5; backdrop-filter:blur(12px); }
-    h1 { font-size:clamp(1.15rem,2vw,1.55rem); margin:0; letter-spacing:.02em; }
-    h2 { margin:0 0 .85rem; font-size:.9rem; color:#b9cccc; text-transform:uppercase; letter-spacing:.12em; }
+    button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline:3px solid rgba(101,224,194,.75); outline-offset:3px; }
+    header { display:flex; justify-content:space-between; gap:1rem; align-items:center; padding:.68rem clamp(.85rem,2vw,1.4rem); border-bottom:1px solid var(--line); background:rgba(7,17,27,.95); position:sticky; top:0; z-index:8; backdrop-filter:blur(12px); }
+    h1 { font-size:clamp(1.05rem,1.6vw,1.35rem); margin:0; letter-spacing:.02em; }
+    h2 { margin:0; font-size:.82rem; color:#c4d2d4; text-transform:uppercase; letter-spacing:.12em; }
     p { line-height:1.55; }
-    .mode-badge { display:inline-flex; align-items:center; gap:.45rem; padding:.48rem .75rem; border:1px solid #2a7c72; border-radius:99px; color:var(--teal); background:#0b292b; font-size:.78rem; font-weight:800; letter-spacing:.08em; }
+    .mode-badge { display:inline-flex; align-items:center; gap:.42rem; max-width:100%; padding:.38rem .66rem; border:1px solid #2a7c72; border-radius:99px; color:var(--teal); background:#0b292b; font-size:.7rem; font-weight:850; letter-spacing:.07em; text-align:center; }
     .mode-badge::before { content:""; width:.52rem; height:.52rem; border-radius:50%; background:var(--teal); box-shadow:0 0 .8rem var(--teal); }
     .mode-badge.live { color:var(--amber); border-color:#8f6729; background:#30220d; }
     .mode-badge.live::before { background:var(--amber); box-shadow:0 0 .8rem var(--amber); }
     .mode-badge.execution { color:var(--red); border-color:#8f3d43; background:#32161b; }
     .mode-badge.execution::before { background:var(--red); box-shadow:0 0 .8rem var(--red); }
-    .shell { width:min(1500px,100%); max-width:100%; margin:auto; padding:clamp(.8rem,2vw,1.5rem); overflow:hidden; }
-    .safety-strip { display:grid; grid-template-columns:repeat(6,1fr); gap:.65rem; margin-bottom:1rem; }
-    .safety-cell { padding:.7rem .85rem; border:1px solid var(--line); border-radius:.75rem; background:rgba(14,27,43,.92); }
-    .safety-cell span { display:block; color:var(--muted); font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; }
-    .safety-cell strong { display:block; margin-top:.28rem; font-size:.92rem; }
-    .workspace { display:grid; grid-template-columns:minmax(310px,.85fr) minmax(480px,1.65fr) minmax(290px,.8fr); gap:1rem; align-items:start; min-width:0; }
-    .column { display:grid; gap:1rem; min-width:0; }
-    .panel { min-width:0; border:1px solid var(--line); border-radius:1rem; padding:1rem; background:linear-gradient(145deg,rgba(17,35,52,.97),rgba(11,24,39,.97)); box-shadow:0 14px 45px rgba(0,0,0,.16); }
+    .shell { width:min(1680px,100%); max-width:100%; margin:auto; padding:clamp(.6rem,1.3vw,1rem); }
+    .safety-strip { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:.5rem; margin-bottom:.65rem; }
+    .safety-cell { min-width:0; padding:.52rem .62rem; border:1px solid var(--line); border-radius:.58rem; background:#0d1a28; }
+    .safety-cell span { display:block; color:var(--muted); font-size:.61rem; text-transform:uppercase; letter-spacing:.08em; }
+    .safety-cell strong { display:block; margin-top:.2rem; overflow-wrap:anywhere; font-size:.76rem; line-height:1.25; }
+    .safety-cell.warning { border-color:#91652d; background:#2b2112; }
+    .safety-cell.unsafe { border-color:#91414a; background:#31191e; }
+    .workspace { display:grid; grid-template-columns:minmax(0,2.35fr) minmax(320px,.75fr); gap:.75rem; align-items:start; min-width:0; }
+    .visual-column, .ops-sidebar { display:grid; gap:.75rem; min-width:0; }
+    .ops-sidebar { position:sticky; top:4.15rem; max-height:calc(100vh - 4.8rem); overflow-y:auto; overscroll-behavior:contain; padding-right:.15rem; scrollbar-width:thin; }
+    .panel { min-width:0; border:1px solid var(--line); border-radius:.72rem; padding:.8rem; background:linear-gradient(145deg,rgba(16,32,47,.98),rgba(10,22,34,.98)); box-shadow:0 10px 30px rgba(0,0,0,.13); }
+    .panel-heading { display:flex; align-items:center; justify-content:space-between; gap:.7rem; margin-bottom:.65rem; }
+    .panel-heading .hint { margin:0; text-align:right; }
     .field-label { display:block; margin:.7rem 0 .35rem; color:#bbcccd; font-size:.8rem; font-weight:700; }
     textarea, select, input { width:100%; color:var(--ink); background:#071421; border:1px solid #294258; border-radius:.7rem; padding:.75rem; outline:none; }
-    textarea { resize:vertical; min-height:7rem; }
+    textarea { resize:vertical; min-height:5.5rem; }
     textarea:focus, select:focus, input:focus { border-color:var(--teal); box-shadow:0 0 0 3px rgba(93,228,199,.1); }
     .actions { display:flex; gap:.55rem; flex-wrap:wrap; margin-top:.8rem; }
     .primary, .secondary, .danger { border-radius:.7rem; border:1px solid transparent; padding:.65rem .9rem; font-weight:800; }
@@ -1785,10 +1825,33 @@ _INDEX_HTML = r'''<!doctype html>
     .segment strong { min-width:0; overflow-wrap:anywhere; text-align:right; }
     .limits { display:flex; gap:.4rem; flex-wrap:wrap; }
     .chip { border:1px solid #314a60; color:#b7cbd0; border-radius:99px; padding:.28rem .5rem; font-size:.68rem; }
-    .map-frame { position:relative; aspect-ratio:3/2; min-height:360px; border:1px solid #29465a; overflow:hidden; border-radius:.8rem; background:#08131e; }
+    .map-panel { padding:.65rem; }
+    .map-frame { position:relative; aspect-ratio:16/10; min-height:520px; border:1px solid #355168; overflow:hidden; border-radius:.58rem; background:#07121d; }
     #mission-map { width:100%; height:100%; display:block; }
-    .legend { display:flex; flex-wrap:wrap; gap:.8rem; margin-top:.65rem; color:var(--muted); font-size:.72rem; }
+    .visual-status { display:flex; flex-wrap:wrap; gap:.38rem; align-items:center; }
+    .status-pill { display:inline-flex; align-items:center; gap:.3rem; min-width:0; padding:.25rem .45rem; border:1px solid #355168; border-radius:99px; background:rgba(7,18,29,.88); color:#c8d7da; font-size:.65rem; font-weight:750; }
+    .status-pill::before { content:""; flex:0 0 auto; width:.42rem; height:.42rem; border-radius:50%; background:var(--teal); }
+    .status-pill.stale::before, .status-pill.degraded::before { background:var(--amber); }
+    .status-pill.unavailable::before, .status-pill.interrupted::before { background:var(--red); }
+    .map-overlay { position:absolute; inset:.55rem .55rem auto; display:flex; flex-wrap:wrap; gap:.35rem; z-index:2; pointer-events:none; }
+    .visual-alert { position:absolute; inset:auto .55rem .55rem; z-index:2; padding:.52rem .65rem; border:1px solid #8f6729; border-radius:.5rem; background:rgba(48,34,13,.94); color:#f7d99c; font-size:.72rem; font-weight:750; }
+    .legend { display:flex; flex-wrap:wrap; gap:.72rem; margin-top:.55rem; color:var(--muted); font-size:.68rem; }
     .legend i { width:.7rem; height:.7rem; border-radius:50%; display:inline-block; margin-right:.28rem; vertical-align:-.05rem; }
+    .camera-panel { padding:.65rem; }
+    .camera-frame { position:relative; aspect-ratio:16/9; overflow:hidden; border:1px solid #355168; border-radius:.58rem; background:#050b12; }
+    #live-camera-preview { width:100%; height:100%; display:block; object-fit:contain; background:#050b12; }
+    .camera-empty { position:absolute; inset:0; display:grid; place-items:center; padding:2rem; text-align:center; color:#a7bac0; background:radial-gradient(circle at 50% 35%,#142d3e 0,#07121d 60%); }
+    .camera-empty strong { display:block; color:#dce7e8; font-size:1rem; }
+    .camera-empty span { display:block; max-width:38rem; margin-top:.35rem; font-size:.78rem; line-height:1.45; }
+    .camera-overlay { position:absolute; inset:0; pointer-events:none; }
+    .detection-box { position:absolute; border:2px solid var(--amber); border-radius:.3rem; box-shadow:0 0 0 1px rgba(0,0,0,.4); }
+    .detection-box span { position:absolute; left:-2px; bottom:100%; max-width:14rem; padding:.18rem .3rem; overflow:hidden; border-radius:.22rem .22rem 0 0; background:rgba(35,27,8,.92); color:#ffdf9d; font-size:.62rem; font-weight:800; white-space:nowrap; text-overflow:ellipsis; }
+    .camera-interruption { position:absolute; inset:0; display:grid; place-items:center; padding:2rem; text-align:center; background:rgba(33,10,14,.72); color:#ffd1cd; font-weight:850; }
+    .camera-meta { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.45rem; margin-top:.52rem; }
+    .camera-meta div { min-width:0; padding:.45rem .52rem; border-radius:.45rem; background:#081521; }
+    .camera-meta span { display:block; color:var(--muted); font-size:.6rem; text-transform:uppercase; letter-spacing:.06em; }
+    .camera-meta strong { display:block; margin-top:.18rem; overflow-wrap:anywhere; font-size:.72rem; }
+    .detection-summary { display:flex; flex-wrap:wrap; gap:.38rem; margin-top:.5rem; }
     .status-line { display:flex; justify-content:space-between; align-items:center; gap:.7rem; }
     .state { font-size:1.25rem; color:var(--teal); font-weight:900; letter-spacing:.04em; }
     .terminal { color:var(--amber); font-size:.78rem; }
@@ -1811,8 +1874,31 @@ _INDEX_HTML = r'''<!doctype html>
     .in-flight { color:var(--amber) !important; }
     .error { min-height:1.2rem; color:#ffaba5; font-size:.8rem; margin-top:.5rem; }
     .rejected { border-color:#7e3541; color:#ffd3d0; }
-    @media (max-width:1100px) { .workspace { grid-template-columns:minmax(300px,.85fr) minmax(430px,1.3fr); } .workspace > .column:last-child { grid-column:1/-1; grid-template-columns:1fr 1fr; } }
-    @media (max-width:760px) { header { position:static; align-items:flex-start; flex-direction:column; } .shell { padding:.7rem; } .safety-strip { grid-template-columns:1fr 1fr; } .workspace, .workspace > .column:last-child { grid-template-columns:minmax(0,1fr); } .workspace > .column:last-child { grid-column:auto; } .map-frame { min-height:0; } .plan-meta { grid-template-columns:1fr; } .segment { flex-direction:column; gap:.35rem; } .segment strong { text-align:left; font-size:.76rem; } }
+    details.panel { padding:0; }
+    details.panel > summary { cursor:pointer; list-style:none; padding:.75rem .8rem; color:#c4d2d4; font-size:.78rem; font-weight:800; text-transform:uppercase; letter-spacing:.1em; }
+    details.panel > summary::-webkit-details-marker { display:none; }
+    details.panel > summary::after { content:"+"; float:right; color:var(--teal); font-size:1rem; }
+    details.panel[open] > summary::after { content:"−"; }
+    details.panel > .detail-body { padding:0 .8rem .8rem; }
+    @media (max-width:1180px) {
+      .workspace { grid-template-columns:minmax(0,1.8fr) minmax(310px,.8fr); }
+      .map-frame { min-height:420px; }
+      .safety-strip { grid-template-columns:repeat(4,minmax(0,1fr)); }
+    }
+    @media (max-width:1100px) {
+      header { position:static; align-items:flex-start; flex-direction:column; }
+      .shell { padding:.55rem; }
+      .safety-strip { grid-template-columns:1fr 1fr; }
+      .workspace { grid-template-columns:minmax(0,1fr); }
+      .visual-column { grid-row:1; }
+      .ops-sidebar { grid-row:2; position:static; max-height:none; overflow:visible; padding:0; }
+      .map-frame { min-height:0; aspect-ratio:4/3; }
+      .camera-frame { aspect-ratio:4/3; }
+      .camera-meta { grid-template-columns:1fr; }
+      .plan-meta, .rolling-grid { grid-template-columns:1fr; }
+      .segment { flex-direction:column; gap:.35rem; }
+      .segment strong { text-align:left; font-size:.76rem; }
+    }
   </style>
 </head>
 <body>
@@ -1828,9 +1914,54 @@ _INDEX_HTML = r'''<!doctype html>
       <div class="safety-cell"><span>Telemetry</span><strong id="safety-telemetry">FRESH</strong></div>
       <div class="safety-cell"><span>STOP</span><strong id="safety-stop">READY</strong></div>
       <div class="safety-cell"><span>ESTOP</span><strong id="safety-estop">CLEAR</strong></div>
+      <div class="safety-cell"><span>Motion authority</span><strong id="safety-authority">NONE</strong></div>
     </section>
     <div class="workspace">
-      <div class="column">
+      <div class="visual-column">
+        <section class="panel map-panel" aria-labelledby="map-heading">
+          <div class="panel-heading">
+            <h2 id="map-heading">Live spatial map</h2>
+            <div class="visual-status" id="map-status" aria-live="polite"></div>
+          </div>
+          <div class="map-frame">
+            <svg id="mission-map" role="img" aria-label="Fixture room map showing rover, route, path, obstacles, and objects"></svg>
+            <div class="map-overlay" id="map-overlay" aria-hidden="true"></div>
+            <div class="visual-alert" id="map-alert" hidden></div>
+          </div>
+          <div class="legend" aria-label="Map legend">
+            <span><i style="background:#7da7f7"></i>Goal / safe corridor</span>
+            <span><i style="background:#65e0c2"></i>Rover / traveled path</span>
+            <span><i style="background:#f4c36a"></i>Semantic tracks</span>
+            <span><i style="background:#64788c"></i>Occupancy / obstacles</span>
+          </div>
+        </section>
+        <section class="panel camera-panel" aria-labelledby="camera-heading">
+          <div class="panel-heading">
+            <h2 id="camera-heading">Camera</h2>
+            <div class="visual-status" id="camera-status" aria-live="polite"></div>
+          </div>
+          <div class="camera-frame" id="camera-frame">
+            <img id="live-camera-preview" hidden alt="Latest rover camera evidence">
+            <div class="camera-empty" id="camera-empty">
+              <div><strong>No camera frame available</strong><span>The console will not substitute a fixture for a missing image source.</span></div>
+            </div>
+            <div class="camera-overlay" id="camera-overlay" aria-hidden="true"></div>
+            <div class="camera-interruption" id="camera-interruption" hidden></div>
+          </div>
+          <div class="camera-meta" aria-label="Camera evidence metadata">
+            <div><span>Frame ID</span><strong id="camera-frame-id">Unavailable</strong></div>
+            <div><span>Evidence timestamp</span><strong id="camera-timestamp">Unavailable</strong></div>
+            <div><span>Observation focus</span><strong id="camera-focus">No active request</strong></div>
+          </div>
+          <div class="detection-summary" id="camera-detections" aria-live="polite"></div>
+        </section>
+      </div>
+      <aside class="ops-sidebar" aria-label="Mission controls and details">
+        <section class="panel" aria-labelledby="status-heading">
+          <div class="panel-heading"><h2 id="status-heading">Mission status</h2><span class="terminal" id="terminal-reason"></span></div>
+          <div class="status-line"><div class="state" id="mission-state" data-testid="mission-state">READY</div><div class="hint" id="progress-label">0% complete</div></div>
+          <progress id="mission-progress" max="100" value="0"></progress>
+        </section>
         <section class="panel" aria-labelledby="mission-heading">
           <h2 id="mission-heading">Mission prompt</h2>
           <label class="field-label" for="mission-prompt">Tell the rover what to do</label>
@@ -1850,53 +1981,39 @@ _INDEX_HTML = r'''<!doctype html>
             <button class="danger" id="cancel" data-testid="cancel" disabled>Cancel mission</button>
           </div>
         </section>
-      </div>
-      <div class="column">
-        <section class="panel" aria-labelledby="map-heading">
-          <h2 id="map-heading">Room map</h2>
-          <div class="map-frame"><svg id="mission-map" role="img" aria-label="Fixture room map showing rover, route, path, obstacles, and objects"></svg></div>
-          <div class="legend"><span><i style="background:#78a9ff"></i>Proposed route</span><span><i style="background:#5de4c7"></i>Traveled path</span><span><i style="background:#ffca6b"></i>Objects</span><span><i style="background:#64788c"></i>Obstacles</span></div>
-        </section>
-        <section class="panel" aria-labelledby="proposal-heading">
-          <h2 id="proposal-heading">LLM proposal</h2>
-          <div id="proposal-view" class="empty">Submit a mission to see a typed route proposal or rejection.</div>
-        </section>
         <section class="panel" id="rolling-intent-panel" hidden>
           <h2>Current finite leased intent</h2>
           <div id="rolling-intent" class="empty">No validated intent yet.</div>
         </section>
-      </div>
-      <div class="column">
-        <section class="panel" aria-labelledby="status-heading">
-          <h2 id="status-heading">Mission status</h2>
-          <div class="status-line"><div class="state" id="mission-state" data-testid="mission-state">READY</div><div class="terminal" id="terminal-reason"></div></div>
-          <progress id="mission-progress" max="100" value="0"></progress>
-          <div class="hint" id="progress-label">0% complete</div>
-        </section>
-        <section class="panel" aria-labelledby="events-heading">
-          <h2 id="events-heading">Event history</h2>
-          <ol class="event-list" id="event-list"><li class="empty">No mission events yet.</li></ol>
+        <section class="panel" aria-labelledby="proposal-heading">
+          <h2 id="proposal-heading">LLM proposal</h2>
+          <div id="proposal-view" class="empty">Submit a mission to see a typed route proposal or rejection.</div>
         </section>
         <section class="panel" id="rolling-loop-panel" hidden>
           <h2>Asynchronous LLM loop</h2>
           <div class="rolling-grid" id="rolling-metrics"></div>
           <div class="revision-list" id="rolling-revisions"></div>
         </section>
-        <section class="panel" id="rolling-world-panel" hidden>
-          <h2>Fresh world snapshot & detections</h2>
-          <img id="live-camera-preview" hidden alt="Latest live stationary camera evidence" style="width:100%;max-width:640px;border-radius:12px;border:1px solid #385168;margin-bottom:1rem">
-          <pre class="rolling-json" id="rolling-world"></pre>
-        </section>
-        <section class="panel" aria-labelledby="result-heading">
-          <h2 id="result-heading">Terminal evidence</h2>
-          <div id="result-view" class="empty" data-testid="result-view">No terminal evidence yet.</div>
-          <ul id="artifact-list" class="artifact-list"></ul>
-        </section>
-        <section class="panel">
-          <h2>Authority boundary</h2>
-          <p class="hint" id="authority-copy">The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.</p>
-        </section>
-      </div>
+        <details class="panel" id="rolling-world-panel" hidden>
+          <summary>Fresh world snapshot &amp; detections</summary>
+          <div class="detail-body"><pre class="rolling-json" id="rolling-world"></pre></div>
+        </details>
+        <details class="panel" id="terminal-panel">
+          <summary id="result-heading">Terminal evidence &amp; artifacts</summary>
+          <div class="detail-body">
+            <div id="result-view" class="empty" data-testid="result-view">No terminal evidence yet.</div>
+            <ul id="artifact-list" class="artifact-list"></ul>
+          </div>
+        </details>
+        <details class="panel">
+          <summary id="events-heading">Event history</summary>
+          <div class="detail-body"><ol class="event-list" id="event-list"><li class="empty">No mission events yet.</li></ol></div>
+        </details>
+        <details class="panel">
+          <summary>Authority boundary &amp; diagnostics</summary>
+          <div class="detail-body"><p class="hint" id="authority-copy">The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.</p></div>
+        </details>
+      </aside>
     </div>
   </main>
   <script>
@@ -1915,6 +2032,31 @@ _INDEX_HTML = r'''<!doctype html>
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    }
+
+    function statusPill(label, value, tone = '') {
+      return `<span class="status-pill ${escapeHtml(tone)}">${escapeHtml(label)}: ${escapeHtml(value)}</span>`;
+    }
+
+    function formatEvidenceTime(value) {
+      const stamp = finiteNumber(value);
+      if (stamp === null) return 'Unavailable';
+      if (stamp < 1e9) return `${stamp.toFixed(3)} s replay time`;
+      const milliseconds = stamp > 1e12 ? stamp : stamp * 1000;
+      const date = new Date(milliseconds);
+      return Number.isNaN(date.getTime()) ? `${stamp.toFixed(3)} s` : date.toISOString();
+    }
+
+    function finiteNumber(value) {
+      if (value === null || value === '' || typeof value === 'boolean') return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function setSafetyTone(id, tone) {
+      const cell = $(id).closest('.safety-cell');
+      cell.classList.toggle('warning', tone === 'warning');
+      cell.classList.toggle('unsafe', tone === 'unsafe');
     }
 
     function render(snapshot) {
@@ -1968,6 +2110,15 @@ _INDEX_HTML = r'''<!doctype html>
       $('safety-telemetry').textContent = snapshot.safety.telemetry_fresh ? 'FRESH' : 'STALE — BLOCKED';
       $('safety-stop').textContent = snapshot.safety.stop_state || (snapshot.safety.stop_active ? 'ACTIVE' : 'READY');
       $('safety-estop').textContent = snapshot.safety.estop_state || (snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR');
+      $('safety-authority').textContent = execution ? 'PHYSICAL ENABLED' : stationary ? 'STATIONARY ONLY' : rollingReplay ? 'REPLAY ONLY' : live ? 'PHYSICAL LOCKED' : 'SIMULATION ONLY';
+      const collisionState = String(snapshot.safety.collision_state || 'UNKNOWN').toUpperCase();
+      const stopState = String($('safety-stop').textContent).toUpperCase();
+      const estopState = String($('safety-estop').textContent).toUpperCase();
+      setSafetyTone('safety-collision', ['CLEAR','SLOW'].includes(collisionState) ? (collisionState === 'SLOW' ? 'warning' : '') : 'unsafe');
+      setSafetyTone('safety-telemetry', snapshot.safety.telemetry_fresh ? '' : 'unsafe');
+      setSafetyTone('safety-stop', ['READY','CLEAR'].includes(stopState) ? '' : stopState === 'UNKNOWN' ? 'warning' : 'unsafe');
+      setSafetyTone('safety-estop', estopState === 'CLEAR' ? '' : estopState === 'UNKNOWN' ? 'warning' : 'unsafe');
+      setSafetyTone('safety-authority', execution ? 'unsafe' : stationary || rollingReplay || live ? 'warning' : '');
       $('approve').disabled = snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
       $('approval-input').hidden = live;
       $('approval-input-label').hidden = live;
@@ -1996,8 +2147,10 @@ _INDEX_HTML = r'''<!doctype html>
         $('result-view').textContent = 'No terminal evidence yet.';
       }
       $('artifact-list').innerHTML = artifacts.map((artifact) => `<li><a href="${escapeHtml(artifact.href)}" target="_blank" rel="noopener">${escapeHtml(artifact.label)}</a> <span class="hint">${escapeHtml(artifact.media_type)}</span></li>`).join('');
+      $('terminal-panel').open = Boolean(snapshot.mission.terminal);
       renderRolling(snapshot);
-      renderMap(snapshot.map);
+      renderMap(snapshot.map, snapshot);
+      renderCamera(snapshot);
       if (snapshot.mission.terminal && timer) { clearInterval(timer); timer = null; }
     }
 
@@ -2063,35 +2216,168 @@ _INDEX_HTML = r'''<!doctype html>
         semantic_map: world.semantic_map,
       };
       $('rolling-world').textContent = JSON.stringify(visible, null, 2);
-      const preview = snapshot.camera_preview || {};
-      $('live-camera-preview').hidden = !stationary || !preview.available;
-      if (stationary && preview.available) {
-        $('live-camera-preview').src = preview.data_url;
-        $('live-camera-preview').alt = `Live stationary camera evidence ${preview.frame_id}`;
-      }
     }
 
-    function renderMap(map) {
+    function renderCamera(snapshot) {
+      const stationary = Boolean(snapshot.adapter.stationary_perception);
+      const rolling = snapshot.rolling || {};
+      const world = rolling.world_snapshot || {};
+      const worldCamera = world.camera || {};
+      const preview = snapshot.camera_preview || {};
+      const frameId = preview.frame_id || worldCamera.frame_id || '';
+      const stamp = preview.stamp_s ?? preview.source_timestamp_s ?? worldCamera.stamp_s;
+      const detections = Array.isArray(preview.detections)
+        ? preview.detections
+        : Array.isArray(worldCamera.detections) ? worldCamera.detections : [];
+      const intent = rolling.active_intent || {};
+      const focus = intent.observation_focus || 'No active request';
+      const viewpoint = intent.viewpoint_recommendation || intent.viewpoint || '';
+      const hasPixels = Boolean(preview.available && preview.data_url);
+      const state = preview.state || (frameId ? 'metadata-only' : 'unavailable');
+      const image = $('live-camera-preview');
+      const empty = $('camera-empty');
+      const interruption = $('camera-interruption');
+
+      image.hidden = !hasPixels;
+      if (hasPixels) {
+        image.src = preview.data_url;
+        image.alt = `Rover camera frame ${frameId || 'without identifier'} with detection overlays`;
+      } else {
+        image.removeAttribute('src');
+      }
+      empty.hidden = hasPixels;
+      if (!hasPixels) {
+        const title = state === 'interrupted' ? 'Camera stream interrupted' : frameId ? 'Frame pixels not supplied' : 'Camera source unavailable';
+        const explanation = state === 'interrupted'
+          ? preview.error || 'The camera source stopped before supplying a current frame.'
+          : frameId
+            ? `Evidence metadata for ${frameId} is available, but this ${stationary ? 'live source' : 'replay'} supplied no image pixels.`
+            : 'The console will not substitute a fixture for a missing image source.';
+        empty.innerHTML = `<div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(explanation)}</span></div>`;
+      }
+
+      interruption.hidden = state !== 'interrupted' && !(hasPixels && !preview.fresh);
+      if (!interruption.hidden) {
+        interruption.textContent = state === 'interrupted'
+          ? `CAMERA INTERRUPTED — ${preview.error || 'source error'}`
+          : 'STALE CAMERA EVIDENCE — latest frame retained for review';
+      }
+
+      $('camera-frame-id').textContent = frameId || 'Unavailable';
+      $('camera-timestamp').textContent = formatEvidenceTime(stamp);
+      $('camera-focus').textContent = viewpoint ? `${focus} · ${viewpoint}` : focus;
+      const cameraTone = hasPixels && preview.fresh ? '' : state === 'interrupted' ? 'interrupted' : state === 'stale' ? 'stale' : 'unavailable';
+      const age = finiteNumber(preview.age_s);
+      $('camera-status').innerHTML = statusPill(
+        'Input',
+        hasPixels ? (preview.fresh ? 'fresh' : state) : frameId ? 'metadata only' : state,
+        cameraTone
+      ) + (age !== null ? statusPill('Age', `${age.toFixed(2)} s`, age > 1.5 ? 'stale' : '') : '');
+
+      const width = finiteNumber(preview.width);
+      const height = finiteNumber(preview.height);
+      $('camera-overlay').innerHTML = hasPixels && width !== null && width > 0 && height !== null && height > 0
+        ? detections.filter((item) => item && item.bbox).map((item) => {
+            const box = item.bbox;
+            const left = Math.max(0, Math.min(100, Number(box.x) / width * 100));
+            const top = Math.max(0, Math.min(100, Number(box.y) / height * 100));
+            const boxWidth = Math.max(0, Math.min(100 - left, Number(box.width) / width * 100));
+            const boxHeight = Math.max(0, Math.min(100 - top, Number(box.height) / height * 100));
+            const confidence = finiteNumber(item.confidence);
+            const label = `${item.track_id || item.detection_id || 'detection'} · ${item.label || 'unknown'}${confidence !== null ? ` ${Math.round(confidence * 100)}%` : ''}`;
+            return `<div class="detection-box" style="left:${left}%;top:${top}%;width:${boxWidth}%;height:${boxHeight}%"><span>${escapeHtml(label)}</span></div>`;
+          }).join('')
+        : '';
+      $('camera-detections').innerHTML = detections.length
+        ? detections.map((item) => {
+            const confidence = finiteNumber(item.confidence);
+            const label = `${item.track_id || item.detection_id || 'detection'} · ${item.label || 'unknown'}${confidence !== null ? ` · ${Math.round(confidence * 100)}%` : ''}`;
+            return `<span class="chip">${escapeHtml(label)}</span>`;
+          }).join('')
+        : '<span class="hint">No detections reported for this frame.</span>';
+    }
+
+    function renderMap(map, snapshot) {
       const svg = $('mission-map');
       const W = 900, H = 600, pad = 42;
-      const origin = map.bounds.origin || {x_m:0, y_m:0};
-      const sx = (x) => pad + ((x - origin.x_m) / map.bounds.width_m) * (W - pad * 2);
-      const sy = (y) => H - pad - ((y - origin.y_m) / map.bounds.height_m) * (H - pad * 2);
+      const bounds = map.bounds || {origin:{x_m:0,y_m:0},width_m:1,height_m:1};
+      const origin = bounds.origin || {x_m:0, y_m:0};
+      const widthM = Math.max(.001, Number(bounds.width_m) || 1);
+      const heightM = Math.max(.001, Number(bounds.height_m) || 1);
+      const rover = map.rover || {x_m:0,y_m:0,yaw_deg:0};
+      const sx = (x) => pad + ((Number(x) - Number(origin.x_m || 0)) / widthM) * (W - pad * 2);
+      const sy = (y) => H - pad - ((Number(y) - Number(origin.y_m || 0)) / heightM) * (H - pad * 2);
       const points = (items) => items.map((p) => `${sx(p.x_m)},${sy(p.y_m)}`).join(' ');
       const grid = Array.from({length:11}, (_,i) => `<line x1="${pad + i*(W-pad*2)/10}" y1="${pad}" x2="${pad + i*(W-pad*2)/10}" y2="${H-pad}" stroke="#14283a"/><line x1="${pad}" y1="${pad + i*(H-pad*2)/10}" x2="${W-pad}" y2="${pad + i*(H-pad*2)/10}" stroke="#14283a"/>`).join('');
-      const obstacles = map.obstacles.map((o) => `<g><rect x="${sx(o.x_m)}" y="${sy(o.y_m + o.height_m)}" width="${o.width_m/map.bounds.width_m*(W-pad*2)}" height="${o.height_m/map.bounds.height_m*(H-pad*2)}" rx="8" fill="#42576b" stroke="#6f8497"/><text x="${sx(o.x_m)+8}" y="${sy(o.y_m + o.height_m)+20}" fill="#b8c8d4" font-size="14">${escapeHtml(o.label)}</text></g>`).join('');
-      const objects = map.objects.map((o) => `<g><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="10" fill="#ffca6b"/><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="18" fill="none" stroke="#ffca6b" opacity=".45"/><text x="${sx(o.x_m)+15}" y="${sy(o.y_m)-10}" fill="#ffdf9d" font-size="15">${escapeHtml(o.label)} ${Math.round(o.confidence*100)}%</text></g>`).join('');
-      const goal = map.goal_region ? `<circle cx="${sx(map.goal_region.x_m)}" cy="${sy(map.goal_region.y_m)}" r="${Math.max(7, map.goal_region.radius_m/map.bounds.width_m*(W-pad*2))}" fill="rgba(120,169,255,.12)" stroke="#78a9ff" stroke-width="3"/>` : '';
+      const world = (snapshot.rolling || {}).world_snapshot || {};
+      const tracks = Array.isArray(world.semantic_tracks)
+        ? world.semantic_tracks
+        : Array.isArray((world.semantic_map || {}).tracks) ? world.semantic_map.tracks : [];
+      const trackById = new Map(tracks.map((item) => [String(item.track_id || item.object_id || ''), item]));
+      const obstacles = (map.obstacles || []).map((o) => {
+        const occupancy = String(o.label || '').toLowerCase().includes('occupancy');
+        if (occupancy) return `<circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="2.6" fill="#75899a" opacity=".8"/>`;
+        const obstacleWidth = Number(o.width_m || .05) / widthM * (W-pad*2);
+        const obstacleHeight = Number(o.height_m || .05) / heightM * (H-pad*2);
+        return `<g><rect x="${sx(o.x_m)}" y="${sy(Number(o.y_m) + Number(o.height_m || .05))}" width="${obstacleWidth}" height="${obstacleHeight}" rx="7" fill="#42576b" stroke="#8294a3"/><text x="${sx(o.x_m)+8}" y="${sy(Number(o.y_m) + Number(o.height_m || .05))+20}" fill="#d2dde3" font-size="13">${escapeHtml(o.label || 'obstacle')}</text></g>`;
+      }).join('');
+      const objects = (map.objects || []).map((o) => {
+        const track = trackById.get(String(o.object_id || o.track_id || '')) || {};
+        const confidence = finiteNumber(o.confidence ?? track.confidence);
+        const uncertaintyM = finiteNumber(o.uncertainty_m ?? track.uncertainty_m);
+        const uncertaintyRadius = uncertaintyM !== null ? Math.max(16, uncertaintyM / widthM * (W-pad*2)) : 18;
+        const confidenceLabel = confidence !== null ? ` ${Math.round(confidence*100)}%` : '';
+        return `<g><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="${uncertaintyRadius}" fill="rgba(244,195,106,.08)" stroke="#f4c36a" stroke-dasharray="5 5" opacity=".75"/><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="9" fill="#f4c36a"/><text x="${sx(o.x_m)+14}" y="${sy(o.y_m)-11}" fill="#ffe2a5" font-size="14">${escapeHtml(o.label || track.label || 'track')}${escapeHtml(confidenceLabel)}</text></g>`;
+      }).join('');
+      const goal = map.goal_region ? `<circle cx="${sx(map.goal_region.x_m)}" cy="${sy(map.goal_region.y_m)}" r="${Math.max(7, Number(map.goal_region.radius_m || 0)/widthM*(W-pad*2))}" fill="rgba(125,167,247,.13)" stroke="#7da7f7" stroke-width="3"/>` : '';
+      const intent = (snapshot.rolling || {}).active_intent || {};
+      let corridorMin = finiteNumber(snapshot.safety.forward_corridor_min_angle_deg);
+      let corridorMax = finiteNumber(snapshot.safety.forward_corridor_max_angle_deg);
+      if ((corridorMin === null || corridorMax === null) && intent.safe_corridor) {
+        const corridor = String(intent.safe_corridor || '');
+        [corridorMin, corridorMax] = corridor === 'left' ? [10,55] : corridor === 'right' ? [-55,-10] : [-25,25];
+      }
+      const clearance = finiteNumber(snapshot.safety.forward_corridor_clearance_m);
+      const corridorAvailable = corridorMin !== null && corridorMax !== null && clearance !== null && clearance > 0;
+      const corridorRange = corridorAvailable ? Math.max(.1, Math.min(clearance, Math.min(widthM,heightM)*.45)) : 0;
+      const endpoint = (offset) => {
+        const angle = (Number(rover.yaw_deg || 0) + offset) * Math.PI / 180;
+        return `${sx(Number(rover.x_m) + corridorRange*Math.cos(angle))},${sy(Number(rover.y_m) + corridorRange*Math.sin(angle))}`;
+      };
+      const corridorShape = map.available === false || !corridorAvailable ? '' : `<path d="M ${sx(rover.x_m)} ${sy(rover.y_m)} L ${endpoint(corridorMin)} L ${endpoint(corridorMax)} Z" fill="rgba(125,167,247,.10)" stroke="#7da7f7" stroke-width="2" stroke-dasharray="6 6"/>`;
       const layerNotice = map.navigation_available && map.unavailable_layers && map.unavailable_layers.length ? `<text x="${pad+8}" y="${H-pad-10}" fill="#91a9aa" font-size="15">Unavailable layers: ${escapeHtml(map.unavailable_layers.join(', '))}</text>` : '';
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
       const frame = `${grid}<rect x="${pad}" y="${pad}" width="${W-pad*2}" height="${H-pad*2}" fill="none" stroke="#385168" stroke-width="3"/>`;
+      const sources = world.sources || {};
+      const localizationSource = sources.localization || {};
+      const localization = map.localization || world.localization || localizationSource.value || {};
+      const localizationState = String(localization.state || (map.available === false ? 'unavailable' : snapshot.adapter.fixture_only ? 'replay' : 'unknown')).toLowerCase();
+      const localizationFresh = localizationSource.fresh ?? localization.fresh ?? snapshot.safety.telemetry_fresh;
+      const localizationQuality = finiteNumber(localization.quality);
+      const qualityLabel = localizationQuality !== null ? `${Math.round(localizationQuality*100)}%` : 'not reported';
+      const freshnessLabel = localizationFresh ? 'fresh' : 'stale';
+      const mapTone = map.available === false ? 'unavailable' : !localizationFresh ? 'stale' : localizationState === 'degraded' ? 'degraded' : '';
+      const sourceLabel = map.source || (snapshot.adapter.fixture_only ? 'replay fixture' : 'authoritative service');
+      $('map-status').innerHTML = statusPill('Map', map.available === false ? 'unavailable' : freshnessLabel, mapTone);
+      $('map-overlay').innerHTML = [
+        statusPill('Localization', localizationState, mapTone),
+        statusPill('Quality', qualityLabel, localizationQuality !== null && localizationQuality < .55 ? 'degraded' : ''),
+        statusPill('Source', sourceLabel),
+        world.snapshot_id ? statusPill('Snapshot', String(world.snapshot_id).slice(0,12)) : '',
+      ].join('');
+      const alert = $('map-alert');
+      alert.hidden = map.available !== false && localizationFresh && localizationState !== 'degraded';
+      alert.textContent = map.available === false
+        ? map.unavailable_reason || 'Authoritative spatial data unavailable'
+        : !localizationFresh ? 'STALE LOCALIZATION — spatial evidence is not current'
+        : 'DEGRADED LOCALIZATION — use pose and tracks with caution';
       if (map.available === false) {
         svg.setAttribute('aria-label', 'Authoritative live room map unavailable');
         svg.innerHTML = `${frame}<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#91a9aa" font-size="20">${escapeHtml(map.unavailable_reason || 'Authoritative map unavailable')}</text>`;
         return;
       }
-      svg.setAttribute('aria-label', 'Room map showing authoritative rover, route, path, obstacles, and objects');
-      svg.innerHTML = `${frame}${goal}${obstacles}<polyline points="${points(map.proposed_route)}" fill="none" stroke="#78a9ff" stroke-width="5" stroke-dasharray="10 10"/>${map.traveled_path.length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#5de4c7" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(map.rover.x_m)} ${sy(map.rover.y_m)}) rotate(${map.rover.yaw_deg})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#5de4c7" stroke="#d4fff7" stroke-width="2"/></g>${layerNotice}`;
+      svg.setAttribute('aria-label', `Room map showing ${sourceLabel} occupancy, rover heading, safe corridor, route, path, goal, and semantic tracks`);
+      svg.innerHTML = `${frame}${corridorShape}${goal}${obstacles}<polyline points="${points(map.proposed_route || [])}" fill="none" stroke="#7da7f7" stroke-width="5" stroke-dasharray="10 10"/>${(map.traveled_path || []).length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#65e0c2" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(rover.x_m)} ${sy(rover.y_m)}) rotate(${Number(rover.yaw_deg || 0)})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#65e0c2" stroke="#d4fff7" stroke-width="2"/></g>${layerNotice}`;
     }
 
     async function loadScenarios() {
