@@ -2245,14 +2245,12 @@ _INDEX_HTML = r'''<!doctype html>
       } else {
         image.removeAttribute('src');
       }
-      empty.hidden = hasPixels;
-      if (!hasPixels) {
-        const title = state === 'interrupted' ? 'Camera stream interrupted' : frameId ? 'Frame pixels not supplied' : 'Camera source unavailable';
-        const explanation = state === 'interrupted'
-          ? preview.error || 'The camera source stopped before supplying a current frame.'
-          : frameId
-            ? `Evidence metadata for ${frameId} is available, but this ${stationary ? 'live source' : 'replay'} supplied no image pixels.`
-            : 'The console will not substitute a fixture for a missing image source.';
+      empty.hidden = hasPixels || state === 'interrupted';
+      if (!hasPixels && state !== 'interrupted') {
+        const title = frameId ? 'Frame pixels not supplied' : 'Camera source unavailable';
+        const explanation = frameId
+          ? `Evidence metadata for ${frameId} is available, but this ${stationary ? 'live source' : 'replay'} supplied no image pixels.`
+          : 'The console will not substitute a fixture for a missing image source.';
         empty.innerHTML = `<div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(explanation)}</span></div>`;
       }
 

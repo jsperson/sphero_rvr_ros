@@ -412,6 +412,7 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "STALE LOCALIZATION" in page
     assert "STALE CAMERA EVIDENCE" in page
     assert "CAMERA INTERRUPTED" in page
+    assert "empty.hidden = hasPixels || state === 'interrupted';" in page
     assert "Frame pixels not supplied" in page
     assert "detection-box" in page
     assert 'id="safety-authority"' in page
