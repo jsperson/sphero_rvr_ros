@@ -644,6 +644,8 @@ def test_systemd_telemetry_stop_requires_clean_unit_descendants_and_lidar_handle
         calls.append((command, kwargs))
         if command[:3] == ["systemctl", "--user", "stop"]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["systemctl", "--user", "reset-failed"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if command[:3] == ["systemctl", "--user", "show"]:
             return SimpleNamespace(
                 returncode=0,
@@ -686,6 +688,13 @@ def test_systemd_telemetry_stop_requires_clean_unit_descendants_and_lidar_handle
         "rvr-adaptive-mission.service",
         TELEMETRY_UNIT,
     ]
+    assert calls[1][0] == [
+        "systemctl",
+        "--user",
+        "reset-failed",
+        "rvr-adaptive-mission.service",
+        TELEMETRY_UNIT,
+    ]
     assert [call[0] for call in calls].count(["fuser", "/dev/rplidar"]) == 1
     assert any(call[0][:2] == ["ps", "-eo"] for call in calls)
 
@@ -696,6 +705,8 @@ def test_systemd_telemetry_stop_retains_degraded_state_when_unit_does_not_stop_c
     def fake_run(command, **kwargs):
         del kwargs
         if command[:3] == ["systemctl", "--user", "stop"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["systemctl", "--user", "reset-failed"]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if command[:3] == ["systemctl", "--user", "show"]:
             return SimpleNamespace(
@@ -787,6 +798,8 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'id="telemetry-toggle"' in page
     assert "Turn telemetry on" in page
     assert "Turn telemetry off" in page
+    assert "snapshot.safety.telemetry_fresh || degraded" in page
+    assert "['failed','degraded'].includes" in page
     assert "/api/web/telemetry" in page
     assert 'id="request-status" role="status" aria-live="polite"' in page
     assert 'id="approval-state" role="status" aria-live="polite"' in page
@@ -798,6 +811,7 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "Frame pixels not supplied" in page
     assert "detection-box" in page
     assert 'id="safety-authority"' in page
+    assert "physicalAdaptiveMission ? 'PHYSICAL LOCKED'" in page
     assert page.index('aria-label="Safety state"') < page.index('id="map-heading"')
     assert page.index('id="map-heading"') < page.index('id="camera-heading"')
     assert page.index('id="camera-heading"') < page.index('id="mission-heading"')

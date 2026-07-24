@@ -454,6 +454,35 @@ class SystemdTelemetryControl:
                 raise MissionWebError(
                     f"unable to {action} telemetry: {detail or 'systemd request failed'}"
                 )
+            if not active:
+                try:
+                    reset = subprocess.run(
+                        [
+                            "systemctl",
+                            "--user",
+                            "reset-failed",
+                            ADAPTIVE_MISSION_UNIT,
+                            self.unit,
+                        ],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=5.0,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    self.mark_degraded(
+                        "Shutdown stopped telemetry, but failed-unit state could "
+                        f"not be cleared before verification: {exc}"
+                    )
+                    raise MissionWebError(self._degraded_detail) from exc
+                if reset.returncode != 0:
+                    detail = str(reset.stderr).strip() or str(reset.stdout).strip()
+                    self.mark_degraded(
+                        "Shutdown stopped telemetry, but failed-unit state could "
+                        f"not be cleared before verification: {detail or 'systemd request failed'}"
+                    )
+                    raise MissionWebError(self._degraded_detail)
             status = dict(self.status())
             expected_state = "active" if active else "inactive"
             state_matches = bool(status.get("active", False)) == active
@@ -3220,8 +3249,8 @@ _INDEX_HTML = r'''<!doctype html>
       const control = snapshot.telemetry_control || {};
       panel.hidden = !controllable;
       if (!controllable) return;
-      const active = Boolean(control.active || snapshot.safety.telemetry_fresh);
       const degraded = ['failed', 'degraded'].includes(String(control.state || '').toLowerCase());
+      const active = Boolean(control.active || snapshot.safety.telemetry_fresh || degraded);
       const transitioning = telemetryRequestInFlight || Boolean(control.transitioning);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
       button.setAttribute('aria-describedby', 'telemetry-status');
@@ -3231,7 +3260,6 @@ _INDEX_HTML = r'''<!doctype html>
       button.disabled = transitioning
         || Boolean(missionRequestInFlight)
         || !control.available
-        || degraded
         || (!active && !control.start_permitted);
       label.textContent = transitioning
         ? (active ? 'Stopping telemetry' : 'Starting telemetry')
@@ -3361,7 +3389,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('safety-telemetry').textContent = snapshot.safety.telemetry_fresh ? 'FRESH' : 'STALE — BLOCKED';
       $('safety-stop').textContent = snapshot.safety.stop_state || (snapshot.safety.stop_active ? 'ACTIVE' : 'READY');
       $('safety-estop').textContent = snapshot.safety.estop_state || (snapshot.safety.estop_latched ? 'LATCHED' : 'CLEAR');
-      $('safety-authority').textContent = execution ? 'PHYSICAL ENABLED' : stationary ? 'STATIONARY ONLY' : rollingReplay ? 'REPLAY ONLY' : live ? 'PHYSICAL LOCKED' : 'SIMULATION ONLY';
+      $('safety-authority').textContent = execution ? 'PHYSICAL ENABLED' : stationary ? 'STATIONARY ONLY' : physicalAdaptiveMission ? 'PHYSICAL LOCKED' : rollingReplay ? 'REPLAY ONLY' : live ? 'PHYSICAL LOCKED' : 'SIMULATION ONLY';
       const collisionState = String(snapshot.safety.collision_state || 'UNKNOWN').toUpperCase();
       const stopState = String($('safety-stop').textContent).toUpperCase();
       const estopState = String($('safety-estop').textContent).toUpperCase();
@@ -3768,6 +3796,8 @@ _INDEX_HTML = r'''<!doctype html>
       const currentlyActive = Boolean(
         (current.telemetry_control && current.telemetry_control.active)
         || (current.safety && current.safety.telemetry_fresh)
+        || (current.telemetry_control
+          && ['failed','degraded'].includes(String(current.telemetry_control.state || '').toLowerCase()))
       );
       telemetryRequestInFlight = true;
       $('request-error').textContent = '';
