@@ -2331,6 +2331,24 @@ def _authoritative_live_map(live_evidence: Mapping[str, Any]) -> dict[str, Any]:
             required = {"bounds", "rover", "proposed_route", "traveled_path", "obstacles", "objects"}
             if isinstance(candidate, Mapping) and required <= set(candidate):
                 result = json.loads(json.dumps(dict(candidate), allow_nan=False))
+                localization_record = live_evidence.get("localization", {})
+                localization_value = (
+                    localization_record.get("value", {})
+                    if isinstance(localization_record, Mapping)
+                    else {}
+                )
+                if not isinstance(localization_value, Mapping):
+                    localization_value = {}
+                result["localization"] = {
+                    "state": str(localization_value.get("state", "unknown")),
+                    "quality": localization_value.get("quality"),
+                    "source": str(localization_value.get("source", "")),
+                    "fresh": bool(
+                        isinstance(localization_record, Mapping)
+                        and localization_record.get("fresh", False)
+                        and localization_record.get("valid", False)
+                    ),
+                }
                 result.update({"available": True, "fixture_only": False, "source": "Pi mission service"})
                 return result
     navigation_map = _authoritative_navigation_map(live_evidence)
@@ -2467,6 +2485,7 @@ def _authoritative_navigation_map(
             "state": str(localization.get("state", "unknown")),
             "quality": localization.get("quality"),
             "source": str(localization.get("source", "")),
+            "fresh": True,
             "odom_translation_disagreement_m": localization.get(
                 "odom_translation_disagreement_m"
             ),
@@ -3249,7 +3268,15 @@ _INDEX_HTML = r'''<!doctype html>
       panel.hidden = !controllable;
       if (!controllable) return;
       const degraded = ['failed', 'degraded'].includes(String(control.state || '').toLowerCase());
-      const active = Boolean(control.active || snapshot.safety.telemetry_fresh || degraded);
+      const sensorDataFresh = Boolean(
+        snapshot.camera_preview
+        && snapshot.camera_preview.fresh
+        && snapshot.map
+        && snapshot.map.available
+        && snapshot.map.localization
+        && snapshot.map.localization.fresh
+      );
+      const active = Boolean(control.active || sensorDataFresh || degraded);
       const transitioning = telemetryRequestInFlight || Boolean(control.transitioning);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
       button.setAttribute('aria-describedby', 'telemetry-status');
@@ -3265,7 +3292,7 @@ _INDEX_HTML = r'''<!doctype html>
         : degraded
           ? (control.detail || 'Telemetry lifecycle is degraded; shutdown is not verified')
         : active
-          ? (snapshot.safety.telemetry_fresh ? 'On · data fresh' : 'On · waiting for fresh data')
+          ? (sensorDataFresh ? 'On · data fresh' : 'On · waiting for fresh data')
           : control.verified_stopped
             ? 'Off · motor, camera, and sensor processes verified stopped; retained evidence is stale'
           : control.available && !control.start_permitted
@@ -3273,7 +3300,7 @@ _INDEX_HTML = r'''<!doctype html>
           : control.available
             ? (control.detail || 'Inactive · physical motor stop is not verified')
             : (control.detail || 'Control unavailable');
-      panel.classList.toggle('warning', !active || !snapshot.safety.telemetry_fresh);
+      panel.classList.toggle('warning', !active || !sensorDataFresh);
       panel.classList.toggle('unsafe', degraded);
     }
 
@@ -3794,7 +3821,12 @@ _INDEX_HTML = r'''<!doctype html>
       if (!current || telemetryRequestInFlight || missionRequestInFlight) return;
       const currentlyActive = Boolean(
         (current.telemetry_control && current.telemetry_control.active)
-        || (current.safety && current.safety.telemetry_fresh)
+        || (current.camera_preview
+          && current.camera_preview.fresh
+          && current.map
+          && current.map.available
+          && current.map.localization
+          && current.map.localization.fresh)
         || (current.telemetry_control
           && ['failed','degraded'].includes(String(current.telemetry_control.state || '').toLowerCase()))
       );

@@ -383,7 +383,7 @@ def _stationary_provider_prompt(
             "Use only detection, track, face identity, occupancy, and freshness evidence in the snapshot.",
             "A face label is authoritative only when recognized_from_enrollment is true; every other face remains unknown.",
             "When uncertain_track_id is non-empty, focus on that exact track and recommend left, right, wider, or closer.",
-            "Recommend a viewpoint for an operator or later reviewed stage; never claim the rover moved.",
+            "Recommend a viewpoint for an operator or later reviewed mission; never claim the rover moved.",
             "Keep observing while sensors are fresh. Do not choose finish merely because one revision is complete.",
             "Ground the concise rationale in evidence IDs and track IDs present in the snapshot.",
         ],

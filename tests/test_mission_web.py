@@ -322,7 +322,52 @@ def test_live_adapter_renders_fresh_lidar_navigation_without_fabricating_map_lay
     assert live_map["proposed_route"][-1]["x_m"] == pytest.approx(-0.05)
     assert live_map["traveled_path"][0]["x_m"] == pytest.approx(-0.3)
     assert live_map["localization"]["quality"] == pytest.approx(0.91)
+    assert live_map["localization"]["fresh"] is True
     assert live_map["objects"] == []
+
+
+def test_live_semantic_map_preserves_localization_freshness_for_sensor_ui() -> None:
+    client = FakeLiveMissionClient()
+    service = client.service_snapshot()
+    evidence = service["capabilities"]["query_status_telemetry@1.0"]["evidence"]
+    evidence["localization"] = {
+        "fresh": True,
+        "valid": True,
+        "value": {
+            "state": "valid",
+            "quality": 0.8,
+            "source": "slam_toolbox_stationary",
+        },
+    }
+    evidence["semantic_map"] = {
+        "fresh": True,
+        "valid": True,
+        "value": {
+            "map": {
+                "bounds": {
+                    "origin": {"x_m": -1.0, "y_m": -1.0},
+                    "width_m": 2.0,
+                    "height_m": 2.0,
+                },
+                "rover": {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0},
+                "proposed_route": [],
+                "traveled_path": [],
+                "obstacles": [],
+                "objects": [],
+            }
+        },
+    }
+    client.service_snapshot = lambda: service
+
+    live_map = LiveMissionWebAdapter(client).snapshot()["map"]
+
+    assert live_map["available"] is True
+    assert live_map["localization"] == {
+        "state": "valid",
+        "quality": 0.8,
+        "source": "slam_toolbox_stationary",
+        "fresh": True,
+    }
 
 
 def test_proposal_reuses_prompt_drive_validation_and_requires_exact_digest_approval() -> None:
@@ -797,7 +842,8 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'id="telemetry-toggle"' in page
     assert "Turn telemetry on" in page
     assert "Turn telemetry off" in page
-    assert "snapshot.safety.telemetry_fresh || degraded" in page
+    assert "const sensorDataFresh = Boolean(" in page
+    assert "snapshot.map.localization.fresh" in page
     assert "['failed','degraded'].includes" in page
     assert "/api/web/telemetry" in page
     assert 'id="request-status" role="status" aria-live="polite"' in page
