@@ -588,6 +588,8 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "Unavailable layers:" in page
     assert "function shouldContinuouslyPoll(snapshot)" in page
     assert "Boolean(snapshot.adapter.stationary_perception)" in page
+    assert "if (!livePoll) stopTimer();" in page
+    assert "$('request-error').textContent = '';" in page
     assert "const origin = bounds.origin" in page
     assert "STALE LOCALIZATION" in page
     assert "STALE CAMERA EVIDENCE" in page

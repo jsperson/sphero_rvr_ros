@@ -154,7 +154,10 @@ owner is present. The unit contains lidar, Camera 3, stationary SLAM, tracking,
 and semantic perception only—no rover driver, route executor, serial transport,
 motor graph, or motion publisher. Sensor state and startup errors remain
 visible, and live stationary pages continue polling after a terminal mission so
-newly requested map and camera evidence can still appear.
+newly requested map and camera evidence can still appear. Read-only live
+polling also continues through a temporary Pi or network interruption and
+clears the connection error when authoritative state becomes reachable again;
+mock/replay mutation polling still stops on an error.
 
 ## HTTP routes
 

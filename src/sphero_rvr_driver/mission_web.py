@@ -2717,8 +2717,16 @@ _INDEX_HTML = r'''<!doctype html>
     function startTimer() {
       stopTimer();
       timer = setInterval(async () => {
-        try { render(current && current.adapter.fixture_only ? await api('/api/web/mission/advance', {method:'POST', body:'{}'}) : await api('/api/web/state')); }
-        catch (error) { stopTimer(); $('request-error').textContent = error.message; }
+        const livePoll = Boolean(current && !current.adapter.fixture_only);
+        try {
+          render(livePoll
+            ? await api('/api/web/state')
+            : await api('/api/web/mission/advance', {method:'POST', body:'{}'}));
+          $('request-error').textContent = '';
+        } catch (error) {
+          if (!livePoll) stopTimer();
+          $('request-error').textContent = error.message;
+        }
       }, 650);
     }
     function stopTimer() { if (timer) clearInterval(timer); timer = null; }
