@@ -152,6 +152,8 @@ class FakeRouteTransport:
                 {
                     "correlation_id": request.segments[0].correlation_id,
                     "status": "complete",
+                    "terminal_distance_error_m": 0.0,
+                    "terminal_angle_error_deg": 0.0,
                 }
             ],
             "supervision": {
@@ -469,6 +471,139 @@ def test_physical_adaptive_mission_submits_exactly_one_bounded_supervised_route(
     assert receipts["camera"]["received_at_s"] == 100.1
     assert receipts["lidar"]["received_at_s"] == 100.1
     assert receipts["localization"]["received_at_s"] == 100.1
+
+
+def test_physical_adaptive_mission_accepts_bounded_settled_distance_overshoot() -> None:
+    cache = _cache()
+    transport = FakeRouteTransport(
+        {
+            "route_id": (
+                "physical-adaptive-mission:adaptive-mission-intent:1"
+            ),
+            "status": "complete",
+            "terminal_reason": "complete",
+            "source_sha": SHA,
+            "terminal_settled": True,
+            "measured_distance_m": 0.273,
+            "measured_angle_deg": 0.0,
+            "executed_segments": [
+                {
+                    "correlation_id": (
+                        "physical-adaptive-mission:"
+                        "adaptive-mission-intent:1"
+                    ),
+                    "status": "complete",
+                    "terminal_distance_error_m": 0.023,
+                    "terminal_angle_error_deg": None,
+                }
+            ],
+            "supervision": {
+                "samples": 78,
+                "collision_state": "CLEAR",
+                "requested": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+                "supervised": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": -0.015,
+                },
+            },
+        },
+        after_execute=lambda: _refresh_perception(cache),
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="6" * 64,
+            approval_id="operator:" + "6" * 64,
+            operator="scott@example.com",
+        )
+        result = executor.execute(
+            _intent(executor, "move_distance", 0.25),
+            threading.Event(),
+        )
+    finally:
+        executor.close()
+
+    assert result.outcome == "completed"
+    assert result.reason == "complete"
+    assert result.movement.supervised_linear_mps == 0.10
+    assert result.snapshot["progress"]["cumulative_translation_m"] == 0.273
+
+
+def test_physical_adaptive_mission_rejects_terminal_overshoot_beyond_tolerance() -> None:
+    transport = FakeRouteTransport(
+        {
+            "route_id": (
+                "physical-adaptive-mission:adaptive-mission-intent:1"
+            ),
+            "status": "complete",
+            "terminal_reason": "complete",
+            "source_sha": SHA,
+            "terminal_settled": True,
+            "measured_distance_m": 0.281,
+            "measured_angle_deg": 0.0,
+            "executed_segments": [
+                {
+                    "correlation_id": (
+                        "physical-adaptive-mission:"
+                        "adaptive-mission-intent:1"
+                    ),
+                    "status": "complete",
+                    "terminal_distance_error_m": 0.031,
+                    "terminal_angle_error_deg": None,
+                }
+            ],
+            "supervision": {
+                "samples": 78,
+                "collision_state": "CLEAR",
+                "requested": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+                "supervised": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+            },
+        }
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        _cache(),
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="8" * 64,
+            approval_id="operator:" + "8" * 64,
+            operator="scott@example.com",
+        )
+        result = executor.execute(
+            _intent(executor, "move_distance", 0.25),
+            threading.Event(),
+        )
+    finally:
+        executor.close()
+
+    assert result.outcome == "failed"
+    assert result.reason == "terminal_evidence_incomplete"
+    assert result.movement.supervised_linear_mps == 0.0
 
 
 def test_physical_adaptive_mission_blocks_replanning_without_updated_perception() -> None:

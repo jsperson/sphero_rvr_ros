@@ -242,6 +242,12 @@ class FakeRouteTransport:
                     {
                         "correlation_id": segment.correlation_id,
                         "status": "complete",
+                        "terminal_distance_error_m": (
+                            0.0 if is_move else None
+                        ),
+                        "terminal_angle_error_deg": (
+                            None if is_move else 0.0
+                        ),
                     }
                 ]
             ),

@@ -31,6 +31,9 @@ from .adaptive_mission_controller import (
     validate_world_snapshot,
 )
 
+DEFAULT_MAX_TERMINAL_DISTANCE_ERROR_M = 0.03
+DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG = 10.0
+
 
 class AdaptiveMissionRouteTransport(Protocol):
     def execute(self, request: LiveRouteRequest) -> Mapping[str, Any]: ...
@@ -89,6 +92,12 @@ class PhysicalAdaptiveMissionExecutor:
         max_source_age_s: float = 0.30,
         max_perception_age_s: float = 1.0,
         cleanup_timeout_s: float = 3.0,
+        max_terminal_distance_error_m: float = (
+            DEFAULT_MAX_TERMINAL_DISTANCE_ERROR_M
+        ),
+        max_terminal_angle_error_deg: float = (
+            DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG
+        ),
         now: Any = time.time,
     ) -> None:
         self.cache = cache
@@ -99,6 +108,12 @@ class PhysicalAdaptiveMissionExecutor:
         self.max_source_age_s = float(max_source_age_s)
         self.max_perception_age_s = float(max_perception_age_s)
         self.cleanup_timeout_s = float(cleanup_timeout_s)
+        self.max_terminal_distance_error_m = float(
+            max_terminal_distance_error_m
+        )
+        self.max_terminal_angle_error_deg = float(
+            max_terminal_angle_error_deg
+        )
         self._now = now
         if (
             not math.isfinite(self.max_source_age_s)
@@ -121,6 +136,15 @@ class PhysicalAdaptiveMissionExecutor:
             raise MissionValidationError(
                 "physical Adaptive mission cleanup timeout must be positive and finite"
             )
+        for name in (
+            "max_terminal_distance_error_m",
+            "max_terminal_angle_error_deg",
+        ):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value <= 0.0:
+                raise MissionValidationError(
+                    f"physical Adaptive mission {name} must be positive and finite"
+                )
         self.execution_enabled = validate_physical_adaptive_mission_gate(
             enabled=execution_enabled,
             source_sha=self.source_sha,
@@ -705,18 +729,25 @@ class PhysicalAdaptiveMissionExecutor:
             measured_rotation = _optional_finite(
                 result.get("measured_angle_deg")
             )
+            executed_segment = (
+                _mapping(executed[0])
+                if isinstance(executed, list) and len(executed) == 1
+                else {}
+            )
             if (
-                not isinstance(executed, list)
-                or len(executed) != 1
-                or str(executed[0].get("correlation_id", ""))
+                not executed_segment
+                or str(executed_segment.get("correlation_id", ""))
                 != request.segments[0].correlation_id
-                or str(executed[0].get("status", "")).lower() != "complete"
+                or str(executed_segment.get("status", "")).lower()
+                != "complete"
                 or measured_distance is None
                 or measured_rotation is None
-                or abs(measured_distance)
-                > self.limits.max_translation_per_intent_m
-                or abs(measured_rotation)
-                > self.limits.max_rotation_per_intent_deg
+                or not self._terminal_motion_within_limits(
+                    intent,
+                    executed_segment,
+                    measured_distance=measured_distance,
+                    measured_rotation=measured_rotation,
+                )
                 or not _movement_within_limits(movement, self.limits)
             ):
                 status = "failed"
@@ -754,6 +785,51 @@ class PhysicalAdaptiveMissionExecutor:
             snapshot=snapshot,
             movement=movement,
             duration_s=max(0.0, time.monotonic() - started),
+        )
+
+    def _terminal_motion_within_limits(
+        self,
+        intent: AdaptiveMissionIntent,
+        executed_segment: Mapping[str, Any],
+        *,
+        measured_distance: float,
+        measured_rotation: float,
+    ) -> bool:
+        """Accept only settled motion within the runner's bounded stop tolerance."""
+
+        epsilon = 1e-9
+        if intent.action == "move_distance":
+            terminal_error = _optional_finite(
+                executed_segment.get("terminal_distance_error_m")
+            )
+            return bool(
+                terminal_error is not None
+                and terminal_error
+                <= self.max_terminal_distance_error_m + epsilon
+                and abs(measured_distance)
+                <= (
+                    self.limits.max_translation_per_intent_m
+                    + self.max_terminal_distance_error_m
+                    + epsilon
+                )
+                and abs(measured_rotation)
+                <= self.limits.max_rotation_per_intent_deg + epsilon
+            )
+        terminal_error = _optional_finite(
+            executed_segment.get("terminal_angle_error_deg")
+        )
+        return bool(
+            terminal_error is not None
+            and terminal_error
+            <= self.max_terminal_angle_error_deg + epsilon
+            and abs(measured_rotation)
+            <= (
+                self.limits.max_rotation_per_intent_deg
+                + self.max_terminal_angle_error_deg
+                + epsilon
+            )
+            and abs(measured_distance)
+            <= self.limits.max_translation_per_intent_m + epsilon
         )
 
     def _nonmotion_result(
