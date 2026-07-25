@@ -23,6 +23,7 @@ def generate_launch_description():
     start_rvr = LaunchConfiguration("start_rvr")
     start_live_route_runner = LaunchConfiguration("start_live_route_runner")
     serial_port = LaunchConfiguration("serial_port")
+    lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     enrollment_dir = LaunchConfiguration("enrollment_dir")
     evidence_dir = LaunchConfiguration("evidence_dir")
     camera_info_url = LaunchConfiguration("camera_info_url")
@@ -61,6 +62,14 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
             DeclareLaunchArgument(
+                "lidar_serial_port",
+                default_value="/dev/rplidar",
+                description=(
+                    "Dedicated lidar device, intentionally distinct from "
+                    "the RVR serial_port argument."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "enrollment_dir",
                 default_value=(
                     "/home/jsperson/.local/share/sphero_rvr/face-enrollment"
@@ -86,6 +95,7 @@ def generate_launch_description():
                     "start_collision_stop": "true",
                     "start_live_route_runner": start_live_route_runner,
                     "serial_port": serial_port,
+                    "lidar_serial_port": lidar_serial_port,
                     "start_lidar": "true",
                     "start_camera": "true",
                     "camera_info_url": camera_info_url,

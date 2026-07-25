@@ -25,6 +25,7 @@ def generate_launch_description():
     start_slam = LaunchConfiguration("start_slam")
     start_live_route_runner = LaunchConfiguration("start_live_route_runner")
     serial_port = LaunchConfiguration("serial_port")
+    lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     camera_info_url = LaunchConfiguration("camera_info_url")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
@@ -74,6 +75,14 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
         DeclareLaunchArgument(
+            "lidar_serial_port",
+            default_value="/dev/rplidar",
+            description=(
+                "Dedicated lidar device; kept separate from the RVR UART "
+                "so nested launch arguments cannot alias both devices."
+            ),
+        ),
+        DeclareLaunchArgument(
             "camera_info_url",
             default_value=(
                 "file:///home/jsperson/.ros/camera_info/"
@@ -100,6 +109,9 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(lidar_launch)),
+            launch_arguments={
+                "serial_port": lidar_serial_port,
+            }.items(),
             condition=IfCondition(start_lidar),
         ),
         IncludeLaunchDescription(

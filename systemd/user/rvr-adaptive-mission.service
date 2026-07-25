@@ -5,7 +5,7 @@ Description=Sphero RVR adaptive mission hardware graph (explicit start only)
 Type=simple
 EnvironmentFile=%h/.config/sphero_rvr/mission-stack.env
 ExecStartPre=/bin/bash -lc '[[ "${RVR_ADAPTIVE_MISSION_ENABLED:-false}" == "true" && "${RVR_LIVE_EXECUTION_ENABLED:-false}" == "true" && -n "${RVR_SOURCE_SHA:-}" && "$RVR_SOURCE_SHA" == "$RVR_DEPLOYED_SHA" && "$RVR_SOURCE_SHA" == "$RVR_LIVE_EXECUTION_REVIEWED_SHA" ]]'
-ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/jsperson/ros2_ws/install/rplidar_ros/share/rplidar_ros/local_setup.bash && source "$RVR_ROS_WORKSPACE/install/setup.bash" && exec ros2 launch sphero_rvr_driver adaptive_mission_perception.launch.py start_rvr:=true start_live_route_runner:=true serial_port:="${RVR_SERIAL_PORT:-/dev/ttyAMA0}"'
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/jsperson/ros2_ws/install/rplidar_ros/share/rplidar_ros/local_setup.bash && source "$RVR_ROS_WORKSPACE/install/setup.bash" && exec ros2 launch sphero_rvr_driver adaptive_mission_perception.launch.py start_rvr:=true start_live_route_runner:=true serial_port:="${RVR_SERIAL_PORT:-/dev/ttyAMA0}" lidar_serial_port:="${RVR_LIDAR_SERIAL_PORT:-/dev/rplidar}"'
 ExecStop=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source "$RVR_ROS_WORKSPACE/install/setup.bash" && timeout --signal=TERM 8 ros2 service call /stop_motor std_srvs/srv/Empty "{}"'
 Restart=no
 KillMode=mixed
