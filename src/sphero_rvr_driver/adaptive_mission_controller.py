@@ -628,15 +628,19 @@ class AdaptiveMissionApprovalEnvelope:
             "segments": [],
             "decision": "propose",
             "summary": (
-                "Approve one 15-minute adaptive mission lease. The LLM selects one "
-                "bounded intent from each fresh snapshot; deterministic validation, "
-                "the executor, and collision supervision remain authoritative."
+                "Approve one 15-minute adaptive mission lease. Approval activates "
+                "the supervised sensor and motion graph; the LLM is called only "
+                "after fresh camera, lidar, localization, and safety evidence arrive. "
+                "Deterministic validation, the executor, and collision supervision "
+                "remain authoritative."
             ),
             "contract": {
                 "fixed_route": False,
                 "replanning_after_every_intent": True,
                 "one_authenticated_approval": True,
                 "per_intent_approval": False,
+                "approval_activates_supervised_graph": True,
+                "first_intent_requires_fresh_post_approval_evidence": True,
                 "motion_authority": False,
                 "physical_execution_enabled": bool(
                     self.physical_execution_enabled
@@ -1018,6 +1022,7 @@ class AdaptiveMissionController:
         limits: Optional[AdaptiveMissionLimits] = None,
         checkpoint: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
         owns_executor: bool = True,
+        activation_event_message: str = "",
         now: Callable[[], float] = time.time,
     ) -> None:
         if (
@@ -1063,22 +1068,27 @@ class AdaptiveMissionController:
         self._execution_in_flight = False
         self._requested_terminal: Optional[tuple[str, str]] = None
         self._append_event(
-            "objective_interpreted",
-            first_intent.interpreted_objective,
+            "approval_bound",
+            f"Authenticated operator {self.operator} approved lease through "
+            f"{self._mission_expires_at_s:.3f}; no per-intent approval is required.",
         )
+        if str(activation_event_message).strip():
+            self._append_event(
+                "physical_session_activated",
+                str(activation_event_message).strip(),
+            )
         self._append_event(
             "snapshot",
             _snapshot_event_message(self._world),
         )
         self._append_event(
+            "objective_interpreted",
+            first_intent.interpreted_objective,
+        )
+        self._append_event(
             "llm_revision",
             f"LLM chose revision {first_intent.revision}: "
             f"{first_intent.action} — {first_intent.rationale}",
-        )
-        self._append_event(
-            "approval_bound",
-            f"Authenticated operator {self.operator} approved lease through "
-            f"{self._mission_expires_at_s:.3f}; no per-intent approval is required.",
         )
 
     def start(self) -> None:

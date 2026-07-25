@@ -150,6 +150,90 @@ class SequenceProvider:
         )
 
 
+class RecordingSessionLifecycle:
+    activation_capable = True
+
+    def __init__(
+        self,
+        cache: LiveStateCache,
+        provider: SequenceProvider,
+    ) -> None:
+        self.cache = cache
+        self.provider = provider
+        self.active = False
+        self.activations: list[tuple[str, str, str]] = []
+        self.deactivations: list[str] = []
+
+    def activate(
+        self,
+        *,
+        mission_id: str,
+        proposal_digest: str,
+        operator: str,
+    ) -> Mapping[str, Any]:
+        assert self.provider.calls == 0
+        self.activations.append(
+            (mission_id, proposal_digest, operator)
+        )
+        fresh = _cache().snapshot()
+        for name in (
+            "camera",
+            "lidar",
+            "localization",
+            "odom",
+            "collision",
+            "control",
+        ):
+            record = fresh.source(name)
+            self.cache.update(
+                name,
+                record.value,
+                received_at_s=time.time(),
+            )
+        self.active = True
+        return self.status()
+
+    def deactivate(self, *, reason: str) -> Mapping[str, Any]:
+        self.active = False
+        self.deactivations.append(str(reason))
+        return self.status()
+
+    def status(self) -> Mapping[str, Any]:
+        return {
+            "activation_capable": True,
+            "active": self.active,
+            "transitioning": False,
+            "mission_id": (
+                self.activations[-1][0]
+                if self.active and self.activations
+                else ""
+            ),
+            "detail": (
+                "approved session active"
+                if self.active
+                else "physical session locked"
+            ),
+        }
+
+
+class OneShotRelockFailureLifecycle(RecordingSessionLifecycle):
+    def __init__(
+        self,
+        cache: LiveStateCache,
+        provider: SequenceProvider,
+    ) -> None:
+        super().__init__(cache, provider)
+        self.failed = False
+
+    def deactivate(self, *, reason: str) -> Mapping[str, Any]:
+        if "terminal outcome" in str(reason) and not self.failed:
+            self.failed = True
+            raise MissionValidationError(
+                "systemd graph remained active"
+            )
+        return super().deactivate(reason=reason)
+
+
 class FakeRouteTransport:
     def __init__(
         self,
@@ -304,6 +388,7 @@ def _build(
         provider,
         executor,
         execution_enabled=True,
+        activation_timeout_s=1.0,
     )
     return service, controller, route_transport
 
@@ -338,6 +423,138 @@ def _approve(
     )
 
 
+def test_authenticated_approval_activates_fresh_evidence_before_first_provider_call(
+    tmp_path,
+) -> None:
+    provider = SequenceProvider([("stop", 0.0)])
+    cache = LiveStateCache()
+    lifecycle = RecordingSessionLifecycle(cache, provider)
+    service = MissionService(
+        tmp_path / "approval-activation.sqlite3",
+        source_sha=SHA,
+        deployed_sha=SHA,
+        mode="live",
+        live_execution_enabled=True,
+    )
+    transport = FakeRouteTransport()
+    transport.cache = cache
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+    )
+    controller = LiveAdaptiveMissionController(
+        service,
+        provider,
+        executor,
+        execution_enabled=True,
+        session_lifecycle=lifecycle,
+        activation_timeout_s=1.0,
+    )
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="approval-activation",
+            mission_id="approval-activation-mission",
+        )
+        assert proposed["status"] == "proposed"
+        assert provider.calls == 0
+        planning_event = next(
+            event
+            for event in proposed["events"]
+            if event["kind"] == "planning"
+        )
+        assert planning_event["payload"][
+            "provider_call_started"
+        ] is False
+        before = controller.service_snapshot()
+        assert before["live_execution_enabled"] is False
+        assert before["approval_activation_enabled"] is True
+        assert before["adaptive_mission_readiness"]["planning_ready"] is True
+
+        approved = _approve(controller, proposed)
+        assert approved["status"] == "approved"
+        terminal = _wait_status(
+            controller, proposed["mission_id"], {"complete"}
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert provider.calls == 1
+    assert len(lifecycle.activations) == 1
+    assert lifecycle.activations[0][0] == proposed["mission_id"]
+    assert lifecycle.activations[0][1] == proposed["proposal_digest"]
+    assert lifecycle.activations[0][2] == "scott@example.com"
+    assert lifecycle.active is False
+    assert any(
+        "terminal outcome: complete" in reason
+        for reason in lifecycle.deactivations
+    )
+    first_snapshot = terminal["result"]["world_snapshots"][0]
+    assert first_snapshot["evidence"]["scan_fresh"] is True
+    assert first_snapshot["evidence"]["odometry_fresh"] is True
+
+
+def test_terminal_is_recovery_required_when_physical_session_cannot_relock(
+    tmp_path,
+) -> None:
+    provider = SequenceProvider([("stop", 0.0)])
+    cache = LiveStateCache()
+    lifecycle = OneShotRelockFailureLifecycle(cache, provider)
+    service = MissionService(
+        tmp_path / "relock-failure.sqlite3",
+        source_sha=SHA,
+        deployed_sha=SHA,
+        mode="live",
+        live_execution_enabled=True,
+    )
+    transport = FakeRouteTransport()
+    transport.cache = cache
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+    )
+    controller = LiveAdaptiveMissionController(
+        service,
+        provider,
+        executor,
+        execution_enabled=True,
+        session_lifecycle=lifecycle,
+        activation_timeout_s=1.0,
+    )
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="relock-failure",
+            mission_id="relock-failure-mission",
+        )
+        _approve(controller, proposed)
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {"recovery_required"},
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert "relock failed" in terminal["terminal_reason"]
+    assert terminal["result"]["physical_session_relock"] == {
+        "verified": False,
+        "error": (
+            "MissionValidationError: systemd graph remained active"
+        ),
+    }
+
+
 def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path) -> None:
     provider = SequenceProvider(
         [
@@ -358,7 +575,17 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
             controller, submitted["mission_id"], {"proposed"}
         )
         assert proposed["proposal"]["segments"] == []
-        assert proposed["proposal"]["first_intent"]["action"] == "move_distance"
+        assert proposed["proposal"]["first_intent"] == {}
+        assert proposed["proposal"]["starting_snapshot_id"] == (
+            "pending-approval-activation"
+        )
+        assert proposed["proposal"]["contract"][
+            "approval_activates_supervised_graph"
+        ] is True
+        assert proposed["proposal"]["contract"][
+            "first_intent_requires_fresh_post_approval_evidence"
+        ] is True
+        assert provider.calls == 0
         assert proposed["proposal"]["executor_mode"] == (
             "physical-supervised-live-route"
         )
@@ -413,11 +640,12 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
         range(1, len(events) + 1)
     )
     kinds = [event["event_type"] for event in events]
-    assert kinds[:4] == [
-        "objective_interpreted",
-        "snapshot",
-        "llm_revision",
+    assert kinds[:5] == [
         "approval_bound",
+        "physical_session_activated",
+        "snapshot",
+        "objective_interpreted",
+        "llm_revision",
     ]
     assert kinds.count("snapshot") == 5
     assert kinds[-1] == "terminal"
@@ -495,11 +723,11 @@ def test_locked_live_adaptive_mission_plans_observation_from_fresh_sensors(
             controller, submitted["mission_id"], {"proposed"}
         )
 
-        assert proposed["proposal"]["first_intent"]["action"] == "observe"
+        assert proposed["proposal"]["first_intent"] == {}
         assert proposed["proposal"]["contract"][
             "physical_execution_enabled"
         ] is False
-        assert provider.calls == 1
+        assert provider.calls == 0
         with pytest.raises(
             MissionValidationError,
             match="disabled by reviewed service configuration",
@@ -534,18 +762,13 @@ def test_locked_live_adaptive_mission_rejects_stale_observation_sources(
         execution_enabled=False,
     )
     try:
-        with pytest.raises(
-            MissionValidationError,
-            match=(
-                "planning requires fresh camera, lidar, and localization "
-                "evidence: camera,lidar,localization"
-            ),
-        ):
-            controller.submit(
-                PROMPT,
-                session_id="adaptive-mission-locked-stale",
-                mission_id="adaptive-mission-locked-stale",
-            )
+        proposed = controller.submit(
+            PROMPT,
+            session_id="adaptive-mission-locked-stale",
+            mission_id="adaptive-mission-locked-stale",
+        )
+        assert proposed["status"] == "proposed"
+        assert proposed["proposal"]["first_intent"] == {}
         assert provider.calls == 0
     finally:
         controller.close()
@@ -582,15 +805,19 @@ def test_live_adaptive_mission_readiness_vetoes_stale_or_stop_evidence(
                 record.value,
                 received_at_s=float(record.received_at_s),
             )
-        with pytest.raises(
-            MissionValidationError, match="readiness failed"
-        ) as error:
-            _approve(controller, proposed)
+        approved = _approve(controller, proposed)
+        assert approved["status"] == "approved"
+        terminal = _wait_status(
+            controller,
+            submitted["mission_id"],
+            {"failed"},
+            timeout_s=2.0,
+        )
     finally:
         controller.close()
         service.close()
 
-    assert reason in str(error.value)
+    assert reason in terminal["terminal_reason"]
     assert transport.requests == []
 
 

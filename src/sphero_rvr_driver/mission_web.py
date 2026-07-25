@@ -1756,6 +1756,9 @@ class LiveMissionWebAdapter:
             service.get("stationary_perception_enabled", False)
         )
         self.adaptive_mission_enabled = bool(service.get("adaptive_mission_enabled", False))
+        self.approval_activation_enabled = bool(
+            service.get("approval_activation_enabled", False)
+        )
         self.mode = (
             "live/stationary-perception"
             if self.stationary_perception_enabled
@@ -1807,6 +1810,11 @@ class LiveMissionWebAdapter:
             self.adaptive_mission_enabled = bool(
                 self._service_snapshot.get("adaptive_mission_enabled", False)
             )
+            self.approval_activation_enabled = bool(
+                self._service_snapshot.get(
+                    "approval_activation_enabled", False
+                )
+            )
             self.mode = (
                 "live/stationary-perception"
                 if self.stationary_perception_enabled
@@ -1831,6 +1839,7 @@ class LiveMissionWebAdapter:
                 )
                 if (
                     self.adaptive_mission_enabled
+                    and not self.approval_activation_enabled
                     and (
                         not isinstance(readiness, Mapping)
                         or readiness.get("planning_ready") is not True
@@ -1984,8 +1993,13 @@ class LiveMissionWebAdapter:
             )
             or (
                 self.adaptive_mission_enabled
-                and self.live_execution_enabled
-                and adaptive_readiness.get("ready") is True
+                and (
+                    self.approval_activation_enabled
+                    or (
+                        self.live_execution_enabled
+                        and adaptive_readiness.get("ready") is True
+                    )
+                )
             )
             or (
                 self.live_execution_enabled
@@ -2016,6 +2030,11 @@ class LiveMissionWebAdapter:
         adaptive_mission_projection_enabled = self.adaptive_mission_enabled or any(
             str(payload.get("schema", "")).startswith("sphero_rvr.adaptive_mission_")
             for payload in (proposal, result)
+        )
+        proposal_matches_active_controller = bool(
+            not proposal
+            or not self.adaptive_mission_enabled
+            or proposal.get("schema") == ADAPTIVE_MISSION_PROPOSAL_SCHEMA
         )
 
         progress_value = 0.0
@@ -2057,6 +2076,17 @@ class LiveMissionWebAdapter:
                 "mode": self.mode,
                 "fixture_only": False,
                 "live_execution_enabled": self.live_execution_enabled,
+                "approval_activation_enabled": (
+                    self.approval_activation_enabled
+                ),
+                "physical_session": dict(
+                    self._service_snapshot.get("physical_session", {})
+                )
+                if isinstance(
+                    self._service_snapshot.get("physical_session", {}),
+                    Mapping,
+                )
+                else {},
                 "direct_ros_commands_allowed": False,
                 "credentials_accepted": False,
                 "service_source_sha": self._service_snapshot.get("source_sha", ""),
@@ -2123,7 +2153,11 @@ class LiveMissionWebAdapter:
             "proposal": dict(proposal) if proposal else None,
             "approval": {
                 "required": bool(proposal) and state == WebMissionState.PROPOSED.value,
-                "enabled": execution_ready and state == WebMissionState.PROPOSED.value,
+                "enabled": (
+                    execution_ready
+                    and state == WebMissionState.PROPOSED.value
+                    and proposal_matches_active_controller
+                ),
                 "approved": bool(approval.get("approved", False)),
                 "proposal_digest": str(proposal.get("proposal_digest", "")) if proposal else "",
                 "required_phrase": "",
@@ -3410,6 +3444,8 @@ _INDEX_HTML = r'''<!doctype html>
                   ? 'Ready: this starts stationary snapshots and leased LLM observation intent only.'
                   : 'Disabled: the authoritative stationary-perception prerequisites are not ready.';
       } else if (adaptiveMission) {
+        const adaptiveProposal = snapshot.proposal
+          && snapshot.proposal.schema === 'sphero_rvr.adaptive_mission_proposal.v1';
         $('approval-state').textContent = approvalBusy
           ? 'Binding the prompt, SHAs, lease, speed ceilings, safety policy, starting snapshot, and first intent.'
           : planningLocked
@@ -3419,7 +3455,9 @@ _INDEX_HTML = r'''<!doctype html>
                   : ''
               }.`
           : snapshot.mission.state === 'PROPOSED' && snapshot.approval.enabled
-            ? `Ready: one authenticated approval starts adaptive replanning; ${snapshot.approval.authenticated_operator} remains the bound operator.`
+            ? 'Ready: one authenticated approval activates supervised sensing and execution, waits for fresh evidence, and starts adaptive replanning.'
+          : snapshot.mission.state === 'PROPOSED' && !adaptiveProposal
+            ? 'Disabled: generate a new Adaptive mission proposal for this deployment.'
           : snapshot.mission.state === 'PROPOSED'
             ? 'Disabled: physical execution and fresh supervised safety readiness are required before approval.'
             : '';
@@ -3453,13 +3491,15 @@ _INDEX_HTML = r'''<!doctype html>
       const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const execution = live && snapshot.adapter.live_execution_enabled;
+      const approvalActivation = live
+        && Boolean(snapshot.adapter.approval_activation_enabled);
       const physicalAdaptiveMission = adaptiveMission && live;
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
-      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — SUPERVISED PHYSICAL EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
       $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
       $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : 'One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the 15-minute lease ends. Every intent remains bounded.') : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? 'One authenticated approval starts the supervised graph, waits for fresh evidence, and then begins bounded model-driven execution.' : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : 'One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the 15-minute lease ends. Every intent remains bounded.') : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
       $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? 'The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, 15-minute lease, speed ceilings, and safety policy. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.' : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
@@ -3550,7 +3590,8 @@ _INDEX_HTML = r'''<!doctype html>
             message: proposal.interpreted_objective || proposal.summary || 'Objective interpreted.',
           });
         }
-        if (!loopEvents.length && proposal.first_intent) {
+        if (!loopEvents.length && proposal.first_intent
+            && proposal.first_intent.action) {
           const first = proposal.first_intent;
           entries.push({
             tone: 'intent',
@@ -3614,6 +3655,8 @@ _INDEX_HTML = r'''<!doctype html>
           ? (snapshot.mission.terminal_reason || 'Terminal evidence recorded.')
           : snapshot.mission.state === 'PLANNING'
             ? 'The LLM is choosing the next bounded intent.'
+            : snapshot.mission.state === 'APPROVED'
+              ? 'Approval accepted. Activating supervised sensing and waiting for fresh evidence before the first model call.'
             : snapshot.mission.state === 'PROPOSED'
               ? 'Proposal ready for one authenticated mission-lease approval.'
               : 'Waiting for the next mission action.';
@@ -3826,7 +3869,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('request-status').textContent = current && current.adapter.stationary_perception
         ? 'Starting stationary snapshots and the leased LLM observation-intent loop…'
         : current && current.adapter.adaptive_mission
-          ? 'Starting the leased LLM movement loop from fresh telemetry…'
+          ? 'Activating the supervised graph and waiting for fresh camera, lidar, localization, and safety evidence…'
           : 'Confirming the exact persisted proposal…';
       if (current) renderActionState(current);
       try {

@@ -167,21 +167,17 @@ See `docs/mapping.md`, `docs/slam_replay.md`, and `docs/lidar_collision_stop_sup
 
 The driver, lidar/camera calibration, collision boundary, replay SLAM, semantic artifacts, typed Mission API, and bounded LLM planner are foundations for the product rather than separate end states.
 
-The integrated no-motion stack now provides a durable Pi mission owner, real
-ChatGPT OAuth proposal planning, digest-bound approval records, and both replay
-and authenticated live/proposal-only web adapters. Physical execution remains
-locked off pending operator-gated measurement validation. See
-`docs/pi_mission_stack.md` for deployment and rollback.
+The integrated stack now provides a durable Pi mission owner, real ChatGPT
+OAuth adaptive planning, digest-bound approval records, and authenticated
+approval-time physical activation. Boot and proposal generation keep the
+supervised hardware graph stopped. Approval starts it, waits for fresh evidence,
+and terminal handling verifies it stopped again. See `docs/pi_mission_stack.md`
+for deployment and rollback.
 
-The active sequence is:
-
-1. deploy and validate the integrated proposal-only Pi web mission stack;
-2. resolve route-local versus absolute-odometry evidence and complete restrained,
-   digest-approved physical prompt stages;
-3. add adaptive LLM exploration over validated candidate objectives;
-4. bind live observation, object detection, semantic projection, and coverage;
-5. complete a shoe-mapping vertical slice;
-6. add point-to-point navigation and a second semantic mission.
+The production sequence is: persist one reviewed mission envelope while locked;
+authenticate one operator approval; activate the supervised graph; wait for
+fresh typed perception and safety; execute and replan through bounded intents;
+then verify terminal settlement and relock.
 
 See [docs/product_direction.md](docs/product_direction.md) for the product contract. `STATUS.md` retains hardware history and the current implementation handoff.
 

@@ -408,9 +408,12 @@ def test_mission_service_launch_is_default_off_and_contains_no_motor_process() -
     assert 'executable="lidar_collision_stop_supervisor"' not in source
 
 
-def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> None:
+def test_user_services_keep_approval_activation_exact_sha_bound_and_default_off() -> None:
     mission_unit = (REPO_ROOT / "systemd/user/rvr-mission-service.service").read_text()
     web_unit = (REPO_ROOT / "systemd/user/rvr-mission-web.service").read_text()
+    adaptive_unit = (
+        REPO_ROOT / "systemd/user/rvr-adaptive-mission.service"
+    ).read_text()
     installer = (REPO_ROOT / "scripts/install-rvr-mission-stack-services").read_text()
     environment = (REPO_ROOT / "config/mission-stack.env.example").read_text()
 
@@ -436,6 +439,9 @@ def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> No
     assert "RVR_ROS_WORKSPACE=replace-with-absolute-mission-stack-workspace" in environment
     assert "RVR_LIVE_EXECUTION_ENABLED=false" in environment
     assert "RVR_LIVE_EXECUTION_REVIEWED_SHA=" in environment
+    assert "RVR_APPROVAL_ACTIVATION_ENABLED=false" in environment
+    assert "RVR_APPROVAL_ACTIVATION_REVIEWED_SHA=" in environment
+    assert "RVR_APPROVAL_ACTIVATION_TIMEOUT_S=30.0" in environment
     assert "RVR_ADAPTIVE_MISSION_ENABLED=false" in environment
     assert "RVR_PLANNING_MAX_MOTION_CALLS=3" in environment
     assert "RVR_PLANNING_MAX_TRANSLATION_M=0.5" in environment
@@ -443,13 +449,28 @@ def test_user_services_are_no_motion_loopback_only_and_not_self_enabling() -> No
     assert "RVR_PLANNING_MAX_RUNTIME_S=45.0" in environment
     assert '${RVR_LIVE_EXECUTION_ENABLED:-false}' in mission_unit
     assert '${RVR_LIVE_EXECUTION_REVIEWED_SHA:-disabled}' in mission_unit
+    assert '${RVR_APPROVAL_ACTIVATION_ENABLED:-false}' in mission_unit
+    assert '${RVR_APPROVAL_ACTIVATION_REVIEWED_SHA:-disabled}' in mission_unit
     assert '${RVR_ADAPTIVE_MISSION_ENABLED:-false}' in mission_unit
     assert '${RVR_PLANNING_MAX_MOTION_CALLS:-3}' in mission_unit
     mission_config = (REPO_ROOT / "config/mission_service.yaml").read_text()
     assert "live_execution_enabled: false" in mission_config
     assert "adaptive_mission_enabled: false" in mission_config
+    assert "approval_activation_enabled: false" in mission_config
+    assert "approval_activation_reviewed_sha:" in mission_config
+    assert "approval_activation_timeout_s: 30.0" in mission_config
     assert "planning_max_motion_calls: 3" in mission_config
     assert "planning_max_translation_per_call_m: 0.5" in mission_config
     assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in mission_unit
     assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in web_unit
     assert "replace-with-reviewed-source-sha" in environment
+    assert (
+        '"${RVR_APPROVAL_ACTIVATION_ENABLED:-false}" == "true"'
+        in adaptive_unit
+    )
+    assert (
+        '"$RVR_SOURCE_SHA" == "$RVR_APPROVAL_ACTIVATION_REVIEWED_SHA"'
+        in adaptive_unit
+    )
+    assert "WantedBy=default.target" in adaptive_unit
+    assert "systemctl" not in adaptive_unit

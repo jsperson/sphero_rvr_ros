@@ -133,14 +133,15 @@ injecting authenticated tailnet identity when proxying to localhost. Do not plac
 another untrusted proxy between Serve and this listener, do not expose the port on
 the LAN, and do not use Tailscale Funnel.
 
-The normal Pi configuration reports `live_execution_enabled=false`; therefore the page is
-marked `LIVE - PROPOSAL ONLY / EXECUTION LOCKED`, proposal-only OAuth planning is
-available, and approval is disabled. The web command cannot enable motion. An
-attended operator may use the separately reviewed Pi configuration gate described
-in `docs/pi_mission_stack.md`; the service then installs the deterministic route
-executor only when the reviewed, source, and deployed SHAs match. Even in that mode,
-the UI and server keep approval disabled until authoritative odometry and safety
-evidence are fresh and clear. Missing STOP/ESTOP evidence renders `UNKNOWN`.
+The product Pi configuration reports approval-time activation capability while
+the physical session remains locked. Proposal generation persists only the
+prompt and exact reviewed envelope; it does not start sensors or make a stale
+model request. **Approve 15-minute lease** is the authenticated authorization
+boundary: it starts the fixed supervised graph, waits for fresh authoritative
+camera/lidar/localization and safety evidence, and only then invokes the model.
+Missing or unsafe STOP/ESTOP/collision evidence prevents execution. Every
+terminal path stops the graph again, and a relock failure is shown as
+`RECOVERY_REQUIRED`.
 
 When stationary or adaptive perception is configured, the safety strip includes
 an authenticated **Camera + lidar** telemetry toggle. It starts only the fixed

@@ -2,12 +2,11 @@
 
 ## Status and intent
 
-Adaptive mission is the first browser-initiated, adaptive physical-movement stage. Its
-software path is implemented behind independent default-off Adaptive mission selection
-and exact-SHA live-execution gates. This document is not authorization to enable
-either gate. The deployed Pi remains nonphysical with
-`RVR_ADAPTIVE_MISSION_ENABLED=false` and `RVR_LIVE_EXECUTION_ENABLED=false` until the
-attended physical acceptance sequence passes.
+Adaptive mission is the browser-initiated adaptive physical-movement product.
+Its installed capability is exact-SHA bound, while the supervised hardware
+graph remains stopped until a Tailscale-authenticated operator approves the
+current mission. Approval starts sensing, waits for fresh evidence, and only
+then permits the first model decision.
 
 Adaptive mission deliberately gives the supervisory planner broad movement authority
 inside one operator-approved mission:
@@ -71,7 +70,8 @@ One authenticated approval binds the complete Adaptive mission envelope:
 - mission lease and per-intent lease;
 - required sensor, localization, and safety sources;
 - collision geometry and stopping policy;
-- the starting world snapshot and map identity, when available.
+- the requirement that the first world snapshot and model intent be obtained
+  only after approval activates fresh live perception.
 
 After approval, the planner may revise routes and issue any number of
 short-horizon intents inside that envelope without per-intent human approval.

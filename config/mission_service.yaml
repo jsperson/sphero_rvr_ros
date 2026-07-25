@@ -43,6 +43,11 @@ live_mission_service:
     # overridden and the reviewed SHA exactly matches source and deployed SHAs.
     live_execution_enabled: false
     live_execution_reviewed_sha: ""
+    # Product mode keeps the supervised graph stopped until authenticated
+    # approval, then waits for fresh evidence before the first provider call.
+    approval_activation_enabled: false
+    approval_activation_reviewed_sha: ""
+    approval_activation_timeout_s: 30.0
     approval_ttl_s: 60.0
     route_graph_timeout_s: 5.0
     route_cleanup_timeout_s: 3.0

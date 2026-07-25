@@ -47,28 +47,26 @@ durable prompt lifecycle used by the Pi planner and web adapter: `received`,
 truthful terminal or `recovery_required` state. Planning and execution run on
 separate worker threads so status and cancellation remain available.
 
-The packaged user-service units start this owner and the loopback web adapter, but
-they do not start a rover driver, route runner, collision node, or sensor. The
-installed helper deliberately does not enable either unit. Physical route
-execution remains default-disabled. Setting `RVR_LIVE_EXECUTION_ENABLED=true`
-installs only the existing `RosLiveRouteExecutor`, and startup rejects that
-setting unless `RVR_LIVE_EXECUTION_REVIEWED_SHA` exactly matches the deployed
-and running source SHA. This configuration gate does not approve a mission: the server still
-requires fresh odometry, collision CLEAR, STOP READY, ESTOP CLEAR, and the
-authenticated operator's exact proposal-digest phrase. Readiness is checked
-before approval is persisted and again before the route is submitted.
+The packaged owner and loopback web units do not start a rover driver, route
+runner, collision node, or sensor. Physical route execution remains
+default-disabled. Product deployment uses
+`RVR_APPROVAL_ACTIVATION_ENABLED=true` with
+`RVR_APPROVAL_ACTIVATION_REVIEWED_SHA` exactly equal to the source and deployed
+SHA. This installs the capability but leaves the fixed
+`rvr-adaptive-mission.service` graph stopped.
 
-Adaptive mission is selected separately with `RVR_ADAPTIVE_MISSION_ENABLED=true`. Its installed
-default is false, and selection alone creates no route transport when live
-execution remains false. When both reviewed gates are enabled, MissionService
-owns the repeatedly replanned controller and persists the proposal, one
-Tailscale-authenticated 900-second approval, every world-snapshot/intent
-checkpoint, and the terminal result. The approval digest binds the prompt,
-source/deployed SHA, provider identity, physical executor mode, starting
-snapshot, first intent, speed and per-intent limits, lease, and installed lidar
-safety policy. A restart converts approved, queued, running, or
-cancel-requested Adaptive mission work to `recovery_required`; it never recreates an
-executor lease.
+Adaptive mission is selected separately with
+`RVR_ADAPTIVE_MISSION_ENABLED=true`. Proposal generation persists the prompt,
+provider identity, limits, policy, and exact-SHA envelope without starting
+hardware or calling the model with stale evidence. One Tailscale-authenticated
+approval starts the fixed supervised graph, waits up to the bounded activation
+timeout for fresh camera, lidar, localization, odometry, collision, STOP, and
+ESTOP evidence, then makes the first OAuth model call. Failure at any point
+stops the graph and records a terminal failure. Cancellation, timeout, STOP,
+ESTOP, provider loss, normal completion, or service restart also stops it.
+Terminal state is not persisted until relock is verified; failure to relock is
+`recovery_required`. The adaptive unit is systemd-bound to the mission owner,
+so stopping or restarting the owner also stops the graph.
 
 The LLM motion envelope is separately Pi-owned and configurable. The calibration
 profile remains three motion calls, 0.5 m cumulative translation, 0.5 m per

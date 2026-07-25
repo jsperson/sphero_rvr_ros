@@ -1,7 +1,8 @@
 # Pi web mission stack
 
-This runbook deploys the integrated prompt planner, persistent service, and web
-console without starting the rover driver or granting physical execution.
+This runbook deploys the integrated adaptive mission product. Boot and proposal
+generation start no rover hardware; one authenticated approval activates the
+fixed supervised graph for that mission only.
 
 ## Authority boundary
 
@@ -17,10 +18,11 @@ browser
 
 Planning credentials, proposal persistence, approval identity, and the exact
 digest gate stay on the Pi. The browser does not receive OAuth material and has
-no ROS, serial, motor, or OpenAI route. The deployed owner is intentionally
-proposal-only: `RVR_ADAPTIVE_MISSION_ENABLED=false` and
-`live_execution_enabled=false`, so no Adaptive mission controller or route executor is
-instantiated, and the two systemd units start no motor-capable process.
+no ROS, serial, motor, or OpenAI route. The reviewed product owner selects
+Adaptive mission and installs an exact-SHA approval-activation capability. The
+motor-capable unit remains inactive until a Tailscale-authenticated operator
+approves the current proposal, and it is stopped again before a terminal result
+is reported.
 
 ## Deployment layout
 
@@ -85,7 +87,10 @@ RVR_SOURCE_SHA=<exact-reviewed-sha>
 RVR_DEPLOYED_SHA=<same-exact-sha>
 RVR_LIVE_EXECUTION_ENABLED=false
 RVR_LIVE_EXECUTION_REVIEWED_SHA=
-RVR_ADAPTIVE_MISSION_ENABLED=false
+RVR_APPROVAL_ACTIVATION_ENABLED=true
+RVR_APPROVAL_ACTIVATION_REVIEWED_SHA=<same-exact-sha>
+RVR_APPROVAL_ACTIVATION_TIMEOUT_S=30.0
+RVR_ADAPTIVE_MISSION_ENABLED=true
 RVR_WEB_PORT=8765
 RVR_WEB_ORIGIN=https://sphero-pi-2.tailab4000.ts.net
 ```
@@ -106,6 +111,11 @@ Pi should run the units across logout and reboot:
 systemctl --user enable --now rvr-mission-service.service rvr-mission-web.service
 systemctl --user --no-pager --full status rvr-mission-service.service rvr-mission-web.service
 ```
+
+Do not enable `rvr-adaptive-mission.service`. Its `BindsTo` relationship and
+exact-SHA `ExecStartPre` are additional fail-closed controls; MissionService
+starts it only after authenticated approval and stops it on every terminal,
+cancellation, activation failure, or owner restart.
 
 ## Tailnet-only HTTPS
 
@@ -332,6 +342,14 @@ prompt, exact SHAs, proposal digest, limits, safety policy, and 15-minute lease.
 Independent STOP, two zero motor samples, unchanged encoder samples, relock,
 restart/no-resume, and process cleanup passed. Its sealed evidence is
 `/home/jsperson/rvr_runs/adaptive_mission_capability_retry_45ae1ad_20260724T204000Z`.
+
+## Archived manual calibration procedure
+
+The remainder of this section records the pre-product manual calibration
+workflow. Do not use its `RVR_LIVE_EXECUTION_*` toggling as product operation.
+The supported product flow is the approval-activation configuration above:
+generate a bound proposal while locked, then let authenticated approval start
+and later stop the fixed supervised unit automatically.
 
 While Scott is present, prepare the supervised ROS graph and verify fresh odom,
 collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, route-runner request/status graph

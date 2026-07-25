@@ -39,6 +39,7 @@ from .stationary_perception import (
 from .adaptive_mission_controller import CodexOAuthAdaptiveMissionIntentProvider, AdaptiveMissionLimits
 from .adaptive_mission_live_controller import LiveAdaptiveMissionController
 from .adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
+from .adaptive_mission_session import SystemdAdaptiveMissionSession
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:
@@ -287,13 +288,41 @@ def main(args=None):
             adaptive_mission_enabled = bool(
                 self.get_parameter("adaptive_mission_enabled").value
             )
+            approval_activation_enabled = bool(
+                self.get_parameter("approval_activation_enabled").value
+            )
+            legacy_live_execution_enabled = bool(
+                self.get_parameter("live_execution_enabled").value
+            )
+            if (
+                approval_activation_enabled
+                and legacy_live_execution_enabled
+            ):
+                raise ValueError(
+                    "approval-time activation and legacy always-unlocked execution "
+                    "cannot be enabled together"
+                )
+            reviewed_sha = str(
+                self.get_parameter(
+                    "approval_activation_reviewed_sha"
+                    if approval_activation_enabled
+                    else "live_execution_reviewed_sha"
+                ).value
+            )
             live_execution_enabled = _validated_execution_gate(
-                enabled=bool(self.get_parameter("live_execution_enabled").value),
-                reviewed_sha=str(self.get_parameter("live_execution_reviewed_sha").value),
+                enabled=(
+                    approval_activation_enabled
+                    or legacy_live_execution_enabled
+                ),
+                reviewed_sha=reviewed_sha,
                 source_sha=source_sha,
                 deployed_sha=deployed_sha,
                 planning_enabled=planning_enabled,
             )
+            if approval_activation_enabled and not adaptive_mission_enabled:
+                raise ValueError(
+                    "approval-time activation requires the Adaptive mission controller"
+                )
             if stationary_perception_enabled and live_execution_enabled:
                 raise ValueError(
                     "stationary perception cannot coexist with live execution authority"
@@ -342,11 +371,7 @@ def main(args=None):
                     self._cache,
                     source_sha=source_sha,
                     deployed_sha=deployed_sha,
-                    reviewed_sha=str(
-                        self.get_parameter(
-                            "live_execution_reviewed_sha"
-                        ).value
-                    ),
+                    reviewed_sha=reviewed_sha,
                     execution_enabled=live_execution_enabled,
                     transport=ros_route_executor,
                     limits=AdaptiveMissionLimits(),
@@ -360,6 +385,12 @@ def main(args=None):
                 if adaptive_mission_enabled
                 else None
             )
+            adaptive_session = None
+            if adaptive_mission_enabled:
+                adaptive_session = SystemdAdaptiveMissionSession(
+                    activation_capable=live_execution_enabled
+                )
+                adaptive_session.ensure_locked()
 
             def service_factory() -> MissionService:
                 return MissionService(
@@ -408,6 +439,12 @@ def main(args=None):
                         adaptive_mission_executor,  # type: ignore[arg-type]
                         execution_enabled=live_execution_enabled,
                         limits=AdaptiveMissionLimits(),
+                        session_lifecycle=adaptive_session,
+                        activation_timeout_s=float(
+                            self.get_parameter(
+                                "approval_activation_timeout_s"
+                            ).value
+                        ),
                     )
             elif planning_enabled:
                 def controller_factory(service: MissionService) -> PromptMissionController:
@@ -526,6 +563,9 @@ def main(args=None):
             self.declare_parameter("planning_angular_speed_deg_s", 30.0)
             self.declare_parameter("live_execution_enabled", False)
             self.declare_parameter("live_execution_reviewed_sha", "")
+            self.declare_parameter("approval_activation_enabled", False)
+            self.declare_parameter("approval_activation_reviewed_sha", "")
+            self.declare_parameter("approval_activation_timeout_s", 30.0)
             self.declare_parameter("approval_ttl_s", 60.0)
             self.declare_parameter("route_graph_timeout_s", 5.0)
             self.declare_parameter("route_cleanup_timeout_s", 3.0)

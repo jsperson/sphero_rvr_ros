@@ -123,9 +123,17 @@ class FakeLiveMissionClient:
 
 
 class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
-    def __init__(self, *, planning_ready: bool = True) -> None:
-        super().__init__(execution_enabled=True)
+    def __init__(
+        self,
+        *,
+        planning_ready: bool = True,
+        approval_activation_enabled: bool = False,
+    ) -> None:
+        super().__init__(
+            execution_enabled=not approval_activation_enabled
+        )
         self.planning_ready = planning_ready
+        self.approval_activation_enabled = approval_activation_enabled
         digest = "d" * 64
         self.proposal = {
             "schema": "sphero_rvr.adaptive_mission_proposal.v1",
@@ -155,6 +163,16 @@ class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
             {
                 "mode": "live/adaptive-mission",
                 "adaptive_mission_enabled": True,
+                "approval_activation_enabled": (
+                    self.approval_activation_enabled
+                ),
+                "physical_session": {
+                    "activation_capable": (
+                        self.approval_activation_enabled
+                    ),
+                    "active": self.execution_enabled,
+                    "transitioning": False,
+                },
                 "provider_id": "openai-codex-oauth",
                 "model_id": "gpt-5.6-sol",
                 "reasoning_effort": "high",
@@ -981,6 +999,8 @@ def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_
         "mode": "live/proposal-only",
         "fixture_only": False,
         "live_execution_enabled": False,
+        "approval_activation_enabled": False,
+        "physical_session": {},
         "direct_ros_commands_allowed": False,
         "credentials_accepted": False,
         "service_source_sha": "live-source",
@@ -1165,6 +1185,52 @@ def test_live_adaptive_mission_web_never_submits_predictably_stale_planning() ->
     page = str(build_mission_web_bundle()["index_html"])
     assert "Planning locked: waiting for fresh camera, lidar, and localization" in page
     assert "planning.ready !== true" in page
+
+
+def test_live_adaptive_mission_approval_activation_stages_without_stale_model_call() -> None:
+    client = FakeAdaptiveMissionLiveMissionClient(
+        planning_ready=False,
+        approval_activation_enabled=True,
+    )
+    adapter = LiveMissionWebAdapter(
+        client,
+        session_id="web-session",
+        operator="untrusted-fallback",
+    )
+
+    ready = adapter.snapshot()
+    assert ready["adapter"]["live_execution_enabled"] is False
+    assert ready["adapter"]["approval_activation_enabled"] is True
+    assert ready["approval"]["enabled"] is False
+
+    planning = adapter.propose("Explore the room", "live")
+    assert planning["mission"]["state"] == "PLANNING"
+    assert client.submissions == [
+        ("Explore the room", "web-session", "web")
+    ]
+    proposed = adapter.snapshot()
+    assert proposed["mission"]["state"] == "PROPOSED"
+    assert proposed["approval"]["enabled"] is True
+
+    with pytest.raises(
+        MissionWebError, match="authenticated Tailscale"
+    ):
+        adapter.approve("", confirm_current_proposal=True)
+    adapter.set_request_identity(
+        "scott@example.com", authenticated=True
+    )
+    approved = adapter.approve(
+        "", confirm_current_proposal=True
+    )
+    assert approved["mission"]["state"] == "RUNNING"
+    assert client.approvals[-1][2:] == (
+        "scott@example.com",
+        "tailscale-serve",
+    )
+
+    page = str(build_mission_web_bundle()["index_html"])
+    assert "approval starts the supervised graph" in page
+    assert "Activating the supervised graph and waiting for fresh" in page
 
 
 def test_adaptive_mission_terminal_projection_preserves_truthful_loop_metrics() -> None:

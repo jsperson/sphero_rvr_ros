@@ -591,6 +591,7 @@ class MissionService:
         session_id: str,
         prompt: str,
         source: str = "api",
+        provider_call_started: bool = True,
     ) -> dict[str, Any]:
         """Persist receipt and planning before any provider call begins."""
 
@@ -631,7 +632,16 @@ class MissionService:
                         "UPDATE prompt_missions SET status='planning', updated_at_s=? WHERE mission_id=?",
                         (self._now(), mission),
                     )
-                    self._append_event(mission, session, "planning", {"provider_call_started": True})
+                    self._append_event(
+                        mission,
+                        session,
+                        "planning",
+                        {
+                            "provider_call_started": bool(
+                                provider_call_started
+                            )
+                        },
+                    )
             except sqlite3.IntegrityError as exc:
                 raise MissionValidationError(f"mission id already exists: {mission}") from exc
             return self.prompt_status(mission)
@@ -831,6 +841,12 @@ class MissionService:
                 or contract.get("replanning_after_every_intent") is not True
                 or contract.get("one_authenticated_approval") is not True
                 or contract.get("per_intent_approval") is not False
+                or contract.get("approval_activates_supervised_graph")
+                is not True
+                or contract.get(
+                    "first_intent_requires_fresh_post_approval_evidence"
+                )
+                is not True
                 or contract.get("motion_authority") is not False
                 or contract.get("physical_execution_enabled")
                 is not expected_physical
@@ -844,6 +860,15 @@ class MissionService:
             ):
                 raise MissionValidationError(
                     "live Adaptive mission requires the supervised physical executor mode"
+                )
+            if expected_physical and (
+                payload.get("starting_snapshot_id")
+                != "pending-approval-activation"
+                or payload.get("first_intent") != {}
+            ):
+                raise MissionValidationError(
+                    "physical Adaptive mission must defer its first snapshot and "
+                    "LLM intent until authenticated approval activation"
                 )
             digest = str(payload.get("proposal_digest", "")).strip().lower()
             body = dict(payload)
@@ -1453,7 +1478,12 @@ class MissionService:
         result: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         transitions = {
-            "approved": {"queued", "cancelled"},
+            "approved": {
+                "queued",
+                "cancelled",
+                "failed",
+                "recovery_required",
+            },
             "queued": {"running", "cancelled", "recovery_required"},
             "running": _PROMPT_TERMINAL_STATUSES | {"cancel_requested"},
             "cancel_requested": _PROMPT_TERMINAL_STATUSES,
@@ -1571,6 +1601,7 @@ class MissionService:
                                     "metrics",
                                     "motion_authority",
                                     "physical_execution_enabled",
+                                    "provider_call_started",
                                 )
                                 if key in payload
                             },
