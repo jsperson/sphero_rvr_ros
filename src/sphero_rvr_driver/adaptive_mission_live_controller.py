@@ -257,6 +257,7 @@ class LiveAdaptiveMissionController:
                 snapshot,
                 mission_id=mission_id,
                 require_motion=False,
+                require_execution_safety=self.execution_enabled,
             )
             raw = dict(self.provider.choose(mission["prompt"], snapshot))
             intent = AdaptiveMissionIntent.validated(

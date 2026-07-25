@@ -109,6 +109,7 @@ def validate_world_snapshot(
     *,
     mission_id: str,
     require_motion: bool = False,
+    require_execution_safety: bool = True,
 ) -> None:
     if str(snapshot.get("schema", "")) != ADAPTIVE_MISSION_WORLD_SCHEMA:
         raise MissionValidationError("adaptive mission world snapshot schema is invalid")
@@ -146,6 +147,31 @@ def validate_world_snapshot(
         raise MissionValidationError(
             "adaptive mission world snapshot perception status must be an object"
         )
+    if not require_execution_safety:
+        if require_motion:
+            raise MissionValidationError(
+                "observation-only snapshot validation cannot authorize motion"
+            )
+        if execution.get("motion_permitted") is not False:
+            raise MissionValidationError(
+                "observation-only snapshot unexpectedly permits motion"
+            )
+        receipts = evidence.get("source_receipts")
+        if not isinstance(receipts, Mapping):
+            raise MissionValidationError(
+                "observation-only snapshot lacks typed source receipts"
+            )
+        for name in ("lidar", "localization"):
+            receipt = receipts.get(name)
+            if (
+                not isinstance(receipt, Mapping)
+                or receipt.get("fresh") is not True
+                or receipt.get("valid") is not True
+            ):
+                raise MissionValidationError(
+                    f"stale observation evidence: {name}"
+                )
+        return
     for name in ("scan_fresh", "transform_fresh", "odometry_fresh"):
         if evidence.get(name) is not True:
             raise MissionValidationError(f"stale evidence: {name}")

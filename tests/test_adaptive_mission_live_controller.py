@@ -312,6 +312,117 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
     assert first["supervised"]["linear_mps"] == 0.05
 
 
+def test_locked_live_adaptive_mission_plans_observation_from_fresh_sensors(
+    tmp_path,
+) -> None:
+    now = time.time()
+    cache = LiveStateCache()
+    cache.update(
+        "lidar",
+        {"scan_id": "live-scan-1", "sample_count": 720},
+        received_at_s=now,
+    )
+    cache.update(
+        "localization",
+        {
+            "state": "valid",
+            "authoritative": True,
+            "pose": {
+                "frame_id": "map",
+                "x_m": 0.0,
+                "y_m": 0.0,
+                "heading_deg": 0.0,
+            },
+        },
+        received_at_s=now,
+    )
+    provider = SequenceProvider([("observe", 0.0)])
+    service = MissionService(
+        tmp_path / "adaptive-mission-locked.sqlite3",
+        source_sha=SHA,
+        deployed_sha=SHA,
+        mode="live",
+        live_execution_enabled=False,
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        execution_enabled=False,
+    )
+    controller = LiveAdaptiveMissionController(
+        service,
+        provider,
+        executor,
+        execution_enabled=False,
+    )
+    try:
+        submitted = controller.submit(
+            PROMPT,
+            session_id="adaptive-mission-locked",
+            mission_id="adaptive-mission-locked-observe",
+        )
+        proposed = _wait_status(
+            controller, submitted["mission_id"], {"proposed"}
+        )
+
+        assert proposed["proposal"]["first_intent"]["action"] == "observe"
+        assert proposed["proposal"]["contract"][
+            "physical_execution_enabled"
+        ] is False
+        assert provider.calls == 1
+        with pytest.raises(
+            MissionValidationError,
+            match="disabled by reviewed service configuration",
+        ):
+            _approve(controller, proposed)
+    finally:
+        controller.close()
+        service.close()
+
+
+def test_locked_live_adaptive_mission_rejects_stale_observation_sources(
+    tmp_path,
+) -> None:
+    provider = SequenceProvider([("observe", 0.0)])
+    service = MissionService(
+        tmp_path / "adaptive-mission-locked-stale.sqlite3",
+        source_sha=SHA,
+        deployed_sha=SHA,
+        mode="live",
+        live_execution_enabled=False,
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        LiveStateCache(),
+        source_sha=SHA,
+        deployed_sha=SHA,
+        execution_enabled=False,
+    )
+    controller = LiveAdaptiveMissionController(
+        service,
+        provider,
+        executor,
+        execution_enabled=False,
+    )
+    try:
+        submitted = controller.submit(
+            PROMPT,
+            session_id="adaptive-mission-locked-stale",
+            mission_id="adaptive-mission-locked-stale",
+        )
+        rejected = _wait_status(
+            controller, submitted["mission_id"], {"rejected"}
+        )
+
+        assert "stale observation evidence: lidar" in rejected[
+            "terminal_reason"
+        ]
+        assert provider.calls == 0
+    finally:
+        controller.close()
+        service.close()
+
+
 @pytest.mark.parametrize(
     ("stale", "stop", "reason"),
     ((True, False, "scan_fresh"), (False, True, "collision_state")),
