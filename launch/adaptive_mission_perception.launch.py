@@ -100,6 +100,7 @@ def generate_launch_description():
                     "start_camera": "true",
                     "camera_info_url": camera_info_url,
                     "start_slam": "true",
+                    "slam_autostart": "true",
                     "use_sim_time": "false",
                 }.items(),
             ),

@@ -12,6 +12,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg_share = Path(get_package_share_directory("sphero_rvr_driver"))
+    slam_share = Path(get_package_share_directory("slam_toolbox"))
     rvr_launch = pkg_share / "launch" / "supervised_rvr.launch.py"
     lidar_launch = pkg_share / "launch" / "lidar.launch.py"
     camera_launch = pkg_share / "launch" / "camera.launch.py"
@@ -23,6 +24,7 @@ def generate_launch_description():
     start_lidar = LaunchConfiguration("start_lidar")
     start_camera = LaunchConfiguration("start_camera")
     start_slam = LaunchConfiguration("start_slam")
+    slam_autostart = LaunchConfiguration("slam_autostart")
     start_live_route_runner = LaunchConfiguration("start_live_route_runner")
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
@@ -64,6 +66,14 @@ def generate_launch_description():
             "start_slam",
             default_value="true",
             description="Start slam_toolbox online async mapping node.",
+        ),
+        DeclareLaunchArgument(
+            "slam_autostart",
+            default_value="false",
+            description=(
+                "Configure and activate slam_toolbox from launch. Adaptive "
+                "missions enable this; the TUI retains explicit lifecycle control."
+            ),
         ),
         DeclareLaunchArgument(
             "start_live_route_runner",
@@ -125,6 +135,38 @@ def generate_launch_description():
             name="slam_toolbox",
             output="screen",
             parameters=[str(slam_config), {"use_sim_time": use_sim_time}],
-            condition=IfCondition(start_slam),
+            condition=IfCondition(
+                PythonExpression(
+                    [
+                        "'",
+                        start_slam,
+                        "' == 'true' and '",
+                        slam_autostart,
+                        "' != 'true'",
+                    ]
+                )
+            ),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                str(slam_share / "launch" / "online_async_launch.py")
+            ),
+            launch_arguments={
+                "autostart": "true",
+                "use_lifecycle_manager": "false",
+                "use_sim_time": use_sim_time,
+                "slam_params_file": str(slam_config),
+            }.items(),
+            condition=IfCondition(
+                PythonExpression(
+                    [
+                        "'",
+                        start_slam,
+                        "' == 'true' and '",
+                        slam_autostart,
+                        "' == 'true'",
+                    ]
+                )
+            ),
         ),
     ])

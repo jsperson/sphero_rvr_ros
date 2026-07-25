@@ -379,12 +379,16 @@ def test_adaptive_mission_perception_launch_fuses_sensors_without_bypassing_supe
     assert '"lidar_serial_port": lidar_serial_port' in launch_text
     assert '"start_camera": "true"' in launch_text
     assert '"start_slam": "true"' in launch_text
+    assert '"slam_autostart": "true"' in launch_text
     assert '"stationary_session": False' in launch_text
     assert 'executable="stationary_perception"' in launch_text
     assert "Adaptive mission semantic perception exited" in launch_text
     assert '"start_live_route_runner": start_live_route_runner' in mapping_text
     assert '"serial_port": lidar_serial_port' in mapping_text
     assert 'default_value="/dev/rplidar"' in mapping_text
+    assert '"online_async_launch.py"' in mapping_text
+    assert '"autostart": "true"' in mapping_text
+    assert '"slam_autostart",\n            default_value="false"' in mapping_text
     assert 'serial_port:="${RVR_SERIAL_PORT:-/dev/ttyAMA0}"' in adaptive_unit
     assert (
         'lidar_serial_port:="${RVR_LIDAR_SERIAL_PORT:-/dev/rplidar}"'
