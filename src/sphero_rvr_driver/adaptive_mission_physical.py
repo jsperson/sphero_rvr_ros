@@ -33,6 +33,7 @@ from .adaptive_mission_controller import (
 
 DEFAULT_MAX_TERMINAL_DISTANCE_ERROR_M = 0.03
 DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG = 10.0
+DEFAULT_TRANSLATION_CLEARANCE_RESERVE_M = 0.40
 
 
 class AdaptiveMissionRouteTransport(Protocol):
@@ -98,6 +99,9 @@ class PhysicalAdaptiveMissionExecutor:
         max_terminal_angle_error_deg: float = (
             DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG
         ),
+        translation_clearance_reserve_m: float = (
+            DEFAULT_TRANSLATION_CLEARANCE_RESERVE_M
+        ),
         now: Any = time.time,
     ) -> None:
         self.cache = cache
@@ -113,6 +117,9 @@ class PhysicalAdaptiveMissionExecutor:
         )
         self.max_terminal_angle_error_deg = float(
             max_terminal_angle_error_deg
+        )
+        self.translation_clearance_reserve_m = float(
+            translation_clearance_reserve_m
         )
         self._now = now
         if (
@@ -139,6 +146,7 @@ class PhysicalAdaptiveMissionExecutor:
         for name in (
             "max_terminal_distance_error_m",
             "max_terminal_angle_error_deg",
+            "translation_clearance_reserve_m",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
@@ -303,6 +311,15 @@ class PhysicalAdaptiveMissionExecutor:
         )
         odometry_fresh = bool(odom_record.get("fresh"))
         collision_state = str(collision.get("state", "UNKNOWN")).upper()
+        forward_clearance = _optional_finite(
+            collision.get(
+                "forward_corridor_clearance_m",
+                collision.get("front_clearance_m"),
+            )
+        )
+        rear_clearance = _optional_finite(
+            collision.get("rear_clearance_m")
+        )
         stop_active = _stop_active(control, collision_state)
         estop_latched = _estop_latched(control, collision_state)
         perception = _perception_observations(
@@ -368,12 +385,32 @@ class PhysicalAdaptiveMissionExecutor:
                     ),
                 },
                 "observations": {
-                    "forward_clearance_m": collision.get(
-                        "forward_corridor_clearance_m",
-                        collision.get("front_clearance_m"),
-                    ),
+                    "forward_clearance_m": forward_clearance,
                     "left_clearance_m": collision.get("left_clearance_m"),
                     "right_clearance_m": collision.get("right_clearance_m"),
+                    "motion_clearance": {
+                        "translation_reserve_m": (
+                            self.translation_clearance_reserve_m
+                        ),
+                        "forward_usable_m": (
+                            max(
+                                0.0,
+                                forward_clearance
+                                - self.translation_clearance_reserve_m,
+                            )
+                            if forward_clearance is not None
+                            else None
+                        ),
+                        "reverse_usable_m": (
+                            max(
+                                0.0,
+                                rear_clearance
+                                - self.translation_clearance_reserve_m,
+                            )
+                            if rear_clearance is not None
+                            else None
+                        ),
+                    },
                     **perception,
                     "coverage_note": (
                         (

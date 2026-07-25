@@ -192,6 +192,7 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
     rules = "\n".join(request["rules"])
     assert "objective evidence only" in rules
     assert "never override lidar collision safety" in rules
+    assert "forward_usable_m" in rules
     assert "observations.perception.available is true" in rules
     assert "explicit enrollment evidence" in rules
     assert "missing or stale perception" in rules
@@ -201,6 +202,7 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
         "stop",
         "turn_angle",
     ]
+    assert request["authority"]["translation_clearance"] == {}
 
 
 def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None:

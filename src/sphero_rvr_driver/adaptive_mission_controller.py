@@ -254,6 +254,8 @@ class AdaptiveMissionIntent:
                 raise MissionValidationError(
                     "motion intent rejected because the snapshot permits observation only"
                 )
+        if action == "move_distance":
+            _validate_snapshot_translation_clearance(snapshot, distance)
         rationale = str(raw.get("rationale", "")).strip()
         objective = str(raw.get("interpreted_objective", "")).strip()
         focus = str(raw.get("observation_focus", "")).strip()
@@ -501,6 +503,12 @@ def _adaptive_mission_output_schema() -> dict[str, Any]:
 def _adaptive_mission_provider_prompt(
     prompt: str, snapshot: Mapping[str, Any]
 ) -> str:
+    observations = snapshot.get("observations", {})
+    motion_clearance = (
+        observations.get("motion_clearance", {})
+        if isinstance(observations, Mapping)
+        else {}
+    )
     request = {
         "role": "You are the supervisory exploration planner for a small rover.",
         "operator_prompt": str(prompt),
@@ -515,6 +523,11 @@ def _adaptive_mission_provider_prompt(
             "angular_speed_ceiling_rad_s": 0.4,
             "mission_lease_s": 900.0,
             "cumulative_travel": "unlimited until mission lease expires",
+            "translation_clearance": (
+                dict(motion_clearance)
+                if isinstance(motion_clearance, Mapping)
+                else {}
+            ),
         },
         "rules": [
             "Return exactly one intent bound to world_snapshot.snapshot_id.",
@@ -525,6 +538,7 @@ def _adaptive_mission_provider_prompt(
             "observe and stop use zero distance_m and zero angle_deg.",
             "Use lease_s 5 and timeout_s 5.",
             "Treat collision, STOP, ESTOP, and freshness evidence as authoritative.",
+            "Before move_distance, require the signed distance magnitude to be no greater than authority.translation_clearance.forward_usable_m for forward motion or reverse_usable_m for reverse motion; if that value is missing or insufficient, choose turn_angle, observe, or stop.",
             "Camera detections and semantic tracks are objective evidence only; they never override lidar collision safety.",
             "Use semantic tracks for object- or person-directed movement only when observations.perception.available is true.",
             "A face label is authoritative only when recognized_from_enrollment is true and enrollment_evidence_ids supplies explicit enrollment evidence; every other face is unknown.",
@@ -538,6 +552,42 @@ def _adaptive_mission_provider_prompt(
     return json.dumps(
         request, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
+
+
+def _validate_snapshot_translation_clearance(
+    snapshot: Mapping[str, Any], distance_m: float
+) -> None:
+    execution = snapshot.get("execution", {})
+    observations = snapshot.get("observations", {})
+    physical = bool(
+        isinstance(execution, Mapping)
+        and execution.get("mode") == "physical-supervised-live-route"
+    )
+    clearance = (
+        observations.get("motion_clearance")
+        if isinstance(observations, Mapping)
+        else None
+    )
+    if not isinstance(clearance, Mapping):
+        if physical:
+            raise MissionValidationError(
+                "physical move intent lacks typed translation clearance"
+            )
+        return
+    direction = "forward" if distance_m > 0.0 else "reverse"
+    usable = _finite(
+        clearance.get(f"{direction}_usable_m"),
+        f"adaptive mission {direction} usable translation",
+    )
+    if usable < 0.0:
+        raise MissionValidationError(
+            f"adaptive mission {direction} usable translation is negative"
+        )
+    if abs(distance_m) > usable + 1e-9:
+        raise MissionValidationError(
+            "adaptive mission intent translation exceeds snapshot usable "
+            f"{direction} clearance"
+        )
 
 
 @dataclass(frozen=True)

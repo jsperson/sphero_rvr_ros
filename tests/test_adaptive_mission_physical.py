@@ -473,6 +473,68 @@ def test_physical_adaptive_mission_submits_exactly_one_bounded_supervised_route(
     assert receipts["localization"]["received_at_s"] == 100.1
 
 
+def test_physical_adaptive_mission_rejects_move_beyond_typed_usable_clearance() -> None:
+    cache = _cache()
+    cache.update(
+        "collision",
+        {
+            "state": "CLEAR",
+            "scan_healthy": True,
+            "scan_age_s": 0.02,
+            "tf_available": True,
+            "tf_reason": "ok",
+            "front_clearance_m": 0.5945,
+            "forward_corridor_clearance_m": 0.4165,
+            "left_clearance_m": 0.6158,
+            "right_clearance_m": 0.4602,
+        },
+        received_at_s=100.0,
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=FakeRouteTransport(),
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        snapshot = executor.snapshot("physical-adaptive-mission")
+        clearance = snapshot["observations"]["motion_clearance"]
+        raw = {
+            "snapshot_id": snapshot["snapshot_id"],
+            "action": "move_distance",
+            "distance_m": 0.25,
+            "angle_deg": 0.0,
+            "observation_focus": "Choose a safer direction.",
+            "rationale": "Forward clearance is narrow.",
+            "interpreted_objective": "Explore safely.",
+            "lease_s": 5.0,
+            "timeout_s": 5.0,
+        }
+        with pytest.raises(
+            MissionValidationError,
+            match="exceeds snapshot usable forward clearance",
+        ):
+            AdaptiveMissionIntent.validated(
+                raw,
+                revision=1,
+                snapshot=snapshot,
+                issued_at_s=100.0,
+                provider_id="test-provider",
+                model_id="test-model",
+                limits=AdaptiveMissionLimits(),
+            )
+    finally:
+        executor.close()
+
+    assert clearance["translation_reserve_m"] == 0.40
+    assert clearance["forward_usable_m"] == pytest.approx(0.0165)
+    assert clearance["reverse_usable_m"] is None
+
+
 def test_physical_adaptive_mission_accepts_bounded_settled_distance_overshoot() -> None:
     cache = _cache()
     transport = FakeRouteTransport(
