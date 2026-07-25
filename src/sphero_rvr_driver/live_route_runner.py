@@ -336,6 +336,7 @@ class _SettlingState:
     stable_since: float
     reference_odom: OdomMotionState
     reference_encoder_counts: Optional[TrackEncoderState]
+    terminal_reason: Optional[str] = None
 
 
 class LiveRouteRunner:
@@ -436,9 +437,17 @@ class LiveRouteRunner:
                 reference_encoder_counts=state.encoder_counts,
             )
             return TwistCommand()
-        self._record_active(telemetry, state)
         terminal = self._terminal_for_active_stop(telemetry.stop_reason, state)
-        self._finish(terminal, state)
+        # A stall or other primitive-level stop already latches a zero command,
+        # but it still needs the same independent pose/encoder settlement proof
+        # as target completion before the terminal manifest is trustworthy.
+        self._settling = _SettlingState(
+            started_at=float(state.stamp),
+            stable_since=float(state.stamp),
+            reference_odom=state.odom,
+            reference_encoder_counts=state.encoder_counts,
+            terminal_reason=terminal,
+        )
         return TwistCommand()
 
     def manifest(self) -> LiveRouteManifest:
@@ -688,6 +697,19 @@ class LiveRouteRunner:
             return TwistCommand()
 
         settled_duration = float(state.stamp) - settling.started_at
+        if settling.terminal_reason is not None:
+            self._record_active(
+                telemetry,
+                state,
+                status_override=self._status_for_terminal(
+                    settling.terminal_reason
+                ),
+                terminal_reason_override=settling.terminal_reason,
+                terminal_settled=True,
+                terminal_settle_duration_s=settled_duration,
+            )
+            self._finish(settling.terminal_reason, state)
+            return TwistCommand()
         if self._terminal_target_error_exceeded(active, telemetry):
             if self._can_correct_turn_undershoot(active, telemetry, state):
                 active.correction_count += 1

@@ -450,12 +450,17 @@ def test_live_route_runner_blocks_wrong_direction_progress_as_truthful_terminal_
 
     manifest = run_route_replay(
         request,
-        (_state(1.0, 0.0, 0.0, 0.0), _state(2.0, 0.0, 0.0, math.radians(80.0))),
+        (
+            _state(1.0, 0.0, 0.0, 0.0),
+            _state(2.0, 0.0, 0.0, math.radians(80.0)),
+            _state(2.6, 0.0, 0.0, math.radians(80.0)),
+        ),
         config,
     )
 
     assert manifest.terminal_reason == "wrong_direction"
     assert manifest.status is ToolResultStatus.FAILED
+    assert manifest.terminal_settled is True
 
 
 def test_live_route_runner_waits_for_stationary_evidence_before_complete() -> None:
@@ -1061,12 +1066,21 @@ def test_live_route_runner_reports_no_progress_turn_as_stall_not_wrong_direction
 
     manifest = run_route_replay(
         request,
-        (_state(1.0, 0.0, 0.0, 0.0), _state(2.0, 0.0, 0.0, 0.0)),
+        (
+            _state(1.0, 0.0, 0.0, 0.0),
+            _state(2.0, 0.0, 0.0, 0.0),
+            _state(2.6, 0.0, 0.0, 0.0),
+        ),
         config,
     )
 
     assert manifest.terminal_reason == "stall"
     assert manifest.status is ToolResultStatus.FAILED
+    assert manifest.terminal_settled is True
+    assert (
+        manifest.executed_segments[0].terminal_settle_duration_s
+        >= config.terminal_settle_time_s
+    )
 
 
 def test_live_route_runner_reports_translation_stall_distinct_from_wrong_direction_turn() -> None:
