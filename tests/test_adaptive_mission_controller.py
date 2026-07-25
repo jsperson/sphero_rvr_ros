@@ -337,6 +337,18 @@ def test_adaptive_mission_replans_repeatedly_without_a_cumulative_travel_cap(tmp
     )
     assert terminal["mission"]["result"]["limits"]["linear_speed_mps"] == 0.10
     assert terminal["mission"]["result"]["limits"]["angular_speed_rad_s"] == 0.4
+    snapshot_messages = [
+        event["message"]
+        for event in terminal["mission"]["result"]["events"]
+        if event["event_type"] == "snapshot"
+    ]
+    assert snapshot_messages
+    assert all(
+        "camera=unavailable" in message
+        and "lidar=unavailable" in message
+        and "localization=unavailable" in message
+        for message in snapshot_messages
+    )
 
 
 def test_adaptive_mission_replans_movement_from_fresh_recognition_evidence(tmp_path) -> None:
@@ -666,13 +678,15 @@ def test_browser_bundle_exposes_adaptive_mission_objective_lease_and_supervision
 
     assert "ADAPTIVE MISSION CLOSED LOOP" in html
     assert "Mission log" in html
-    assert "LLM ${proposal.decision" in html
+    assert "Instruction received" in html
+    assert "Objective interpreted" in html
     assert "First intent" in html
     assert "Approve 15-minute lease" in html
     assert "requested" in html
     assert "supervised" in html
     assert "Revision ${revision.revision}" in html
-    assert "Fresh world snapshot &amp; detections" in html
+    assert "const loopEvents = Array.isArray(rolling.events)" in html
+    assert "Fresh world snapshot &amp; detections" not in html
 
 
 def _post_json(

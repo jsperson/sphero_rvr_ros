@@ -197,22 +197,40 @@ class PhysicalAdaptiveMissionExecutor:
         snapshot = self.snapshot(self._mission_id or "adaptive-mission-readiness")
         evidence = snapshot["evidence"]
         safety = snapshot["safety"]
-        reasons = []
+        observations = _mapping(snapshot.get("observations"))
+        perception = _mapping(observations.get("perception"))
+        source_receipts = _mapping(evidence.get("source_receipts"))
+        planning_reasons = []
+        if perception.get("camera_fresh") is not True:
+            planning_reasons.append("camera")
+        lidar = _mapping(source_receipts.get("lidar"))
+        if lidar.get("fresh") is not True or lidar.get("valid") is not True:
+            planning_reasons.append("lidar")
+        if perception.get("localization_fresh") is not True:
+            planning_reasons.append("localization")
+        execution_reasons = []
         for field in ("scan_fresh", "transform_fresh", "odometry_fresh"):
             if evidence.get(field) is not True:
-                reasons.append(field)
+                execution_reasons.append(field)
         if str(safety.get("collision_state", "UNKNOWN")).upper() not in {
             "CLEAR",
             "SLOW",
         }:
-            reasons.append("collision_state")
+            execution_reasons.append("collision_state")
         if safety.get("stop_active") is not False:
-            reasons.append("stop")
+            execution_reasons.append("stop")
         if safety.get("estop_latched") is not False:
-            reasons.append("estop")
+            execution_reasons.append("estop")
+        reasons = list(planning_reasons)
+        if self.execution_enabled:
+            reasons.extend(execution_reasons)
         return {
             "ready": not reasons,
             "reasons": reasons,
+            "planning_ready": not planning_reasons,
+            "planning_reasons": planning_reasons,
+            "execution_ready": not execution_reasons,
+            "execution_reasons": execution_reasons,
             "execution_enabled": self.execution_enabled,
             "motion_authority": self.motion_authority,
             "source_sha": self.source_sha,
@@ -353,18 +371,32 @@ class PhysicalAdaptiveMissionExecutor:
         self, intent: AdaptiveMissionIntent, cancellation: threading.Event
     ) -> IntentExecutionResult:
         before = self.snapshot(self._mission_id)
+        started = time.monotonic()
+        deadline = started + intent.timeout_s
         if cancellation.is_set():
             return self._nonmotion_result(
                 intent, "cancelled", "operator_cancelled", before
             )
         if intent.action == "observe":
+            updated, reason = self._wait_for_updated_perception(
+                before,
+                cancellation,
+                deadline=deadline,
+            )
+            if reason:
+                return self._nonmotion_result(
+                    intent,
+                    "cancelled" if reason == "operator_cancelled" else "blocked",
+                    reason,
+                    updated,
+                )
             self._observation_count += 1
             self._intent_count += 1
             return self._nonmotion_result(
                 intent,
                 "completed",
                 "observation_completed",
-                self.snapshot(self._mission_id),
+                updated,
             )
         if intent.action == "stop":
             self._intent_count += 1
@@ -393,13 +425,11 @@ class PhysicalAdaptiveMissionExecutor:
             )
 
         request = self._route_request(intent)
-        started = time.monotonic()
         future = self._pool.submit(self.transport.execute, request)
         with self._lock:
             self._future = future
         cancel_attempted = False
         cancel_reason = ""
-        deadline = started + intent.timeout_s
         cleanup_deadline = math.inf
         try:
             while not future.done():
@@ -456,7 +486,86 @@ class PhysicalAdaptiveMissionExecutor:
                 "cleanup_uncertain",
                 terminal.snapshot,
             )
+        if terminal.outcome == "completed":
+            updated, reason = self._wait_for_updated_perception(
+                before,
+                cancellation,
+                deadline=deadline,
+            )
+            if reason:
+                return IntentExecutionResult(
+                    outcome=(
+                        "cancelled"
+                        if reason == "operator_cancelled"
+                        else "blocked"
+                    ),
+                    reason=reason,
+                    snapshot=updated,
+                    movement=terminal.movement,
+                    duration_s=max(0.0, time.monotonic() - started),
+                )
+            return IntentExecutionResult(
+                outcome=terminal.outcome,
+                reason=terminal.reason,
+                snapshot=updated,
+                movement=terminal.movement,
+                duration_s=max(0.0, time.monotonic() - started),
+            )
         return terminal
+
+    def _wait_for_updated_perception(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        deadline: float,
+    ) -> tuple[Mapping[str, Any], str]:
+        """Wait within the intent timeout for a newer typed sensor cycle."""
+
+        previous_evidence = _mapping(previous.get("evidence"))
+        previous_receipts = _mapping(
+            previous_evidence.get("source_receipts")
+        )
+        latest = self.snapshot(self._mission_id)
+        while True:
+            latest_evidence = _mapping(latest.get("evidence"))
+            latest_receipts = _mapping(
+                latest_evidence.get("source_receipts")
+            )
+            observations = _mapping(latest.get("observations"))
+            perception = _mapping(observations.get("perception"))
+            updated = True
+            for name in ("camera", "lidar", "localization"):
+                prior = _mapping(previous_receipts.get(name))
+                current = _mapping(latest_receipts.get(name))
+                prior_at = _optional_finite(prior.get("received_at_s"))
+                current_at = _optional_finite(current.get("received_at_s"))
+                if (
+                    current.get("valid") is not True
+                    or (
+                        name != "camera"
+                        and current.get("fresh") is not True
+                    )
+                    or current_at is None
+                    or (
+                        prior_at is not None
+                        and current_at <= prior_at
+                    )
+                ):
+                    updated = False
+                    break
+            if (
+                updated
+                and perception.get("camera_fresh") is True
+                and perception.get("localization_fresh") is True
+            ):
+                return latest, ""
+            if cancellation.is_set():
+                return latest, "operator_cancelled"
+            if time.monotonic() >= deadline:
+                return latest, "updated_perception_timeout"
+            cancellation.wait(0.02)
+            latest = self.snapshot(self._mission_id)
 
     def cancel(self) -> bool:
         with self._lock:

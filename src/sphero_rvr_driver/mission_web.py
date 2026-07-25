@@ -1823,6 +1823,34 @@ class LiveMissionWebAdapter:
             raise MissionWebError("live adapter accepts only the Pi mission-service scenario")
         with self._lock:
             try:
+                self._service_snapshot = dict(
+                    self.client.service_snapshot()
+                )
+                readiness = self._service_snapshot.get(
+                    "adaptive_mission_readiness", {}
+                )
+                if (
+                    self.adaptive_mission_enabled
+                    and (
+                        not isinstance(readiness, Mapping)
+                        or readiness.get("planning_ready") is not True
+                    )
+                ):
+                    reasons = (
+                        readiness.get("planning_reasons", [])
+                        if isinstance(readiness, Mapping)
+                        else []
+                    )
+                    detail = ",".join(
+                        str(item)
+                        for item in reasons
+                        if str(item).strip()
+                    )
+                    raise MissionValidationError(
+                        "adaptive mission planning is locked until camera, "
+                        "lidar, and localization evidence are fresh"
+                        + (f": {detail}" if detail else "")
+                    )
                 snapshot = self.client.submit_prompt(
                     prompt,
                     session_id=self.session_id,
@@ -1924,11 +1952,20 @@ class LiveMissionWebAdapter:
         odom = live_evidence.get("odom", {})
         collision = live_evidence.get("collision", {})
         route_progress = live_evidence.get("route_progress", {})
+        adaptive_readiness = self._service_snapshot.get(
+            "adaptive_mission_readiness", {}
+        )
+        if not isinstance(adaptive_readiness, Mapping):
+            adaptive_readiness = {}
         if self.stationary_perception_enabled:
             required_fresh = all(
                 isinstance(live_evidence.get(name), Mapping)
                 and bool(live_evidence[name].get("fresh", False))
                 for name in ("camera", "lidar", "localization", "semantic_map")
+            )
+        elif self.adaptive_mission_enabled:
+            required_fresh = (
+                adaptive_readiness.get("planning_ready") is True
             )
         else:
             required_fresh = bool(
@@ -1948,12 +1985,7 @@ class LiveMissionWebAdapter:
             or (
                 self.adaptive_mission_enabled
                 and self.live_execution_enabled
-                and isinstance(
-                    self._service_snapshot.get("adaptive_mission_readiness"),
-                    Mapping,
-                )
-                and self._service_snapshot["adaptive_mission_readiness"].get("ready")
-                is True
+                and adaptive_readiness.get("ready") is True
             )
             or (
                 self.live_execution_enabled
@@ -2074,6 +2106,20 @@ class LiveMissionWebAdapter:
                 ),
             },
             "scenario": LiveScenario.LIVE.value,
+            "planning": {
+                "enabled": bool(
+                    self._service_snapshot.get("planning_enabled", True)
+                ),
+                "ready": required_fresh,
+                "reasons": list(
+                    adaptive_readiness.get("planning_reasons", [])
+                )
+                if self.adaptive_mission_enabled
+                and isinstance(
+                    adaptive_readiness.get("planning_reasons", []), list
+                )
+                else [],
+            },
             "proposal": dict(proposal) if proposal else None,
             "approval": {
                 "required": bool(proposal) and state == WebMissionState.PROPOSED.value,
@@ -2161,6 +2207,32 @@ class LiveMissionWebAdapter:
         }
 
 
+def _connect_live_web_adapter(
+    client: MissionServiceClient,
+    *,
+    session_id: str,
+    operator: str,
+    timeout_s: float = 10.0,
+) -> LiveMissionWebAdapter:
+    """Tolerate a stale startup socket until the required owner accepts calls."""
+
+    deadline = time.monotonic() + float(timeout_s)
+    while True:
+        try:
+            return LiveMissionWebAdapter(
+                client,
+                session_id=session_id,
+                operator=operator,
+            )
+        except OSError as exc:
+            if time.monotonic() >= deadline:
+                raise MissionWebError(
+                    "mission service socket did not accept a connection "
+                    f"within {float(timeout_s):.1f} seconds: {exc}"
+                ) from exc
+            time.sleep(0.1)
+
+
 def _stationary_projection(result: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize running checkpoints and terminal stationary results for the UI."""
 
@@ -2228,6 +2300,11 @@ def _stationary_projection(result: Mapping[str, Any]) -> dict[str, Any]:
             dict(result.get("mission_lease", {}))
             if isinstance(result.get("mission_lease"), Mapping)
             else {}
+        ),
+        "events": (
+            list(result.get("events", []))
+            if isinstance(result.get("events"), list)
+            else []
         ),
     }
 
@@ -2838,7 +2915,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.mode == "live":
         if not args.public_origin:
             parser.error("live mode requires --public-origin for same-origin enforcement")
-        adapter: MissionWebAdapter = LiveMissionWebAdapter(
+        adapter: MissionWebAdapter = _connect_live_web_adapter(
             # Stationary checkpoints deliberately retain exact world snapshots and
             # can exceed the generic command-response ceiling during a sustained
             # live run. Keep the browser boundary finite while allowing the
@@ -3038,10 +3115,6 @@ _INDEX_HTML = r'''<!doctype html>
     .artifact-list { display:grid; gap:.45rem; margin:.7rem 0 0; padding:0; list-style:none; }
     .artifact-list a { color:var(--teal); font-weight:800; }
     progress { width:100%; height:.65rem; accent-color:var(--teal); }
-    .event-list { list-style:none; margin:0; padding:0; display:grid; gap:.65rem; max-height:25rem; overflow:auto; }
-    .event-list li { position:relative; padding-left:1.2rem; color:#cad7d7; font-size:.8rem; line-height:1.35; }
-    .event-list li::before { content:""; position:absolute; left:.1rem; top:.35rem; width:.45rem; height:.45rem; border-radius:50%; background:var(--blue); }
-    .event-list small { display:block; color:var(--muted); margin-bottom:.12rem; }
     .mission-log { list-style:none; margin:0; padding:0; display:grid; gap:.55rem; max-height:32rem; overflow:auto; }
     .mission-log li { padding:.62rem .7rem; border-left:3px solid var(--blue); border-radius:.3rem .6rem .6rem .3rem; background:#081724; color:#d2dddd; font-size:.78rem; line-height:1.42; }
     .mission-log li.intent { border-left-color:var(--teal); }
@@ -3052,7 +3125,6 @@ _INDEX_HTML = r'''<!doctype html>
     .rolling-card { min-width:0; padding:.65rem; border:1px solid #294258; border-radius:.65rem; background:#071421; }
     .rolling-card span { display:block; color:var(--muted); font-size:.67rem; text-transform:uppercase; letter-spacing:.06em; }
     .rolling-card strong { display:block; margin-top:.24rem; overflow-wrap:anywhere; color:#d8f5ef; font-size:.8rem; }
-    .rolling-json { margin:.65rem 0 0; max-height:16rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; padding:.65rem; border-radius:.55rem; background:#071421; color:#bdd2ff; font-size:.68rem; }
     .revision-list { display:grid; gap:.55rem; max-height:22rem; overflow:auto; }
     .revision { border-left:3px solid var(--teal); padding:.6rem .7rem; border-radius:.25rem .6rem .6rem .25rem; background:#091827; font-size:.76rem; line-height:1.4; }
     .revision small { color:var(--muted); display:block; margin-bottom:.18rem; }
@@ -3089,7 +3161,7 @@ _INDEX_HTML = r'''<!doctype html>
 </head>
 <body>
   <header>
-    <div><h1>__APP_NAME__</h1><div class="hint">Map-driven mission planning preview</div></div>
+    <div><h1>__APP_NAME__</h1><div class="hint">English instruction → fresh perception → supervised movement</div></div>
     <div class="mode-badge" data-testid="mode-badge">MOCK / REPLAY — NO LIVE EXECUTION</div>
   </header>
   <main class="shell">
@@ -3157,7 +3229,7 @@ _INDEX_HTML = r'''<!doctype html>
         <section class="panel" aria-labelledby="mission-heading">
           <h2 id="mission-heading">Mission prompt</h2>
           <label class="field-label" for="mission-prompt">Tell the rover what to do</label>
-          <textarea id="mission-prompt" data-testid="mission-prompt">Explore this room, identify and map the shoes and any recognized people, inspect uncertain findings from another viewpoint, then stop safely.</textarea>
+          <textarea id="mission-prompt" data-testid="mission-prompt">Explore and map the room</textarea>
           <label class="field-label" for="scenario" id="scenario-label">Replay outcome</label>
           <select id="scenario" data-testid="scenario"></select>
           <div class="actions"><button class="primary" id="propose" data-testid="propose" type="button" aria-describedby="request-status request-error">Generate proposal</button></div>
@@ -3177,25 +3249,17 @@ _INDEX_HTML = r'''<!doctype html>
           </div>
         </section>
         <section class="panel" aria-labelledby="mission-log-heading">
-          <h2 id="mission-log-heading">Mission log</h2>
+          <h2 id="mission-log-heading">Mission log — chronological</h2>
           <ol class="mission-log" id="mission-log" aria-live="polite">
             <li class="empty">No mission activity yet.</li>
           </ol>
         </section>
-        <details class="panel" id="rolling-world-panel" hidden>
-          <summary>Fresh world snapshot &amp; detections</summary>
-          <div class="detail-body"><pre class="rolling-json" id="rolling-world"></pre></div>
-        </details>
         <details class="panel" id="terminal-panel">
           <summary id="result-heading">Terminal evidence &amp; artifacts</summary>
           <div class="detail-body">
             <div id="result-view" class="empty" data-testid="result-view">No terminal evidence yet.</div>
             <ul id="artifact-list" class="artifact-list"></ul>
           </div>
-        </details>
-        <details class="panel">
-          <summary id="events-heading">Event history</summary>
-          <div class="detail-body"><ol class="event-list" id="event-list"><li class="empty">No mission events yet.</li></ol></div>
         </details>
         <details class="panel">
           <summary>Authority boundary &amp; diagnostics</summary>
@@ -3310,7 +3374,12 @@ _INDEX_HTML = r'''<!doctype html>
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
       const cancelBusy = missionRequestInFlight === 'cancel';
-      $('propose').disabled = Boolean(missionRequestInFlight) || telemetryRequestInFlight;
+      const planningLocked = adaptiveMission
+        && !snapshot.adapter.fixture_only
+        && (!snapshot.planning || snapshot.planning.ready !== true);
+      $('propose').disabled = Boolean(missionRequestInFlight)
+        || telemetryRequestInFlight
+        || planningLocked;
       $('propose').textContent = proposalBusy ? 'Generating proposal…' : 'Generate proposal';
       $('approve').disabled = Boolean(missionRequestInFlight)
         || telemetryRequestInFlight
@@ -3343,6 +3412,12 @@ _INDEX_HTML = r'''<!doctype html>
       } else if (adaptiveMission) {
         $('approval-state').textContent = approvalBusy
           ? 'Binding the prompt, SHAs, lease, speed ceilings, safety policy, starting snapshot, and first intent.'
+          : planningLocked
+            ? `Planning locked: waiting for fresh camera, lidar, and localization evidence${
+                snapshot.planning && snapshot.planning.reasons && snapshot.planning.reasons.length
+                  ? ` (${snapshot.planning.reasons.join(', ')})`
+                  : ''
+              }.`
           : snapshot.mission.state === 'PROPOSED'
             ? `Ready: one authenticated approval starts adaptive replanning; ${snapshot.approval.authenticated_operator} remains the bound operator.`
             : '';
@@ -3432,8 +3507,6 @@ _INDEX_HTML = r'''<!doctype html>
         ? ''
         : (snapshot.approval.required_phrase || 'Not approvable');
       $('approval-input').disabled = live || snapshot.mission.state !== 'PROPOSED' || !snapshot.approval.enabled;
-      const events = snapshot.events || [];
-      $('event-list').innerHTML = events.length ? events.map((event) => `<li><small>#${event.sequence} · ${escapeHtml(event.event_type)}</small>${escapeHtml(event.message)}</li>`).join('') : '<li class="empty">No mission events yet.</li>';
       const result = snapshot.mission.result || {};
       const artifacts = snapshot.artifacts || [];
       if (Object.keys(result).length) {
@@ -3446,7 +3519,6 @@ _INDEX_HTML = r'''<!doctype html>
       $('artifact-list').innerHTML = artifacts.map((artifact) => `<li><a href="${escapeHtml(artifact.href)}" target="_blank" rel="noopener">${escapeHtml(artifact.label)}</a> <span class="hint">${escapeHtml(artifact.media_type)}</span></li>`).join('');
       $('terminal-panel').open = Boolean(snapshot.mission.terminal);
       renderMissionLog(snapshot);
-      renderRolling(snapshot);
       renderMap(snapshot.map, snapshot);
       renderCamera(snapshot);
       renderActionState(snapshot);
@@ -3460,16 +3532,23 @@ _INDEX_HTML = r'''<!doctype html>
       const proposal = snapshot.proposal || null;
       const rolling = snapshot.rolling || {};
       const intent = rolling.active_intent || null;
+      const loopEvents = Array.isArray(rolling.events) ? rolling.events : [];
       const entries = [];
       if (proposal) {
         const model = [proposal.provider_id, proposal.model_id].filter(Boolean).join('/');
-        const objective = proposal.interpreted_objective || proposal.summary || 'Objective interpreted.';
         entries.push({
           tone: proposal.decision === 'reject' ? 'warning' : '',
-          label: `LLM ${proposal.decision || 'proposal'}${model ? ` · ${model}` : ''}`,
-          message: objective,
+          label: `Instruction received${model ? ` · ${model}` : ''}`,
+          message: proposal.prompt || 'Mission instruction persisted.',
         });
-        if (proposal.first_intent) {
+        if (!loopEvents.length) {
+          entries.push({
+            tone: proposal.decision === 'reject' ? 'warning' : '',
+            label: `Objective interpreted`,
+            message: proposal.interpreted_objective || proposal.summary || 'Objective interpreted.',
+          });
+        }
+        if (!loopEvents.length && proposal.first_intent) {
           const first = proposal.first_intent;
           entries.push({
             tone: 'intent',
@@ -3477,23 +3556,29 @@ _INDEX_HTML = r'''<!doctype html>
             message: `${first.rationale || ''} · ${Number(first.distance_m || 0).toFixed(2)} m · ${Number(first.angle_deg || 0).toFixed(1)}°`,
           });
         }
-        const limits = proposal.limits || {};
-        if (Object.keys(limits).length) {
-          entries.push({
-            tone: '',
-            label: 'Mission lease and limits',
-            message: Object.entries(limits).map(([key, value]) => `${key}=${value}`).join(' · '),
-          });
-        }
       }
-      for (const event of (snapshot.events || [])) {
+      for (const event of loopEvents) {
+        const kind = String(event.event_type || 'event').toLowerCase();
+        entries.push({
+          tone: kind === 'terminal'
+            ? 'terminal-log'
+            : ['intent_result','llm_revision'].includes(kind)
+              ? 'intent'
+              : ['blocked','failed','rejected','cancelled','stopped','estopped'].includes(kind)
+                ? 'warning'
+                : '',
+          label: `#${event.sequence} · ${event.event_type}`,
+          message: event.message,
+        });
+      }
+      if (!loopEvents.length) for (const event of (snapshot.events || [])) {
         entries.push({
           tone: ['blocked','failed','rejected','cancelled','stopped','estopped'].includes(String(event.event_type || '').toLowerCase()) ? 'warning' : '',
           label: `#${event.sequence} · ${event.event_type}`,
           message: event.message,
         });
       }
-      for (const revision of (rolling.intent_revisions || [])) {
+      if (!loopEvents.length) for (const revision of (rolling.intent_revisions || [])) {
         const execution = revision.execution || {};
         const movement = execution.movement || {};
         entries.push({
@@ -3502,14 +3587,15 @@ _INDEX_HTML = r'''<!doctype html>
           message: `${revision.rationale || ''} · requested ${JSON.stringify(movement.requested || {})} → supervised ${JSON.stringify(movement.supervised || {})}`,
         });
       }
-      if (intent) {
+      if (intent && !loopEvents.length) {
         entries.push({
           tone: 'intent',
           label: `Active intent · revision ${intent.revision} · ${intent.action}`,
           message: `${intent.rationale || ''} · lease ${intent.lease_s || 0}s · snapshot ${String(intent.snapshot_id || '').slice(0, 12)}`,
         });
       }
-      if (snapshot.mission.terminal) {
+      if (snapshot.mission.terminal
+          && !loopEvents.some((event) => event.event_type === 'terminal')) {
         entries.push({
           tone: 'terminal-log',
           label: `Terminal · ${snapshot.mission.state}`,
@@ -3529,47 +3615,6 @@ _INDEX_HTML = r'''<!doctype html>
             : snapshot.mission.state === 'PROPOSED'
               ? 'Proposal ready for one authenticated mission-lease approval.'
               : 'Waiting for the next mission action.';
-    }
-
-    function renderRolling(snapshot) {
-      const enabled = Boolean(snapshot.adapter.rolling_replay);
-      const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
-      $('rolling-world-panel').hidden = !enabled;
-      if (!enabled) return;
-      const rolling = snapshot.rolling || {};
-      const world = rolling.world_snapshot || {};
-      const visible = adaptiveMission ? {
-        snapshot_id: world.snapshot_id,
-        version: world.version,
-        pose: world.pose,
-        evidence: world.evidence,
-        safety: world.safety,
-        execution: world.execution,
-        progress: world.progress,
-        observations: world.observations,
-        last_execution: world.last_execution,
-      } : stationary ? {
-        snapshot_id: world.snapshot_id,
-        version: world.version,
-        observed_at_s: world.observed_at_s,
-        sources: world.sources,
-        occupancy: world.occupancy,
-        detections: world.detections,
-        semantic_tracks: world.semantic_tracks,
-        uncertain_track_id: world.uncertain_track_id,
-        safety: world.safety,
-      } : {
-        snapshot_id: world.snapshot_id,
-        tick: world.tick,
-        elapsed_s: world.elapsed_s,
-        localization: world.localization,
-        obstacles: world.obstacles,
-        progress: world.progress,
-        camera: world.camera,
-        semantic_map: world.semantic_map,
-      };
-      $('rolling-world').textContent = JSON.stringify(visible, null, 2);
     }
 
     function renderCamera(snapshot) {
@@ -3739,6 +3784,13 @@ _INDEX_HTML = r'''<!doctype html>
 
     async function propose() {
       if (missionRequestInFlight || telemetryRequestInFlight) return;
+      if (current && current.adapter.adaptive_mission
+          && !current.adapter.fixture_only
+          && (!current.planning || current.planning.ready !== true)) {
+        $('request-error').textContent =
+          'Planning is locked until camera, lidar, and localization evidence are fresh.';
+        return;
+      }
       if (!current || current.adapter.fixture_only) stopTimer();
       missionRequestInFlight = 'proposal';
       $('request-error').textContent = '';

@@ -21,6 +21,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def _cache(now: float = 100.0) -> LiveStateCache:
     cache = LiveStateCache()
     cache.update(
+        "camera",
+        {"frame_id": "live-camera-1", "detections": []},
+        received_at_s=now,
+    )
+    cache.update(
+        "lidar",
+        {"scan_id": "live-scan-1", "sample_count": 720},
+        received_at_s=now,
+    )
+    cache.update(
+        "localization",
+        {"state": "valid", "stamp_s": now},
+        received_at_s=now,
+    )
+    cache.update(
         "odom",
         {
             "frame_id": "map",
@@ -51,6 +66,26 @@ def _cache(now: float = 100.0) -> LiveStateCache:
         received_at_s=now,
     )
     return cache
+
+
+def _refresh_perception(
+    cache: LiveStateCache, *, received_at_s: float = 100.1
+) -> None:
+    cache.update(
+        "camera",
+        {"frame_id": "live-camera-2", "detections": []},
+        received_at_s=received_at_s,
+    )
+    cache.update(
+        "lidar",
+        {"scan_id": "live-scan-2", "sample_count": 720},
+        received_at_s=received_at_s,
+    )
+    cache.update(
+        "localization",
+        {"state": "valid", "stamp_s": received_at_s},
+        received_at_s=received_at_s,
+    )
 
 
 def _intent(
@@ -85,14 +120,20 @@ def _intent(
 
 class FakeRouteTransport:
     def __init__(
-        self, result: Optional[Mapping[str, Any]] = None
+        self,
+        result: Optional[Mapping[str, Any]] = None,
+        *,
+        after_execute: Optional[Any] = None,
     ) -> None:
         self.result = None if result is None else dict(result)
+        self.after_execute = after_execute
         self.requests = []
         self.cancelled = False
 
     def execute(self, request):
         self.requests.append(request)
+        if self.after_execute is not None:
+            self.after_execute()
         if self.result is not None:
             return dict(self.result)
         return {
@@ -369,9 +410,12 @@ def test_physical_adaptive_mission_gate_requires_exact_reviewed_deployment(
 
 
 def test_physical_adaptive_mission_submits_exactly_one_bounded_supervised_route() -> None:
-    transport = FakeRouteTransport()
+    cache = _cache()
+    transport = FakeRouteTransport(
+        after_execute=lambda: _refresh_perception(cache)
+    )
     executor = PhysicalAdaptiveMissionExecutor(
-        _cache(),
+        cache,
         source_sha=SHA,
         deployed_sha=SHA,
         reviewed_sha=SHA,
@@ -406,6 +450,59 @@ def test_physical_adaptive_mission_submits_exactly_one_bounded_supervised_route(
         "lidar_collision_stop_supervisor"
     )
     assert result.snapshot["progress"]["cumulative_translation_m"] == 0.25
+    receipts = result.snapshot["evidence"]["source_receipts"]
+    assert receipts["camera"]["received_at_s"] == 100.1
+    assert receipts["lidar"]["received_at_s"] == 100.1
+    assert receipts["localization"]["received_at_s"] == 100.1
+
+
+def test_physical_adaptive_mission_blocks_replanning_without_updated_perception() -> None:
+    transport = FakeRouteTransport()
+    executor = PhysicalAdaptiveMissionExecutor(
+        _cache(),
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    executor.reset("physical-adaptive-mission")
+    executor.bind_approval(
+        proposal_digest="7" * 64,
+        approval_id="operator:" + "7" * 64,
+        operator="scott@example.com",
+    )
+    snapshot = executor.snapshot("physical-adaptive-mission")
+    raw = {
+        "snapshot_id": snapshot["snapshot_id"],
+        "action": "move_distance",
+        "distance_m": 0.10,
+        "angle_deg": 0.0,
+        "observation_focus": "new camera, lidar, and localization receipts",
+        "rationale": "Require updated perception before another model call.",
+        "interpreted_objective": "Explore only from updated physical evidence.",
+        "lease_s": 0.05,
+        "timeout_s": 0.05,
+    }
+    intent = AdaptiveMissionIntent.validated(
+        raw,
+        revision=1,
+        snapshot=snapshot,
+        issued_at_s=100.0,
+        provider_id="test-provider",
+        model_id="test-model",
+        limits=AdaptiveMissionLimits(),
+    )
+    try:
+        result = executor.execute(intent, threading.Event())
+    finally:
+        executor.close()
+
+    assert result.outcome == "blocked"
+    assert result.reason == "updated_perception_timeout"
+    assert len(transport.requests) == 1
+    assert result.movement.supervised_linear_mps == 0.05
 
 
 def test_physical_adaptive_mission_rejects_uncorrelated_terminal_evidence() -> None:

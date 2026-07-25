@@ -1013,6 +1013,19 @@ class AdaptiveMissionController:
         self._execution_in_flight = False
         self._requested_terminal: Optional[tuple[str, str]] = None
         self._append_event(
+            "objective_interpreted",
+            first_intent.interpreted_objective,
+        )
+        self._append_event(
+            "snapshot",
+            _snapshot_event_message(self._world),
+        )
+        self._append_event(
+            "llm_revision",
+            f"LLM chose revision {first_intent.revision}: "
+            f"{first_intent.action} — {first_intent.rationale}",
+        )
+        self._append_event(
             "approval_bound",
             f"Authenticated operator {self.operator} approved lease through "
             f"{self._mission_expires_at_s:.3f}; no per-intent approval is required.",
@@ -1117,6 +1130,10 @@ class AdaptiveMissionController:
                     f"{execution.movement.requested_angular_rad_s:+.2f} rad/s; "
                     f"supervised {execution.movement.supervised_linear_mps:+.2f} m/s, "
                     f"{execution.movement.supervised_angular_rad_s:+.2f} rad/s.",
+                )
+                self._append_event(
+                    "snapshot",
+                    _snapshot_event_message(self._world),
                 )
                 if execution.outcome != "completed":
                     if (
@@ -1365,6 +1382,7 @@ class AdaptiveMissionController:
             "final_snapshot": json.loads(json.dumps(self._world)),
             "world_snapshots": json.loads(json.dumps(self._snapshots)),
             "intent_revisions": json.loads(json.dumps(self._revisions)),
+            "events": json.loads(json.dumps(self._events)),
             "provider": {
                 "provider_id": self.provider.provider_id,
                 "model_id": self.provider.model_id,
@@ -1400,3 +1418,46 @@ def _finite(value: Any, name: str) -> float:
     if not math.isfinite(number):
         raise MissionValidationError(f"{name} must be finite")
     return number
+
+
+def _snapshot_event_message(snapshot: Mapping[str, Any]) -> str:
+    evidence = snapshot.get("evidence", {})
+    receipts = (
+        evidence.get("source_receipts", {})
+        if isinstance(evidence, Mapping)
+        else {}
+    )
+    observations = snapshot.get("observations", {})
+    perception = (
+        observations.get("perception", {})
+        if isinstance(observations, Mapping)
+        else {}
+    )
+    identifiers = []
+    if isinstance(receipts, Mapping):
+        for name in ("camera", "lidar", "localization"):
+            record = receipts.get(name, {})
+            if not isinstance(record, Mapping) or not record:
+                identifiers.append(f"{name}=unavailable")
+                continue
+            state = (
+                "fresh"
+                if record.get("fresh") is True
+                else "stale"
+            )
+            identifiers.append(
+                f"{name}={state}"
+                f"@{record.get('received_at_s')}"
+            )
+    frame = (
+        perception.get("camera_frame_id")
+        if isinstance(perception, Mapping)
+        else None
+    )
+    suffix = ", ".join(identifiers) if identifiers else "typed replay evidence"
+    if frame:
+        suffix += f", frame={frame}"
+    return (
+        f"Snapshot v{snapshot.get('version', '?')} "
+        f"{str(snapshot.get('snapshot_id', ''))[:12]}: {suffix}."
+    )

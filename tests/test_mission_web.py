@@ -22,6 +22,7 @@ from sphero_rvr_driver.mission_web import (
     build_mission_web_bundle,
     handle_mission_web_request,
     make_server,
+    _connect_live_web_adapter,
     _stationary_projection,
 )
 from sphero_rvr_driver.mission_api import MissionValidationError
@@ -122,8 +123,9 @@ class FakeLiveMissionClient:
 
 
 class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
-    def __init__(self) -> None:
+    def __init__(self, *, planning_ready: bool = True) -> None:
         super().__init__(execution_enabled=True)
+        self.planning_ready = planning_ready
         digest = "d" * 64
         self.proposal = {
             "schema": "sphero_rvr.adaptive_mission_proposal.v1",
@@ -157,8 +159,14 @@ class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
                 "model_id": "gpt-5.6-sol",
                 "reasoning_effort": "high",
                 "adaptive_mission_readiness": {
-                    "ready": True,
-                    "reasons": [],
+                    "ready": self.planning_ready,
+                    "reasons": [] if self.planning_ready else ["lidar"],
+                    "planning_ready": self.planning_ready,
+                    "planning_reasons": (
+                        [] if self.planning_ready else ["lidar"]
+                    ),
+                    "execution_ready": True,
+                    "execution_reasons": [],
                     "execution_enabled": True,
                     "motion_authority": False,
                 },
@@ -871,11 +879,13 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
         "Camera",
         "Mission status",
         "Mission log",
-        "Event history",
         "Terminal evidence",
         "Authority boundary",
     ):
         assert token in page
+    assert "Event history" not in page
+    assert ">Explore and map the room</textarea>" in page
+    assert "English instruction → fresh perception → supervised movement" in page
     assert "artifact.href" in page
     for forbidden in ("localStorage", "sessionStorage", "OPENAI_API_KEY", "CODEX_API_KEY", "WebSocket("):
         assert forbidden not in page
@@ -1000,6 +1010,30 @@ def test_live_adapter_uses_only_service_client_and_shows_truthful_proposal_only_
     assert adapter.cancel()["mission"]["state"] == "CANCELLED"
 
 
+def test_live_web_startup_retries_a_stale_socket_until_owner_accepts() -> None:
+    client = FakeLiveMissionClient()
+    original = client.service_snapshot
+    attempts = 0
+
+    def starting_service():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise ConnectionRefusedError("stale socket")
+        return original()
+
+    client.service_snapshot = starting_service
+    adapter = _connect_live_web_adapter(
+        client,
+        session_id="web-session",
+        operator="scott@example.com",
+        timeout_s=1.0,
+    )
+
+    assert attempts == 3
+    assert adapter.snapshot()["mission"]["state"] == "READY"
+
+
 def test_live_adaptive_mission_web_renders_loop_and_binds_tailscale_approval() -> None:
     client = FakeAdaptiveMissionLiveMissionClient()
     client.mission = client._snapshot("proposed", proposal=client.proposal)
@@ -1102,6 +1136,35 @@ def test_live_adaptive_mission_web_renders_loop_and_binds_tailscale_approval() -
             "tailscale-serve",
         )
     ]
+
+
+def test_live_adaptive_mission_web_never_submits_predictably_stale_planning() -> None:
+    client = FakeAdaptiveMissionLiveMissionClient(planning_ready=False)
+    adapter = LiveMissionWebAdapter(
+        client,
+        session_id="web-session",
+        operator="scott@example.com",
+    )
+
+    snapshot = adapter.snapshot()
+    assert snapshot["planning"] == {
+        "enabled": True,
+        "ready": False,
+        "reasons": ["lidar"],
+    }
+    with pytest.raises(
+        MissionWebError,
+        match=(
+            "planning is locked until camera, lidar, and localization "
+            "evidence are fresh: lidar"
+        ),
+    ):
+        adapter.propose("Explore and map the room", "live")
+    assert client.submissions == []
+
+    page = str(build_mission_web_bundle()["index_html"])
+    assert "Planning locked: waiting for fresh camera, lidar, and localization" in page
+    assert "planning.ready !== true" in page
 
 
 def test_adaptive_mission_terminal_projection_preserves_truthful_loop_metrics() -> None:

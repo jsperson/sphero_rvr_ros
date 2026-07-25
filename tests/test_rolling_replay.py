@@ -205,7 +205,8 @@ def test_browser_bundle_renders_rolling_replay_evidence_panels() -> None:
     assert "Mission log" in html
     assert "Active intent · revision" in html
     assert "Revision ${revision.revision}" in html
-    assert "Fresh world snapshot &amp; detections" in html
+    assert "Fresh world snapshot &amp; detections" not in html
+    assert "const loopEvents = Array.isArray(rolling.events)" in html
     assert "requested ${JSON.stringify" in html
     assert "supervised ${JSON.stringify" in html
     assert "ROLLING LLM REPLAY — NO MOTION AUTHORITY" in html

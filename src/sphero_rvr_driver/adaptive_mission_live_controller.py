@@ -74,6 +74,16 @@ class LiveAdaptiveMissionController:
                 raise MissionValidationError(
                     "another physical adaptive mission is already active or awaiting approval"
                 )
+            readiness = self.executor.readiness()
+            if readiness.get("planning_ready") is not True:
+                reasons = ",".join(
+                    str(item)
+                    for item in readiness.get("planning_reasons", [])
+                )
+                raise MissionValidationError(
+                    "adaptive mission planning requires fresh camera, lidar, "
+                    f"and localization evidence: {reasons or 'not ready'}"
+                )
             identifier = str(
                 mission_id or f"adaptive-mission-live-{uuid.uuid4().hex}"
             )

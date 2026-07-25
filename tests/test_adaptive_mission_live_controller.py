@@ -21,6 +21,30 @@ def _cache(*, stale: bool = False, stop: bool = False) -> LiveStateCache:
     now = time.time() - (1.0 if stale else 0.0)
     cache = LiveStateCache()
     cache.update(
+        "camera",
+        {"frame_id": "live-camera-1", "detections": []},
+        received_at_s=now,
+    )
+    cache.update(
+        "lidar",
+        {"scan_id": "live-scan-1", "sample_count": 720},
+        received_at_s=now,
+    )
+    cache.update(
+        "localization",
+        {
+            "state": "valid",
+            "authoritative": True,
+            "pose": {
+                "frame_id": "map",
+                "x_m": 0.0,
+                "y_m": 0.0,
+                "heading_deg": 0.0,
+            },
+        },
+        received_at_s=now,
+    )
+    cache.update(
         "odom",
         {
             "frame_id": "odom",
@@ -83,6 +107,7 @@ class SequenceProvider:
         self.actions = list(actions)
         self.calls = 0
         self.snapshots: list[str] = []
+        self.cache: Optional[LiveStateCache] = None
 
     def choose(
         self, prompt: str, snapshot: Mapping[str, Any]
@@ -91,7 +116,38 @@ class SequenceProvider:
         self.snapshots.append(str(snapshot["snapshot_id"]))
         action, value = self.actions[self.calls]
         self.calls += 1
+        if action == "observe" and self.cache is not None:
+            threading.Timer(0.1, self._publish_perception_cycle).start()
         return _raw(snapshot, action, value)
+
+    def _publish_perception_cycle(self) -> None:
+        if self.cache is None:
+            return
+        observed = time.time()
+        self.cache.update(
+            "camera",
+            {"frame_id": f"observe-camera-{self.calls}", "detections": []},
+            received_at_s=observed,
+        )
+        self.cache.update(
+            "lidar",
+            {"scan_id": f"observe-scan-{self.calls}", "sample_count": 720},
+            received_at_s=observed,
+        )
+        self.cache.update(
+            "localization",
+            {
+                "state": "valid",
+                "authoritative": True,
+                "pose": {
+                    "frame_id": "map",
+                    "x_m": 0.0,
+                    "y_m": 0.0,
+                    "heading_deg": 0.0,
+                },
+            },
+            received_at_s=observed,
+        )
 
 
 class FakeRouteTransport:
@@ -107,6 +163,7 @@ class FakeRouteTransport:
         self.entered = threading.Event()
         self.release = threading.Event()
         self.cancelled = False
+        self.cache: Optional[LiveStateCache] = None
 
     def execute(self, request):
         self.requests.append(request)
@@ -115,6 +172,38 @@ class FakeRouteTransport:
             self.release.wait(timeout=2.0)
         segment = request.segments[0]
         cancelled = self.cancelled
+        if not cancelled and self.cache is not None:
+            observed = time.time()
+            self.cache.update(
+                "camera",
+                {
+                    "frame_id": f"live-camera-{len(self.requests) + 1}",
+                    "detections": [],
+                },
+                received_at_s=observed,
+            )
+            self.cache.update(
+                "lidar",
+                {
+                    "scan_id": f"live-scan-{len(self.requests) + 1}",
+                    "sample_count": 720,
+                },
+                received_at_s=observed,
+            )
+            self.cache.update(
+                "localization",
+                {
+                    "state": "valid",
+                    "authoritative": True,
+                    "pose": {
+                        "frame_id": "map",
+                        "x_m": 0.0,
+                        "y_m": 0.0,
+                        "heading_deg": 0.0,
+                    },
+                },
+                received_at_s=observed,
+            )
         is_move = segment.tool_id == "move_distance"
         requested_linear = (
             float(segment.arguments["speed_mps"]) if is_move else 0.0
@@ -192,9 +281,12 @@ def _build(
         mode="live",
         live_execution_enabled=True,
     )
+    active_cache = cache or _cache()
     route_transport = transport or FakeRouteTransport()
+    route_transport.cache = active_cache
+    provider.cache = active_cache
     executor = PhysicalAdaptiveMissionExecutor(
-        cache or _cache(),
+        active_cache,
         source_sha=SHA,
         deployed_sha=SHA,
         reviewed_sha=SHA,
@@ -310,6 +402,31 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
     first = result["intent_revisions"][0]["execution"]["movement"]
     assert first["requested"]["linear_mps"] == 0.10
     assert first["supervised"]["linear_mps"] == 0.05
+    events = result["events"]
+    assert [event["sequence"] for event in events] == list(
+        range(1, len(events) + 1)
+    )
+    kinds = [event["event_type"] for event in events]
+    assert kinds[:4] == [
+        "objective_interpreted",
+        "snapshot",
+        "llm_revision",
+        "approval_bound",
+    ]
+    assert kinds.count("snapshot") == 5
+    assert kinds[-1] == "terminal"
+    assert any(
+        "requested +0.10 m/s" in event["message"]
+        and "supervised +0.05 m/s" in event["message"]
+        for event in events
+    )
+    assert any(
+        "camera=fresh@" in event["message"]
+        and "lidar=fresh@" in event["message"]
+        and "localization=fresh@" in event["message"]
+        for event in events
+        if event["event_type"] == "snapshot"
+    )
 
 
 def test_locked_live_adaptive_mission_plans_observation_from_fresh_sensors(
@@ -320,6 +437,11 @@ def test_locked_live_adaptive_mission_plans_observation_from_fresh_sensors(
     cache.update(
         "lidar",
         {"scan_id": "live-scan-1", "sample_count": 720},
+        received_at_s=now,
+    )
+    cache.update(
+        "camera",
+        {"frame_id": "live-camera-1", "detections": []},
         received_at_s=now,
     )
     cache.update(
@@ -337,6 +459,7 @@ def test_locked_live_adaptive_mission_plans_observation_from_fresh_sensors(
         received_at_s=now,
     )
     provider = SequenceProvider([("observe", 0.0)])
+    provider.cache = cache
     service = MissionService(
         tmp_path / "adaptive-mission-locked.sqlite3",
         source_sha=SHA,
@@ -405,18 +528,18 @@ def test_locked_live_adaptive_mission_rejects_stale_observation_sources(
         execution_enabled=False,
     )
     try:
-        submitted = controller.submit(
-            PROMPT,
-            session_id="adaptive-mission-locked-stale",
-            mission_id="adaptive-mission-locked-stale",
-        )
-        rejected = _wait_status(
-            controller, submitted["mission_id"], {"rejected"}
-        )
-
-        assert "stale observation evidence: lidar" in rejected[
-            "terminal_reason"
-        ]
+        with pytest.raises(
+            MissionValidationError,
+            match=(
+                "planning requires fresh camera, lidar, and localization "
+                "evidence: camera,lidar,localization"
+            ),
+        ):
+            controller.submit(
+                PROMPT,
+                session_id="adaptive-mission-locked-stale",
+                mission_id="adaptive-mission-locked-stale",
+            )
         assert provider.calls == 0
     finally:
         controller.close()
