@@ -3418,8 +3418,10 @@ _INDEX_HTML = r'''<!doctype html>
                   ? ` (${snapshot.planning.reasons.join(', ')})`
                   : ''
               }.`
-          : snapshot.mission.state === 'PROPOSED'
+          : snapshot.mission.state === 'PROPOSED' && snapshot.approval.enabled
             ? `Ready: one authenticated approval starts adaptive replanning; ${snapshot.approval.authenticated_operator} remains the bound operator.`
+          : snapshot.mission.state === 'PROPOSED'
+            ? 'Disabled: physical execution and fresh supervised safety readiness are required before approval.'
             : '';
       } else {
         $('approval-state').textContent = approvalBusy

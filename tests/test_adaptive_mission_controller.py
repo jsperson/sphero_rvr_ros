@@ -686,6 +686,10 @@ def test_browser_bundle_exposes_adaptive_mission_objective_lease_and_supervision
     assert "supervised" in html
     assert "Revision ${revision.revision}" in html
     assert "const loopEvents = Array.isArray(rolling.events)" in html
+    assert (
+        "Disabled: physical execution and fresh supervised safety readiness "
+        "are required before approval."
+    ) in html
     assert "Fresh world snapshot &amp; detections" not in html
 
 
