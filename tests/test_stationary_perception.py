@@ -487,6 +487,8 @@ def test_stationary_launch_and_browser_have_no_motion_surface() -> None:
     assert '"/cmd_vel"' not in node_text
     assert "serial.Serial(" not in node_text
     assert "import sphero_sdk" not in node_text
+    assert "rclpy.try_shutdown()" in node_text
+    assert "rclpy.shutdown()" not in node_text
     assert "LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY" in html
     assert "Mission log" in html
     assert "Turn telemetry off" in html
