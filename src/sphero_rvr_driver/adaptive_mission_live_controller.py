@@ -526,8 +526,9 @@ class LiveAdaptiveMissionController:
                     active_objective,
                     snapshot,
                     revision=1,
-                    issued_at_s=float(self._clock_s()),
+                    issued_at_s=None,
                     limits=mission_limits,
+                    issue_clock=self._clock_s,
                 )
                 if cancellation.is_set():
                     raise MissionValidationError(

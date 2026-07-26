@@ -190,6 +190,29 @@ class ContinuousLeaseProvider(SequenceProvider):
         return _raw(snapshot, "stop", 0.0)
 
 
+class AdvancingClock:
+    def __init__(self, now_s: float) -> None:
+        self.now_s = float(now_s)
+
+    def __call__(self) -> float:
+        return self.now_s
+
+    def advance(self, seconds: float) -> None:
+        self.now_s += float(seconds)
+
+
+class SlowFirstDecisionProvider(SequenceProvider):
+    def __init__(self, clock: AdvancingClock) -> None:
+        super().__init__([("stop", 0.0)])
+        self.clock = clock
+
+    def choose(
+        self, prompt: str, snapshot: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        self.clock.advance(6.0)
+        return super().choose(prompt, snapshot)
+
+
 class RecordingSessionLifecycle:
     activation_capable = True
 
@@ -405,6 +428,7 @@ def _build(
     transport: Optional[FakeRouteTransport] = None,
     limits: Optional[AdaptiveMissionLimits] = None,
     keep_session_active_until_lease_end: bool = False,
+    clock_s: Any = None,
 ):
     authority_limits = limits or AdaptiveMissionLimits()
     service = MissionService(
@@ -414,6 +438,7 @@ def _build(
         mode="live",
         live_execution_enabled=True,
         adaptive_mission_limits=authority_limits.to_json_dict(),
+        clock_s=clock_s,
     )
     active_cache = cache or _cache()
     route_transport = transport or FakeRouteTransport()
@@ -438,6 +463,7 @@ def _build(
         keep_session_active_until_lease_end=(
             keep_session_active_until_lease_end
         ),
+        clock_s=clock_s or time.time,
     )
     return service, controller, route_transport
 
@@ -550,6 +576,44 @@ def test_authenticated_approval_activates_fresh_evidence_before_first_provider_c
     first_snapshot = terminal["result"]["world_snapshots"][0]
     assert first_snapshot["evidence"]["scan_fresh"] is True
     assert first_snapshot["evidence"]["odometry_fresh"] is True
+
+
+def test_first_intent_lease_starts_after_slow_provider_inference(
+    tmp_path,
+) -> None:
+    clock = AdvancingClock(time.time())
+    provider = SlowFirstDecisionProvider(clock)
+    service, controller, transport = _build(
+        tmp_path,
+        provider,
+        limits=AdaptiveMissionLimits(mission_lease_s=120.0),
+        clock_s=clock,
+    )
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="slow-first-decision",
+            mission_id="slow-first-decision-mission",
+        )
+        approved = _approve(controller, proposed)
+        approved_at_s = approved["approval"]["approved_at_s"]
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {"complete", "timeout"},
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert terminal["status"] == "complete"
+    assert terminal["terminal_reason"] == "planner_stop"
+    assert transport.requests == []
+    revision = terminal["result"]["intent_revisions"][0]
+    assert revision["issued_at_s"] == pytest.approx(approved_at_s + 6.0)
+    assert revision["expires_at_s"] - revision["issued_at_s"] == pytest.approx(
+        5.0
+    )
 
 
 def test_terminal_is_recovery_required_when_physical_session_cannot_relock(

@@ -793,13 +793,21 @@ def choose_validated_adaptive_intent(
     snapshot: Mapping[str, Any],
     *,
     revision: int,
-    issued_at_s: float,
+    issued_at_s: Optional[float],
     limits: AdaptiveMissionLimits,
     supervised_collision_escape: Optional[bool] = None,
+    issue_clock: Callable[[], float] = time.time,
 ) -> tuple[dict[str, Any], AdaptiveMissionIntent]:
-    """Run provider inference and deterministic rover intent validation."""
+    """Run provider inference and deterministic rover intent validation.
+
+    Passing ``issued_at_s=None`` starts the finite intent lease after provider
+    inference returns, so inference latency cannot consume motion authority.
+    """
 
     raw = dict(provider.choose(prompt, snapshot))
+    effective_issued_at_s = (
+        float(issue_clock()) if issued_at_s is None else float(issued_at_s)
+    )
     collision_escape = (
         bool(
             _is_collision_replan_snapshot(snapshot)
@@ -820,7 +828,7 @@ def choose_validated_adaptive_intent(
             raw,
             revision=revision,
             snapshot=snapshot,
-            issued_at_s=issued_at_s,
+            issued_at_s=effective_issued_at_s,
             provider_id=provider.provider_id,
             model_id=provider.model_id,
             limits=limits,
