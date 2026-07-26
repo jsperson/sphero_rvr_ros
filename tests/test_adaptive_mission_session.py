@@ -93,12 +93,7 @@ def test_systemd_session_activates_only_fixed_graph_after_complete_binding(
         "stop",
         ADAPTIVE_MISSION_UNIT,
     ) in commands
-    assert (
-        "systemctl",
-        "--user",
-        "reset-failed",
-        ADAPTIVE_MISSION_UNIT,
-    ) in commands
+    assert not any("reset-failed" in command for command in commands)
 
 
 def test_systemd_session_fails_closed_for_disabled_or_incomplete_activation(
@@ -193,6 +188,18 @@ def test_systemd_session_requires_failed_state_to_clear_before_relock(
     def run(command, **kwargs):
         del kwargs
         command = tuple(command)
+        if "show" in command:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    "LoadState=loaded\n"
+                    "ActiveState=failed\n"
+                    "SubState=failed\n"
+                    "Result=exit-code\n"
+                ),
+                stderr="",
+            )
         if command[:3] == ("systemctl", "--user", "reset-failed"):
             return CompletedProcess(
                 command, 1, stdout="", stderr="reset rejected"
@@ -211,3 +218,50 @@ def test_systemd_session_requires_failed_state_to_clear_before_relock(
         MissionValidationError, match="reset rejected"
     ):
         lifecycle.deactivate(reason="terminal")
+
+
+def test_systemd_session_clears_failed_state_before_verified_relock(
+    monkeypatch,
+) -> None:
+    state = "failed"
+    commands: list[tuple[str, ...]] = []
+
+    def run(command, **kwargs):
+        nonlocal state
+        del kwargs
+        command = tuple(command)
+        commands.append(command)
+        if command[:3] == ("systemctl", "--user", "reset-failed"):
+            state = "inactive"
+        if "show" in command:
+            substate = "failed" if state == "failed" else "dead"
+            return CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    "LoadState=loaded\n"
+                    f"ActiveState={state}\n"
+                    f"SubState={substate}\n"
+                    "Result=success\n"
+                ),
+                stderr="",
+            )
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "sphero_rvr_driver.adaptive_mission_session.subprocess.run",
+        run,
+    )
+    lifecycle = SystemdAdaptiveMissionSession(
+        activation_capable=True
+    )
+
+    status = lifecycle.deactivate(reason="terminal")
+
+    assert status["active"] is False
+    assert (
+        "systemctl",
+        "--user",
+        "reset-failed",
+        ADAPTIVE_MISSION_UNIT,
+    ) in commands

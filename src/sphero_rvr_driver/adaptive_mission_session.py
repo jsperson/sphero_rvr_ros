@@ -100,12 +100,16 @@ class SystemdAdaptiveMissionSession:
                 action="stop supervised Adaptive mission graph",
                 timeout_s=35.0,
             )
-            self._run(
-                ["systemctl", "--user", "reset-failed", self.unit],
-                action="clear supervised Adaptive mission graph failure state",
-                timeout_s=5.0,
-            )
             status = self._unit_status()
+            if status["state"] == "failed":
+                self._run(
+                    ["systemctl", "--user", "reset-failed", self.unit],
+                    action=(
+                        "clear supervised Adaptive mission graph failure state"
+                    ),
+                    timeout_s=5.0,
+                )
+                status = self._unit_status()
             if (
                 status["active"]
                 or status["transitioning"]
