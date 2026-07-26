@@ -4,6 +4,13 @@ live_route_runner:
     status_topic: /mission_api/v2/live_route/status
     diagnostics_topic: /diagnostics
     cmd_vel_topic: /cmd_vel
+    # Phase 1 remains replay/simulation only. Enabling this mode additionally
+    # requires use_sim_time:=true in the node and disables legacy route input.
+    hierarchical_mode_enabled: false
+    nav2_cmd_topic: /nav2_cmd_vel_request
+    nav2_cmd_lease_s: 0.25
+    hierarchical_max_linear_mps: 0.10
+    hierarchical_max_angular_rad_s: 0.4
     scan_topic: /scan
     odom_topic: /odom
     encoder_counts_topic: /encoder_counts

@@ -7,3 +7,7 @@ repositories:
     type: git
     url: https://github.com/Slamtec/rplidar_ros.git
     version: ros2
+  frontier_exploration_ros2:
+    type: git
+    url: https://github.com/mertgulerx/frontier_exploration_ros2.git
+    version: ec530d2a813739cd25dd0c438d2365c510b9fad8

@@ -2,13 +2,15 @@
 
 ## Status
 
-This document is the Milestone 6 Phase 0 design decision for continuous,
-recognition-driven exploration. It is verified against repository baseline
-`121423ce808ceb998ca990cb80efa77ae7f2c956`.
+This document is the approved Milestone 6 Phase 0 design decision for
+continuous, recognition-driven exploration, verified against repository
+baseline `121423ce808ceb998ca990cb80efa77ae7f2c956`.
 
-Phase 0 is documentation-only. It does not add a dependency, change a
-controller or executor, start ROS, grant motion authority, or alter the
-installed default-off physical gates.
+Phase 1 now implements the default-off replay slice from baseline
+`7b948c766384df36dcb8a9ea950c9297e879486b`. Its implementation and acceptance
+evidence are recorded in
+[hierarchical_exploration_phase1.md](hierarchical_exploration_phase1.md).
+Physical hierarchical exploration remains unavailable.
 
 ## Decision
 
@@ -470,9 +472,6 @@ verbatim:
 The selected architecture adds these consequences without weakening those
 invariants:
 
-- `collision_stop_node` remains the sole `/cmd_vel_motor` publisher and an
-  independent stop path. Nav2 and its costmaps are planning-time avoidance,
-  never the safety boundary.
 - In hierarchical mode, Nav2 publishes only to a private request topic;
   `live_route_runner_node` is the sole `/cmd_vel` publisher and applies
   server-owned leases and caps.
@@ -483,14 +482,6 @@ invariants:
   reviewed SHA remains blank.
 - The replay executor remains default and reports
   `motion_authority=false` and `physical_execution_enabled=false`.
-- The LLM emits only schema-validated, snapshot-bound goals. It has no route,
-  ROS, Twist, speed, threshold, credential, shell, code-generation, or
-  approval surface.
-- Motion-critical stale evidence, collision, STOP, ESTOP, cancellation,
-  persistence failure, process loss, or mission/goal lease expiry produces
-  deterministic zero and cannot be reversed by a later model response.
-- Digest-bound approval, MissionService persistence, exact-SHA checks, and
-  restart-to-`recovery_required` behavior are preserved.
 - Drop-off detection remains unavailable. Physical exploration is restricted
   to attended, level, bounded rooms with no stairs, ledges, or open drop-offs
   until independent negative-obstacle sensing exists.
@@ -520,7 +511,8 @@ integration runs in a ROS 2 Jazzy replay/simulation environment, with no rover
 driver, serial owner, or physical command graph. Pi CPU and memory measurements
 are no-motion evidence only.
 
-Human review of this document and the Nav2 decision is required before Phase 1.
+Human review approved the Nav2 decision before Phase 1. Phase 1 results and
+residuals are recorded in the linked evidence report.
 
 ## References
 

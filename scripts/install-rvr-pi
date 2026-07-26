@@ -91,6 +91,8 @@ sudo apt-get install -y \
   "ros-${ROS_DISTRO}-ros-base" \
   "ros-${ROS_DISTRO}-slam-toolbox" \
   "ros-${ROS_DISTRO}-nav2-map-server" \
+  "ros-${ROS_DISTRO}-navigation2" \
+  "ros-${ROS_DISTRO}-nav2-bringup" \
   libcamera-ipa \
   libcamera-tools \
   v4l-utils \
@@ -181,6 +183,7 @@ export LD_LIBRARY_PATH="$RPI_LIBCAMERA_ROOT/lib/aarch64-linux-gnu${LD_LIBRARY_PA
 packages=("$PACKAGE_NAME")
 [[ -d "$WS_ROOT/src/rplidar_ros" ]] && packages+=(rplidar_ros)
 [[ -d "$WS_ROOT/src/camera_ros" ]] && packages+=(camera_ros)
+[[ -d "$WS_ROOT/src/frontier_exploration_ros2" ]] && packages+=(frontier_exploration_ros2)
 colcon build --symlink-install --packages-select "${packages[@]}"
 
 log "Installing device udev rules when available"
@@ -200,6 +203,10 @@ source_ros_setup "$WS_ROOT/install/setup.bash"
 ros2 pkg prefix "$PACKAGE_NAME"
 ros2 pkg prefix slam_toolbox
 ros2 pkg prefix nav2_map_server
+ros2 pkg prefix nav2_smac_planner
+ros2 pkg prefix nav2_controller
+ros2 pkg prefix nav2_loopback_sim
+ros2 pkg prefix frontier_exploration_ros2
 ros2 pkg prefix camera_ros
 ros2 run nav2_map_server map_saver_cli --help >/dev/null
 ros2 launch "$PACKAGE_NAME" lidar.launch.py --show-args >/dev/null

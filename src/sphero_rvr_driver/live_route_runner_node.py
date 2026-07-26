@@ -28,6 +28,11 @@ from .live_route_runner import (
     _normalize_exception_terminal,
     route_request_from_json,
 )
+from .hierarchical_exploration import (
+    HierarchicalBridgeConfig,
+    HierarchicalCommandBridge,
+    PRIVATE_NAV2_CMD_TOPIC,
+)
 from .odometry import MotionPrimitiveConfig, OdomMotionState
 from .range_motion_node import _stamp_seconds, _tf_error_reason, _transform2d_from_transform_stamped
 
@@ -115,6 +120,7 @@ def main(args=None):
     from rclpy.duration import Duration
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
     from rclpy.time import Time
     from sensor_msgs.msg import LaserScan
     from std_msgs.msg import String
@@ -135,12 +141,37 @@ def main(args=None):
                     "live route control_period_s must be positive and no greater than 0.05"
                 )
             self._runner = LiveRouteRunner(self._read_config())
+            self._hierarchical_mode = bool(
+                self.get_parameter("hierarchical_mode_enabled").value
+            )
+            if self._hierarchical_mode and not bool(
+                self.get_parameter("use_sim_time").value
+            ):
+                raise ValueError(
+                    "Phase 1 hierarchical mode is replay-only and requires use_sim_time"
+                )
+            self._hierarchical_bridge = HierarchicalCommandBridge(
+                HierarchicalBridgeConfig(
+                    enabled=self._hierarchical_mode,
+                    command_lease_s=float(
+                        self.get_parameter("nav2_cmd_lease_s").value
+                    ),
+                    max_linear_mps=float(
+                        self.get_parameter("hierarchical_max_linear_mps").value
+                    ),
+                    max_angular_rad_s=float(
+                        self.get_parameter("hierarchical_max_angular_rad_s").value
+                    ),
+                )
+            )
+            self._latest_nav2_command_received_at: Optional[float] = None
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
             self._latest_request: Optional[LiveRouteRequest] = None
             self._latest_scan: Optional[ScanInput] = None
             self._scan_stamp_tracker = ScanStampTracker()
             self._latest_odom: Optional[OdomMotionState] = None
+            self._latest_odom_received_at: Optional[float] = None
             self._latest_encoder_counts: Optional[TrackEncoderState] = None
             self._collision_state: Optional[str] = None
             self._collision_received_at: Optional[float] = None
@@ -152,8 +183,21 @@ def main(args=None):
             self._cmd_pub = self.create_publisher(Twist, self._supervisor_cmd_topic(), 10)
             self._status_pub = self.create_publisher(String, str(self.get_parameter("status_topic").value), 10)
             self._diagnostics_pub = self.create_publisher(DiagnosticArray, str(self.get_parameter("diagnostics_topic").value), 10)
-            self.create_subscription(String, str(self.get_parameter("route_request_topic").value), self._on_route_request, 10)
-            self.create_subscription(LaserScan, str(self.get_parameter("scan_topic").value), self._on_scan, 10)
+            if self._hierarchical_mode:
+                self.create_subscription(
+                    Twist,
+                    self._private_nav2_cmd_topic(),
+                    self._on_nav2_command,
+                    10,
+                )
+            else:
+                self.create_subscription(String, str(self.get_parameter("route_request_topic").value), self._on_route_request, 10)
+            self.create_subscription(
+                LaserScan,
+                str(self.get_parameter("scan_topic").value),
+                self._on_scan,
+                qos_profile_sensor_data,
+            )
             self.create_subscription(Odometry, str(self.get_parameter("odom_topic").value), self._on_odom, 10)
             self.create_subscription(String, str(self.get_parameter("encoder_counts_topic").value), self._on_encoder_counts, 10)
             self.create_subscription(String, str(self.get_parameter("collision_state_topic").value), self._on_collision_state, 10)
@@ -169,6 +213,11 @@ def main(args=None):
                 "status_topic": "/mission_api/v2/live_route/status",
                 "diagnostics_topic": "/diagnostics",
                 "cmd_vel_topic": "/cmd_vel",
+                "hierarchical_mode_enabled": False,
+                "nav2_cmd_topic": PRIVATE_NAV2_CMD_TOPIC,
+                "nav2_cmd_lease_s": 0.25,
+                "hierarchical_max_linear_mps": 0.10,
+                "hierarchical_max_angular_rad_s": 0.4,
                 "scan_topic": "/scan",
                 "odom_topic": "/odom",
                 "encoder_counts_topic": "/encoder_counts",
@@ -271,6 +320,23 @@ def main(args=None):
                 raise ValueError("live_route_runner cmd_vel_topic must remain /cmd_vel")
             return "/cmd_vel"
 
+        def _private_nav2_cmd_topic(self) -> str:
+            topic = str(self.get_parameter("nav2_cmd_topic").value)
+            if topic != PRIVATE_NAV2_CMD_TOPIC:
+                raise ValueError(
+                    f"hierarchical Nav2 command topic must remain {PRIVATE_NAV2_CMD_TOPIC}"
+                )
+            return PRIVATE_NAV2_CMD_TOPIC
+
+        def _on_nav2_command(self, msg) -> None:
+            now_s = self._now_seconds()
+            self._latest_nav2_command_received_at = now_s
+            self._hierarchical_bridge.accept(
+                float(msg.linear.x),
+                float(msg.angular.z),
+                received_at_s=now_s,
+            )
+
         def _on_route_request(self, msg) -> None:
             try:
                 request = route_request_from_json(str(msg.data), source_sha=self._source_sha)
@@ -330,6 +396,7 @@ def main(args=None):
 
         def _on_odom(self, msg) -> None:
             self._latest_odom = _odom_state(msg)
+            self._latest_odom_received_at = self._now_seconds()
 
         def _on_encoder_counts(self, msg) -> None:
             self._latest_encoder_counts = _encoder_state(getattr(msg, "data", None))
@@ -349,6 +416,15 @@ def main(args=None):
 
         def _on_cancel(self, request, response):
             self._cancel = True
+            if self._hierarchical_mode:
+                self._publish_command(
+                    type("Zero", (), {"linear_x": 0.0, "angular_z": 0.0})()
+                )
+                response.success = True
+                response.message = (
+                    "hierarchical replay cancel requested; zero command published"
+                )
+                return response
             try:
                 command = self._runner.update(self._current_state())
             except Exception as exc:
@@ -364,6 +440,44 @@ def main(args=None):
             return response
 
         def _tick(self) -> None:
+            if self._hierarchical_mode:
+                now_s = self._now_seconds()
+                evidence_fresh = bool(
+                    self._latest_odom is not None
+                    and self._latest_odom_received_at is not None
+                    and now_s >= self._latest_odom_received_at
+                    and now_s - self._latest_odom_received_at
+                    <= float(self.get_parameter("max_sample_age_s").value)
+                    and self._collision_received_at is not None
+                    and now_s >= self._collision_received_at
+                    and now_s - self._collision_received_at
+                    <= float(
+                        self.get_parameter("collision_state_max_age_s").value
+                    )
+                )
+                decision = self._hierarchical_bridge.evaluate(
+                    now_s=now_s,
+                    goal_active=(
+                        self._latest_nav2_command_received_at is not None
+                    ),
+                    mission_lease_valid=True,
+                    motion_evidence_fresh=evidence_fresh,
+                    collision_state=self._collision_state or "UNKNOWN",
+                    stop=self._stop,
+                    estop=self._estop,
+                    cancelled=self._cancel,
+                )
+                self._publish_command(
+                    type(
+                        "HierarchicalCommand",
+                        (),
+                        {
+                            "linear_x": decision.bridged_linear_mps,
+                            "angular_z": decision.bridged_angular_rad_s,
+                        },
+                    )()
+                )
+                return
             if not self._runner.active:
                 return
             try:
