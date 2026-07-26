@@ -100,8 +100,17 @@ class SystemdAdaptiveMissionSession:
                 action="stop supervised Adaptive mission graph",
                 timeout_s=35.0,
             )
+            self._run(
+                ["systemctl", "--user", "reset-failed", self.unit],
+                action="clear supervised Adaptive mission graph failure state",
+                timeout_s=5.0,
+            )
             status = self._unit_status()
-            if status["active"] or status["transitioning"]:
+            if (
+                status["active"]
+                or status["transitioning"]
+                or status["state"] != "inactive"
+            ):
                 raise MissionValidationError(
                     "supervised Adaptive mission graph did not relock: "
                     + str(status["detail"])
@@ -170,6 +179,7 @@ class SystemdAdaptiveMissionSession:
             "active": loaded and active_state == "active",
             "transitioning": active_state
             in {"activating", "deactivating", "reloading"},
+            "state": active_state,
             "detail": detail,
         }
 
