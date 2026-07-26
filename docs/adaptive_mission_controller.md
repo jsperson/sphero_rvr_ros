@@ -11,8 +11,8 @@ disabled-by-default `PhysicalAdaptiveMissionExecutor`.
 
 ```text
 prompt
-  -> Codex CLI authenticated with ChatGPT OAuth
-  -> exact typed world snapshot
+  -> supervised persistent Codex app-server using ChatGPT OAuth
+  -> fresh ephemeral thread with compact typed world evidence
   -> one move_distance / turn_angle / observe / stop intent
   -> deterministic snapshot, type, lease, and magnitude validation
   -> AdaptiveMissionExecutor
@@ -31,6 +31,78 @@ intent to one `LiveRouteRequest`. `RosLiveRouteExecutor` submits that request to
 `lidar_collision_stop_supervisor` remains the sole `/cmd_vel_motor` publisher.
 The adapter accepts completion only when route, source SHA, segment correlation,
 settlement, measurements, and requested-versus-supervised evidence agree.
+
+The OAuth provider owns one supervised `codex app-server` process and starts a
+new ephemeral thread for every snapshot-bound decision. It never reuses model
+conversation state. App-server startup verifies that the Codex account type is
+ChatGPT; credentials remain in Codex's persisted OAuth session and are neither
+read nor logged by the rover. The child process receives a minimal allowlist of
+non-secret runtime variables. A timeout, cancellation, malformed schema,
+authentication mismatch, or unrecoverable server failure fails closed. A
+crashed server may be restarted once within the original decision deadline.
+
+Every planning cycle emits
+`sphero_rvr.adaptive_planning_latency.v1` metrics for prompt/image preparation,
+OAuth client startup, inference, deterministic validation, and total latency.
+The record includes only model/runtime identifiers, snapshot ID, input length,
+image attachment reason, restart count, and status; it contains no credential
+material.
+
+The model input is a typed decision projection rather than the complete
+executor record. It retains STOP/ESTOP and collision state, source freshness,
+scan/odometry age, drop-off-detection unavailability, signed translation
+clearance, pose, progress, last bounded intent and navigation outcome, camera
+freshness, and camera detections. Bulky route samples, duplicate recognition
+records, receipt timestamps, and local image paths are excluded. Image pixels
+are attached only for a recoverable stall/collision decision or an
+object-directed objective. Every such decision requires a fresh frame- and
+SHA-bound image and otherwise fails closed.
+
+## Recorded-snapshot latency benchmark
+
+The no-motion benchmark uses three cases from recorded real mission
+`adaptive-mission-live-39f168fbc4a748609a6a80b48a76b247`: clear exploration,
+the fixed-obstacle recoverable stall, and an object-directed shoe objective.
+Each case runs three times. Success requires schema validity, a second
+deterministic validation producing an identical intent, objective progress,
+safe obstacle behavior, and an image attachment for both recovery and
+object-directed decisions.
+
+The high-effort Sol legacy baseline at runtime SHA
+`ef2ca33d` used:
+
+```bash
+PYTHONPATH=src python3 scripts/rvr_adaptive_planner_benchmark.py \
+  --mission-id adaptive-mission-live-39f168fbc4a748609a6a80b48a76b247 \
+  --integration exec --legacy-full-input --reasoning-effort high \
+  --model gpt-5.6-sol --repetitions 3 --timeout 60
+```
+
+All nine baseline decisions passed. Total latency was 13,400 ms p50 and
+22,464 ms p95. The first fixed-obstacle recovery took 19,358 ms.
+
+The final compact-input comparison at runtime SHA `a803d81e` used:
+
+```bash
+PYTHONPATH=src python3 scripts/rvr_adaptive_planner_benchmark.py \
+  --mission-id adaptive-mission-live-39f168fbc4a748609a6a80b48a76b247 \
+  --integration app-server --reasoning-effort low \
+  --model gpt-5.6-sol --model gpt-5.6-terra --model gpt-5.6-luna \
+  --repetitions 3 --timeout 60
+```
+
+| Model | Total p50 | Total p95 | Valid decisions |
+|---|---:|---:|---:|
+| Sol | 8,804 ms | 16,033 ms | 9/9 |
+| Terra | 7,267 ms | 10,994 ms | 9/9 |
+| Luna | 6,567 ms | 12,691 ms | 9/9 |
+
+The deterministic selector chooses the lowest valid p50 and then p95, so
+Adaptive mission uses Luna at low effort. This reduces total p50 by 51.0% and
+p95 by 43.5% from the high-Sol ephemeral baseline. The same set covers initial
+objective interpretation and did not justify a separate stronger model for
+that first decision. Sol remains the general Prompt Drive default; the
+Adaptive mission service selects Luna explicitly.
 
 ## Approval and limits
 
