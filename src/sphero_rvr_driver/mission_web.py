@@ -57,6 +57,7 @@ from .adaptive_mission_controller import (
     AdaptiveMissionIntent,
     AdaptiveMissionIntentProvider,
     AdaptiveMissionLimits,
+    choose_validated_adaptive_intent,
     validate_world_snapshot,
 )
 
@@ -1393,14 +1394,12 @@ class AdaptiveMissionAdapter:
                     mission_id=mission_id,
                     require_motion=False,
                 )
-                raw = dict(self.provider.choose(objective, staged_snapshot))
-                staged_intent = AdaptiveMissionIntent.validated(
-                    raw,
+                raw, staged_intent = choose_validated_adaptive_intent(
+                    self.provider,
+                    objective,
+                    staged_snapshot,
                     revision=1,
-                    snapshot=staged_snapshot,
                     issued_at_s=time.time(),
-                    provider_id=self.provider.provider_id,
-                    model_id=self.provider.model_id,
                     limits=self._mission_limits,
                 )
             except Exception as exc:

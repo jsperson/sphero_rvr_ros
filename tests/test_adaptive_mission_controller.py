@@ -12,6 +12,7 @@ import urllib.request
 
 import pytest
 
+from sphero_rvr_driver.codex_app_server import codex_oauth_environment
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_service import MissionService
 from sphero_rvr_driver.mission_web import (
@@ -29,6 +30,8 @@ from sphero_rvr_driver.adaptive_mission_controller import (
     AdaptiveMissionLimits,
     MovementDecision,
     _adaptive_mission_provider_prompt,
+    _decision_evidence_snapshot,
+    _visual_reasoning_relevance,
     _verified_camera_attachment,
     make_world_snapshot,
     validate_world_snapshot,
@@ -53,6 +56,20 @@ def _raw(snapshot: Mapping[str, Any], action: str, value: float = 0.0) -> dict[s
         "lease_s": 5.0,
         "timeout_s": 5.0,
     }
+
+
+def test_codex_oauth_environment_excludes_credentials(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-propagate")
+    monkeypatch.setenv("UNRELATED_OAUTH_TOKEN", "must-not-propagate")
+    monkeypatch.setenv("HOME", "/tmp/codex-oauth-home")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    environment = codex_oauth_environment()
+
+    assert environment["HOME"] == "/tmp/codex-oauth-home"
+    assert environment["PATH"] == "/usr/bin"
+    assert "OPENAI_API_KEY" not in environment
+    assert "UNRELATED_OAUTH_TOKEN" not in environment
 
 
 class SequenceProvider:
@@ -386,6 +403,7 @@ def test_real_oauth_provider_passes_verified_camera_to_codex(
     provider = CodexOAuthAdaptiveMissionIntentProvider(
         codex_command="codex",
         timeout_s=5.0,
+        integration="exec",
     )
 
     chosen = provider.choose("Explore from visual evidence.", snapshot)
@@ -393,6 +411,89 @@ def test_real_oauth_provider_passes_verified_camera_to_codex(
     assert chosen["action"] == "observe"
     assert len(codex_calls) == 1
     assert "--image" in codex_calls[0]
+
+
+def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    payload = b"\xff\xd8persistent-oauth-frame\xff\xd9"
+    source = tmp_path / "live-frame.jpg"
+    source.write_bytes(payload)
+    base = dict(
+        ReplayAdaptiveMissionExecutor().snapshot("persistent-app-server")
+    )
+    base.pop("schema", None)
+    base.pop("snapshot_id", None)
+    observations = dict(base["observations"])
+    observations["camera_detections"] = [
+        {"label": "shoe", "confidence": 0.91}
+    ]
+    perception = dict(observations["perception"])
+    perception.update(
+        {
+            "camera_fresh": True,
+            "camera_frame_id": "live-camera-00000009",
+            "camera_image": {
+                "available": True,
+                "frame_id": "live-camera-00000009",
+                "path": str(source),
+                "mime_type": "image/jpeg",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "byte_count": len(payload),
+            },
+        }
+    )
+    observations["perception"] = perception
+    base["observations"] = observations
+    snapshot = make_world_snapshot(base)
+
+    class FakeAppServer:
+        instances = 0
+
+        def __init__(self, **_kwargs) -> None:
+            FakeAppServer.instances += 1
+            self.calls = []
+
+        def run_turn(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["image_path"] is not None:
+                assert Path(kwargs["image_path"]).read_bytes() == payload
+            request = json.loads(kwargs["prompt"])
+            assert "path" not in json.dumps(request["world_snapshot"])
+            return json.dumps(_raw(snapshot, "observe")), 3.0, 0
+
+        def cancel(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "sphero_rvr_driver.adaptive_mission_controller.CodexAppServerClient",
+        FakeAppServer,
+    )
+    provider = CodexOAuthAdaptiveMissionIntentProvider(timeout_s=5.0)
+
+    provider.choose("Explore mapped free space.", snapshot)
+    provider.choose("Find the detected shoe.", snapshot)
+
+    assert FakeAppServer.instances == 1
+    assert provider._client is not None
+    assert [call["image_path"] is not None for call in provider._client.calls] == [
+        False,
+        True,
+    ]
+    compact = _decision_evidence_snapshot(snapshot)
+    assert compact["observations"]["camera_detections"] == [
+        {"label": "shoe", "confidence": 0.91}
+    ]
+    assert compact["observations"]["perception"]["camera_fresh"] is True
+    assert "path" not in compact["observations"]["perception"]["camera_image"]
+    assert _visual_reasoning_relevance(
+        "Find the detected shoe.", snapshot
+    ) == (True, "objective:detected_label")
+    assert len(provider.latency_history()) == 2
 
 
 def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None:

@@ -15,9 +15,9 @@ from .adaptive_mission_controller import (
     CodexOAuthAdaptiveMissionIntentProvider,
     AdaptiveMissionApprovalEnvelope,
     AdaptiveMissionController,
-    AdaptiveMissionIntent,
     AdaptiveMissionIntentProvider,
     AdaptiveMissionLimits,
+    choose_validated_adaptive_intent,
     validate_world_snapshot,
 )
 from .adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
@@ -334,6 +334,9 @@ class LiveAdaptiveMissionController:
                 cancellation = self._activation_cancel.get(str(mission_id))
                 if cancellation is not None:
                     cancellation.set()
+                cancel_provider = getattr(self.provider, "cancel", None)
+                if callable(cancel_provider):
+                    cancel_provider()
                 relock_error = self._deactivate_session(
                     reason="physical session relocked after operator cancellation"
                 )
@@ -423,6 +426,9 @@ class LiveAdaptiveMissionController:
             cancellation_events = tuple(self._activation_cancel.values())
         for cancellation in cancellation_events:
             cancellation.set()
+        cancel_provider = getattr(self.provider, "cancel", None)
+        if callable(cancel_provider):
+            cancel_provider()
         for controller in controllers:
             controller.close()
         deadline = time.monotonic() + float(timeout_s)
@@ -438,6 +444,9 @@ class LiveAdaptiveMissionController:
         relock_error = self._deactivate_session(
             reason="physical session relocked because mission service stopped"
         )
+        close_provider = getattr(self.provider, "close", None)
+        if callable(close_provider):
+            close_provider()
         if relock_error:
             self.executor.close()
             raise RuntimeError(
@@ -512,8 +521,13 @@ class LiveAdaptiveMissionController:
                         "prompt", active_objective
                     )
                 )
-                raw = dict(
-                    self.provider.choose(active_objective, snapshot)
+                raw, first_intent = choose_validated_adaptive_intent(
+                    self.provider,
+                    active_objective,
+                    snapshot,
+                    revision=1,
+                    issued_at_s=float(self._clock_s()),
+                    limits=mission_limits,
                 )
                 if cancellation.is_set():
                     raise MissionValidationError(
@@ -533,15 +547,6 @@ class LiveAdaptiveMissionController:
                 if latest_objective == active_objective:
                     break
             approved_at = float(approval["approved_at_s"])
-            first_intent = AdaptiveMissionIntent.validated(
-                raw,
-                revision=1,
-                snapshot=snapshot,
-                issued_at_s=float(self._clock_s()),
-                provider_id=self.provider.provider_id,
-                model_id=self.provider.model_id,
-                limits=mission_limits,
-            )
             self.executor.bind_approval(
                 proposal_digest=str(approval.get("proposal_digest", "")),
                 approval_id=str(approval.get("approval_id", "")),

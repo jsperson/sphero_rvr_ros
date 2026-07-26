@@ -561,7 +561,7 @@ def main(args=None):
             self.declare_parameter("stationary_perception_tick_s", 0.2)
             self.declare_parameter("stationary_perception_max_source_age_s", 1.5)
             self.declare_parameter("planning_model", "gpt-5.6-sol")
-            self.declare_parameter("planning_reasoning_effort", "high")
+            self.declare_parameter("planning_reasoning_effort", "low")
             self.declare_parameter("planning_max_motion_calls", 3)
             self.declare_parameter("planning_max_translation_m", 0.5)
             self.declare_parameter("planning_max_translation_per_call_m", 0.5)

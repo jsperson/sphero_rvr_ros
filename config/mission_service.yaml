@@ -27,7 +27,7 @@ live_mission_service:
     stationary_perception_tick_s: 0.2
     stationary_perception_max_source_age_s: 1.5
     planning_model: gpt-5.6-sol
-    planning_reasoning_effort: high
+    planning_reasoning_effort: low
     # Pi-owned LLM motion envelope. Calibration defaults stay conservative.
     # Attended room driving can be intentionally widened without changing code,
     # but PromptDriveLimits still enforces 8 calls / 2 m / 0.75 m per call /

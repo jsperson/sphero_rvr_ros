@@ -12,6 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ import threading
 import time
 from typing import Any, Callable, Mapping, Optional, Protocol
 
+from .codex_app_server import CodexAppServerClient, codex_oauth_environment
 from .mission_api import MissionValidationError
 from .prompt_drive import ALLOWED_REASONING_EFFORTS, DEFAULT_CODEX_MODEL_ID
 
@@ -40,6 +42,7 @@ _OBJECTIVE_STATUSES = {
     "blocked",
 }
 _CLEAR_COLLISION_STATES = {"CLEAR", "SLOW"}
+_LOG = logging.getLogger(__name__)
 
 
 def canonical_digest(payload: Mapping[str, Any]) -> str:
@@ -416,7 +419,7 @@ class AdaptiveMissionIntentProvider(Protocol):
 
 
 class CodexOAuthAdaptiveMissionIntentProvider:
-    """Real ChatGPT-OAuth planner for one snapshot-bound adaptive mission intent."""
+    """ChatGPT-OAuth planner with isolated turns on one supervised app-server."""
 
     provider_id = "openai-codex-oauth"
 
@@ -428,10 +431,16 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         codex_command: str = "codex",
         timeout_s: float = 120.0,
         limits: Optional[AdaptiveMissionLimits] = None,
+        integration: str = "app-server",
+        compact_input: bool = True,
     ) -> None:
         if reasoning_effort not in ALLOWED_REASONING_EFFORTS:
             raise MissionValidationError(
                 f"unsupported reasoning effort: {reasoning_effort}"
+            )
+        if integration not in {"app-server", "exec"}:
+            raise MissionValidationError(
+                f"unsupported Codex OAuth integration: {integration}"
             )
         self.model_id = model or os.environ.get(
             "OPENAI_MODEL", DEFAULT_CODEX_MODEL_ID
@@ -440,102 +449,302 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         self.codex_command = str(codex_command)
         self.timeout_s = float(timeout_s)
         self.limits = limits or AdaptiveMissionLimits()
+        self.integration = str(integration)
+        self.compact_input = bool(compact_input)
         self._oauth_checked = False
         self._oauth_lock = threading.Lock()
+        self._client = (
+            CodexAppServerClient(codex_command=self.codex_command)
+            if self.integration == "app-server"
+            else None
+        )
+        self._latency_lock = threading.Lock()
+        self._latency_history: list[dict[str, Any]] = []
+        self._cycle_sequence = 0
 
     def choose(
         self, prompt: str, snapshot: Mapping[str, Any]
     ) -> Mapping[str, Any]:
+        total_started = time.perf_counter()
+        preparation_started = total_started
+        metric: dict[str, Any] = {
+            "schema": "sphero_rvr.adaptive_planning_latency.v1",
+            "snapshot_id": str(snapshot.get("snapshot_id", "")),
+            "model_id": self.model_id,
+            "reasoning_effort": self.reasoning_effort,
+            "integration": self.integration,
+            "compact_input": self.compact_input,
+            "prompt_image_preparation_ms": 0.0,
+            "oauth_client_startup_ms": 0.0,
+            "inference_ms": 0.0,
+            "validation_ms": 0.0,
+            "total_ms": 0.0,
+            "image_attached": False,
+            "image_reason": "not_relevant",
+            "input_characters": 0,
+            "server_restart_count": 0,
+            "success": False,
+            "error_type": "",
+        }
+        payload: Any = None
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="rvr-adaptive-mission-"
+            ) as directory:
+                root = Path(directory)
+                decision_snapshot = (
+                    _decision_evidence_snapshot(snapshot)
+                    if self.compact_input
+                    else json.loads(json.dumps(dict(snapshot)))
+                )
+                image_required, image_reason = _visual_reasoning_relevance(
+                    prompt, snapshot
+                )
+                metric["image_reason"] = image_reason
+                attach_available_image = image_required or not self.compact_input
+                camera_path = (
+                    _verified_camera_attachment(snapshot, root)
+                    if attach_available_image
+                    else None
+                )
+                if image_required and camera_path is None:
+                    raise MissionValidationError(
+                        "visual planning decision lacks a fresh digest-bound camera image"
+                    )
+                metric["image_attached"] = camera_path is not None
+                decision_observations = decision_snapshot.get(
+                    "observations", {}
+                )
+                if isinstance(decision_observations, dict):
+                    decision_perception = decision_observations.get(
+                        "perception", {}
+                    )
+                    if isinstance(decision_perception, dict):
+                        decision_image = decision_perception.get(
+                            "camera_image", {}
+                        )
+                        if isinstance(decision_image, dict):
+                            decision_image["attached"] = (
+                                camera_path is not None
+                            )
+                            decision_image["attachment_reason"] = image_reason
+                provider_prompt = _adaptive_mission_provider_prompt(
+                    prompt,
+                    decision_snapshot,
+                    limits=self.limits,
+                )
+                metric["input_characters"] = len(provider_prompt)
+                metric["prompt_image_preparation_ms"] = (
+                    time.perf_counter() - preparation_started
+                ) * 1000.0
+                if self.integration == "app-server":
+                    inference_started = time.perf_counter()
+                    assert self._client is not None
+                    output, startup_ms, restart_count = self._client.run_turn(
+                        prompt=provider_prompt,
+                        model=self.model_id,
+                        effort=self.reasoning_effort,
+                        output_schema=_adaptive_mission_output_schema(),
+                        cwd=str(root),
+                        image_path=(
+                            str(camera_path)
+                            if camera_path is not None
+                            else None
+                        ),
+                        timeout_s=self.timeout_s,
+                    )
+                    inference_elapsed_ms = (
+                        time.perf_counter() - inference_started
+                    ) * 1000.0
+                    metric["oauth_client_startup_ms"] = startup_ms
+                    metric["inference_ms"] = max(
+                        0.0, inference_elapsed_ms - startup_ms
+                    )
+                    metric["server_restart_count"] = restart_count
+                else:
+                    output, startup_ms, inference_ms = self._choose_ephemeral(
+                        provider_prompt=provider_prompt,
+                        root=root,
+                        camera_path=camera_path,
+                    )
+                    metric["oauth_client_startup_ms"] = startup_ms
+                    metric["inference_ms"] = inference_ms
+                validation_started = time.perf_counter()
+                try:
+                    payload = json.loads(output)
+                except json.JSONDecodeError as exc:
+                    raise MissionValidationError(
+                        "Codex OAuth adaptive mission intent call returned malformed output"
+                    ) from exc
+                if not isinstance(payload, Mapping):
+                    raise MissionValidationError(
+                        "Codex OAuth adaptive mission intent output must be an object"
+                    )
+                metric["validation_ms"] = (
+                    time.perf_counter() - validation_started
+                ) * 1000.0
+            metric["success"] = True
+            return dict(payload)
+        except Exception as exc:
+            metric["error_type"] = exc.__class__.__name__
+            raise
+        finally:
+            metric["total_ms"] = (
+                time.perf_counter() - total_started
+            ) * 1000.0
+            self._record_latency(metric)
+
+    def _choose_ephemeral(
+        self,
+        *,
+        provider_prompt: str,
+        root: Path,
+        camera_path: Optional[Path],
+    ) -> tuple[str, float, float]:
         executable = shutil.which(self.codex_command)
         if executable is None:
             raise MissionValidationError(
                 "Codex CLI is not installed; Adaptive mission requires the real OAuth provider"
             )
-        env = dict(os.environ)
-        env.pop("OPENAI_API_KEY", None)
-        env.pop("CODEX_API_KEY", None)
+        env = codex_oauth_environment()
+        startup_started = time.perf_counter()
         self._require_chatgpt_oauth(executable, env)
-        with tempfile.TemporaryDirectory(prefix="rvr-adaptive-mission-") as directory:
-            root = Path(directory)
-            schema_path = root / "intent-schema.json"
-            output_path = root / "intent.json"
-            camera_path = _verified_camera_attachment(snapshot, root)
-            schema_path.write_text(
-                json.dumps(_adaptive_mission_output_schema(), sort_keys=True),
-                encoding="utf-8",
+        startup_ms = (time.perf_counter() - startup_started) * 1000.0
+        schema_path = root / "intent-schema.json"
+        output_path = root / "intent.json"
+        schema_path.write_text(
+            json.dumps(_adaptive_mission_output_schema(), sort_keys=True),
+            encoding="utf-8",
+        )
+        command = [
+            executable,
+            "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--strict-config",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--sandbox",
+            "read-only",
+            "--disable",
+            "shell_tool",
+            "--disable",
+            "unified_exec",
+            "--disable",
+            "apps",
+            "--disable",
+            "multi_agent",
+            "--disable",
+            "web_search_request",
+            "-c",
+            'web_search="disabled"',
+            "-c",
+            f'model_reasoning_effort="{self.reasoning_effort}"',
+            "-C",
+            str(root),
+            "-m",
+            self.model_id,
+            "--output-schema",
+            str(schema_path),
+            "--output-last-message",
+            str(output_path),
+        ]
+        if camera_path is not None:
+            command.extend(["--image", str(camera_path)])
+        command.append("-")
+        inference_started = time.perf_counter()
+        try:
+            completed = subprocess.run(
+                command,
+                input=provider_prompt,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=self.timeout_s,
+                env=env,
+                cwd=root,
+                check=False,
             )
-            command = [
-                executable,
-                "exec",
-                "--ignore-user-config",
-                "--ignore-rules",
-                "--strict-config",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "--disable",
-                "shell_tool",
-                "--disable",
-                "unified_exec",
-                "--disable",
-                "apps",
-                "--disable",
-                "multi_agent",
-                "--disable",
-                "web_search_request",
-                "-c",
-                'web_search="disabled"',
-                "-c",
-                f'model_reasoning_effort="{self.reasoning_effort}"',
-                "-C",
-                str(root),
-                "-m",
-                self.model_id,
-                "--output-schema",
-                str(schema_path),
-                "--output-last-message",
-                str(output_path),
-            ]
-            if camera_path is not None:
-                command.extend(["--image", str(camera_path)])
-            command.append("-")
-            try:
-                completed = subprocess.run(
-                    command,
-                    input=_adaptive_mission_provider_prompt(
-                        prompt, snapshot, limits=self.limits
-                    ),
-                    text=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    timeout=self.timeout_s,
-                    env=env,
-                    cwd=root,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise MissionValidationError(
-                    "Codex OAuth adaptive mission intent call timed out"
-                ) from exc
-            if completed.returncode != 0:
-                detail = str(completed.stderr).strip().splitlines()
-                suffix = f": {detail[-1]}" if detail else ""
-                raise MissionValidationError(
-                    "Codex OAuth adaptive mission intent call failed with exit code "
-                    f"{completed.returncode}{suffix}"
-                )
-            try:
-                payload = json.loads(output_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise MissionValidationError(
-                    "Codex OAuth adaptive mission intent call returned malformed output"
-                ) from exc
-        if not isinstance(payload, Mapping):
+        except subprocess.TimeoutExpired as exc:
             raise MissionValidationError(
-                "Codex OAuth adaptive mission intent output must be an object"
+                "Codex OAuth adaptive mission intent call timed out"
+            ) from exc
+        inference_ms = (time.perf_counter() - inference_started) * 1000.0
+        if completed.returncode != 0:
+            raise MissionValidationError(
+                "Codex OAuth adaptive mission intent call failed with exit code "
+                f"{completed.returncode}; inspect Pi Codex logs"
             )
-        return dict(payload)
+        try:
+            output = output_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise MissionValidationError(
+                "Codex OAuth adaptive mission intent call returned malformed output"
+            ) from exc
+        return output, startup_ms, inference_ms
+
+    def latency_history(self) -> list[dict[str, Any]]:
+        with self._latency_lock:
+            return json.loads(json.dumps(self._latency_history))
+
+    def add_validation_latency(
+        self,
+        snapshot_id: str,
+        *,
+        validation_ms: float,
+        valid: bool,
+    ) -> None:
+        """Add deterministic rover-schema validation to the latest cycle."""
+
+        with self._latency_lock:
+            for metric in reversed(self._latency_history):
+                if metric["snapshot_id"] == str(snapshot_id):
+                    metric["validation_ms"] = round(
+                        float(metric["validation_ms"]) + float(validation_ms), 3
+                    )
+                    metric["total_ms"] = round(
+                        float(metric["total_ms"]) + float(validation_ms), 3
+                    )
+                    if not valid:
+                        metric["success"] = False
+                        metric["error_type"] = "MissionValidationError"
+                    _LOG.info(
+                        "adaptive_planning_cycle_validated %s",
+                        json.dumps(
+                            metric,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    )
+                    break
+
+    def cancel(self) -> None:
+        if self._client is not None:
+            self._client.cancel()
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+
+    def _record_latency(self, metric: Mapping[str, Any]) -> None:
+        sanitized = dict(metric)
+        with self._latency_lock:
+            self._cycle_sequence += 1
+            sanitized["cycle"] = self._cycle_sequence
+            for name in (
+                "prompt_image_preparation_ms",
+                "oauth_client_startup_ms",
+                "inference_ms",
+                "validation_ms",
+                "total_ms",
+            ):
+                sanitized[name] = round(float(sanitized[name]), 3)
+            self._latency_history.append(sanitized)
+            del self._latency_history[:-256]
+        _LOG.info(
+            "adaptive_planning_cycle %s",
+            json.dumps(sanitized, sort_keys=True, separators=(",", ":")),
+        )
 
     def _require_chatgpt_oauth(
         self, executable: str, env: Mapping[str, str]
@@ -566,6 +775,60 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                     "run `codex login --device-auth`"
                 )
             self._oauth_checked = True
+
+
+def choose_validated_adaptive_intent(
+    provider: AdaptiveMissionIntentProvider,
+    prompt: str,
+    snapshot: Mapping[str, Any],
+    *,
+    revision: int,
+    issued_at_s: float,
+    limits: AdaptiveMissionLimits,
+    supervised_collision_escape: Optional[bool] = None,
+) -> tuple[dict[str, Any], AdaptiveMissionIntent]:
+    """Run provider inference and deterministic rover intent validation."""
+
+    raw = dict(provider.choose(prompt, snapshot))
+    collision_escape = (
+        bool(
+            _is_collision_replan_snapshot(snapshot)
+            and str(raw.get("action", "")).strip() == "move_distance"
+            and _finite(
+                raw.get("distance_m"),
+                "adaptive mission collision escape distance",
+            )
+            < 0.0
+        )
+        if supervised_collision_escape is None
+        else bool(supervised_collision_escape)
+    )
+    validation_started = time.perf_counter()
+    valid = False
+    try:
+        intent = AdaptiveMissionIntent.validated(
+            raw,
+            revision=revision,
+            snapshot=snapshot,
+            issued_at_s=issued_at_s,
+            provider_id=provider.provider_id,
+            model_id=provider.model_id,
+            limits=limits,
+            supervised_collision_escape=collision_escape,
+        )
+        valid = True
+        return raw, intent
+    finally:
+        record = getattr(provider, "add_validation_latency", None)
+        if callable(record):
+            record(
+                str(snapshot.get("snapshot_id", "")),
+                validation_ms=(
+                    time.perf_counter() - validation_started
+                )
+                * 1000.0,
+                valid=valid,
+            )
 
 
 def _adaptive_mission_output_schema() -> dict[str, Any]:
@@ -660,7 +923,7 @@ def _adaptive_mission_provider_prompt(
             "After any recoverable navigation outcome, reverse motion is additionally limited to 0.15 m.",
             "Before move_distance, require the signed distance magnitude to be no greater than authority.translation_clearance.forward_usable_m for forward motion or reverse_usable_m for reverse motion; if that value is missing or insufficient, choose turn_angle, observe, or stop.",
             "Camera detections and semantic tracks are objective evidence only; they never override lidar collision safety.",
-            "When observations.perception.camera_image.available is true, an exact frame- and SHA-bound camera image is attached as advisory evidence; use it to assess whether a stalled path shows a likely fixed obstacle, a likely minor surface feature, or remains visually indeterminate.",
+            "When observations.perception.camera_image.attached is true, an exact frame- and SHA-bound camera image is attached as advisory evidence; use it to assess whether a stalled path shows a likely fixed obstacle, a likely minor surface feature, or remains visually indeterminate.",
             "State that visual assessment in the rationale after a stall. Never use the image to override lidar, STOP, ESTOP, clearance, freshness, or deterministic motion limits.",
             "Use semantic tracks for object- or person-directed movement only when observations.perception.available is true.",
             "A face label is authoritative only when recognized_from_enrollment is true and enrollment_evidence_ids supplies explicit enrollment evidence; every other face is unknown.",
@@ -674,6 +937,133 @@ def _adaptive_mission_provider_prompt(
     return json.dumps(
         request, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
+
+
+def _decision_evidence_snapshot(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a world snapshot to typed fields that can affect one decision."""
+
+    observations = snapshot.get("observations", {})
+    observations = observations if isinstance(observations, Mapping) else {}
+    perception = observations.get("perception", {})
+    perception = perception if isinstance(perception, Mapping) else {}
+    camera_image = perception.get("camera_image", {})
+    camera_image = camera_image if isinstance(camera_image, Mapping) else {}
+    image_metadata = {
+        key: camera_image.get(key)
+        for key in (
+            "available",
+            "frame_id",
+            "mime_type",
+            "sha256",
+            "byte_count",
+        )
+        if key in camera_image
+    }
+    compact_perception = {
+        key: value
+        for key, value in perception.items()
+        if key != "camera_image"
+    }
+    compact_perception["camera_image"] = image_metadata
+    compact_observations = {
+        key: observations.get(key)
+        for key in (
+            "forward_clearance_m",
+            "left_clearance_m",
+            "right_clearance_m",
+            "motion_clearance",
+            "camera_detections",
+            "semantic_tracks",
+            "recognized_objects",
+            "recognized_faces",
+            "unknown_faces",
+            "coverage_note",
+        )
+        if key in observations
+    }
+    # Camera freshness and detections are deliberately retained even when no
+    # image pixels are relevant to the current decision.
+    compact_observations.setdefault("camera_detections", [])
+    compact_observations["perception"] = compact_perception
+    return {
+        key: json.loads(json.dumps(snapshot.get(key)))
+        for key in (
+            "schema",
+            "snapshot_id",
+            "mission_id",
+            "version",
+            "observed_at_s",
+            "evidence",
+            "safety",
+            "execution",
+            "last_execution",
+            "pose",
+            "progress",
+        )
+        if key in snapshot
+    } | {"observations": json.loads(json.dumps(compact_observations))}
+
+
+def _visual_reasoning_relevance(
+    prompt: str,
+    snapshot: Mapping[str, Any],
+) -> tuple[bool, str]:
+    outcome = _navigation_outcome(snapshot)
+    reason = str(outcome.get("reason", "")).strip().lower()
+    if outcome.get("recoverable") is True and reason in {
+        "stall",
+        "collision_veto",
+    }:
+        return True, f"recovery:{reason}"
+
+    objective = str(prompt).casefold()
+    observations = snapshot.get("observations", {})
+    observations = observations if isinstance(observations, Mapping) else {}
+    labels: set[str] = set()
+    for name in (
+        "camera_detections",
+        "semantic_tracks",
+        "recognized_objects",
+        "recognized_faces",
+        "unknown_faces",
+    ):
+        values = observations.get(name, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, Mapping):
+                continue
+            for key in ("label", "kind", "name", "class_name"):
+                value = str(item.get(key, "")).strip().casefold()
+                if len(value) >= 3:
+                    labels.add(value)
+    if any(label in objective for label in labels):
+        return True, "objective:detected_label"
+    object_terms = {
+        "approach",
+        "camera",
+        "face",
+        "find",
+        "follow",
+        "identify",
+        "locate",
+        "object",
+        "person",
+        "shoe",
+        "track",
+        "visual",
+        "image",
+        "pixels",
+    }
+    words = {
+        "".join(character for character in token if character.isalnum())
+        for token in objective.split()
+    }
+    if words & object_terms:
+        return True, "objective:object_directed"
+    return False, "not_relevant"
 
 
 def _verified_camera_attachment(
@@ -1427,6 +1817,9 @@ class AdaptiveMissionController:
     def close(self, *, timeout_s: float = 10.0) -> None:
         self._shutdown.set()
         self._cancellation.set()
+        cancel_provider = getattr(self.provider, "cancel", None)
+        if callable(cancel_provider):
+            cancel_provider()
         with self._objective_condition:
             self._objective_condition.notify_all()
         cancel_executor = getattr(self.executor, "cancel", None)
@@ -1813,27 +2206,44 @@ class AdaptiveMissionController:
                             )
                             future.cancel()
                             return None
-                raw = future.result()
+                raw = dict(future.result())
                 self._provider_future = None
-                next_intent = AdaptiveMissionIntent.validated(
-                    raw,
-                    revision=intent_revision,
-                    snapshot=provider_snapshot,
-                    issued_at_s=self._now(),
-                    provider_id=self.provider.provider_id,
-                    model_id=self.provider.model_id,
-                    limits=self.limits,
-                    supervised_collision_escape=bool(
-                        _is_collision_replan_snapshot(provider_snapshot)
-                        and str(raw.get("action", "")).strip()
-                        == "move_distance"
-                        and _finite(
-                            raw.get("distance_m"),
-                            "adaptive mission collision escape distance",
+                validation_started = time.perf_counter()
+                validation_valid = False
+                try:
+                    next_intent = AdaptiveMissionIntent.validated(
+                        raw,
+                        revision=intent_revision,
+                        snapshot=provider_snapshot,
+                        issued_at_s=self._now(),
+                        provider_id=self.provider.provider_id,
+                        model_id=self.provider.model_id,
+                        limits=self.limits,
+                        supervised_collision_escape=bool(
+                            _is_collision_replan_snapshot(provider_snapshot)
+                            and str(raw.get("action", "")).strip()
+                            == "move_distance"
+                            and _finite(
+                                raw.get("distance_m"),
+                                "adaptive mission collision escape distance",
+                            )
+                            < 0.0
+                        ),
+                    )
+                    validation_valid = True
+                finally:
+                    record_latency = getattr(
+                        self.provider, "add_validation_latency", None
+                    )
+                    if callable(record_latency):
+                        record_latency(
+                            str(provider_snapshot.get("snapshot_id", "")),
+                            validation_ms=(
+                                time.perf_counter() - validation_started
+                            )
+                            * 1000.0,
+                            valid=validation_valid,
                         )
-                        < 0.0
-                    ),
-                )
                 if (
                     _navigation_outcome(provider_snapshot).get(
                         "recoverable"
@@ -1916,6 +2326,9 @@ class AdaptiveMissionController:
 
     def _request_terminal(self, status: str, reason: str) -> None:
         self._cancellation.set()
+        cancel_provider = getattr(self.provider, "cancel", None)
+        if callable(cancel_provider):
+            cancel_provider()
         with self._lock:
             if self._terminal:
                 return
@@ -1957,6 +2370,10 @@ class AdaptiveMissionController:
     def _projection(self) -> dict[str, Any]:
         progress = self._world.get("progress", {})
         result = self._terminal_result() if self._terminal else {}
+        latency_reader = getattr(self.provider, "latency_history", None)
+        planning_cycles = (
+            latency_reader() if callable(latency_reader) else []
+        )
         map_projection = getattr(self.executor, "map_projection", None)
         map_payload = (
             map_projection()
@@ -1998,6 +2415,7 @@ class AdaptiveMissionController:
                 ),
                 "provider_calls_started": self._provider_calls_started,
                 "provider_calls_completed": self._provider_calls_completed,
+                "planning_cycles": planning_cycles,
             },
             "metrics": {
                 "intent_revision_count": len(self._revisions),
@@ -2041,6 +2459,7 @@ class AdaptiveMissionController:
         }
 
     def _terminal_result(self) -> dict[str, Any]:
+        latency_reader = getattr(self.provider, "latency_history", None)
         return {
             "schema": ADAPTIVE_MISSION_RESULT_SCHEMA,
             "mission_id": self.mission_id,
@@ -2056,6 +2475,9 @@ class AdaptiveMissionController:
                 "reasoning_effort": self.provider.reasoning_effort,
                 "calls_started": self._provider_calls_started,
                 "calls_completed": self._provider_calls_completed,
+                "planning_cycles": (
+                    latency_reader() if callable(latency_reader) else []
+                ),
             },
             "approval": {
                 "operator": self.operator,
