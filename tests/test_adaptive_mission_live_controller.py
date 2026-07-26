@@ -94,6 +94,7 @@ def _raw(
         "interpreted_objective": (
             "Explore locally reachable floor space and finish in a stopped state."
         ),
+        "objective_status": "complete" if action == "stop" else "in_progress",
         "lease_s": 5.0,
         "timeout_s": 5.0,
     }

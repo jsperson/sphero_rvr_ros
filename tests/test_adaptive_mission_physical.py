@@ -104,6 +104,7 @@ def _intent(
         "observation_focus": "authoritative live lidar",
         "rationale": "Fresh evidence supports one bounded intent.",
         "interpreted_objective": "Explore from fresh physical evidence.",
+        "objective_status": "complete" if action == "stop" else "in_progress",
         "lease_s": 5.0,
         "timeout_s": 5.0,
     }
@@ -511,6 +512,7 @@ def test_physical_adaptive_mission_rejects_move_beyond_typed_usable_clearance() 
             "observation_focus": "Choose a safer direction.",
             "rationale": "Forward clearance is narrow.",
             "interpreted_objective": "Explore safely.",
+            "objective_status": "in_progress",
             "lease_s": 5.0,
             "timeout_s": 5.0,
         }
@@ -535,7 +537,7 @@ def test_physical_adaptive_mission_rejects_move_beyond_typed_usable_clearance() 
     assert clearance["reverse_usable_m"] is None
 
 
-def test_physical_recovery_marks_only_deterministic_reverse_as_collision_escape() -> None:
+def test_physical_recovery_marks_only_controller_authorized_reverse_as_collision_escape() -> None:
     cache = _cache()
     cache.update(
         "collision",
@@ -579,6 +581,7 @@ def test_physical_recovery_marks_only_deterministic_reverse_as_collision_escape(
                 "observation_focus": "rear corridor",
                 "rationale": "Reverse within typed rear clearance.",
                 "interpreted_objective": "Explore and map the room.",
+                "objective_status": "in_progress",
                 "lease_s": 5.0,
                 "timeout_s": 5.0,
             },
@@ -588,6 +591,7 @@ def test_physical_recovery_marks_only_deterministic_reverse_as_collision_escape(
             provider_id="deterministic-supervised-recovery",
             model_id="none",
             limits=AdaptiveMissionLimits(),
+            supervised_collision_escape=True,
         )
         route = executor._route_request(recovery)
     finally:
@@ -664,6 +668,141 @@ def test_physical_adaptive_mission_accepts_bounded_settled_distance_overshoot() 
     assert result.reason == "complete"
     assert result.movement.supervised_linear_mps == 0.10
     assert result.snapshot["progress"]["cumulative_translation_m"] == 0.273
+
+
+def test_physical_adaptive_mission_replans_settled_modest_target_error_from_fresh_evidence() -> None:
+    cache = _cache()
+    correlation = "physical-adaptive-mission:adaptive-mission-intent:1"
+    transport = FakeRouteTransport(
+        {
+            "route_id": correlation,
+            "status": "failed",
+            "terminal_reason": "target_error",
+            "source_sha": SHA,
+            "terminal_settled": True,
+            "measured_distance_m": 0.284,
+            "measured_angle_deg": 0.0,
+            "executed_segments": [
+                {
+                    "correlation_id": correlation,
+                    "status": "failed",
+                    "terminal_distance_error_m": 0.034,
+                    "terminal_angle_error_deg": 0.0,
+                }
+            ],
+            "supervision": {
+                "samples": 3,
+                "collision_state": "CLEAR",
+                "requested": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+                "supervised": {
+                    "linear_mps": 0.0,
+                    "angular_rad_s": 0.0,
+                },
+            },
+        },
+        after_execute=lambda: _refresh_perception(cache),
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="4" * 64,
+            approval_id="operator:" + "4" * 64,
+            operator="scott@example.com",
+        )
+        result = executor.execute(
+            _intent(executor, "move_distance", 0.25),
+            threading.Event(),
+        )
+    finally:
+        executor.close()
+
+    assert result.outcome == "replan"
+    assert result.reason == "target_error"
+    assert result.snapshot["progress"]["cumulative_translation_m"] == pytest.approx(
+        0.284
+    )
+    outcome = result.snapshot["last_execution"]["navigation_outcome"]
+    assert outcome["classification"] == "recoverable_settled"
+    assert outcome["distance_error_m"] == pytest.approx(0.034)
+    assert outcome["fresh_evidence_required"] is True
+    assert result.snapshot["evidence"]["source_receipts"]["lidar"][
+        "received_at_s"
+    ] == pytest.approx(100.1)
+
+
+def test_physical_adaptive_mission_rejects_target_error_outside_replan_envelope() -> None:
+    correlation = "physical-adaptive-mission:adaptive-mission-intent:1"
+    transport = FakeRouteTransport(
+        {
+            "route_id": correlation,
+            "status": "failed",
+            "terminal_reason": "target_error",
+            "source_sha": SHA,
+            "terminal_settled": True,
+            "measured_distance_m": 0.31,
+            "measured_angle_deg": 0.0,
+            "executed_segments": [
+                {
+                    "correlation_id": correlation,
+                    "status": "failed",
+                    "terminal_distance_error_m": 0.06,
+                    "terminal_angle_error_deg": 0.0,
+                }
+            ],
+            "supervision": {
+                "samples": 3,
+                "collision_state": "CLEAR",
+                "requested": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+                "supervised": {
+                    "linear_mps": 0.0,
+                    "angular_rad_s": 0.0,
+                },
+            },
+        }
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        _cache(),
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="5" * 64,
+            approval_id="operator:" + "5" * 64,
+            operator="scott@example.com",
+        )
+        result = executor.execute(
+            _intent(executor, "move_distance", 0.25),
+            threading.Event(),
+        )
+    finally:
+        executor.close()
+
+    assert result.outcome == "failed"
+    assert result.reason == "target_error"
+    assert result.snapshot["last_execution"]["navigation_outcome"][
+        "recoverable"
+    ] is False
 
 
 def test_physical_adaptive_mission_rejects_terminal_overshoot_beyond_tolerance() -> None:
@@ -757,6 +896,7 @@ def test_physical_adaptive_mission_blocks_replanning_without_updated_perception(
         "observation_focus": "new camera, lidar, and localization receipts",
         "rationale": "Require updated perception before another model call.",
         "interpreted_objective": "Explore only from updated physical evidence.",
+        "objective_status": "in_progress",
         "lease_s": 0.05,
         "timeout_s": 0.05,
     }
@@ -870,9 +1010,69 @@ def test_physical_adaptive_mission_collision_terminal_vetoes_llm_motion() -> Non
         executor.close()
 
     assert result.outcome == "blocked"
-    assert result.reason == "collision_veto"
+    assert result.reason == "updated_perception_timeout"
     assert result.movement.requested_linear_mps == 0.10
     assert result.movement.supervised_linear_mps == 0.0
+
+
+def test_physical_adaptive_mission_collision_replans_only_after_fresh_evidence() -> None:
+    cache = _cache()
+    transport = FakeRouteTransport(
+        {
+            "route_id": (
+                "physical-adaptive-mission:adaptive-mission-intent:1"
+            ),
+            "status": "blocked",
+            "terminal_reason": "collision_veto",
+            "source_sha": SHA,
+            "terminal_settled": True,
+            "executed_segments": [],
+            "supervision": {
+                "samples": 2,
+                "collision_state": "BLOCKED",
+                "requested": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+                "supervised": {
+                    "linear_mps": 0.0,
+                    "angular_rad_s": 0.0,
+                },
+            },
+        },
+        after_execute=lambda: _refresh_perception(cache),
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="3" * 64,
+            approval_id="operator:" + "3" * 64,
+            operator="scott@example.com",
+        )
+        result = executor.execute(
+            _intent(executor, "move_distance", 0.10),
+            threading.Event(),
+        )
+    finally:
+        executor.close()
+
+    assert result.outcome == "replan"
+    assert result.reason == "collision_veto"
+    outcome = result.snapshot["last_execution"]["navigation_outcome"]
+    assert outcome["recoverable"] is True
+    assert outcome["measured_distance_m"] == 0.0
+    assert result.snapshot["evidence"]["source_receipts"]["camera"][
+        "received_at_s"
+    ] == pytest.approx(100.1)
 
 
 def test_physical_adaptive_mission_rechecks_stale_evidence_at_submission() -> None:
@@ -1022,6 +1222,7 @@ def test_physical_adaptive_mission_timeout_reports_uncertain_cleanup_until_settl
         "observation_focus": "authoritative live lidar",
         "rationale": "Exercise bounded timeout cleanup.",
         "interpreted_objective": "Stop if route cleanup cannot be proven.",
+        "objective_status": "in_progress",
         "lease_s": 0.05,
         "timeout_s": 0.05,
     }

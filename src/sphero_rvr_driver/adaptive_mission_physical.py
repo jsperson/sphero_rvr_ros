@@ -33,6 +33,8 @@ from .adaptive_mission_controller import (
 
 DEFAULT_MAX_TERMINAL_DISTANCE_ERROR_M = 0.03
 DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG = 10.0
+DEFAULT_MAX_REPLAN_DISTANCE_ERROR_M = 0.05
+DEFAULT_MAX_REPLAN_ANGLE_ERROR_DEG = 15.0
 DEFAULT_TRANSLATION_CLEARANCE_RESERVE_M = 0.40
 
 
@@ -99,6 +101,12 @@ class PhysicalAdaptiveMissionExecutor:
         max_terminal_angle_error_deg: float = (
             DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG
         ),
+        max_replan_distance_error_m: float = (
+            DEFAULT_MAX_REPLAN_DISTANCE_ERROR_M
+        ),
+        max_replan_angle_error_deg: float = (
+            DEFAULT_MAX_REPLAN_ANGLE_ERROR_DEG
+        ),
         translation_clearance_reserve_m: float = (
             DEFAULT_TRANSLATION_CLEARANCE_RESERVE_M
         ),
@@ -117,6 +125,12 @@ class PhysicalAdaptiveMissionExecutor:
         )
         self.max_terminal_angle_error_deg = float(
             max_terminal_angle_error_deg
+        )
+        self.max_replan_distance_error_m = float(
+            max_replan_distance_error_m
+        )
+        self.max_replan_angle_error_deg = float(
+            max_replan_angle_error_deg
         )
         self.translation_clearance_reserve_m = float(
             translation_clearance_reserve_m
@@ -146,6 +160,8 @@ class PhysicalAdaptiveMissionExecutor:
         for name in (
             "max_terminal_distance_error_m",
             "max_terminal_angle_error_deg",
+            "max_replan_distance_error_m",
+            "max_replan_angle_error_deg",
             "translation_clearance_reserve_m",
         ):
             value = float(getattr(self, name))
@@ -153,6 +169,24 @@ class PhysicalAdaptiveMissionExecutor:
                 raise MissionValidationError(
                     f"physical Adaptive mission {name} must be positive and finite"
                 )
+        if not (
+            self.max_terminal_distance_error_m
+            <= self.max_replan_distance_error_m
+            <= DEFAULT_MAX_REPLAN_DISTANCE_ERROR_M
+        ):
+            raise MissionValidationError(
+                "physical Adaptive mission replan distance error must be "
+                "between the terminal tolerance and 0.05 m"
+            )
+        if not (
+            self.max_terminal_angle_error_deg
+            <= self.max_replan_angle_error_deg
+            <= DEFAULT_MAX_REPLAN_ANGLE_ERROR_DEG
+        ):
+            raise MissionValidationError(
+                "physical Adaptive mission replan angle error must be "
+                "between the terminal tolerance and 15 degrees"
+            )
         self.execution_enabled = validate_physical_adaptive_mission_gate(
             enabled=execution_enabled,
             source_sha=self.source_sha,
@@ -550,7 +584,7 @@ class PhysicalAdaptiveMissionExecutor:
                 "cleanup_uncertain",
                 terminal.snapshot,
             )
-        if terminal.outcome == "completed":
+        if terminal.outcome in {"completed", "replan"}:
             updated, reason = self._wait_for_updated_perception(
                 before,
                 cancellation,
@@ -806,20 +840,58 @@ class PhysicalAdaptiveMissionExecutor:
             "estopped": "blocked",
             "timeout": "timeout",
         }.get(status, "failed")
-        if outcome == "completed":
-            measured_distance = abs(
-                _optional_finite(result.get("measured_distance_m")) or 0.0
-            )
-            measured_rotation = abs(
-                _optional_finite(result.get("measured_angle_deg")) or 0.0
-            )
+        recoverable = self._recoverable_navigation_terminal(
+            intent,
+            request,
+            result,
+            status=status,
+            reason=reason,
+            movement=movement,
+            samples=samples,
+        )
+        if recoverable:
+            outcome = "replan"
+        measured_distance = abs(
+            _optional_finite(result.get("measured_distance_m")) or 0.0
+        )
+        measured_rotation = abs(
+            _optional_finite(result.get("measured_angle_deg")) or 0.0
+        )
+        if outcome in {"completed", "replan"}:
             self._cumulative_translation_m += measured_distance
             self._cumulative_rotation_deg += measured_rotation
             self._intent_count += 1
+        navigation_outcome = {
+            "classification": (
+                "completed"
+                if outcome == "completed"
+                else (
+                    "recoverable_settled"
+                    if outcome == "replan"
+                    else "terminal"
+                )
+            ),
+            "reason": reason or status,
+            "recoverable": outcome == "replan",
+            "terminal_settled": result.get("terminal_settled") is True,
+            "fresh_evidence_required": outcome == "replan",
+            "requested_distance_m": intent.distance_m,
+            "requested_angle_deg": intent.angle_deg,
+            "measured_distance_m": measured_distance,
+            "measured_angle_deg": measured_rotation,
+            "distance_error_m": abs(
+                measured_distance - abs(intent.distance_m)
+            ),
+            "angle_error_deg": abs(
+                measured_rotation - abs(intent.angle_deg)
+            ),
+            "collision_state": movement.collision_state,
+        }
         self._last_execution = {
             "intent": intent.to_json_dict(),
             "route_terminal": dict(result),
             "movement": movement.to_json_dict(),
+            "navigation_outcome": navigation_outcome,
         }
         snapshot = self.snapshot(self._mission_id)
         return IntentExecutionResult(
@@ -828,6 +900,115 @@ class PhysicalAdaptiveMissionExecutor:
             snapshot=snapshot,
             movement=movement,
             duration_s=max(0.0, time.monotonic() - started),
+        )
+
+    def _recoverable_navigation_terminal(
+        self,
+        intent: AdaptiveMissionIntent,
+        request: LiveRouteRequest,
+        result: Mapping[str, Any],
+        *,
+        status: str,
+        reason: str,
+        movement: MovementDecision,
+        samples: int,
+    ) -> bool:
+        """Admit only settled, correlated, tightly bounded outcomes to replanning."""
+
+        normalized_reason = str(reason).strip().lower()
+        if (
+            normalized_reason
+            not in {"target_error", "stall", "collision_veto"}
+            or status not in {"failed", "blocked"}
+            or result.get("terminal_settled") is not True
+            or samples < 1
+            or not _movement_within_limits(movement, self.limits)
+            or str(result.get("route_id", "")) != request.route_id
+            or str(result.get("source_sha", "")) != self.source_sha
+        ):
+            return False
+        collision_state = movement.collision_state.upper()
+        if collision_state in {"ESTOP", "ESTOPPED", "LATCHED"}:
+            return False
+        executed = result.get("executed_segments")
+        if not isinstance(executed, list) or len(executed) > 1:
+            return False
+        measured_distance = _optional_finite(
+            result.get("measured_distance_m")
+        )
+        measured_rotation = _optional_finite(
+            result.get("measured_angle_deg")
+        )
+        if not executed:
+            return bool(
+                normalized_reason == "collision_veto"
+                and (measured_distance is None or measured_distance == 0.0)
+                and (measured_rotation is None or measured_rotation == 0.0)
+                and movement.supervised_linear_mps == 0.0
+                and movement.supervised_angular_rad_s == 0.0
+            )
+        segment = _mapping(executed[0])
+        if (
+            str(segment.get("correlation_id", ""))
+            != request.segments[0].correlation_id
+            or str(segment.get("status", "")).lower()
+            not in {"failed", "blocked", "stopped"}
+            or measured_distance is None
+            or measured_rotation is None
+        ):
+            return False
+        epsilon = 1e-9
+        if intent.action == "move_distance":
+            distance_error = abs(
+                abs(measured_distance) - abs(intent.distance_m)
+            )
+            segment_error = _optional_finite(
+                segment.get("terminal_distance_error_m")
+            )
+            if normalized_reason == "target_error" and (
+                segment_error is None
+                or not math.isclose(
+                    segment_error,
+                    distance_error,
+                    rel_tol=0.0,
+                    abs_tol=1e-6,
+                )
+            ):
+                return False
+            return bool(
+                distance_error
+                <= self.max_replan_distance_error_m + epsilon
+                and abs(measured_distance)
+                <= self.limits.max_translation_per_intent_m
+                + self.max_replan_distance_error_m
+                + epsilon
+                and abs(measured_rotation)
+                <= self.limits.max_rotation_per_intent_deg + epsilon
+            )
+        angle_error = abs(
+            abs(measured_rotation) - abs(intent.angle_deg)
+        )
+        segment_error = _optional_finite(
+            segment.get("terminal_angle_error_deg")
+        )
+        if normalized_reason == "target_error" and (
+            segment_error is None
+            or not math.isclose(
+                segment_error,
+                angle_error,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            return False
+        return bool(
+            angle_error <= self.max_replan_angle_error_deg + epsilon
+            and abs(measured_rotation)
+            <= self.limits.max_rotation_per_intent_deg
+            + self.max_replan_angle_error_deg
+            + epsilon
+            and abs(measured_distance)
+            <= self.limits.max_translation_per_intent_m + epsilon
         )
 
     def _terminal_motion_within_limits(
@@ -900,6 +1081,22 @@ class PhysicalAdaptiveMissionExecutor:
         self._last_execution = {
             "intent": intent.to_json_dict(),
             "movement": movement.to_json_dict(),
+            "navigation_outcome": {
+                "classification": (
+                    "completed" if outcome == "completed" else "terminal"
+                ),
+                "reason": reason,
+                "recoverable": False,
+                "terminal_settled": outcome == "completed",
+                "fresh_evidence_required": False,
+                "requested_distance_m": intent.distance_m,
+                "requested_angle_deg": intent.angle_deg,
+                "measured_distance_m": 0.0,
+                "measured_angle_deg": 0.0,
+                "distance_error_m": abs(intent.distance_m),
+                "angle_error_deg": abs(intent.angle_deg),
+                "collision_state": movement.collision_state,
+            },
         }
         updated_snapshot = self.snapshot(self._mission_id)
         return IntentExecutionResult(
@@ -1027,7 +1224,7 @@ def _stop_active(control: Mapping[str, Any], collision_state: str) -> bool:
 
 def _is_supervised_collision_escape(intent: AdaptiveMissionIntent) -> bool:
     return bool(
-        intent.provider_id == "deterministic-supervised-recovery"
+        intent.supervised_collision_escape
         and intent.action == "move_distance"
         and intent.distance_m < 0.0
     )

@@ -44,6 +44,7 @@ def _raw(snapshot: Mapping[str, Any], action: str, value: float = 0.0) -> dict[s
         "interpreted_objective": (
             "Explore reachable local free space and stop when the planned sample is complete."
         ),
+        "objective_status": "complete" if action == "stop" else "in_progress",
         "lease_s": 5.0,
         "timeout_s": 5.0,
     }
@@ -355,6 +356,40 @@ def test_adaptive_mission_accepts_all_supported_snapshot_bound_intents(
 
 
 @pytest.mark.parametrize(
+    ("action", "objective_status", "message"),
+    (
+        ("stop", "in_progress", "stop requires"),
+        ("move_distance", "complete", "motion requires"),
+        ("observe", "complete", "observe requires"),
+        ("turn_angle", "", "objective status is unsupported"),
+    ),
+)
+def test_adaptive_mission_rejects_unreasonable_action_objective_status_pair(
+    action: str,
+    objective_status: str,
+    message: str,
+) -> None:
+    limits = AdaptiveMissionLimits()
+    snapshot = ReplayAdaptiveMissionExecutor(limits=limits).snapshot(
+        "objective-status"
+    )
+    value = 0.10 if action == "move_distance" else 10.0
+    raw = _raw(snapshot, action, value)
+    raw["objective_status"] = objective_status
+
+    with pytest.raises(MissionValidationError, match=message):
+        AdaptiveMissionIntent.validated(
+            raw,
+            revision=1,
+            snapshot=snapshot,
+            issued_at_s=10.0,
+            provider_id="test",
+            model_id="test",
+            limits=limits,
+        )
+
+
+@pytest.mark.parametrize(
     ("action", "value", "message"),
     (
         ("move_distance", 0.251, "translation exceeds 0.25"),
@@ -451,6 +486,42 @@ def test_adaptive_mission_replans_repeatedly_without_a_cumulative_travel_cap(tmp
     )
 
 
+def test_model_stop_distinguishes_completed_from_blocked_objective(
+    tmp_path,
+) -> None:
+    class BlockedStopProvider(SequenceProvider):
+        def choose(
+            self, prompt: str, snapshot: Mapping[str, Any]
+        ) -> Mapping[str, Any]:
+            raw = dict(super().choose(prompt, snapshot))
+            raw["objective_status"] = "blocked"
+            raw["rationale"] = (
+                "Fresh evidence offers no validated observation or maneuver."
+            )
+            return raw
+
+    provider = BlockedStopProvider([("stop", 0.0)])
+    adapter = AdaptiveMissionAdapter(
+        provider,
+        database=tmp_path / "blocked-stop.sqlite3",
+        source_sha="adaptive-mission-blocked-stop",
+        allow_loopback_test_approval=True,
+    )
+    try:
+        proposed = adapter.propose(PROMPT, "adaptive_mission_explore")
+        adapter.approve(proposed["approval"]["required_phrase"])
+        terminal = _wait_terminal(adapter)
+    finally:
+        adapter.close()
+
+    assert terminal["mission"]["state"] == "BLOCKED"
+    assert terminal["mission"]["terminal_reason"] == (
+        "planner_objective_blocked"
+    )
+    revision = terminal["mission"]["result"]["intent_revisions"][0]
+    assert revision["objective_status"] == "blocked"
+
+
 def test_adaptive_mission_replans_movement_from_fresh_recognition_evidence(tmp_path) -> None:
     provider = RecognitionDrivenProvider()
     adapter = AdaptiveMissionAdapter(
@@ -535,7 +606,12 @@ def test_exploration_recovery_reverses_turns_and_replans_after_failure(
     supervisor,
 ) -> None:
     provider = SequenceProvider(
-        [("move_distance", 0.20), ("stop", 0.0)]
+        [
+            ("move_distance", 0.20),
+            ("move_distance", -0.15),
+            ("turn_angle", 45.0),
+            ("stop", 0.0),
+        ]
     )
     executor = RecoveryReplayAdaptiveMissionExecutor(
         supervisor=supervisor
@@ -582,15 +658,62 @@ def test_exploration_recovery_reverses_turns_and_replans_after_failure(
         "stop",
     ]
     assert revisions[1]["distance_m"] == pytest.approx(-0.15)
-    assert revisions[1]["provider_id"] == (
-        "deterministic-supervised-recovery"
+    assert revisions[1]["provider_id"] == provider.provider_id
+    assert revisions[1]["supervised_collision_escape"] is (
+        isinstance(supervisor, ReplayCollisionSupervisor)
+        and not isinstance(supervisor, StallOnceSupervisor)
     )
     assert revisions[2]["angle_deg"] == pytest.approx(45.0)
-    assert provider.calls == 2
+    assert provider.calls == 4
     event_types = [event["event_type"] for event in terminal["events"]]
-    assert "recovery_started" in event_types
-    assert "recovery_reverse_completed" in event_types
-    assert "recovery_completed" in event_types
+    assert "outcome_replan" in event_types
+
+
+def test_llm_problem_solving_reverse_is_capped_at_fifteen_centimeters() -> None:
+    provider = SequenceProvider(
+        [("move_distance", 0.20), ("move_distance", -0.20)]
+    )
+    executor = RecoveryReplayAdaptiveMissionExecutor(
+        supervisor=ReplayCollisionSupervisor(collision_on_intent=1)
+    )
+    mission_id = "recovery-reverse-cap"
+    first_snapshot = executor.snapshot(mission_id)
+    first_raw = provider.choose(PROMPT, first_snapshot)
+    approved_at = time.time()
+    first_intent = AdaptiveMissionIntent.validated(
+        first_raw,
+        revision=1,
+        snapshot=first_snapshot,
+        issued_at_s=approved_at,
+        provider_id=provider.provider_id,
+        model_id=provider.model_id,
+        limits=executor.limits,
+    )
+    controller = AdaptiveMissionController(
+        mission_id=mission_id,
+        prompt="Explore and map the room",
+        proposal_digest="b" * 64,
+        operator="operator@example.com",
+        authenticated=True,
+        authentication_source="tailscale-serve",
+        approved_at_s=approved_at,
+        first_snapshot=first_snapshot,
+        first_intent=first_intent,
+        provider=provider,
+        executor=executor,
+        enable_exploration_recovery=True,
+    )
+    try:
+        controller.start()
+        terminal = _wait_controller_terminal(controller)
+    finally:
+        controller.close()
+
+    assert terminal["status"] == "failed"
+    assert "problem-solving reverse exceeds 0.15 m" in (
+        terminal["terminal_reason"]
+    )
+    assert len(terminal["result"]["intent_revisions"]) == 1
 
 
 def test_stale_updated_snapshot_stops_before_another_provider_call(tmp_path) -> None:
