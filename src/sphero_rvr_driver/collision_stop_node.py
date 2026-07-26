@@ -166,6 +166,7 @@ def main(args=None):
     from rclpy.duration import Duration
     from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
     from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
     from rclpy.time import Time
     from sensor_msgs.msg import LaserScan
     from std_msgs.msg import String
@@ -202,7 +203,12 @@ def main(args=None):
             self._events_pub = self.create_publisher(String, events_topic, 10)
             self._diagnostics_pub = self.create_publisher(DiagnosticArray, diagnostics_topic, 10)
             self.create_subscription(Twist, requested_cmd_topic, self._on_cmd_vel, 10)
-            self.create_subscription(LaserScan, scan_topic, self._on_scan, 10)
+            self.create_subscription(
+                LaserScan,
+                scan_topic,
+                self._on_scan,
+                qos_profile_sensor_data,
+            )
 
             self._driver_stop_client = self.create_client(
                 Trigger,

@@ -21,6 +21,7 @@ setup(
                 "launch/mission_service.launch.py",
                 "launch/stationary_perception.launch.py",
                 "launch/adaptive_mission_perception.launch.py",
+                "launch/hierarchical_exploration_replay.launch.py",
             ],
         ),
         (
@@ -37,6 +38,8 @@ setup(
                 "config/live_route_runner.yaml",
                 "config/mission_service.yaml",
                 "config/mission-stack.env.example",
+                "config/hierarchical_nav2.yaml",
+                "config/hierarchical_navigate_through_poses.xml",
             ],
         ),
         (
@@ -90,6 +93,16 @@ setup(
                 "docs/stationary_perception.md",
                 "docs/adaptive_mission_authority.md",
                 "docs/adaptive_mission_controller.md",
+                "docs/hierarchical_exploration.md",
+                "docs/hierarchical_exploration_phase1.md",
+            ],
+        ),
+        (
+            "share/sphero_rvr_driver/artifacts/phase1_recorded_slam_map",
+            [
+                "artifacts/phase1_recorded_slam_map/phase1_recorded_slam_map.yaml",
+                "artifacts/phase1_recorded_slam_map/phase1_recorded_slam_map.pgm",
+                "artifacts/phase1_recorded_slam_map/manifest.json",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -138,6 +151,8 @@ setup(
             "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
             "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
             "stationary_perception = sphero_rvr_driver.stationary_perception_node:main",
+            "rvr_nav2_loopback_sim = sphero_rvr_driver.nav2_loopback_compat:main",
+            "rvr_hierarchical_nav2_replay_validate = sphero_rvr_driver.hierarchical_nav2_replay_validation:main",
         ],
     },
 )
