@@ -598,9 +598,41 @@ def test_settled_navigation_outcome_uses_normal_schema_without_alternatives() ->
     assert "consider observe" not in encoded
     assert "change the approach angle" not in encoded
     assert '"alternatives"' not in encoded
-    assert _adaptive_mission_output_schema()["properties"]["action"][
+    output_schema = _adaptive_mission_output_schema(
+        str(snapshot["snapshot_id"])
+    )
+    assert output_schema["properties"]["action"][
         "enum"
     ] == ["move_distance", "observe", "stop", "turn_angle"]
+    assert output_schema["properties"]["snapshot_id"]["enum"] == [
+        snapshot["snapshot_id"]
+    ]
+
+
+def test_output_schema_requires_and_binds_exact_current_snapshot() -> None:
+    current_snapshot_id = "fresh-snapshot-id"
+    historical_snapshot_id = "prior-snapshot-id"
+
+    output_schema = _adaptive_mission_output_schema(current_snapshot_id)
+
+    assert output_schema["properties"]["snapshot_id"] == {
+        "type": "string",
+        "enum": [current_snapshot_id],
+    }
+    assert historical_snapshot_id not in output_schema["properties"][
+        "snapshot_id"
+    ]["enum"]
+    assert output_schema["properties"]["action"]["enum"] == [
+        "move_distance",
+        "observe",
+        "stop",
+        "turn_angle",
+    ]
+    with pytest.raises(
+        MissionValidationError,
+        match="requires an exact snapshot identity",
+    ):
+        _adaptive_mission_output_schema("")
 
 
 def test_normal_success_prompt_has_no_recovery_specific_feedback() -> None:
@@ -702,6 +734,13 @@ def test_real_oauth_provider_passes_verified_camera_to_codex(
         codex_calls.append(list(command))
         image_index = command.index("--image") + 1
         assert Path(command[image_index]).read_bytes() == payload
+        schema_index = command.index("--output-schema") + 1
+        output_schema = json.loads(
+            Path(command[schema_index]).read_text(encoding="utf-8")
+        )
+        assert output_schema["properties"]["snapshot_id"]["enum"] == [
+            snapshot["snapshot_id"]
+        ]
         output_index = command.index("--output-last-message") + 1
         Path(command[output_index]).write_text(
             json.dumps(_raw(snapshot, "observe")),
@@ -825,6 +864,16 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
         True,
         False,
     ]
+    assert all(
+        call["output_schema"]["properties"]["snapshot_id"]["enum"]
+        == [snapshot["snapshot_id"]]
+        for call in provider._client.calls
+    )
+    assert all(
+        call["output_schema"]["properties"]["action"]["enum"]
+        == ["move_distance", "observe", "stop", "turn_angle"]
+        for call in provider._client.calls
+    )
     prompts = [
         json.loads(call["prompt"])
         for call in provider._client.calls

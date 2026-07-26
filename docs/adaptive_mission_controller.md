@@ -59,6 +59,13 @@ are attached only for a recoverable stall/collision decision or an
 object-directed objective. Every such decision requires a fresh frame- and
 SHA-bound image and otherwise fails closed.
 
+Each isolated decision also receives a dynamically bound structured-output
+schema whose `snapshot_id` permits only that decision's fresh snapshot. Prior
+execution evidence may contain historical snapshot identities, but they are
+not valid output values. The deterministic snapshot-identity validator remains
+authoritative and still fails closed if a provider violates the schema; the
+controller neither repairs nor substitutes a returned identity.
+
 ## Recorded-snapshot latency benchmark
 
 The no-motion benchmark uses three cases from recorded real mission
