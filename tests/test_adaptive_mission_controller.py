@@ -489,7 +489,11 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
         "sphero_rvr_driver.adaptive_mission_controller.CodexAppServerClient",
         FakeAppServer,
     )
-    provider = CodexOAuthAdaptiveMissionIntentProvider(timeout_s=5.0)
+    latency_records: list[str] = []
+    provider = CodexOAuthAdaptiveMissionIntentProvider(
+        timeout_s=5.0,
+        latency_logger=latency_records.append,
+    )
 
     provider.choose("Explore mapped free space.", snapshot)
     provider.choose("Find the detected shoe.", snapshot)
@@ -522,6 +526,13 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
         "Choose one safe action.", snapshot
     ) == (False, "not_relevant")
     assert len(provider.latency_history()) == 2
+    assert len(latency_records) == 2
+    assert all(
+        record.startswith("adaptive_planning_cycle {")
+        and "OPENAI_API_KEY" not in record
+        and str(source) not in record
+        for record in latency_records
+    )
 
 
 def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None:

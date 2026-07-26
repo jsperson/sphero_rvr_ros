@@ -437,6 +437,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         limits: Optional[AdaptiveMissionLimits] = None,
         integration: str = "app-server",
         compact_input: bool = True,
+        latency_logger: Optional[Callable[[str], None]] = None,
     ) -> None:
         if reasoning_effort not in ALLOWED_REASONING_EFFORTS:
             raise MissionValidationError(
@@ -455,6 +456,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         self.limits = limits or AdaptiveMissionLimits()
         self.integration = str(integration)
         self.compact_input = bool(compact_input)
+        self._latency_logger = latency_logger or _LOG.info
         self._oauth_checked = False
         self._oauth_lock = threading.Lock()
         self._client = (
@@ -712,13 +714,13 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                     if not valid:
                         metric["success"] = False
                         metric["error_type"] = "MissionValidationError"
-                    _LOG.info(
-                        "adaptive_planning_cycle_validated %s",
-                        json.dumps(
+                    self._latency_logger(
+                        "adaptive_planning_cycle_validated "
+                        + json.dumps(
                             metric,
                             sort_keys=True,
                             separators=(",", ":"),
-                        ),
+                        )
                     )
                     break
 
@@ -745,9 +747,13 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                 sanitized[name] = round(float(sanitized[name]), 3)
             self._latency_history.append(sanitized)
             del self._latency_history[:-256]
-        _LOG.info(
-            "adaptive_planning_cycle %s",
-            json.dumps(sanitized, sort_keys=True, separators=(",", ":")),
+        self._latency_logger(
+            "adaptive_planning_cycle "
+            + json.dumps(
+                sanitized,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         )
 
     def _require_chatgpt_oauth(
