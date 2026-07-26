@@ -170,7 +170,7 @@ resurrect that mission.
 The planner may:
 
 - interpret spatial goals from natural language;
-- choose exploration direction and coverage order;
+- choose navigation direction and, for exploration, coverage order;
 - select reachable local objectives and routes;
 - revisit uncertain regions or observations;
 - pause to gather evidence;

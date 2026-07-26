@@ -35,6 +35,7 @@ from sphero_rvr_driver.adaptive_mission_controller import (
     MovementDecision,
     RecoverableSafetyRejection,
     _adaptive_mission_provider_prompt,
+    _adaptive_mission_output_schema,
     _decision_evidence_snapshot,
     _visual_reasoning_relevance,
     _verified_camera_attachment,
@@ -185,12 +186,18 @@ class SequenceProvider:
         self.entered_delayed_call = threading.Event()
         self.safety_rejections: list[Mapping[str, Any]] = []
         self.snapshots: list[str] = []
+        self.snapshot_payloads: list[Mapping[str, Any]] = []
+        self.prompts: list[str] = []
 
     def choose(
         self, prompt: str, snapshot: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         assert prompt
+        self.prompts.append(str(prompt))
         self.snapshots.append(str(snapshot["snapshot_id"]))
+        self.snapshot_payloads.append(
+            json.loads(json.dumps(dict(snapshot)))
+        )
         self.calls += 1
         if self.fail_after_calls is not None and self.calls > self.fail_after_calls:
             raise ConnectionError("injected provider network failure")
@@ -335,6 +342,40 @@ class StallOnceSupervisor(ReplayCollisionSupervisor):
         return super().supervise(intent, snapshot, limits)
 
 
+class StallOnCallsSupervisor(ReplayCollisionSupervisor):
+    def __init__(self, stall_calls: set[int]) -> None:
+        super().__init__()
+        self.stall_calls = set(stall_calls)
+
+    def supervise(
+        self,
+        intent: AdaptiveMissionIntent,
+        snapshot: Mapping[str, Any],
+        limits: AdaptiveMissionLimits,
+    ) -> MovementDecision:
+        next_call = self.calls + 1
+        if next_call in self.stall_calls:
+            self.calls = next_call
+            return MovementDecision(
+                "failed",
+                "stall",
+                (
+                    limits.linear_speed_mps
+                    if intent.action == "move_distance"
+                    else 0.0
+                ),
+                (
+                    limits.angular_speed_rad_s
+                    if intent.action == "turn_angle"
+                    else 0.0
+                ),
+                0.0,
+                0.0,
+                "CLEAR",
+            )
+        return super().supervise(intent, snapshot, limits)
+
+
 def _wait_terminal(adapter: AdaptiveMissionAdapter, timeout_s: float = 3.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -356,6 +397,51 @@ def _wait_controller_terminal(
             return snapshot
         time.sleep(0.005)
     raise AssertionError("adaptive mission controller did not become terminal")
+
+
+def _run_stall_sequence(
+    *,
+    actions: list[tuple[str, float]],
+    stall_calls: set[int],
+    prompt: str,
+) -> tuple[dict[str, Any], SequenceProvider]:
+    provider = SequenceProvider(actions)
+    executor = RecoveryReplayAdaptiveMissionExecutor(
+        supervisor=StallOnCallsSupervisor(stall_calls)
+    )
+    mission_id = "navigation-stall-sequence"
+    first_snapshot = executor.snapshot(mission_id)
+    first_raw = provider.choose(prompt, first_snapshot)
+    approved_at = time.time()
+    first_intent = AdaptiveMissionIntent.validated(
+        first_raw,
+        revision=1,
+        snapshot=first_snapshot,
+        issued_at_s=approved_at,
+        provider_id=provider.provider_id,
+        model_id=provider.model_id,
+        limits=executor.limits,
+    )
+    controller = AdaptiveMissionController(
+        mission_id=mission_id,
+        prompt=prompt,
+        proposal_digest="c" * 64,
+        operator="operator@example.com",
+        authenticated=True,
+        authentication_source="tailscale-serve",
+        approved_at_s=approved_at,
+        first_snapshot=first_snapshot,
+        first_intent=first_intent,
+        provider=provider,
+        executor=executor,
+        enable_navigation_outcome_recovery=True,
+    )
+    try:
+        controller.start()
+        terminal = _wait_controller_terminal(controller)
+    finally:
+        controller.close()
+    return terminal, provider
 
 
 def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_safety_authority() -> None:
@@ -447,6 +533,89 @@ def test_recovery_prompt_supplies_only_typed_limiting_condition() -> None:
     assert "consider observe" not in recovery_rules
     assert "choose turn_angle" not in recovery_rules
     assert "use fresh evidence to back away" not in recovery_rules
+
+
+def test_settled_navigation_outcome_uses_normal_schema_without_alternatives() -> None:
+    objective = "Travel to the inspection point and return to the dock."
+    base = dict(
+        RecoveryReplayAdaptiveMissionExecutor().snapshot(
+            "navigation-outcome-prompt"
+        )
+    )
+    base.pop("schema", None)
+    base.pop("snapshot_id", None)
+    base["last_execution"] = {
+        "intent": {
+            "action": "move_distance",
+            "distance_m": 0.10,
+            "angle_deg": 0.0,
+        },
+        "movement": {
+            "outcome": "allowed",
+            "reason": "collision_supervised",
+            "collision_state": "CLEAR",
+        },
+        "navigation_outcome": {
+            "classification": "recoverable_settled",
+            "reason": "target_error",
+            "recoverable": True,
+            "terminal_settled": True,
+            "fresh_evidence_required": True,
+            "requested_distance_m": 0.10,
+            "measured_distance_m": 0.07,
+            "residual_distance_m": 0.03,
+            "measurement_uncertainty": {
+                "odometry_precision": "imprecise",
+            },
+            "encoder_evidence": {
+                "left_encoder_delta_counts": 302,
+                "right_encoder_delta_counts": 299,
+            },
+            "collision_state": "CLEAR",
+        },
+        "route_terminal": {
+            "status": "failed",
+            "terminal_reason": "target_error",
+            "terminal_settled": True,
+            "measured_distance_m": 0.07,
+            "left_encoder_delta_counts": 302,
+            "right_encoder_delta_counts": 299,
+        },
+    }
+    snapshot = make_world_snapshot(base)
+
+    request = json.loads(
+        _adaptive_mission_provider_prompt(objective, snapshot)
+    )
+
+    assert request["operator_prompt"] == objective
+    assert request["world_snapshot"]["last_execution"][
+        "navigation_outcome"
+    ]["residual_distance_m"] == pytest.approx(0.03)
+    assert "outcome_judgment_instruction" in request
+    encoded = json.dumps(request).lower()
+    assert "no candidate" in encoded
+    assert "consider observe" not in encoded
+    assert "change the approach angle" not in encoded
+    assert '"alternatives"' not in encoded
+    assert _adaptive_mission_output_schema()["properties"]["action"][
+        "enum"
+    ] == ["move_distance", "observe", "stop", "turn_angle"]
+
+
+def test_normal_success_prompt_has_no_recovery_specific_feedback() -> None:
+    snapshot = ReplayAdaptiveMissionExecutor().snapshot(
+        "normal-success-prompt"
+    )
+    request = json.loads(
+        _adaptive_mission_provider_prompt(
+            "Patrol the available corridor.",
+            snapshot,
+        )
+    )
+
+    assert "outcome_judgment_instruction" not in request
+    assert "safety_rejection" not in request
 
 
 def test_oauth_provider_copies_only_digest_bound_camera_attachment(
@@ -1103,7 +1272,7 @@ def test_exploration_recovery_reverses_turns_and_replans_after_failure(
         first_intent=first_intent,
         provider=provider,
         executor=executor,
-        enable_exploration_recovery=True,
+        enable_navigation_outcome_recovery=True,
     )
     try:
         controller.start()
@@ -1132,8 +1301,92 @@ def test_exploration_recovery_reverses_turns_and_replans_after_failure(
         "safety_rejection"
         if isinstance(supervisor, ReplayCollisionSupervisor)
         and not isinstance(supervisor, StallOnceSupervisor)
-        else "outcome_replan"
+        else "outcome_judgment_submitted"
     ) in event_types
+
+
+def test_non_exploration_stall_gets_fresh_isolated_normal_decision() -> None:
+    objective = "Travel to the charging dock and stop there."
+    terminal, provider = _run_stall_sequence(
+        actions=[
+            ("move_distance", 0.10),
+            ("turn_angle", 30.0),
+            ("stop", 0.0),
+        ],
+        stall_calls={1},
+        prompt=objective,
+    )
+
+    assert terminal["status"] == "complete"
+    assert provider.prompts == [objective, objective, objective]
+    assert len(set(provider.snapshots)) == 3
+    recovered_snapshot = provider.snapshot_payloads[1]
+    outcome = recovered_snapshot["last_execution"]["navigation_outcome"]
+    assert outcome["reason"] == "stall"
+    assert outcome["recoverable"] is True
+    assert provider.safety_rejections == []
+    recovery = terminal["result"]["navigation_outcome_recovery"]
+    assert recovery["judgments"][0]["reason"] == "stall"
+    decision = next(
+        item
+        for item in terminal["result"]["isolated_decisions"]
+        if item["kind"] == "navigation_outcome_judgment"
+    )
+    assert decision["snapshot_id"] == provider.snapshots[1]
+    assert decision["status"] == "validated"
+
+
+def test_completed_turn_resets_consecutive_stall_recovery_debt() -> None:
+    terminal, provider = _run_stall_sequence(
+        actions=[
+            ("move_distance", 0.10),
+            ("turn_angle", 20.0),
+            ("move_distance", 0.08),
+            ("turn_angle", -20.0),
+            ("stop", 0.0),
+        ],
+        stall_calls={1, 3},
+        prompt="Inspect both aisle ends and return to the start.",
+    )
+
+    assert terminal["status"] == "complete"
+    assert provider.calls == 5
+    recovery = terminal["result"]["navigation_outcome_recovery"]
+    assert len(recovery["judgments"]) == 2
+    assert len(recovery["resets"]) == 2
+    assert all(
+        reset["previous_consecutive_stall_recoveries"] == 1
+        and reset["new_consecutive_stall_recoveries"] == 0
+        for reset in recovery["resets"]
+    )
+    assert recovery["terminal_exhaustion_reason"] == ""
+
+
+def test_repeated_consecutive_stalls_exhaust_only_stall_budget() -> None:
+    terminal, provider = _run_stall_sequence(
+        actions=[
+            ("move_distance", 0.10),
+            ("move_distance", 0.08),
+            ("move_distance", 0.06),
+        ],
+        stall_calls={1, 2, 3},
+        prompt="Approach the inspection marker.",
+    )
+
+    assert terminal["status"] == "blocked"
+    assert terminal["terminal_reason"] == (
+        "consecutive_stall_recovery_budget_exhausted"
+    )
+    assert provider.calls == 3
+    recovery = terminal["result"]["navigation_outcome_recovery"]
+    assert recovery["consecutive_stall_recoveries"] == 2
+    assert len(recovery["judgments"]) == 2
+    assert recovery["terminal_exhaustion_reason"] == (
+        "consecutive_stall_recovery_budget_exhausted"
+    )
+    assert terminal["result"]["intent_revisions"][-1]["execution"][
+        "movement"
+    ]["supervised"]["linear_mps"] == 0.0
 
 
 def test_llm_problem_solving_reverse_is_capped_at_fifteen_centimeters() -> None:
@@ -1172,7 +1425,7 @@ def test_llm_problem_solving_reverse_is_capped_at_fifteen_centimeters() -> None:
         first_intent=first_intent,
         provider=provider,
         executor=executor,
-        enable_exploration_recovery=True,
+        enable_navigation_outcome_recovery=True,
     )
     try:
         controller.start()

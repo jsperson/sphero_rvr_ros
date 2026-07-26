@@ -34,8 +34,6 @@ from .adaptive_mission_controller import (
 
 DEFAULT_MAX_TERMINAL_DISTANCE_ERROR_M = 0.03
 DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG = 10.0
-DEFAULT_MAX_REPLAN_DISTANCE_ERROR_M = 0.05
-DEFAULT_MAX_REPLAN_ANGLE_ERROR_DEG = 15.0
 DEFAULT_TRANSLATION_CLEARANCE_RESERVE_M = 0.40
 
 
@@ -102,12 +100,6 @@ class PhysicalAdaptiveMissionExecutor:
         max_terminal_angle_error_deg: float = (
             DEFAULT_MAX_TERMINAL_ANGLE_ERROR_DEG
         ),
-        max_replan_distance_error_m: float = (
-            DEFAULT_MAX_REPLAN_DISTANCE_ERROR_M
-        ),
-        max_replan_angle_error_deg: float = (
-            DEFAULT_MAX_REPLAN_ANGLE_ERROR_DEG
-        ),
         translation_clearance_reserve_m: float = (
             DEFAULT_TRANSLATION_CLEARANCE_RESERVE_M
         ),
@@ -126,12 +118,6 @@ class PhysicalAdaptiveMissionExecutor:
         )
         self.max_terminal_angle_error_deg = float(
             max_terminal_angle_error_deg
-        )
-        self.max_replan_distance_error_m = float(
-            max_replan_distance_error_m
-        )
-        self.max_replan_angle_error_deg = float(
-            max_replan_angle_error_deg
         )
         self.translation_clearance_reserve_m = float(
             translation_clearance_reserve_m
@@ -161,8 +147,6 @@ class PhysicalAdaptiveMissionExecutor:
         for name in (
             "max_terminal_distance_error_m",
             "max_terminal_angle_error_deg",
-            "max_replan_distance_error_m",
-            "max_replan_angle_error_deg",
             "translation_clearance_reserve_m",
         ):
             value = float(getattr(self, name))
@@ -170,24 +154,6 @@ class PhysicalAdaptiveMissionExecutor:
                 raise MissionValidationError(
                     f"physical Adaptive mission {name} must be positive and finite"
                 )
-        if not (
-            self.max_terminal_distance_error_m
-            <= self.max_replan_distance_error_m
-            <= DEFAULT_MAX_REPLAN_DISTANCE_ERROR_M
-        ):
-            raise MissionValidationError(
-                "physical Adaptive mission replan distance error must be "
-                "between the terminal tolerance and 0.05 m"
-            )
-        if not (
-            self.max_terminal_angle_error_deg
-            <= self.max_replan_angle_error_deg
-            <= DEFAULT_MAX_REPLAN_ANGLE_ERROR_DEG
-        ):
-            raise MissionValidationError(
-                "physical Adaptive mission replan angle error must be "
-                "between the terminal tolerance and 15 degrees"
-            )
         self.execution_enabled = validate_physical_adaptive_mission_gate(
             enabled=execution_enabled,
             source_sha=self.source_sha,
@@ -675,10 +641,41 @@ class PhysicalAdaptiveMissionExecutor:
     ) -> Mapping[str, Any]:
         """Acquire a newer no-motion camera/lidar/localization evidence cycle."""
 
+        return self._refresh_typed_evidence(
+            previous,
+            cancellation,
+            timeout_s=timeout_s,
+            context="safety-rejection",
+        )
+
+    def refresh_after_navigation_outcome(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        timeout_s: float,
+    ) -> Mapping[str, Any]:
+        """Acquire a new complete evidence cycle after settled motor stop."""
+
+        return self._refresh_typed_evidence(
+            previous,
+            cancellation,
+            timeout_s=timeout_s,
+            context="navigation-outcome",
+        )
+
+    def _refresh_typed_evidence(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        timeout_s: float,
+        context: str,
+    ) -> Mapping[str, Any]:
         timeout = float(timeout_s)
         if not math.isfinite(timeout) or timeout <= 0.0:
             raise MissionValidationError(
-                "safety-rejection evidence refresh has no remaining lease"
+                f"{context} evidence refresh has no remaining lease"
             )
         previous_receipts = _mapping(
             _mapping(previous.get("evidence")).get("source_receipts")
@@ -730,12 +727,12 @@ class PhysicalAdaptiveMissionExecutor:
                 return latest
             if cancellation.is_set():
                 raise MissionValidationError(
-                    "safety-rejection evidence refresh failed: "
+                    f"{context} evidence refresh failed: "
                     "operator_cancelled"
                 )
             if time.monotonic() >= deadline:
                 raise MissionValidationError(
-                    "safety-rejection evidence refresh failed: "
+                    f"{context} evidence refresh failed: "
                     "updated_evidence_timeout"
                 )
             cancellation.wait(0.02)
@@ -961,7 +958,39 @@ class PhysicalAdaptiveMissionExecutor:
             "angle_error_deg": abs(
                 measured_rotation - abs(intent.angle_deg)
             ),
+            "residual_distance_m": (
+                abs(intent.distance_m) - measured_distance
+            ),
+            "residual_angle_deg": (
+                abs(intent.angle_deg) - measured_rotation
+            ),
             "collision_state": movement.collision_state,
+            "encoder_evidence": {
+                name: result.get(name)
+                for name in (
+                    "encoder_start_stamp",
+                    "encoder_final_stamp",
+                    "left_encoder_delta_counts",
+                    "right_encoder_delta_counts",
+                    "left_track_distance_m",
+                    "right_track_distance_m",
+                )
+            },
+            "measurement_uncertainty": {
+                "odometry_source": "onboard_differential_odometry",
+                "odometry_precision": "imprecise",
+                "target_residual_requires_mission_judgment": (
+                    outcome == "replan"
+                    and reason == "target_error"
+                ),
+                "encoder_evidence_available": all(
+                    result.get(name) is not None
+                    for name in (
+                        "left_encoder_delta_counts",
+                        "right_encoder_delta_counts",
+                    )
+                ),
+            },
         }
         self._last_execution = {
             "intent": intent.to_json_dict(),
@@ -1004,7 +1033,9 @@ class PhysicalAdaptiveMissionExecutor:
         ):
             return False
         collision_state = movement.collision_state.upper()
-        if collision_state in {"ESTOP", "ESTOPPED", "LATCHED"}:
+        if normalized_reason in {"target_error", "stall"} and (
+            collision_state not in {"CLEAR", "SLOW"}
+        ):
             return False
         executed = result.get("executed_segments")
         if not isinstance(executed, list) or len(executed) > 1:
@@ -1041,8 +1072,9 @@ class PhysicalAdaptiveMissionExecutor:
             segment_error = _optional_finite(
                 segment.get("terminal_distance_error_m")
             )
-            if normalized_reason == "target_error":
-                if (
+            if (
+                normalized_reason == "target_error"
+                and (
                     segment_error is None
                     or not math.isclose(
                         segment_error,
@@ -1050,16 +1082,12 @@ class PhysicalAdaptiveMissionExecutor:
                         rel_tol=0.0,
                         abs_tol=1e-6,
                     )
-                ):
-                    return False
-                if (
-                    distance_error
-                    > self.max_replan_distance_error_m + epsilon
-                ):
-                    return False
-            distance_limit = self.limits.max_translation_per_intent_m
-            if normalized_reason == "target_error":
-                distance_limit += self.max_replan_distance_error_m
+                )
+            ):
+                return False
+            distance_limit = (
+                self.limits.linear_speed_mps * intent.timeout_s
+            )
             return bool(
                 abs(measured_distance) <= distance_limit + epsilon
                 and abs(measured_rotation)
@@ -1071,8 +1099,9 @@ class PhysicalAdaptiveMissionExecutor:
         segment_error = _optional_finite(
             segment.get("terminal_angle_error_deg")
         )
-        if normalized_reason == "target_error":
-            if (
+        if (
+            normalized_reason == "target_error"
+            and (
                 segment_error is None
                 or not math.isclose(
                     segment_error,
@@ -1080,13 +1109,12 @@ class PhysicalAdaptiveMissionExecutor:
                     rel_tol=0.0,
                     abs_tol=1e-6,
                 )
-            ):
-                return False
-            if angle_error > self.max_replan_angle_error_deg + epsilon:
-                return False
-        rotation_limit = self.limits.max_rotation_per_intent_deg
-        if normalized_reason == "target_error":
-            rotation_limit += self.max_replan_angle_error_deg
+            )
+        ):
+            return False
+        rotation_limit = math.degrees(
+            self.limits.angular_speed_rad_s * intent.timeout_s
+        )
         return bool(
             abs(measured_rotation) <= rotation_limit + epsilon
             and abs(measured_distance)

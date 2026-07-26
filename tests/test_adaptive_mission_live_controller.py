@@ -106,18 +106,26 @@ class SequenceProvider:
     model_id = "deterministic-adaptive-mission-model"
     reasoning_effort = "fixture"
 
-    def __init__(self, actions: list[tuple[str, float]]) -> None:
+    def __init__(
+        self,
+        actions: list[tuple[str, float]],
+        *,
+        expected_prompt: str = PROMPT,
+    ) -> None:
         self.actions = list(actions)
+        self.expected_prompt = str(expected_prompt)
         self.calls = 0
         self.snapshots: list[str] = []
         self.snapshot_payloads: list[Mapping[str, Any]] = []
         self.safety_rejections: list[Mapping[str, Any]] = []
+        self.prompts: list[str] = []
         self.cache: Optional[LiveStateCache] = None
 
     def choose(
         self, prompt: str, snapshot: Mapping[str, Any]
     ) -> Mapping[str, Any]:
-        assert prompt == PROMPT
+        assert prompt == self.expected_prompt
+        self.prompts.append(str(prompt))
         self.snapshots.append(str(snapshot["snapshot_id"]))
         self.snapshot_payloads.append(
             json.loads(json.dumps(dict(snapshot)))
@@ -461,6 +469,139 @@ class FakeRouteTransport:
         self.cancelled = True
         self.release.set()
         return True
+
+
+class ScriptedNavigationOutcomeTransport(FakeRouteTransport):
+    def __init__(self, outcomes: list[Mapping[str, Any]]) -> None:
+        super().__init__()
+        self.outcomes = [dict(item) for item in outcomes]
+
+    def _publish_full_cycle(self, sequence: int) -> None:
+        if self.cache is None:
+            return
+        current = self.cache.snapshot()
+        observed = time.time()
+        camera = dict(current.source("camera").value)
+        camera["frame_id"] = f"outcome-camera-{sequence}"
+        lidar = dict(current.source("lidar").value)
+        lidar["scan_id"] = f"outcome-scan-{sequence}"
+        localization = dict(current.source("localization").value)
+        odom = dict(current.source("odom").value)
+        collision = dict(current.source("collision").value)
+        for name, value in (
+            ("camera", camera),
+            ("lidar", lidar),
+            ("localization", localization),
+            ("odom", odom),
+            ("collision", collision),
+        ):
+            self.cache.update(
+                name,
+                value,
+                received_at_s=observed,
+            )
+
+    def execute(self, request):
+        self.requests.append(request)
+        self.entered.set()
+        script = self.outcomes[len(self.requests) - 1]
+        sequence = len(self.requests) * 2
+        self._publish_full_cycle(sequence)
+        for offset, delay in enumerate((0.08, 0.16, 0.24), start=1):
+            threading.Timer(
+                delay,
+                self._publish_full_cycle,
+                args=(sequence + offset,),
+            ).start()
+        segment = request.segments[0]
+        is_move = segment.tool_id == "move_distance"
+        reason = str(script.get("reason", "complete"))
+        measured_distance = float(
+            script.get(
+                "measured_distance_m",
+                abs(float(segment.arguments.get("distance_m", 0.0))),
+            )
+        )
+        measured_angle = float(
+            script.get(
+                "measured_angle_deg",
+                abs(float(segment.arguments.get("angle_deg", 0.0))),
+            )
+        )
+        status = str(
+            script.get(
+                "status",
+                "complete" if reason == "complete" else "failed",
+            )
+        )
+        collision_state = str(
+            script.get("collision_state", "CLEAR")
+        )
+        return {
+            "route_id": request.route_id,
+            "status": status,
+            "terminal_reason": reason,
+            "source_sha": request.source_sha,
+            "terminal_settled": True,
+            "measured_distance_m": measured_distance,
+            "measured_angle_deg": measured_angle,
+            "encoder_start_stamp": float(sequence),
+            "encoder_final_stamp": float(sequence) + 0.5,
+            "left_encoder_delta_counts": int(
+                script.get("left_encoder_delta_counts", 302)
+            ),
+            "right_encoder_delta_counts": int(
+                script.get("right_encoder_delta_counts", 299)
+            ),
+            "left_track_distance_m": measured_distance,
+            "right_track_distance_m": measured_distance,
+            "executed_segments": [
+                {
+                    "correlation_id": segment.correlation_id,
+                    "status": status,
+                    "terminal_distance_error_m": (
+                        abs(
+                            measured_distance
+                            - abs(
+                                float(
+                                    segment.arguments.get(
+                                        "distance_m", 0.0
+                                    )
+                                )
+                            )
+                        )
+                        if is_move
+                        else None
+                    ),
+                    "terminal_angle_error_deg": (
+                        abs(
+                            measured_angle
+                            - abs(
+                                float(
+                                    segment.arguments.get(
+                                        "angle_deg", 0.0
+                                    )
+                                )
+                            )
+                        )
+                        if not is_move
+                        else None
+                    ),
+                }
+            ],
+            "supervision": {
+                "samples": 3,
+                "collision_state": collision_state,
+                "requested": {
+                    "linear_mps": 0.10 if is_move else 0.0,
+                    "angular_rad_s": 0.0 if is_move else 0.4,
+                },
+                "supervised": {
+                    "linear_mps": 0.0,
+                    "angular_rad_s": 0.0,
+                },
+            },
+        }
 
 
 def _build(
@@ -1035,6 +1176,147 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
         for event in events
         if event["event_type"] == "snapshot"
     )
+
+
+@pytest.mark.parametrize(
+    ("measured_distance_m", "expected_residual_m"),
+    ((0.07, 0.03), (0.13, -0.03)),
+    ids=["undershoot", "overshoot"],
+)
+def test_settled_target_residual_is_fresh_evidence_for_non_exploration_decision(
+    tmp_path,
+    measured_distance_m: float,
+    expected_residual_m: float,
+) -> None:
+    objective = "Travel to the inspection point and stop there."
+    provider = SequenceProvider(
+        [("move_distance", 0.10), ("stop", 0.0)],
+        expected_prompt=objective,
+    )
+    transport = ScriptedNavigationOutcomeTransport(
+        [
+            {
+                "reason": "target_error",
+                "measured_distance_m": measured_distance_m,
+            }
+        ]
+    )
+    service, controller, _ = _build(
+        tmp_path,
+        provider,
+        transport=transport,
+    )
+    try:
+        proposed = controller.submit(
+            objective,
+            session_id="target-residual-session",
+            mission_id=(
+                "adaptive-mission-live-target-residual-"
+                f"{str(measured_distance_m).replace('.', '-')}"
+            ),
+        )
+        _approve(controller, proposed)
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {"complete"},
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert provider.prompts == [objective, objective]
+    assert provider.safety_rejections == []
+    assert len(set(provider.snapshots)) == 2
+    outcome = provider.snapshot_payloads[1]["last_execution"][
+        "navigation_outcome"
+    ]
+    assert outcome["reason"] == "target_error"
+    assert outcome["requested_distance_m"] == pytest.approx(0.10)
+    assert outcome["measured_distance_m"] == pytest.approx(
+        measured_distance_m
+    )
+    assert outcome["residual_distance_m"] == pytest.approx(
+        expected_residual_m
+    )
+    assert outcome["encoder_evidence"][
+        "left_encoder_delta_counts"
+    ] == 302
+    assert outcome["collision_state"] == "CLEAR"
+    assert outcome["measurement_uncertainty"][
+        "odometry_precision"
+    ] == "imprecise"
+    recovery = terminal["result"]["navigation_outcome_recovery"]
+    assert recovery["consecutive_stall_recoveries"] == 0
+    assert recovery["judgments"][0]["reason"] == "target_error"
+    assert recovery["judgments"][0]["snapshot_id"] == (
+        provider.snapshots[1]
+    )
+    decision = terminal["result"]["isolated_decisions"][1]
+    assert decision["kind"] == "navigation_outcome_judgment"
+    assert decision["snapshot_id"] == provider.snapshots[1]
+
+
+def test_outcome_replacement_intent_passes_normal_validation_and_safety_retry(
+    tmp_path,
+) -> None:
+    objective = "Return to the marked staging point."
+    provider = SequenceProvider(
+        [
+            ("move_distance", 0.10),
+            ("move_distance", 0.30),
+            ("turn_angle", 20.0),
+            ("stop", 0.0),
+        ],
+        expected_prompt=objective,
+    )
+    transport = ScriptedNavigationOutcomeTransport(
+        [
+            {
+                "reason": "target_error",
+                "measured_distance_m": 0.07,
+            },
+            {
+                "reason": "complete",
+                "measured_angle_deg": 20.0,
+            },
+        ]
+    )
+    service, controller, _ = _build(
+        tmp_path,
+        provider,
+        transport=transport,
+    )
+    try:
+        proposed = controller.submit(
+            objective,
+            session_id="replacement-validation-session",
+            mission_id="adaptive-mission-live-replacement-validation",
+        )
+        _approve(controller, proposed)
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {"complete"},
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert provider.calls == 4
+    assert len(provider.safety_rejections) == 1
+    assert provider.safety_rejections[0]["violated_condition"] == (
+        "translation_per_intent_limit_exceeded"
+    )
+    assert len(transport.requests) == 2
+    assert [request.segments[0].tool_id for request in transport.requests] == [
+        "move_distance",
+        "turn_angle",
+    ]
+    assert [
+        item["action"]
+        for item in terminal["result"]["intent_revisions"]
+    ] == ["move_distance", "turn_angle", "stop"]
 
 
 def test_live_clearance_rejection_uses_fresh_isolated_replacement_without_motion(

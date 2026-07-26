@@ -42,6 +42,7 @@ ADAPTIVE_MISSION_SAFETY_REJECTION_SCHEMA = (
 )
 ADAPTIVE_MISSION_SAFETY_POLICY = "lidar_collision_stop.v1"
 DEFAULT_SAFETY_REJECTION_RETRY_BUDGET = 2
+DEFAULT_CONSECUTIVE_STALL_RECOVERY_BUDGET = 2
 
 _ACTIONS = {"move_distance", "turn_angle", "observe", "stop"}
 _OBJECTIVE_STATUSES = {
@@ -568,7 +569,10 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         self, prompt: str, snapshot: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         return self._choose(
-            prompt, snapshot, safety_rejection=None
+            prompt,
+            snapshot,
+            safety_rejection=None,
+            decision_id=None,
         )
 
     def choose_after_safety_rejection(
@@ -581,6 +585,24 @@ class CodexOAuthAdaptiveMissionIntentProvider:
             prompt,
             snapshot,
             safety_rejection=rejection,
+            decision_id=None,
+        )
+
+    def choose_for_decision(
+        self,
+        prompt: str,
+        snapshot: Mapping[str, Any],
+        *,
+        decision_id: str,
+        safety_rejection: Optional[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        """Run one explicitly identified isolated provider decision."""
+
+        return self._choose(
+            prompt,
+            snapshot,
+            safety_rejection=safety_rejection,
+            decision_id=decision_id,
         )
 
     def _choose(
@@ -589,13 +611,15 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         snapshot: Mapping[str, Any],
         *,
         safety_rejection: Optional[Mapping[str, Any]],
+        decision_id: Optional[str],
     ) -> Mapping[str, Any]:
         total_started = time.perf_counter()
         preparation_started = total_started
-        decision_id = uuid.uuid4().hex
+        isolated_decision_id = str(decision_id or uuid.uuid4().hex)
+        outcome = _navigation_outcome(snapshot)
         metric: dict[str, Any] = {
             "schema": "sphero_rvr.adaptive_planning_latency.v1",
-            "decision_id": decision_id,
+            "decision_id": isolated_decision_id,
             "isolated_model_thread": True,
             "snapshot_id": str(snapshot.get("snapshot_id", "")),
             "safety_recovery": safety_rejection is not None,
@@ -604,6 +628,11 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                 if isinstance(safety_rejection, Mapping)
                 else ""
             ),
+            "navigation_outcome_judgment": bool(
+                outcome.get("recoverable") is True
+                and outcome.get("terminal_settled") is True
+            ),
+            "navigation_outcome_reason": str(outcome.get("reason", "")),
             "model_id": self.model_id,
             "reasoning_effort": self.reasoning_effort,
             "integration": self.integration,
@@ -926,6 +955,7 @@ def choose_validated_adaptive_intent(
     limits: AdaptiveMissionLimits,
     supervised_collision_escape: Optional[bool] = None,
     safety_rejection: Optional[Mapping[str, Any]] = None,
+    decision_id: Optional[str] = None,
     issue_clock: Callable[[], float] = time.time,
 ) -> tuple[dict[str, Any], AdaptiveMissionIntent]:
     """Run provider inference and deterministic rover intent validation.
@@ -940,6 +970,7 @@ def choose_validated_adaptive_intent(
             prompt,
             snapshot,
             safety_rejection=safety_rejection,
+            decision_id=decision_id,
         )
     )
     effective_issued_at_s = (
@@ -992,7 +1023,16 @@ def _choose_provider_intent(
     snapshot: Mapping[str, Any],
     *,
     safety_rejection: Optional[Mapping[str, Any]],
+    decision_id: Optional[str] = None,
 ) -> Mapping[str, Any]:
+    identified_choose = getattr(provider, "choose_for_decision", None)
+    if callable(identified_choose) and decision_id:
+        return identified_choose(
+            prompt,
+            snapshot,
+            decision_id=str(decision_id),
+            safety_rejection=safety_rejection,
+        )
     if safety_rejection is None:
         return provider.choose(prompt, snapshot)
     recovery_choose = getattr(
@@ -1063,7 +1103,7 @@ def _adaptive_mission_provider_prompt(
         else {}
     )
     request = {
-        "role": "You are the supervisory exploration planner for a small rover.",
+        "role": "You are the supervisory navigation planner for a small rover.",
         "operator_prompt": str(prompt),
         "world_snapshot": dict(snapshot),
         "authority": {
@@ -1084,7 +1124,7 @@ def _adaptive_mission_provider_prompt(
         },
         "rules": [
             "Return exactly one intent bound to world_snapshot.snapshot_id.",
-            "Choose the exploration strategy from current evidence and revise after every executor result.",
+            "Choose the navigation strategy from current evidence and revise after every executor result.",
             "Never emit a route, ROS topic, Twist, motor command, speed, safety threshold, shell action, credential, or claim of unobserved completion.",
             "move_distance uses signed distance_m and zero angle_deg.",
             "turn_angle uses signed angle_deg (positive left) and zero distance_m.",
@@ -1146,6 +1186,29 @@ def _adaptive_mission_provider_prompt(
             "Independently propose one new intent through the normal schema. "
             "The rejection reports only the binding safety condition; it does "
             "not select, suggest, or enumerate a replacement action."
+        )
+    elif _is_settled_navigation_judgment_snapshot(snapshot):
+        suggestion_prefixes = (
+            "After collision_veto or stall, consider ",
+            "Treat stall as commanded motion not occurring as expected:",
+            "After any recoverable navigation outcome, reverse motion ",
+            "Before move_distance, require the signed distance magnitude ",
+        )
+        request["rules"] = [
+            rule
+            for rule in request["rules"]
+            if not rule.startswith(suggestion_prefixes)
+        ]
+        request["rules"].append(
+            "Treat last_execution.navigation_outcome and route_terminal as "
+            "typed evidence, then independently propose one intent through "
+            "the unchanged normal schema. No candidate, suggested, clamped, "
+            "or preselected replacement action has been supplied."
+        )
+        request["outcome_judgment_instruction"] = (
+            "Independently judge the next mission action from the approved "
+            "operator_prompt, fresh world_snapshot, and prior execution "
+            "outcome through the normal intent schema."
         )
     return json.dumps(
         request, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -1235,7 +1298,10 @@ def _decision_evidence_snapshot(
     receipts = evidence.get("source_receipts", {})
     receipts = receipts if isinstance(receipts, Mapping) else {}
     compact_evidence["source_receipts"] = {
-        str(name): selected(receipt, ("fresh", "valid"))
+        str(name): selected(
+            receipt,
+            ("fresh", "valid", "received_at_s"),
+        )
         for name, receipt in receipts.items()
         if isinstance(receipt, Mapping)
     }
@@ -1272,10 +1338,18 @@ def _decision_evidence_snapshot(
             "status",
             "terminal_reason",
             "terminal_settled",
+            "terminal_settle_duration_s",
             "measured_angle_deg",
             "measured_distance_m",
             "route_displacement_m",
             "route_heading_change_deg",
+            "encoder_start_stamp",
+            "encoder_final_stamp",
+            "left_encoder_delta_counts",
+            "right_encoder_delta_counts",
+            "left_track_distance_m",
+            "right_track_distance_m",
+            "executed_segments",
         ),
     )
     compact_last_execution = {
@@ -1291,11 +1365,15 @@ def _decision_evidence_snapshot(
                 "fresh_evidence_required",
                 "measured_angle_deg",
                 "measured_distance_m",
+                "residual_angle_deg",
+                "residual_distance_m",
                 "reason",
                 "recoverable",
                 "requested_angle_deg",
                 "requested_distance_m",
                 "terminal_settled",
+                "measurement_uncertainty",
+                "encoder_evidence",
             ),
         ),
         "route_terminal": last_route,
@@ -1585,15 +1663,24 @@ class AdaptiveMissionApprovalEnvelope:
                     "alternative_actions_supplied": False,
                     "motion_on_rejected_action": False,
                 },
-                "bounded_exploration_recovery": {
-                    "trigger": "settled_collision_stall_or_modest_target_error",
-                    "maximum_attempts": 2,
+                "navigation_outcome_recovery": {
+                    "trigger": (
+                        "settled_target_residual_or_non_collision_stall"
+                    ),
+                    "consecutive_stall_budget": (
+                        DEFAULT_CONSECUTIVE_STALL_RECOVERY_BUDGET
+                    ),
+                    "stall_debt_resets_after_completed_navigation_action": True,
+                    "target_residual_consumes_stall_budget": False,
                     "maximum_reverse_m": 0.15,
                     "maximum_turn_deg": 45.0,
                     "requires_typed_rear_clearance": True,
                     "supervised_motion_only": True,
                     "fresh_evidence_before_llm_replan": True,
                     "llm_selects_problem_solving_action": True,
+                    "applies_to_all_navigation_objectives": True,
+                    "alternative_actions_supplied": False,
+                    "replacement_uses_normal_intent_schema": True,
                     "deterministic_validation_remains_authoritative": True,
                 },
                 "motion_authority": False,
@@ -1677,6 +1764,14 @@ class AdaptiveMissionExecutor(Protocol):
     ) -> IntentExecutionResult: ...
 
     def refresh_after_safety_rejection(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        timeout_s: float,
+    ) -> Mapping[str, Any]: ...
+
+    def refresh_after_navigation_outcome(
         self,
         previous: Mapping[str, Any],
         cancellation: threading.Event,
@@ -2002,6 +2097,26 @@ class ReplayAdaptiveMissionExecutor:
             refreshed = dict(self.snapshot(self._mission_id))
         return refreshed
 
+    def refresh_after_navigation_outcome(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        timeout_s: float,
+    ) -> Mapping[str, Any]:
+        del timeout_s
+        if cancellation.is_set():
+            raise MissionValidationError(
+                "operator cancelled while refreshing navigation-outcome evidence"
+            )
+        refreshed = dict(self.snapshot(self._mission_id))
+        if str(refreshed.get("snapshot_id", "")) == str(
+            previous.get("snapshot_id", "")
+        ):
+            time.sleep(0.001)
+            refreshed = dict(self.snapshot(self._mission_id))
+        return refreshed
+
     def map_projection(self) -> dict[str, Any]:
         return {
             "available": True,
@@ -2048,13 +2163,16 @@ class AdaptiveMissionController:
         checkpoint: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
         owns_executor: bool = True,
         keep_active_after_planner_stop: bool = False,
-        enable_exploration_recovery: bool = False,
-        max_exploration_recoveries: int = 2,
+        enable_navigation_outcome_recovery: bool = False,
+        max_consecutive_stall_recoveries: int = (
+            DEFAULT_CONSECUTIVE_STALL_RECOVERY_BUDGET
+        ),
         recovery_reverse_m: float = 0.15,
         max_safety_rejection_retries: int = (
             DEFAULT_SAFETY_REJECTION_RETRY_BUDGET
         ),
         initial_safety_rejections: tuple[Mapping[str, Any], ...] = (),
+        initial_decisions: tuple[Mapping[str, Any], ...] = (),
         activation_event_message: str = "",
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -2080,26 +2198,26 @@ class AdaptiveMissionController:
         self._keep_active_after_planner_stop = bool(
             keep_active_after_planner_stop
         )
-        self._enable_exploration_recovery = bool(
-            enable_exploration_recovery
+        self._enable_navigation_outcome_recovery = bool(
+            enable_navigation_outcome_recovery
         )
-        self._max_exploration_recoveries = int(
-            max_exploration_recoveries
+        self._max_consecutive_stall_recoveries = int(
+            max_consecutive_stall_recoveries
         )
         self._recovery_reverse_m = float(recovery_reverse_m)
         self._max_safety_rejection_retries = int(
             max_safety_rejection_retries
         )
-        if self._max_exploration_recoveries < 1:
+        if not 1 <= self._max_consecutive_stall_recoveries <= 3:
             raise MissionValidationError(
-                "exploration recovery count must be positive"
+                "consecutive stall recovery budget must be between 1 and 3"
             )
         if (
             not math.isfinite(self._recovery_reverse_m)
             or not 0.0 < self._recovery_reverse_m <= 0.15
         ):
             raise MissionValidationError(
-                "exploration recovery reverse distance must be within 0.15 m"
+                "navigation recovery reverse distance must be within 0.15 m"
             )
         if not 1 <= self._max_safety_rejection_retries <= 3:
             raise MissionValidationError(
@@ -2131,7 +2249,25 @@ class AdaptiveMissionController:
         self._idle_objective_revision: Optional[int] = None
         self._objective_condition = threading.Condition(self._lock)
         self._requested_terminal: Optional[tuple[str, str]] = None
-        self._recovery_attempts = 0
+        self._consecutive_stall_recoveries = 0
+        self._stall_recovery_resets: list[dict[str, Any]] = []
+        self._outcome_judgments: list[dict[str, Any]] = []
+        self._outcome_exhaustion_reason = ""
+        self._decisions = [
+            json.loads(json.dumps(dict(item)))
+            for item in initial_decisions
+        ]
+        if not self._decisions:
+            self._decisions.append(
+                {
+                    "decision_id": uuid.uuid4().hex,
+                    "snapshot_id": str(first_snapshot.get("snapshot_id", "")),
+                    "isolated_model_thread": True,
+                    "kind": "normal",
+                    "status": "validated",
+                    "provider_call": 1,
+                }
+            )
         self._safety_rejections = [
             json.loads(json.dumps(dict(item)))
             for item in initial_safety_rejections
@@ -2163,6 +2299,7 @@ class AdaptiveMissionController:
             f"LLM chose revision {first_intent.revision}: "
             f"{first_intent.action} [{first_intent.objective_status}] — "
             f"{first_intent.rationale}",
+            details=self._decisions[-1],
         )
 
     def start(self) -> None:
@@ -2352,6 +2489,11 @@ class AdaptiveMissionController:
                     "snapshot",
                     _snapshot_event_message(self._world),
                 )
+                if (
+                    execution.outcome == "completed"
+                    and intent.action in {"move_distance", "turn_angle"}
+                ):
+                    self._reset_consecutive_stall_recoveries(intent)
                 if execution.outcome != "completed":
                     if (
                         self._requested_terminal is not None
@@ -2409,44 +2551,127 @@ class AdaptiveMissionController:
                             "safety_rejection",
                             self._projection(),
                         )
-                    elif self._can_replan_after_outcome(
-                        intent, execution
-                    ):
-                        self._recovery_attempts += 1
-                        replan_after_outcome = True
-                        self._append_event(
-                            "outcome_replan",
-                            "The settled supervised outcome "
-                            f"{execution.reason} is bounded and recoverable; "
-                            "fresh typed evidence will be sent to the LLM for "
-                            "the next validated navigation decision.",
-                        )
-                        checkpoint = (
-                            "outcome_replan",
-                            self._projection(),
-                        )
                     else:
-                        if execution.outcome == "replan":
-                            self._append_event(
-                                "recovery_unavailable",
-                                "The bounded LLM problem-solving limit was "
-                                "reached or this objective is not eligible; "
-                                "automatic motion remains stopped.",
+                        judgment_reason = (
+                            self._navigation_outcome_judgment_reason(
+                                intent, execution
                             )
-                        terminal_status = {
-                            "blocked": "blocked",
-                            "stale": "blocked",
-                            "cancelled": "cancelled",
-                            "timeout": "timeout",
-                        }.get(execution.outcome, "failed")
-                        if execution.reason == "collision_veto":
-                            terminal_status = "blocked"
-                        if "cleanup_uncertain" in execution.reason:
-                            terminal_status = "recovery_required"
-                        self._finish(
-                            terminal_status, execution.reason
                         )
-                        return
+                        if judgment_reason is not None:
+                            if (
+                                judgment_reason == "stall"
+                                and self._consecutive_stall_recoveries
+                                >= self._max_consecutive_stall_recoveries
+                            ):
+                                self._outcome_exhaustion_reason = (
+                                    "consecutive_stall_recovery_budget_exhausted"
+                                )
+                                self._append_event(
+                                    "navigation_outcome_recovery_exhausted",
+                                    "Motion remains stopped; consecutive settled "
+                                    "stall/no-progress recovery budget exhausted "
+                                    f"at {self._consecutive_stall_recoveries}/"
+                                    f"{self._max_consecutive_stall_recoveries}.",
+                                    details={
+                                        "reason": self._outcome_exhaustion_reason,
+                                        "consecutive_stall_recoveries": (
+                                            self._consecutive_stall_recoveries
+                                        ),
+                                        "budget": (
+                                            self._max_consecutive_stall_recoveries
+                                        ),
+                                    },
+                                )
+                                self._finish(
+                                    "blocked",
+                                    self._outcome_exhaustion_reason,
+                                )
+                                return
+                            try:
+                                refreshed = (
+                                    self._fresh_snapshot_after_navigation_outcome(
+                                        self._world
+                                    )
+                                )
+                            except Exception as refresh_exc:
+                                self._finish(
+                                    "blocked",
+                                    "navigation_outcome_evidence_unavailable: "
+                                    f"{refresh_exc.__class__.__name__}: "
+                                    f"{refresh_exc}",
+                                )
+                                return
+                            self._world = json.loads(
+                                json.dumps(refreshed)
+                            )
+                            self._snapshots.append(
+                                json.loads(json.dumps(self._world))
+                            )
+                            if judgment_reason == "stall":
+                                self._consecutive_stall_recoveries += 1
+                            outcome_evidence = json.loads(
+                                json.dumps(
+                                    dict(_navigation_outcome(self._world))
+                                )
+                            )
+                            judgment = {
+                                "reason": judgment_reason,
+                                "submitted_for_llm_judgment": True,
+                                "snapshot_id": str(
+                                    self._world.get("snapshot_id", "")
+                                ),
+                                "outcome_evidence": outcome_evidence,
+                                "consecutive_stall_recoveries": (
+                                    self._consecutive_stall_recoveries
+                                ),
+                                "stall_recovery_budget": (
+                                    self._max_consecutive_stall_recoveries
+                                ),
+                            }
+                            self._outcome_judgments.append(judgment)
+                            replan_after_outcome = True
+                            self._append_event(
+                                "snapshot",
+                                _snapshot_event_message(self._world),
+                            )
+                            self._append_event(
+                                "outcome_judgment_submitted",
+                                "The settled supervised outcome "
+                                f"{judgment_reason} was submitted as typed "
+                                "evidence for an isolated normal LLM decision "
+                                f"from snapshot "
+                                f"{judgment['snapshot_id'][:12]}; consecutive "
+                                "stall/no-progress recovery count is "
+                                f"{self._consecutive_stall_recoveries}/"
+                                f"{self._max_consecutive_stall_recoveries}.",
+                                details=judgment,
+                            )
+                            checkpoint = (
+                                "outcome_judgment_submitted",
+                                self._projection(),
+                            )
+                        else:
+                            if execution.outcome == "replan":
+                                self._append_event(
+                                    "recovery_unavailable",
+                                    "The settled outcome is not eligible for "
+                                    "mission-level judgment; automatic motion "
+                                    "remains stopped.",
+                                )
+                            terminal_status = {
+                                "blocked": "blocked",
+                                "stale": "blocked",
+                                "cancelled": "cancelled",
+                                "timeout": "timeout",
+                            }.get(execution.outcome, "failed")
+                            if execution.reason == "collision_veto":
+                                terminal_status = "blocked"
+                            if "cleanup_uncertain" in execution.reason:
+                                terminal_status = "recovery_required"
+                            self._finish(
+                                terminal_status, execution.reason
+                            )
+                            return
                 if not replan_after_outcome:
                     checkpoint = ("intent_result", self._projection())
                 if intent.action == "stop":
@@ -2547,29 +2772,58 @@ class AdaptiveMissionController:
                 checkpoint = ("llm_revision", self._projection())
             self._emit_checkpoint(*checkpoint)
 
-    def _can_replan_after_outcome(
+    def _navigation_outcome_judgment_reason(
         self,
         failed_intent: AdaptiveMissionIntent,
         execution: IntentExecutionResult,
-    ) -> bool:
+    ) -> Optional[str]:
         if (
-            not self._enable_exploration_recovery
+            not self._enable_navigation_outcome_recovery
             or execution.outcome != "replan"
-            or self._recovery_attempts
-            >= self._max_exploration_recoveries
         ):
-            return False
-        if not _is_exploration_objective(
-            self.prompt,
-            failed_intent.interpreted_objective,
-        ):
-            return False
+            return None
+        if failed_intent.action not in {"move_distance", "turn_angle"}:
+            return None
         outcome = _navigation_outcome(self._world)
-        return bool(
-            outcome.get("recoverable") is True
-            and outcome.get("terminal_settled") is True
-            and str(outcome.get("reason", ""))
-            in {"target_error", "stall", "collision_veto"}
+        reason = str(outcome.get("reason", "")).strip().lower()
+        if (
+            outcome.get("recoverable") is not True
+            or outcome.get("terminal_settled") is not True
+            or reason not in {"target_error", "stall"}
+            or str(self._world.get("snapshot_id", ""))
+            == failed_intent.snapshot_id
+        ):
+            return None
+        collision_state = str(
+            outcome.get(
+                "collision_state",
+                execution.movement.collision_state,
+            )
+        ).upper()
+        if collision_state not in _CLEAR_COLLISION_STATES:
+            return None
+        return reason
+
+    def _reset_consecutive_stall_recoveries(
+        self, completed_intent: AdaptiveMissionIntent
+    ) -> None:
+        previous = self._consecutive_stall_recoveries
+        if previous <= 0:
+            return
+        reset = {
+            "completed_revision": completed_intent.revision,
+            "completed_action": completed_intent.action,
+            "previous_consecutive_stall_recoveries": previous,
+            "new_consecutive_stall_recoveries": 0,
+            "snapshot_id": str(self._world.get("snapshot_id", "")),
+        }
+        self._consecutive_stall_recoveries = 0
+        self._stall_recovery_resets.append(reset)
+        self._append_event(
+            "navigation_stall_recovery_reset",
+            f"Completed navigation action {completed_intent.action} reset "
+            f"consecutive stall/no-progress recovery debt from {previous} to 0.",
+            details=reset,
         )
 
     def _collision_safety_rejection(
@@ -2649,6 +2903,50 @@ class AdaptiveMissionController:
             require_motion=False,
             allow_collision_stopped_observation=True,
         )
+        return refreshed
+
+    def _fresh_snapshot_after_navigation_outcome(
+        self, previous: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        refresh = getattr(
+            self.executor, "refresh_after_navigation_outcome", None
+        )
+        if not callable(refresh):
+            raise MissionValidationError(
+                "executor cannot prove fresh navigation-outcome evidence"
+            )
+        refreshed = dict(
+            refresh(
+                previous,
+                self._cancellation,
+                timeout_s=min(
+                    self.limits.max_intent_timeout_s,
+                    max(
+                        0.0,
+                        self._mission_expires_at_s - self._now(),
+                    ),
+                ),
+            )
+        )
+        if str(refreshed.get("snapshot_id", "")) == str(
+            previous.get("snapshot_id", "")
+        ):
+            raise MissionValidationError(
+                "navigation-outcome evidence did not advance to a new snapshot"
+            )
+        validate_world_snapshot(
+            refreshed,
+            mission_id=self.mission_id,
+            require_motion=False,
+        )
+        outcome = _navigation_outcome(refreshed)
+        if (
+            outcome.get("recoverable") is not True
+            or outcome.get("terminal_settled") is not True
+        ):
+            raise MissionValidationError(
+                "fresh navigation-outcome snapshot lost settled outcome evidence"
+            )
         return refreshed
 
     def _append_safety_rejection_event(
@@ -2757,6 +3055,28 @@ class AdaptiveMissionController:
                     json.dumps(self._world)
                 )
                 intent_revision = len(self._revisions) + 1
+                decision_id = uuid.uuid4().hex
+                decision_record = {
+                    "decision_id": decision_id,
+                    "snapshot_id": str(
+                        provider_snapshot.get("snapshot_id", "")
+                    ),
+                    "isolated_model_thread": True,
+                    "kind": (
+                        "safety_recovery"
+                        if pending_rejection is not None
+                        else (
+                            "navigation_outcome_judgment"
+                            if _is_settled_navigation_judgment_snapshot(
+                                provider_snapshot
+                            )
+                            else "normal"
+                        )
+                    ),
+                    "status": "started",
+                    "provider_call": self._provider_calls_started,
+                }
+                self._decisions.append(decision_record)
                 self._append_event(
                     (
                         "safety_recovery_decision_started"
@@ -2764,13 +3084,14 @@ class AdaptiveMissionController:
                         else "llm_revision_started"
                     ),
                     f"Provider call {self._provider_calls_started} started an "
-                    "isolated decision from snapshot "
-                    f"{str(provider_snapshot.get('snapshot_id', ''))[:12]}"
+                    f"isolated decision {decision_id[:12]} from snapshot "
+                    f"{decision_record['snapshot_id'][:12]}"
                     + (
                         " after a typed safety rejection."
                         if pending_rejection is not None
                         else "."
                     ),
+                    details=decision_record,
                 )
             try:
                 future = self._provider_pool.submit(
@@ -2779,6 +3100,7 @@ class AdaptiveMissionController:
                     provider_prompt,
                     provider_snapshot,
                     safety_rejection=pending_rejection,
+                    decision_id=decision_id,
                 )
                 self._provider_future = future
                 while not future.done():
@@ -2862,6 +3184,7 @@ class AdaptiveMissionController:
                     )
             except RecoverableSafetyRejection as exc:
                 with self._lock:
+                    decision_record["status"] = "safety_rejected"
                     self._provider_future = None
                     self._provider_calls_completed += 1
                     self._inference_in_flight = False
@@ -2918,6 +3241,10 @@ class AdaptiveMissionController:
                 continue
             except Exception as exc:
                 with self._lock:
+                    decision_record["status"] = "failed"
+                    decision_record["error_type"] = (
+                        exc.__class__.__name__
+                    )
                     self._provider_future = None
                     self._inference_in_flight = False
                     if not self._terminal:
@@ -2933,6 +3260,10 @@ class AdaptiveMissionController:
                     objective_revision != self._objective_revision
                 )
                 if not objective_changed:
+                    decision_record["status"] = "validated"
+                    decision_record["intent_revision"] = (
+                        next_intent.revision
+                    )
                     if pending_rejection is not None:
                         self._append_event(
                             "safety_recovery_decision_validated",
@@ -2941,6 +3272,7 @@ class AdaptiveMissionController:
                             "safety-rejection counter reset.",
                         )
                     return next_intent
+                decision_record["status"] = "discarded_objective_changed"
                 self._append_event(
                     "llm_revision_discarded",
                     "An in-flight model response for the previous objective "
@@ -3012,15 +3344,24 @@ class AdaptiveMissionController:
         )
         self._finish(status, reason)
 
-    def _append_event(self, kind: str, message: str) -> None:
-        self._events.append(
-            {
-                "sequence": len(self._events) + 1,
-                "event_type": str(kind),
-                "message": str(message),
-                "at_s": self._now(),
-            }
-        )
+    def _append_event(
+        self,
+        kind: str,
+        message: str,
+        *,
+        details: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        event = {
+            "sequence": len(self._events) + 1,
+            "event_type": str(kind),
+            "message": str(message),
+            "at_s": self._now(),
+        }
+        if details is not None:
+            event["details"] = json.loads(
+                json.dumps(dict(details), allow_nan=False)
+            )
+        self._events.append(event)
 
     def _emit_checkpoint(self, kind: str, projection: Mapping[str, Any]) -> None:
         if self._checkpoint is None:
@@ -3115,6 +3456,26 @@ class AdaptiveMissionController:
                     json.dumps(self._safety_rejections)
                 ),
             },
+            "navigation_outcome_recovery": {
+                "consecutive_stall_recoveries": (
+                    self._consecutive_stall_recoveries
+                ),
+                "consecutive_stall_recovery_budget": (
+                    self._max_consecutive_stall_recoveries
+                ),
+                "judgments": json.loads(
+                    json.dumps(self._outcome_judgments)
+                ),
+                "resets": json.loads(
+                    json.dumps(self._stall_recovery_resets)
+                ),
+                "terminal_exhaustion_reason": (
+                    self._outcome_exhaustion_reason
+                ),
+            },
+            "isolated_decisions": json.loads(
+                json.dumps(self._decisions)
+            ),
             "mission_lease": {
                 "approved_at_s": self.approved_at_s,
                 "expires_at_s": self._mission_expires_at_s,
@@ -3171,6 +3532,26 @@ class AdaptiveMissionController:
                     json.dumps(self._safety_rejections)
                 ),
             },
+            "navigation_outcome_recovery": {
+                "consecutive_stall_recoveries": (
+                    self._consecutive_stall_recoveries
+                ),
+                "consecutive_stall_recovery_budget": (
+                    self._max_consecutive_stall_recoveries
+                ),
+                "judgments": json.loads(
+                    json.dumps(self._outcome_judgments)
+                ),
+                "resets": json.loads(
+                    json.dumps(self._stall_recovery_resets)
+                ),
+                "terminal_exhaustion_reason": (
+                    self._outcome_exhaustion_reason
+                ),
+            },
+            "isolated_decisions": json.loads(
+                json.dumps(self._decisions)
+            ),
             "safety_policy": ADAPTIVE_MISSION_SAFETY_POLICY,
             "auto_resume": False,
             "drop_off_detection_available": False,
@@ -3221,18 +3602,15 @@ def _is_collision_replan_snapshot(snapshot: Mapping[str, Any]) -> bool:
     )
 
 
-def _is_exploration_objective(*values: str) -> bool:
-    text = " ".join(str(value).lower() for value in values)
-    tokens = {
-        token.strip(".,:;!?()[]{}")
-        for token in text.split()
-    }
+def _is_settled_navigation_judgment_snapshot(
+    snapshot: Mapping[str, Any],
+) -> bool:
+    outcome = _navigation_outcome(snapshot)
     return bool(
-        "map" in tokens
-        or any(
-            marker in text
-            for marker in ("explor", "mapping", "survey")
-        )
+        outcome.get("recoverable") is True
+        and outcome.get("terminal_settled") is True
+        and str(outcome.get("reason", "")).strip().lower()
+        in {"target_error", "stall"}
     )
 
 

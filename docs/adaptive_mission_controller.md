@@ -52,8 +52,9 @@ The model input is a typed decision projection rather than the complete
 executor record. It retains STOP/ESTOP and collision state, source freshness,
 scan/odometry age, drop-off-detection unavailability, signed translation
 clearance, pose, progress, last bounded intent and navigation outcome, camera
-freshness, and camera detections. Bulky route samples, duplicate recognition
-records, receipt timestamps, and local image paths are excluded. Image pixels
+freshness, camera detections, receipt timestamps, terminal residuals, and
+encoder summaries. Bulky route samples, duplicate recognition records, and
+local image paths are excluded. Image pixels
 are attached only for a recoverable stall/collision decision or an
 object-directed objective. Every such decision requires a fresh frame- and
 SHA-bound image and otherwise fails closed.
@@ -126,6 +127,24 @@ rotation, intent-count, or provider-call budget inside the active lease. Every
 individual intent remains bounded to 0.25 m, 45 degrees, and 5 seconds. Speed
 ceilings remain 0.10 m/s and 0.4 rad/s.
 
+Settled navigation outcomes are separated from physical command termination.
+After an ordinary odometry overshoot, undershoot, target residual, or
+non-collision stall has stopped and supplied correlated terminal evidence, the
+executor acquires a new complete sensor snapshot. The controller sends the
+approved mission prompt, that fresh snapshot, and the prior execution evidence
+to a new isolated model thread through the unchanged intent schema. It supplies
+no candidate-action list, and validates and supervises the returned intent
+normally.
+
+Target residuals do not consume a recovery budget. Only consecutive settled
+stall/no-progress outcomes use a two-retry fail-closed budget, separate from
+the safety-rejection retry budget. A completed move or turn resets that stall
+debt. The same path applies to travel, inspection, patrol, search, approach,
+retreat, return, and exploration objectives; prompt wording is not an
+eligibility check. Decision IDs, snapshot IDs, typed outcome evidence, stall
+counts/resets, submission reasons, and terminal exhaustion are persisted
+without logging mission prompts or provider credentials.
+
 Approval starts the fixed supervised graph, which owns camera/lidar telemetry
 for the whole active lease and across every replan. The browser cannot toggle
 telemetry independently while that lease owns the graph. A model `stop` ends
@@ -140,7 +159,7 @@ a second lease, changing the original expiry, restarting the graph, or
 interrupting telemetry. An in-flight response for an older objective is
 discarded and fresh typed evidence is reacquired before another model call.
 
-Hardware STOP, ESTOP, collision veto, stale evidence, cancellation, executor timeout,
+Hardware STOP, ESTOP, latched collision stops, stale evidence, cancellation, executor timeout,
 mission-lease expiry, persistence failure, process restart, and provider or
 network failure are terminal. The controller never automatically resumes.
 Restart recovery is owned by `MissionService`, which changes a persisted
@@ -251,9 +270,11 @@ stale-odometry gate bounds that projection. A later exact-SHA trace settled
 8.330 degrees short because the drivetrain response was materially slower.
 After verified stationary evidence, the same correlated turn intent may
 therefore issue at most three single-control-tick corrective pulses within its
-original 5-second timeout. Overshoot, collision, STOP/ESTOP, cancellation, stale evidence,
-timeout, or another terminal result can never re-engage motion. The terminal
-manifest reports the correction count. The collision supervisor and driver
+original 5-second timeout. Collision, STOP/ESTOP, cancellation, stale evidence,
+timeout, or another hard terminal result can never re-engage motion. A settled
+odometry overshoot or undershoot is preserved as uncertain navigation evidence
+for a new isolated mission decision; it does not itself re-engage motion. The
+terminal manifest reports the correction count. The collision supervisor and driver
 still own the absolute 0.4 rad/s ceiling. The rover must become stationary and
 finish within the 0.03 m translation or capability-oriented 10-degree turn
 terminal bound. The wider turn bound is not a collision or safety tolerance.

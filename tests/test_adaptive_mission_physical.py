@@ -792,7 +792,8 @@ def test_physical_adaptive_mission_replans_settled_modest_target_error_from_fres
     ] == pytest.approx(100.1)
 
 
-def test_physical_adaptive_mission_rejects_target_error_outside_replan_envelope() -> None:
+def test_physical_adaptive_mission_submits_larger_settled_target_residual_for_judgment() -> None:
+    cache = _cache()
     correlation = "physical-adaptive-mission:adaptive-mission-intent:1"
     transport = FakeRouteTransport(
         {
@@ -823,10 +824,11 @@ def test_physical_adaptive_mission_rejects_target_error_outside_replan_envelope(
                     "angular_rad_s": 0.0,
                 },
             },
-        }
+        },
+        after_execute=lambda: _refresh_perception(cache),
     )
     executor = PhysicalAdaptiveMissionExecutor(
-        _cache(),
+        cache,
         source_sha=SHA,
         deployed_sha=SHA,
         reviewed_sha=SHA,
@@ -848,11 +850,14 @@ def test_physical_adaptive_mission_rejects_target_error_outside_replan_envelope(
     finally:
         executor.close()
 
-    assert result.outcome == "failed"
+    assert result.outcome == "replan"
     assert result.reason == "target_error"
-    assert result.snapshot["last_execution"]["navigation_outcome"][
-        "recoverable"
-    ] is False
+    outcome = result.snapshot["last_execution"]["navigation_outcome"]
+    assert outcome["recoverable"] is True
+    assert outcome["residual_distance_m"] == pytest.approx(-0.06)
+    assert outcome["measurement_uncertainty"][
+        "target_residual_requires_mission_judgment"
+    ] is True
 
 
 def test_physical_adaptive_mission_replans_settled_stall_beyond_target_error_envelope() -> None:
@@ -923,6 +928,69 @@ def test_physical_adaptive_mission_replans_settled_stall_beyond_target_error_env
     assert result.snapshot["evidence"]["source_receipts"]["camera"][
         "received_at_s"
     ] == pytest.approx(100.1)
+
+
+def test_wrong_direction_telemetry_is_terminal_not_navigation_judgment() -> None:
+    correlation = "physical-adaptive-mission:adaptive-mission-intent:1"
+    transport = FakeRouteTransport(
+        {
+            "route_id": correlation,
+            "status": "failed",
+            "terminal_reason": "wrong_direction",
+            "source_sha": SHA,
+            "terminal_settled": True,
+            "measured_distance_m": 0.01,
+            "measured_angle_deg": 0.0,
+            "executed_segments": [
+                {
+                    "correlation_id": correlation,
+                    "status": "failed",
+                    "terminal_distance_error_m": 0.09,
+                    "terminal_angle_error_deg": None,
+                }
+            ],
+            "supervision": {
+                "samples": 3,
+                "collision_state": "CLEAR",
+                "requested": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+                "supervised": {
+                    "linear_mps": 0.0,
+                    "angular_rad_s": 0.0,
+                },
+            },
+        }
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        _cache(),
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="7" * 64,
+            approval_id="operator:" + "7" * 64,
+            operator="scott@example.com",
+        )
+        result = executor.execute(
+            _intent(executor, "move_distance", 0.10),
+            threading.Event(),
+        )
+    finally:
+        executor.close()
+
+    assert result.outcome == "failed"
+    assert result.reason == "wrong_direction"
+    assert result.snapshot["last_execution"]["navigation_outcome"][
+        "recoverable"
+    ] is False
 
 
 def test_physical_adaptive_mission_rejects_terminal_overshoot_beyond_tolerance() -> None:

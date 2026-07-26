@@ -520,6 +520,7 @@ class LiveAdaptiveMissionController:
             pending_safety_rejection: Optional[dict[str, Any]] = None
             consecutive_safety_rejections = 0
             initial_safety_rejections: list[dict[str, Any]] = []
+            initial_decisions: list[dict[str, Any]] = []
             while True:
                 if cancellation.is_set():
                     raise MissionValidationError(
@@ -536,6 +537,20 @@ class LiveAdaptiveMissionController:
                         "prompt", active_objective
                     )
                 )
+                decision_id = uuid.uuid4().hex
+                decision_record = {
+                    "decision_id": decision_id,
+                    "snapshot_id": str(snapshot.get("snapshot_id", "")),
+                    "isolated_model_thread": True,
+                    "kind": (
+                        "safety_recovery"
+                        if pending_safety_rejection is not None
+                        else "normal"
+                    ),
+                    "status": "started",
+                    "provider_call": len(initial_decisions) + 1,
+                }
+                initial_decisions.append(decision_record)
                 try:
                     raw, first_intent = choose_validated_adaptive_intent(
                         self.provider,
@@ -545,9 +560,11 @@ class LiveAdaptiveMissionController:
                         issued_at_s=None,
                         limits=mission_limits,
                         safety_rejection=pending_safety_rejection,
+                        decision_id=decision_id,
                         issue_clock=self._clock_s,
                     )
                 except RecoverableSafetyRejection as exc:
+                    decision_record["status"] = "safety_rejected"
                     consecutive_safety_rejections += 1
                     refreshed = dict(
                         self.executor.refresh_after_safety_rejection(
@@ -599,6 +616,14 @@ class LiveAdaptiveMissionController:
                             "safety_rejection_retry_budget_exhausted"
                         ) from exc
                     continue
+                except Exception as exc:
+                    decision_record["status"] = "failed"
+                    decision_record["error_type"] = (
+                        exc.__class__.__name__
+                    )
+                    raise
+                decision_record["status"] = "validated"
+                decision_record["intent_revision"] = first_intent.revision
                 consecutive_safety_rejections = 0
                 pending_safety_rejection = None
                 if cancellation.is_set():
@@ -646,13 +671,14 @@ class LiveAdaptiveMissionController:
                 keep_active_after_planner_stop=(
                     self.keep_session_active_until_lease_end
                 ),
-                enable_exploration_recovery=True,
+                enable_navigation_outcome_recovery=True,
                 max_safety_rejection_retries=(
                     self.max_safety_rejection_retries
                 ),
                 initial_safety_rejections=tuple(
                     initial_safety_rejections
                 ),
+                initial_decisions=tuple(initial_decisions),
                 activation_event_message=(
                     "Authenticated approval activated the supervised physical "
                     "graph; fresh readiness was verified before the provider call."
