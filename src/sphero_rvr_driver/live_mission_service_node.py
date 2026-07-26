@@ -443,7 +443,10 @@ def main(args=None):
                             model=model_id,
                             reasoning_effort=reasoning_effort,
                             limits=adaptive_limits,
-                            latency_logger=self.get_logger().info,
+                            latency_logger=lambda message: print(
+                                message,
+                                flush=True,
+                            ),
                         ),
                         adaptive_mission_executor,  # type: ignore[arg-type]
                         execution_enabled=live_execution_enabled,
