@@ -13,6 +13,7 @@ import urllib.request
 import pytest
 
 from sphero_rvr_driver.codex_app_server import (
+    CodexAppServerClient,
     codex_oauth_environment,
     resolve_codex_executable,
 )
@@ -32,6 +33,7 @@ from sphero_rvr_driver.adaptive_mission_controller import (
     AdaptiveMissionIntent,
     AdaptiveMissionLimits,
     MovementDecision,
+    RecoverableSafetyRejection,
     _adaptive_mission_provider_prompt,
     _decision_evidence_snapshot,
     _visual_reasoning_relevance,
@@ -88,6 +90,82 @@ def test_codex_resolution_falls_back_to_user_local_bin(
     assert resolve_codex_executable("codex") == str(executable)
 
 
+def test_app_server_every_decision_starts_new_ephemeral_thread(
+    monkeypatch,
+) -> None:
+    client = CodexAppServerClient()
+    starts: list[tuple[str, Mapping[str, Any]]] = []
+    messages: list[Mapping[str, Any]] = []
+    thread_number = 0
+
+    def request(method, params, *, deadline):
+        nonlocal thread_number
+        del deadline
+        starts.append((str(method), dict(params)))
+        if method == "thread/start":
+            thread_number += 1
+            return {"thread": {"id": f"thread-{thread_number}"}}
+        thread_id = str(params["threadId"])
+        turn_id = f"turn-{thread_number}"
+        messages.extend(
+            [
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "agentMessage",
+                            "text": "{}",
+                        },
+                    },
+                },
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": thread_id,
+                        "turn": {
+                            "id": turn_id,
+                            "status": "completed",
+                        },
+                    },
+                },
+            ]
+        )
+        return {"turn": {"id": turn_id}}
+
+    monkeypatch.setattr(client, "_request_unlocked", request)
+    monkeypatch.setattr(
+        client,
+        "_next_message_unlocked",
+        lambda _deadline: messages.pop(0),
+    )
+
+    for _ in range(2):
+        assert client._run_turn_unlocked(
+            prompt="{}",
+            model="test-model",
+            effort="low",
+            output_schema={"type": "object"},
+            cwd="/tmp",
+            image_path=None,
+            deadline=time.monotonic() + 1.0,
+        ) == "{}"
+
+    thread_starts = [
+        params for method, params in starts if method == "thread/start"
+    ]
+    turn_starts = [
+        params for method, params in starts if method == "turn/start"
+    ]
+    assert len(thread_starts) == 2
+    assert all(params["ephemeral"] is True for params in thread_starts)
+    assert [params["threadId"] for params in turn_starts] == [
+        "thread-1",
+        "thread-2",
+    ]
+
+
 class SequenceProvider:
     provider_id = "injected-adaptive-mission-provider"
     model_id = "deterministic-test-model"
@@ -105,11 +183,14 @@ class SequenceProvider:
         self.fail_after_calls = fail_after_calls
         self.calls = 0
         self.entered_delayed_call = threading.Event()
+        self.safety_rejections: list[Mapping[str, Any]] = []
+        self.snapshots: list[str] = []
 
     def choose(
         self, prompt: str, snapshot: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         assert prompt
+        self.snapshots.append(str(snapshot["snapshot_id"]))
         self.calls += 1
         if self.fail_after_calls is not None and self.calls > self.fail_after_calls:
             raise ConnectionError("injected provider network failure")
@@ -120,6 +201,17 @@ class SequenceProvider:
             raise AssertionError("provider was called after scripted stop")
         action, value = self.actions[self.calls - 1]
         return _raw(snapshot, action, value)
+
+    def choose_after_safety_rejection(
+        self,
+        prompt: str,
+        snapshot: Mapping[str, Any],
+        rejection: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self.safety_rejections.append(
+            json.loads(json.dumps(dict(rejection)))
+        )
+        return self.choose(prompt, snapshot)
 
 
 class RecognitionDrivenProvider:
@@ -312,6 +404,51 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
     assert configured["authority"]["mission_lease_s"] == 120.0
 
 
+def test_recovery_prompt_supplies_only_typed_limiting_condition() -> None:
+    snapshot = ReplayAdaptiveMissionExecutor().snapshot(
+        "typed-recovery-prompt"
+    )
+    rejected = _raw(snapshot, "move_distance", 0.25)
+    rejection = RecoverableSafetyRejection(
+        "clearance exceeded",
+        rejected_request=rejected,
+        violated_condition=(
+            "translation_exceeds_forward_usable_clearance"
+        ),
+        limit_name="forward_usable_m",
+        limit_value=0.2225,
+        limit_unit="m",
+        rejected_snapshot_id=str(snapshot["snapshot_id"]),
+    ).feedback(current_snapshot_id=str(snapshot["snapshot_id"]))
+
+    request = json.loads(
+        _adaptive_mission_provider_prompt(
+            PROMPT,
+            snapshot,
+            safety_rejection=rejection,
+        )
+    )
+
+    assert request["safety_rejection"] == rejection
+    assert set(request["safety_rejection"]) == {
+        "schema",
+        "rejected_request",
+        "violated_condition",
+        "applicable_numeric_limit",
+        "rejected_snapshot_id",
+        "current_snapshot_id",
+        "motion_executed",
+    }
+    assert "alternatives" not in request["safety_rejection"]
+    assert "candidate" not in json.dumps(
+        request["safety_rejection"]
+    ).lower()
+    recovery_rules = "\n".join(request["rules"])
+    assert "consider observe" not in recovery_rules
+    assert "choose turn_angle" not in recovery_rules
+    assert "use fresh evidence to back away" not in recovery_rules
+
+
 def test_oauth_provider_copies_only_digest_bound_camera_attachment(
     tmp_path,
 ) -> None:
@@ -497,10 +634,44 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
 
     provider.choose("Explore mapped free space.", snapshot)
     provider.choose("Find the detected shoe.", snapshot)
+    rejection = RecoverableSafetyRejection(
+        "clearance exceeded",
+        rejected_request=_raw(snapshot, "move_distance", 0.25),
+        violated_condition=(
+            "translation_exceeds_forward_usable_clearance"
+        ),
+        limit_name="forward_usable_m",
+        limit_value=0.2225,
+        limit_unit="m",
+        rejected_snapshot_id=str(snapshot["snapshot_id"]),
+    ).feedback(current_snapshot_id=str(snapshot["snapshot_id"]))
+    provider.choose_after_safety_rejection(
+        "Explore mapped free space.", snapshot, rejection
+    )
 
     assert FakeAppServer.instances == 1
     assert provider._client is not None
     assert [call["image_path"] is not None for call in provider._client.calls] == [
+        False,
+        True,
+        False,
+    ]
+    prompts = [
+        json.loads(call["prompt"])
+        for call in provider._client.calls
+    ]
+    assert "safety_rejection" not in prompts[0]
+    assert "safety_rejection" not in prompts[1]
+    assert prompts[2]["safety_rejection"] == rejection
+    metrics = provider.latency_history()
+    assert len({item["decision_id"] for item in metrics}) == 3
+    assert [item["isolated_model_thread"] for item in metrics] == [
+        True,
+        True,
+        True,
+    ]
+    assert [item["safety_recovery"] for item in metrics] == [
+        False,
         False,
         True,
     ]
@@ -525,8 +696,8 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
     assert _visual_reasoning_relevance(
         "Choose one safe action.", snapshot
     ) == (False, "not_relevant")
-    assert len(provider.latency_history()) == 2
-    assert len(latency_records) == 2
+    assert len(provider.latency_history()) == 3
+    assert len(latency_records) == 3
     assert all(
         record.startswith("adaptive_planning_cycle {")
         and "OPENAI_API_KEY" not in record
@@ -834,7 +1005,7 @@ def test_adaptive_mission_replans_movement_from_fresh_recognition_evidence(tmp_p
     ] == pytest.approx(0.10)
 
 
-def test_collision_supervisor_vetoes_llm_and_records_zero_supervised_motion(
+def test_collision_supervisor_veto_recovers_with_typed_zero_motion_rejection(
     tmp_path,
 ) -> None:
     provider = SequenceProvider([("move_distance", 0.25), ("stop", 0.0)])
@@ -856,12 +1027,33 @@ def test_collision_supervisor_vetoes_llm_and_records_zero_supervised_motion(
 
     revision = terminal["mission"]["result"]["intent_revisions"][0]
     movement = revision["execution"]["movement"]
-    assert terminal["mission"]["state"] == "BLOCKED"
-    assert terminal["mission"]["terminal_reason"] == "collision_veto"
-    assert provider.calls == 1
+    assert terminal["mission"]["state"] == "COMPLETE"
+    assert terminal["mission"]["terminal_reason"] == "planner_stop"
+    assert provider.calls == 2
     assert movement["requested"]["linear_mps"] == pytest.approx(0.10)
     assert movement["supervised"]["linear_mps"] == 0.0
     assert movement["motor_topic_publisher"] == "lidar_collision_stop_supervisor"
+    assert len(provider.safety_rejections) == 1
+    rejection = provider.safety_rejections[0]
+    assert set(rejection) == {
+        "schema",
+        "rejected_request",
+        "violated_condition",
+        "applicable_numeric_limit",
+        "rejected_snapshot_id",
+        "current_snapshot_id",
+        "motion_executed",
+    }
+    assert rejection["violated_condition"] == "collision_supervisor_veto"
+    assert rejection["motion_executed"] is False
+    assert rejection["applicable_numeric_limit"] == {
+        "name": "maximum_executed_motion_m",
+        "value": 0.0,
+        "unit": "m",
+    }
+    assert "alternatives" not in rejection
+    assert provider.snapshots[0] != provider.snapshots[1]
+    assert rejection["current_snapshot_id"] == provider.snapshots[1]
 
 
 @pytest.mark.parametrize(
@@ -936,12 +1128,21 @@ def test_exploration_recovery_reverses_turns_and_replans_after_failure(
     assert revisions[2]["angle_deg"] == pytest.approx(45.0)
     assert provider.calls == 4
     event_types = [event["event_type"] for event in terminal["events"]]
-    assert "outcome_replan" in event_types
+    assert (
+        "safety_rejection"
+        if isinstance(supervisor, ReplayCollisionSupervisor)
+        and not isinstance(supervisor, StallOnceSupervisor)
+        else "outcome_replan"
+    ) in event_types
 
 
 def test_llm_problem_solving_reverse_is_capped_at_fifteen_centimeters() -> None:
     provider = SequenceProvider(
-        [("move_distance", 0.20), ("move_distance", -0.20)]
+        [
+            ("move_distance", 0.20),
+            ("move_distance", -0.20),
+            ("move_distance", -0.20),
+        ]
     )
     executor = RecoveryReplayAdaptiveMissionExecutor(
         supervisor=ReplayCollisionSupervisor(collision_on_intent=1)
@@ -979,11 +1180,20 @@ def test_llm_problem_solving_reverse_is_capped_at_fifteen_centimeters() -> None:
     finally:
         controller.close()
 
-    assert terminal["status"] == "failed"
-    assert "problem-solving reverse exceeds 0.15 m" in (
-        terminal["terminal_reason"]
+    assert terminal["status"] == "blocked"
+    assert terminal["terminal_reason"] == (
+        "safety_rejection_retry_budget_exhausted"
     )
     assert len(terminal["result"]["intent_revisions"]) == 1
+    assert provider.calls == 3
+    assert len(provider.safety_rejections) == 2
+    assert all(
+        rejection["motion_executed"] is False
+        for rejection in provider.safety_rejections
+    )
+    assert len(
+        terminal["result"]["safety_recovery"]["rejections"]
+    ) == 3
 
 
 def test_stale_updated_snapshot_stops_before_another_provider_call(tmp_path) -> None:
@@ -1035,6 +1245,7 @@ def test_provider_network_failure_is_terminal_and_never_restarts(tmp_path) -> No
     assert "provider_failure: ConnectionError" in terminal["mission"]["terminal_reason"]
     assert later["mission"]["state"] == "FAILED"
     assert provider.calls == 2
+    assert provider.safety_rejections == []
     assert terminal["mission"]["result"]["auto_resume"] is False
 
 

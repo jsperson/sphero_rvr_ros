@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Callable, Mapping, Optional, Protocol
+import uuid
 
 from .codex_app_server import (
     CodexAppServerClient,
@@ -36,7 +37,11 @@ ADAPTIVE_MISSION_WORLD_SCHEMA = "sphero_rvr.adaptive_mission_world_snapshot.v1"
 ADAPTIVE_MISSION_INTENT_SCHEMA = "sphero_rvr.adaptive_mission_intent.v1"
 ADAPTIVE_MISSION_PROPOSAL_SCHEMA = "sphero_rvr.adaptive_mission_proposal.v1"
 ADAPTIVE_MISSION_RESULT_SCHEMA = "sphero_rvr.adaptive_mission_result.v1"
+ADAPTIVE_MISSION_SAFETY_REJECTION_SCHEMA = (
+    "sphero_rvr.adaptive_mission_safety_rejection.v1"
+)
 ADAPTIVE_MISSION_SAFETY_POLICY = "lidar_collision_stop.v1"
+DEFAULT_SAFETY_REJECTION_RETRY_BUDGET = 2
 
 _ACTIONS = {"move_distance", "turn_angle", "observe", "stop"}
 _OBJECTIVE_STATUSES = {
@@ -106,6 +111,48 @@ class AdaptiveMissionLimits:
             "max_cumulative_translation_m": None,
             "max_cumulative_rotation_deg": None,
             "max_intent_count": None,
+        }
+
+
+class RecoverableSafetyRejection(MissionValidationError):
+    """A proposal rejected before motion by one numeric safety boundary."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        rejected_request: Mapping[str, Any],
+        violated_condition: str,
+        limit_name: str,
+        limit_value: float,
+        limit_unit: str,
+        rejected_snapshot_id: str,
+    ) -> None:
+        super().__init__(message)
+        self.rejected_request = json.loads(
+            json.dumps(dict(rejected_request), allow_nan=False)
+        )
+        self.violated_condition = str(violated_condition)
+        self.limit_name = str(limit_name)
+        self.limit_value = float(limit_value)
+        self.limit_unit = str(limit_unit)
+        self.rejected_snapshot_id = str(rejected_snapshot_id)
+
+    def feedback(self, *, current_snapshot_id: str) -> dict[str, Any]:
+        return {
+            "schema": ADAPTIVE_MISSION_SAFETY_REJECTION_SCHEMA,
+            "rejected_request": json.loads(
+                json.dumps(self.rejected_request)
+            ),
+            "violated_condition": self.violated_condition,
+            "applicable_numeric_limit": {
+                "name": self.limit_name,
+                "value": self.limit_value,
+                "unit": self.limit_unit,
+            },
+            "rejected_snapshot_id": self.rejected_snapshot_id,
+            "current_snapshot_id": str(current_snapshot_id),
+            "motion_executed": False,
         }
 
 
@@ -302,13 +349,53 @@ class AdaptiveMissionIntent:
         lease = _finite(raw.get("lease_s"), "adaptive mission intent lease")
         timeout = _finite(raw.get("timeout_s"), "adaptive mission intent timeout")
         if abs(distance) > limits.max_translation_per_intent_m:
-            raise MissionValidationError("adaptive mission intent translation exceeds 0.25 m")
+            raise RecoverableSafetyRejection(
+                "adaptive mission intent translation exceeds 0.25 m",
+                rejected_request=raw,
+                violated_condition="translation_per_intent_limit_exceeded",
+                limit_name="max_translation_per_intent_m",
+                limit_value=limits.max_translation_per_intent_m,
+                limit_unit="m",
+                rejected_snapshot_id=str(snapshot.get("snapshot_id", "")),
+            )
         if abs(angle) > limits.max_rotation_per_intent_deg:
-            raise MissionValidationError("adaptive mission intent rotation exceeds 45 degrees")
-        if not 0.0 < lease <= limits.max_intent_lease_s:
-            raise MissionValidationError("adaptive mission intent lease exceeds 5 seconds")
-        if not 0.0 < timeout <= limits.max_intent_timeout_s:
-            raise MissionValidationError("adaptive mission intent timeout exceeds 5 seconds")
+            raise RecoverableSafetyRejection(
+                "adaptive mission intent rotation exceeds 45 degrees",
+                rejected_request=raw,
+                violated_condition="rotation_per_intent_limit_exceeded",
+                limit_name="max_rotation_per_intent_deg",
+                limit_value=limits.max_rotation_per_intent_deg,
+                limit_unit="deg",
+                rejected_snapshot_id=str(snapshot.get("snapshot_id", "")),
+            )
+        if lease <= 0.0:
+            raise MissionValidationError(
+                "adaptive mission intent lease must be positive"
+            )
+        if lease > limits.max_intent_lease_s:
+            raise RecoverableSafetyRejection(
+                "adaptive mission intent lease exceeds 5 seconds",
+                rejected_request=raw,
+                violated_condition="intent_lease_limit_exceeded",
+                limit_name="max_intent_lease_s",
+                limit_value=limits.max_intent_lease_s,
+                limit_unit="s",
+                rejected_snapshot_id=str(snapshot.get("snapshot_id", "")),
+            )
+        if timeout <= 0.0:
+            raise MissionValidationError(
+                "adaptive mission intent timeout must be positive"
+            )
+        if timeout > limits.max_intent_timeout_s:
+            raise RecoverableSafetyRejection(
+                "adaptive mission intent timeout exceeds 5 seconds",
+                rejected_request=raw,
+                violated_condition="intent_timeout_limit_exceeded",
+                limit_name="max_intent_timeout_s",
+                limit_value=limits.max_intent_timeout_s,
+                limit_unit="s",
+                rejected_snapshot_id=str(snapshot.get("snapshot_id", "")),
+            )
         if action == "move_distance":
             if distance == 0.0 or angle != 0.0:
                 raise MissionValidationError(
@@ -330,7 +417,9 @@ class AdaptiveMissionIntent:
                     "motion intent rejected because the snapshot permits observation only"
                 )
         if action == "move_distance":
-            _validate_snapshot_translation_clearance(snapshot, distance)
+            _validate_snapshot_translation_clearance(
+                snapshot, distance, rejected_request=raw
+            )
         rationale = str(raw.get("rationale", "")).strip()
         objective = str(raw.get("interpreted_objective", "")).strip()
         objective_status = str(raw.get("objective_status", "")).strip()
@@ -421,6 +510,13 @@ class AdaptiveMissionIntentProvider(Protocol):
         self, prompt: str, snapshot: Mapping[str, Any]
     ) -> Mapping[str, Any]: ...
 
+    def choose_after_safety_rejection(
+        self,
+        prompt: str,
+        snapshot: Mapping[str, Any],
+        rejection: Mapping[str, Any],
+    ) -> Mapping[str, Any]: ...
+
 
 class CodexOAuthAdaptiveMissionIntentProvider:
     """ChatGPT-OAuth planner with isolated turns on one supervised app-server."""
@@ -471,11 +567,43 @@ class CodexOAuthAdaptiveMissionIntentProvider:
     def choose(
         self, prompt: str, snapshot: Mapping[str, Any]
     ) -> Mapping[str, Any]:
+        return self._choose(
+            prompt, snapshot, safety_rejection=None
+        )
+
+    def choose_after_safety_rejection(
+        self,
+        prompt: str,
+        snapshot: Mapping[str, Any],
+        rejection: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return self._choose(
+            prompt,
+            snapshot,
+            safety_rejection=rejection,
+        )
+
+    def _choose(
+        self,
+        prompt: str,
+        snapshot: Mapping[str, Any],
+        *,
+        safety_rejection: Optional[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
         total_started = time.perf_counter()
         preparation_started = total_started
+        decision_id = uuid.uuid4().hex
         metric: dict[str, Any] = {
             "schema": "sphero_rvr.adaptive_planning_latency.v1",
+            "decision_id": decision_id,
+            "isolated_model_thread": True,
             "snapshot_id": str(snapshot.get("snapshot_id", "")),
+            "safety_recovery": safety_rejection is not None,
+            "safety_rejection_condition": (
+                str(safety_rejection.get("violated_condition", ""))
+                if isinstance(safety_rejection, Mapping)
+                else ""
+            ),
             "model_id": self.model_id,
             "reasoning_effort": self.reasoning_effort,
             "integration": self.integration,
@@ -538,6 +666,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                     prompt,
                     decision_snapshot,
                     limits=self.limits,
+                    safety_rejection=safety_rejection,
                 )
                 metric["input_characters"] = len(provider_prompt)
                 metric["prompt_image_preparation_ms"] = (
@@ -796,6 +925,7 @@ def choose_validated_adaptive_intent(
     issued_at_s: Optional[float],
     limits: AdaptiveMissionLimits,
     supervised_collision_escape: Optional[bool] = None,
+    safety_rejection: Optional[Mapping[str, Any]] = None,
     issue_clock: Callable[[], float] = time.time,
 ) -> tuple[dict[str, Any], AdaptiveMissionIntent]:
     """Run provider inference and deterministic rover intent validation.
@@ -804,7 +934,14 @@ def choose_validated_adaptive_intent(
     inference returns, so inference latency cannot consume motion authority.
     """
 
-    raw = dict(provider.choose(prompt, snapshot))
+    raw = dict(
+        _choose_provider_intent(
+            provider,
+            prompt,
+            snapshot,
+            safety_rejection=safety_rejection,
+        )
+    )
     effective_issued_at_s = (
         float(issue_clock()) if issued_at_s is None else float(issued_at_s)
     )
@@ -847,6 +984,25 @@ def choose_validated_adaptive_intent(
                 * 1000.0,
                 valid=valid,
             )
+
+
+def _choose_provider_intent(
+    provider: AdaptiveMissionIntentProvider,
+    prompt: str,
+    snapshot: Mapping[str, Any],
+    *,
+    safety_rejection: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if safety_rejection is None:
+        return provider.choose(prompt, snapshot)
+    recovery_choose = getattr(
+        provider, "choose_after_safety_rejection", None
+    )
+    if not callable(recovery_choose):
+        raise MissionValidationError(
+            "adaptive mission provider cannot start an isolated safety-recovery decision"
+        )
+    return recovery_choose(prompt, snapshot, safety_rejection)
 
 
 def _adaptive_mission_output_schema() -> dict[str, Any]:
@@ -897,6 +1053,7 @@ def _adaptive_mission_provider_prompt(
     snapshot: Mapping[str, Any],
     *,
     limits: Optional[AdaptiveMissionLimits] = None,
+    safety_rejection: Optional[Mapping[str, Any]] = None,
 ) -> str:
     authority_limits = limits or AdaptiveMissionLimits()
     observations = snapshot.get("observations", {})
@@ -952,6 +1109,44 @@ def _adaptive_mission_provider_prompt(
             "Ground the concise rationale only in this snapshot.",
         ],
     }
+    if safety_rejection is not None:
+        rejection = json.loads(
+            json.dumps(dict(safety_rejection), allow_nan=False)
+        )
+        if (
+            rejection.get("schema")
+            != ADAPTIVE_MISSION_SAFETY_REJECTION_SCHEMA
+            or rejection.get("motion_executed") is not False
+            or str(rejection.get("current_snapshot_id", ""))
+            != str(snapshot.get("snapshot_id", ""))
+            or not isinstance(
+                rejection.get("applicable_numeric_limit"), Mapping
+            )
+        ):
+            raise MissionValidationError(
+                "adaptive mission safety rejection feedback is invalid"
+            )
+        request["safety_rejection"] = rejection
+        suggestion_prefixes = (
+            "After collision_veto or stall, consider ",
+            "Treat stall as commanded motion not occurring as expected:",
+            "Before move_distance, require the signed distance magnitude ",
+        )
+        request["rules"] = [
+            rule
+            for rule in request["rules"]
+            if not rule.startswith(suggestion_prefixes)
+        ]
+        request["rules"].append(
+            "Treat safety_rejection as authoritative and independently choose "
+            "one intent through the unchanged schema without receiving any "
+            "candidate, suggested, clamped, or preselected replacement."
+        )
+        request["recovery_instruction"] = (
+            "Independently propose one new intent through the normal schema. "
+            "The rejection reports only the binding safety condition; it does "
+            "not select, suggest, or enumerate a replacement action."
+        )
     return json.dumps(
         request, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
@@ -1279,7 +1474,10 @@ def _verified_camera_attachment(
 
 
 def _validate_snapshot_translation_clearance(
-    snapshot: Mapping[str, Any], distance_m: float
+    snapshot: Mapping[str, Any],
+    distance_m: float,
+    *,
+    rejected_request: Mapping[str, Any],
 ) -> None:
     execution = snapshot.get("execution", {})
     observations = snapshot.get("observations", {})
@@ -1308,9 +1506,17 @@ def _validate_snapshot_translation_clearance(
             f"adaptive mission {direction} usable translation is negative"
         )
     if abs(distance_m) > usable + 1e-9:
-        raise MissionValidationError(
+        raise RecoverableSafetyRejection(
             "adaptive mission intent translation exceeds snapshot usable "
-            f"{direction} clearance"
+            f"{direction} clearance",
+            rejected_request=rejected_request,
+            violated_condition=(
+                f"translation_exceeds_{direction}_usable_clearance"
+            ),
+            limit_name=f"{direction}_usable_m",
+            limit_value=usable,
+            limit_unit="m",
+            rejected_snapshot_id=str(snapshot.get("snapshot_id", "")),
         )
 
 
@@ -1369,6 +1575,16 @@ class AdaptiveMissionApprovalEnvelope:
                 "telemetry_stops_when_lease_ends": True,
                 "authenticated_objective_updates_within_lease": True,
                 "first_intent_requires_fresh_post_approval_evidence": True,
+                "recoverable_safety_rejection": {
+                    "retry_budget": (
+                        DEFAULT_SAFETY_REJECTION_RETRY_BUDGET
+                    ),
+                    "requires_fresh_snapshot": True,
+                    "requires_isolated_model_thread": True,
+                    "replacement_uses_normal_intent_schema": True,
+                    "alternative_actions_supplied": False,
+                    "motion_on_rejected_action": False,
+                },
                 "bounded_exploration_recovery": {
                     "trigger": "settled_collision_stall_or_modest_target_error",
                     "maximum_attempts": 2,
@@ -1459,6 +1675,14 @@ class AdaptiveMissionExecutor(Protocol):
     def execute(
         self, intent: AdaptiveMissionIntent, cancellation: threading.Event
     ) -> IntentExecutionResult: ...
+
+    def refresh_after_safety_rejection(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        timeout_s: float,
+    ) -> Mapping[str, Any]: ...
 
 
 class ReplayCollisionSupervisor:
@@ -1758,6 +1982,26 @@ class ReplayAdaptiveMissionExecutor:
             duration,
         )
 
+    def refresh_after_safety_rejection(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        timeout_s: float,
+    ) -> Mapping[str, Any]:
+        del timeout_s
+        if cancellation.is_set():
+            raise MissionValidationError(
+                "operator cancelled while refreshing safety-rejection evidence"
+            )
+        refreshed = dict(self.snapshot(self._mission_id))
+        if str(refreshed.get("snapshot_id", "")) == str(
+            previous.get("snapshot_id", "")
+        ):
+            time.sleep(0.001)
+            refreshed = dict(self.snapshot(self._mission_id))
+        return refreshed
+
     def map_projection(self) -> dict[str, Any]:
         return {
             "available": True,
@@ -1807,6 +2051,10 @@ class AdaptiveMissionController:
         enable_exploration_recovery: bool = False,
         max_exploration_recoveries: int = 2,
         recovery_reverse_m: float = 0.15,
+        max_safety_rejection_retries: int = (
+            DEFAULT_SAFETY_REJECTION_RETRY_BUDGET
+        ),
+        initial_safety_rejections: tuple[Mapping[str, Any], ...] = (),
         activation_event_message: str = "",
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -1839,6 +2087,9 @@ class AdaptiveMissionController:
             max_exploration_recoveries
         )
         self._recovery_reverse_m = float(recovery_reverse_m)
+        self._max_safety_rejection_retries = int(
+            max_safety_rejection_retries
+        )
         if self._max_exploration_recoveries < 1:
             raise MissionValidationError(
                 "exploration recovery count must be positive"
@@ -1849,6 +2100,10 @@ class AdaptiveMissionController:
         ):
             raise MissionValidationError(
                 "exploration recovery reverse distance must be within 0.15 m"
+            )
+        if not 1 <= self._max_safety_rejection_retries <= 3:
+            raise MissionValidationError(
+                "safety rejection retry budget must be between 1 and 3"
             )
         self._now = now
         self._mission_expires_at_s = self.approved_at_s + self.limits.mission_lease_s
@@ -1877,6 +2132,10 @@ class AdaptiveMissionController:
         self._objective_condition = threading.Condition(self._lock)
         self._requested_terminal: Optional[tuple[str, str]] = None
         self._recovery_attempts = 0
+        self._safety_rejections = [
+            json.loads(json.dumps(dict(item)))
+            for item in initial_safety_rejections
+        ]
         self._append_event(
             "approval_bound",
             f"Authenticated operator {self.operator} approved lease through "
@@ -1891,6 +2150,10 @@ class AdaptiveMissionController:
             "snapshot",
             _snapshot_event_message(self._world),
         )
+        for rejection in self._safety_rejections:
+            self._append_safety_rejection_event(
+                rejection, retry_number=None
+            )
         self._append_event(
             "objective_interpreted",
             first_intent.interpreted_objective,
@@ -1991,6 +2254,8 @@ class AdaptiveMissionController:
         while not self._shutdown.is_set():
             checkpoint: Optional[tuple[str, dict[str, Any]]] = None
             replan_after_outcome = False
+            pending_safety_rejection: Optional[dict[str, Any]] = None
+            consecutive_safety_rejections = 0
             with self._lock:
                 if self._terminal:
                     return
@@ -2095,7 +2360,56 @@ class AdaptiveMissionController:
                         requested_status, _ = self._requested_terminal
                         self._finish(requested_status, execution.reason)
                         return
-                    if self._can_replan_after_outcome(
+                    collision_rejection = (
+                        self._collision_safety_rejection(
+                            intent, execution
+                        )
+                    )
+                    if collision_rejection is not None:
+                        try:
+                            refreshed = (
+                                self._fresh_snapshot_after_safety_rejection(
+                                    self._world
+                                )
+                            )
+                        except Exception as refresh_exc:
+                            self._finish(
+                                "blocked",
+                                "safety_rejection_evidence_unavailable: "
+                                f"{refresh_exc.__class__.__name__}: "
+                                f"{refresh_exc}",
+                            )
+                            return
+                        self._world = json.loads(
+                            json.dumps(refreshed)
+                        )
+                        self._snapshots.append(
+                            json.loads(json.dumps(self._world))
+                        )
+                        collision_rejection[
+                            "current_snapshot_id"
+                        ] = str(self._world.get("snapshot_id", ""))
+                        consecutive_safety_rejections = 1
+                        pending_safety_rejection = collision_rejection
+                        self._safety_rejections.append(
+                            json.loads(
+                                json.dumps(collision_rejection)
+                            )
+                        )
+                        self._append_safety_rejection_event(
+                            collision_rejection,
+                            retry_number=1,
+                        )
+                        self._append_event(
+                            "snapshot",
+                            _snapshot_event_message(self._world),
+                        )
+                        replan_after_outcome = True
+                        checkpoint = (
+                            "safety_rejection",
+                            self._projection(),
+                        )
+                    elif self._can_replan_after_outcome(
                         intent, execution
                     ):
                         self._recovery_attempts += 1
@@ -2206,7 +2520,12 @@ class AdaptiveMissionController:
                 self._emit_checkpoint(*checkpoint)
             if intent.action == "stop":
                 continue
-            next_intent = self._choose_next_intent()
+            next_intent = self._choose_next_intent(
+                safety_rejection=pending_safety_rejection,
+                consecutive_safety_rejections=(
+                    consecutive_safety_rejections
+                ),
+            )
             if next_intent is None:
                 return
             with self._lock:
@@ -2251,6 +2570,111 @@ class AdaptiveMissionController:
             and outcome.get("terminal_settled") is True
             and str(outcome.get("reason", ""))
             in {"target_error", "stall", "collision_veto"}
+        )
+
+    def _collision_safety_rejection(
+        self,
+        intent: AdaptiveMissionIntent,
+        execution: IntentExecutionResult,
+    ) -> Optional[dict[str, Any]]:
+        outcome = _navigation_outcome(self._world)
+        measured_distance = outcome.get("measured_distance_m")
+        measured_angle = outcome.get("measured_angle_deg")
+        try:
+            zero_measured_motion = (
+                float(measured_distance) == 0.0
+                and float(measured_angle) == 0.0
+            )
+        except (TypeError, ValueError):
+            zero_measured_motion = False
+        if not (
+            execution.outcome == "replan"
+            and execution.reason == "collision_veto"
+            and outcome.get("recoverable") is True
+            and outcome.get("terminal_settled") is True
+            and execution.movement.supervised_linear_mps == 0.0
+            and execution.movement.supervised_angular_rad_s == 0.0
+            and zero_measured_motion
+            and str(self._world.get("snapshot_id", ""))
+            != intent.snapshot_id
+        ):
+            return None
+        rejection = RecoverableSafetyRejection(
+            "collision supervisor vetoed the proposed action",
+            rejected_request=intent.to_json_dict(),
+            violated_condition="collision_supervisor_veto",
+            limit_name="maximum_executed_motion_m",
+            limit_value=0.0,
+            limit_unit="m",
+            rejected_snapshot_id=intent.snapshot_id,
+        )
+        return rejection.feedback(
+            current_snapshot_id=str(
+                self._world.get("snapshot_id", "")
+            )
+        )
+
+    def _fresh_snapshot_after_safety_rejection(
+        self, previous: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        refresh = getattr(
+            self.executor, "refresh_after_safety_rejection", None
+        )
+        if not callable(refresh):
+            raise MissionValidationError(
+                "executor cannot prove fresh safety-rejection evidence"
+            )
+        refreshed = dict(
+            refresh(
+                previous,
+                self._cancellation,
+                timeout_s=min(
+                    self.limits.max_intent_timeout_s,
+                    max(
+                        0.0,
+                        self._mission_expires_at_s - self._now(),
+                    ),
+                ),
+            )
+        )
+        if str(refreshed.get("snapshot_id", "")) == str(
+            previous.get("snapshot_id", "")
+        ):
+            raise MissionValidationError(
+                "safety-rejection evidence did not advance to a new snapshot"
+            )
+        validate_world_snapshot(
+            refreshed,
+            mission_id=self.mission_id,
+            require_motion=False,
+            allow_collision_stopped_observation=True,
+        )
+        return refreshed
+
+    def _append_safety_rejection_event(
+        self,
+        rejection: Mapping[str, Any],
+        *,
+        retry_number: Optional[int],
+    ) -> None:
+        limit = rejection.get("applicable_numeric_limit", {})
+        limit = limit if isinstance(limit, Mapping) else {}
+        retry = (
+            ""
+            if retry_number is None
+            else (
+                f"; isolated retry {retry_number}/"
+                f"{self._max_safety_rejection_retries}"
+            )
+        )
+        self._append_event(
+            "safety_rejection",
+            "No motion executed; rejected condition "
+            f"{str(rejection.get('violated_condition', 'unknown'))} at "
+            f"snapshot {str(rejection.get('current_snapshot_id', ''))[:12]} "
+            f"with {str(limit.get('name', 'limit'))}="
+            f"{limit.get('value')} {str(limit.get('unit', '')).strip()}"
+            f"{retry}.",
         )
 
     def _wait_for_updated_objective(
@@ -2303,7 +2727,18 @@ class AdaptiveMissionController:
         )
         return self._choose_next_intent()
 
-    def _choose_next_intent(self) -> Optional[AdaptiveMissionIntent]:
+    def _choose_next_intent(
+        self,
+        *,
+        safety_rejection: Optional[Mapping[str, Any]] = None,
+        consecutive_safety_rejections: int = 0,
+    ) -> Optional[AdaptiveMissionIntent]:
+        pending_rejection = (
+            json.loads(json.dumps(dict(safety_rejection)))
+            if safety_rejection is not None
+            else None
+        )
+        rejection_count = int(consecutive_safety_rejections)
         while not self._shutdown.is_set():
             with self._lock:
                 if self._terminal:
@@ -2323,15 +2758,27 @@ class AdaptiveMissionController:
                 )
                 intent_revision = len(self._revisions) + 1
                 self._append_event(
-                    "llm_revision_started",
-                    f"Provider call {self._provider_calls_started} received updated "
-                    f"snapshot {str(provider_snapshot.get('snapshot_id', ''))[:12]}.",
+                    (
+                        "safety_recovery_decision_started"
+                        if pending_rejection is not None
+                        else "llm_revision_started"
+                    ),
+                    f"Provider call {self._provider_calls_started} started an "
+                    "isolated decision from snapshot "
+                    f"{str(provider_snapshot.get('snapshot_id', ''))[:12]}"
+                    + (
+                        " after a typed safety rejection."
+                        if pending_rejection is not None
+                        else "."
+                    ),
                 )
             try:
                 future = self._provider_pool.submit(
-                    self.provider.choose,
+                    _choose_provider_intent,
+                    self.provider,
                     provider_prompt,
                     provider_snapshot,
+                    safety_rejection=pending_rejection,
                 )
                 self._provider_future = future
                 while not future.done():
@@ -2400,9 +2847,75 @@ class AdaptiveMissionController:
                     and abs(next_intent.distance_m)
                     > self._recovery_reverse_m + 1e-9
                 ):
-                    raise MissionValidationError(
-                        "problem-solving reverse exceeds 0.15 m"
+                    raise RecoverableSafetyRejection(
+                        "problem-solving reverse exceeds 0.15 m",
+                        rejected_request=raw,
+                        violated_condition=(
+                            "problem_solving_reverse_limit_exceeded"
+                        ),
+                        limit_name="max_problem_solving_reverse_m",
+                        limit_value=self._recovery_reverse_m,
+                        limit_unit="m",
+                        rejected_snapshot_id=str(
+                            provider_snapshot.get("snapshot_id", "")
+                        ),
                     )
+            except RecoverableSafetyRejection as exc:
+                with self._lock:
+                    self._provider_future = None
+                    self._provider_calls_completed += 1
+                    self._inference_in_flight = False
+                rejection_count += 1
+                try:
+                    refreshed = self._fresh_snapshot_after_safety_rejection(
+                        provider_snapshot
+                    )
+                except Exception as refresh_exc:
+                    with self._lock:
+                        if not self._terminal:
+                            self._finish(
+                                "blocked",
+                                "safety_rejection_evidence_unavailable: "
+                                f"{refresh_exc.__class__.__name__}: "
+                                f"{refresh_exc}",
+                            )
+                    return None
+                pending_rejection = exc.feedback(
+                    current_snapshot_id=str(
+                        refreshed.get("snapshot_id", "")
+                    )
+                )
+                with self._lock:
+                    self._world = json.loads(json.dumps(refreshed))
+                    self._snapshots.append(
+                        json.loads(json.dumps(self._world))
+                    )
+                    self._safety_rejections.append(
+                        json.loads(json.dumps(pending_rejection))
+                    )
+                    self._append_safety_rejection_event(
+                        pending_rejection,
+                        retry_number=rejection_count,
+                    )
+                    self._append_event(
+                        "snapshot",
+                        _snapshot_event_message(self._world),
+                    )
+                    checkpoint = self._projection()
+                self._emit_checkpoint(
+                    "safety_rejection", checkpoint
+                )
+                if (
+                    rejection_count
+                    > self._max_safety_rejection_retries
+                ):
+                    with self._lock:
+                        self._finish(
+                            "blocked",
+                            "safety_rejection_retry_budget_exhausted",
+                        )
+                    return None
+                continue
             except Exception as exc:
                 with self._lock:
                     self._provider_future = None
@@ -2420,6 +2933,13 @@ class AdaptiveMissionController:
                     objective_revision != self._objective_revision
                 )
                 if not objective_changed:
+                    if pending_rejection is not None:
+                        self._append_event(
+                            "safety_recovery_decision_validated",
+                            "The isolated replacement decision passed the "
+                            "normal deterministic validator; the consecutive "
+                            "safety-rejection counter reset.",
+                        )
                     return next_intent
                 self._append_event(
                     "llm_revision_discarded",
@@ -2427,6 +2947,8 @@ class AdaptiveMissionController:
                     "was discarded; fresh evidence will be reacquired before "
                     "replanning without changing the lease.",
                 )
+                pending_rejection = None
+                rejection_count = 0
             try:
                 refreshed = dict(self.executor.snapshot(self.mission_id))
                 validate_world_snapshot(
@@ -2583,6 +3105,15 @@ class AdaptiveMissionController:
                     else 0.0
                 ),
                 "cumulative_travel_limit": "none within mission lease",
+                "safety_rejection_count": len(
+                    self._safety_rejections
+                ),
+            },
+            "safety_recovery": {
+                "retry_budget": self._max_safety_rejection_retries,
+                "rejections": json.loads(
+                    json.dumps(self._safety_rejections)
+                ),
             },
             "mission_lease": {
                 "approved_at_s": self.approved_at_s,
@@ -2634,6 +3165,12 @@ class AdaptiveMissionController:
                 "expires_at_s": self._mission_expires_at_s,
             },
             "limits": self.limits.to_json_dict(),
+            "safety_recovery": {
+                "retry_budget": self._max_safety_rejection_retries,
+                "rejections": json.loads(
+                    json.dumps(self._safety_rejections)
+                ),
+            },
             "safety_policy": ADAPTIVE_MISSION_SAFETY_POLICY,
             "auto_resume": False,
             "drop_off_detection_available": False,

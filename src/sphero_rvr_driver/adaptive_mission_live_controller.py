@@ -17,6 +17,8 @@ from .adaptive_mission_controller import (
     AdaptiveMissionController,
     AdaptiveMissionIntentProvider,
     AdaptiveMissionLimits,
+    DEFAULT_SAFETY_REJECTION_RETRY_BUDGET,
+    RecoverableSafetyRejection,
     choose_validated_adaptive_intent,
     validate_world_snapshot,
 )
@@ -104,6 +106,9 @@ class LiveAdaptiveMissionController:
         session_lifecycle: Optional[AdaptiveMissionSessionLifecycle] = None,
         activation_timeout_s: float = 30.0,
         keep_session_active_until_lease_end: bool = True,
+        max_safety_rejection_retries: int = (
+            DEFAULT_SAFETY_REJECTION_RETRY_BUDGET
+        ),
         clock_s: Any = time.time,
     ) -> None:
         self.service = service
@@ -117,6 +122,9 @@ class LiveAdaptiveMissionController:
         self.activation_timeout_s = float(activation_timeout_s)
         self.keep_session_active_until_lease_end = bool(
             keep_session_active_until_lease_end
+        )
+        self.max_safety_rejection_retries = int(
+            max_safety_rejection_retries
         )
         self._clock_s = clock_s
         if self.execution_enabled != self.service.live_execution_enabled:
@@ -136,6 +144,10 @@ class LiveAdaptiveMissionController:
         if not 1.0 <= self.activation_timeout_s <= 120.0:
             raise MissionValidationError(
                 "Adaptive mission activation timeout must be between 1 and 120 seconds"
+            )
+        if not 1 <= self.max_safety_rejection_retries <= 3:
+            raise MissionValidationError(
+                "safety rejection retry budget must be between 1 and 3"
             )
         self._lock = threading.RLock()
         self._threads: dict[str, threading.Thread] = {}
@@ -505,6 +517,9 @@ class LiveAdaptiveMissionController:
                 require_execution_safety=True,
             )
             active_objective = str(mission["prompt"])
+            pending_safety_rejection: Optional[dict[str, Any]] = None
+            consecutive_safety_rejections = 0
+            initial_safety_rejections: list[dict[str, Any]] = []
             while True:
                 if cancellation.is_set():
                     raise MissionValidationError(
@@ -521,15 +536,71 @@ class LiveAdaptiveMissionController:
                         "prompt", active_objective
                     )
                 )
-                raw, first_intent = choose_validated_adaptive_intent(
-                    self.provider,
-                    active_objective,
-                    snapshot,
-                    revision=1,
-                    issued_at_s=None,
-                    limits=mission_limits,
-                    issue_clock=self._clock_s,
-                )
+                try:
+                    raw, first_intent = choose_validated_adaptive_intent(
+                        self.provider,
+                        active_objective,
+                        snapshot,
+                        revision=1,
+                        issued_at_s=None,
+                        limits=mission_limits,
+                        safety_rejection=pending_safety_rejection,
+                        issue_clock=self._clock_s,
+                    )
+                except RecoverableSafetyRejection as exc:
+                    consecutive_safety_rejections += 1
+                    refreshed = dict(
+                        self.executor.refresh_after_safety_rejection(
+                            snapshot,
+                            cancellation,
+                            timeout_s=min(
+                                mission_limits.max_intent_timeout_s,
+                                max(
+                                    0.0,
+                                    float(
+                                        approval.get(
+                                            "expires_at_s", 0.0
+                                        )
+                                    )
+                                    - self._clock_s(),
+                                ),
+                            ),
+                        )
+                    )
+                    if str(refreshed.get("snapshot_id", "")) == str(
+                        snapshot.get("snapshot_id", "")
+                    ):
+                        raise MissionValidationError(
+                            "safety-rejection evidence did not advance "
+                            "to a new snapshot"
+                        )
+                    validate_world_snapshot(
+                        refreshed,
+                        mission_id=mission_id,
+                        require_motion=False,
+                        allow_collision_stopped_observation=True,
+                    )
+                    snapshot = refreshed
+                    pending_safety_rejection = exc.feedback(
+                        current_snapshot_id=str(
+                            snapshot.get("snapshot_id", "")
+                        )
+                    )
+                    initial_safety_rejections.append(
+                        json.loads(
+                            json.dumps(pending_safety_rejection)
+                        )
+                    )
+                    if (
+                        consecutive_safety_rejections
+                        > self.max_safety_rejection_retries
+                    ):
+                        raise MissionValidationError(
+                            "safety_rejection_retry_budget_exhausted"
+                        ) from exc
+                    continue
+                consecutive_safety_rejections = 0
+                pending_safety_rejection = None
                 if cancellation.is_set():
                     raise MissionValidationError(
                         "operator cancelled during first Adaptive mission plan"
@@ -576,6 +647,12 @@ class LiveAdaptiveMissionController:
                     self.keep_session_active_until_lease_end
                 ),
                 enable_exploration_recovery=True,
+                max_safety_rejection_retries=(
+                    self.max_safety_rejection_retries
+                ),
+                initial_safety_rejections=tuple(
+                    initial_safety_rejections
+                ),
                 activation_event_message=(
                     "Authenticated approval activated the supervised physical "
                     "graph; fresh readiness was verified before the provider call."

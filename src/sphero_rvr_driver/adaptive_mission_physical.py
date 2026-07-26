@@ -666,6 +666,81 @@ class PhysicalAdaptiveMissionExecutor:
             cancellation.wait(0.02)
             latest = self.snapshot(self._mission_id)
 
+    def refresh_after_safety_rejection(
+        self,
+        previous: Mapping[str, Any],
+        cancellation: threading.Event,
+        *,
+        timeout_s: float,
+    ) -> Mapping[str, Any]:
+        """Acquire a newer no-motion camera/lidar/localization evidence cycle."""
+
+        timeout = float(timeout_s)
+        if not math.isfinite(timeout) or timeout <= 0.0:
+            raise MissionValidationError(
+                "safety-rejection evidence refresh has no remaining lease"
+            )
+        previous_receipts = _mapping(
+            _mapping(previous.get("evidence")).get("source_receipts")
+        )
+        deadline = time.monotonic() + timeout
+        latest = self.snapshot(self._mission_id)
+        while True:
+            latest_receipts = _mapping(
+                _mapping(latest.get("evidence")).get(
+                    "source_receipts"
+                )
+            )
+            observations = _mapping(latest.get("observations"))
+            perception = _mapping(
+                observations.get("perception")
+            )
+            updated = True
+            for name in (
+                "camera",
+                "lidar",
+                "localization",
+                "odom",
+                "collision",
+            ):
+                prior = _mapping(previous_receipts.get(name))
+                current = _mapping(latest_receipts.get(name))
+                prior_at = _optional_finite(
+                    prior.get("received_at_s")
+                )
+                current_at = _optional_finite(
+                    current.get("received_at_s")
+                )
+                if (
+                    current.get("valid") is not True
+                    or current.get("fresh") is not True
+                    or current_at is None
+                    or (
+                        prior_at is not None
+                        and current_at <= prior_at
+                    )
+                ):
+                    updated = False
+                    break
+            if (
+                updated
+                and perception.get("camera_fresh") is True
+                and perception.get("localization_fresh") is True
+            ):
+                return latest
+            if cancellation.is_set():
+                raise MissionValidationError(
+                    "safety-rejection evidence refresh failed: "
+                    "operator_cancelled"
+                )
+            if time.monotonic() >= deadline:
+                raise MissionValidationError(
+                    "safety-rejection evidence refresh failed: "
+                    "updated_evidence_timeout"
+                )
+            cancellation.wait(0.02)
+            latest = self.snapshot(self._mission_id)
+
     def cancel(self) -> bool:
         with self._lock:
             active = self._future is not None and not self._future.done()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any, Mapping, Optional
@@ -109,6 +110,8 @@ class SequenceProvider:
         self.actions = list(actions)
         self.calls = 0
         self.snapshots: list[str] = []
+        self.snapshot_payloads: list[Mapping[str, Any]] = []
+        self.safety_rejections: list[Mapping[str, Any]] = []
         self.cache: Optional[LiveStateCache] = None
 
     def choose(
@@ -116,11 +119,25 @@ class SequenceProvider:
     ) -> Mapping[str, Any]:
         assert prompt == PROMPT
         self.snapshots.append(str(snapshot["snapshot_id"]))
+        self.snapshot_payloads.append(
+            json.loads(json.dumps(dict(snapshot)))
+        )
         action, value = self.actions[self.calls]
         self.calls += 1
         if action == "observe" and self.cache is not None:
             threading.Timer(0.1, self._publish_perception_cycle).start()
         return _raw(snapshot, action, value)
+
+    def choose_after_safety_rejection(
+        self,
+        prompt: str,
+        snapshot: Mapping[str, Any],
+        rejection: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self.safety_rejections.append(
+            json.loads(json.dumps(dict(rejection)))
+        )
+        return self.choose(prompt, snapshot)
 
     def _publish_perception_cycle(self) -> None:
         if self.cache is None:
@@ -211,6 +228,32 @@ class SlowFirstDecisionProvider(SequenceProvider):
     ) -> Mapping[str, Any]:
         self.clock.advance(6.0)
         return super().choose(prompt, snapshot)
+
+
+class ClearanceRecoveryProvider(SequenceProvider):
+    def choose(
+        self, prompt: str, snapshot: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        result = super().choose(prompt, snapshot)
+        if self.calls <= 2:
+            threading.Timer(
+                0.05, self._publish_full_evidence_cycle
+            ).start()
+        return result
+
+    def _publish_full_evidence_cycle(self) -> None:
+        self._publish_perception_cycle()
+        if self.cache is None:
+            return
+        current = self.cache.snapshot()
+        observed = time.time()
+        for name in ("odom", "collision"):
+            record = current.source(name)
+            self.cache.update(
+                name,
+                record.value,
+                received_at_s=observed,
+            )
 
 
 class RecordingSessionLifecycle:
@@ -946,6 +989,7 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
 
     result = terminal["result"]
     assert provider.calls == 4
+    assert provider.safety_rejections == []
     assert len(set(provider.snapshots)) == 4
     assert [item["action"] for item in result["intent_revisions"]] == [
         "move_distance",
@@ -991,6 +1035,91 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
         for event in events
         if event["event_type"] == "snapshot"
     )
+
+
+def test_live_clearance_rejection_uses_fresh_isolated_replacement_without_motion(
+    tmp_path,
+) -> None:
+    mission_id = "adaptive-mission-live-1114ef99cd564de29bd49665d3de3c6f"
+    provider = ClearanceRecoveryProvider(
+        [
+            ("move_distance", 0.25),
+            ("move_distance", 0.20),
+            ("stop", 0.0),
+        ]
+    )
+    cache = _cache()
+    collision = cache.snapshot().source("collision")
+    collision_value = dict(collision.value)
+    collision_value["forward_corridor_clearance_m"] = 0.6225
+    cache.update(
+        "collision",
+        collision_value,
+        received_at_s=time.time(),
+    )
+    service, controller, transport = _build(
+        tmp_path, provider, cache=cache
+    )
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="clearance-recovery-session",
+            mission_id=mission_id,
+        )
+        _approve(controller, proposed)
+        terminal = _wait_status(
+            controller, mission_id, {"complete"}
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert len(transport.requests) == 1
+    segment = transport.requests[0].segments[0]
+    assert segment.tool_id == "move_distance"
+    assert segment.arguments["distance_m"] == pytest.approx(0.20)
+    assert provider.calls == 3
+    assert len(provider.safety_rejections) == 1
+    rejection = provider.safety_rejections[0]
+    assert rejection["rejected_request"]["distance_m"] == pytest.approx(
+        0.25
+    )
+    assert rejection["violated_condition"] == (
+        "translation_exceeds_forward_usable_clearance"
+    )
+    assert rejection["applicable_numeric_limit"] == {
+        "name": "forward_usable_m",
+        "value": pytest.approx(0.2225),
+        "unit": "m",
+    }
+    assert rejection["motion_executed"] is False
+    assert "alternatives" not in rejection
+    assert provider.snapshots[0] != provider.snapshots[1]
+    assert rejection["current_snapshot_id"] == provider.snapshots[1]
+    first_receipts = provider.snapshot_payloads[0]["evidence"][
+        "source_receipts"
+    ]
+    retry_receipts = provider.snapshot_payloads[1]["evidence"][
+        "source_receipts"
+    ]
+    assert all(
+        retry_receipts[name]["received_at_s"]
+        > first_receipts[name]["received_at_s"]
+        for name in (
+            "camera",
+            "lidar",
+            "localization",
+            "odom",
+            "collision",
+        )
+    )
+    recovery = terminal["result"]["safety_recovery"]
+    assert recovery["retry_budget"] == 2
+    assert len(recovery["rejections"]) == 1
+    assert [
+        revision["action"]
+        for revision in terminal["result"]["intent_revisions"]
+    ] == ["move_distance", "stop"]
 
 
 def test_locked_live_adaptive_mission_plans_observation_from_fresh_sensors(
@@ -1151,6 +1280,7 @@ def test_live_adaptive_mission_readiness_vetoes_stale_or_stop_evidence(
 
     assert reason in terminal["terminal_reason"]
     assert transport.requests == []
+    assert provider.safety_rejections == []
 
 
 def test_live_adaptive_mission_cancel_waits_for_correlated_settled_terminal(tmp_path) -> None:
