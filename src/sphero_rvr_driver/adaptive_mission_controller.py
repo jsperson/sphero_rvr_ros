@@ -714,6 +714,9 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                     limits=self.limits,
                     safety_rejection=safety_rejection,
                 )
+                output_schema = _adaptive_mission_output_schema(
+                    str(snapshot.get("snapshot_id", ""))
+                )
                 metric["input_characters"] = len(provider_prompt)
                 metric["prompt_image_preparation_ms"] = (
                     time.perf_counter() - preparation_started
@@ -725,7 +728,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                         prompt=provider_prompt,
                         model=self.model_id,
                         effort=self.reasoning_effort,
-                        output_schema=_adaptive_mission_output_schema(),
+                        output_schema=output_schema,
                         cwd=str(root),
                         image_path=(
                             str(camera_path)
@@ -748,6 +751,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                         root=root,
                         camera_path=camera_path,
                         timeout_s=effective_timeout_s,
+                        output_schema=output_schema,
                     )
                     metric["oauth_client_startup_ms"] = startup_ms
                     metric["inference_ms"] = inference_ms
@@ -783,6 +787,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         root: Path,
         camera_path: Optional[Path],
         timeout_s: float,
+        output_schema: Mapping[str, Any],
     ) -> tuple[str, float, float]:
         executable = resolve_codex_executable(self.codex_command)
         if executable is None:
@@ -796,7 +801,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         schema_path = root / "intent-schema.json"
         output_path = root / "intent.json"
         schema_path.write_text(
-            json.dumps(_adaptive_mission_output_schema(), sort_keys=True),
+            json.dumps(dict(output_schema), sort_keys=True),
             encoding="utf-8",
         )
         command = [
@@ -1068,13 +1073,23 @@ def _choose_provider_intent(
     return recovery_choose(prompt, snapshot, safety_rejection)
 
 
-def _adaptive_mission_output_schema() -> dict[str, Any]:
+def _adaptive_mission_output_schema(
+    expected_snapshot_id: str,
+) -> dict[str, Any]:
+    snapshot_id = str(expected_snapshot_id).strip()
+    if not snapshot_id:
+        raise MissionValidationError(
+            "adaptive mission output schema requires an exact snapshot identity"
+        )
     return {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "snapshot_id": {"type": "string"},
+            "snapshot_id": {
+                "type": "string",
+                "enum": [snapshot_id],
+            },
             "action": {"type": "string", "enum": sorted(_ACTIONS)},
             "distance_m": {"type": "number", "minimum": -0.25, "maximum": 0.25},
             "angle_deg": {"type": "number", "minimum": -45.0, "maximum": 45.0},
