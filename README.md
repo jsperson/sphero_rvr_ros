@@ -4,11 +4,13 @@ Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission fram
 
 The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
 
-The active Milestone 1 slice is replay-only: enter one mission in the browser,
-let the real authenticated model repeatedly revise one finite leased
-navigation/observation intent, and keep simulated localization, perception,
-tracking, mapping, and movement running while each model call is in flight.
-Physical execution remains unavailable.
+The active product direction is Milestone 6 continuous hierarchical
+exploration. The current Phase 0 package is documentation-only: select a
+deterministic continuous-motion architecture, define frontier and semantic-goal
+contracts, and preserve the existing independent safety boundary. Later phases
+will prove replay-only frontier following before promoting the LLM from
+per-primitive movement to snapshot-bound semantic goal selection. Physical
+hierarchical exploration remains unavailable.
 
 ## Documentation map for operators and maintainers
 
@@ -39,6 +41,7 @@ Physical execution remains unavailable.
 - [docs/supervised_coordinator.md](docs/supervised_coordinator.md) documents the deterministic supervised mapping/navigation coordinator contract above `range_motion`, including Mission API/read-only UI telemetry and fail-closed cancellation semantics.
 - [docs/adaptive_mission_authority.md](docs/adaptive_mission_authority.md) defines broad prompt-guided Adaptive mission route authority at moderate speed, short intent leases, and the independent collision/STOP/ESTOP boundary.
 - [docs/adaptive_mission_controller.md](docs/adaptive_mission_controller.md) documents the snapshot-bound OAuth app-server planner, conditional visual evidence, latency instrumentation, and recorded-snapshot model benchmark.
+- [docs/hierarchical_exploration.md](docs/hierarchical_exploration.md) records the Milestone 6 decision to use Nav2 beneath deterministic frontier generation and LLM semantic-goal selection while preserving the existing command and safety boundaries.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
 - [docs/system_validation.md](docs/system_validation.md) defines the local/Pi ROS system checks, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
