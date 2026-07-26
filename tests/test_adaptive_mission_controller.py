@@ -248,6 +248,9 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
     assert "observations.perception.available is true" in rules
     assert "explicit enrollment evidence" in rules
     assert "missing or stale perception" in rules
+    assert "do not immediately repeat the same forward move" in rules
+    assert "compensate with higher speed or motor authority" in rules
+    assert "retry after a maneuver" in rules
     assert request["authority"]["allowed_intents"] == [
         "move_distance",
         "observe",

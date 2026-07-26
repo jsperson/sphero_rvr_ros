@@ -626,6 +626,7 @@ def _adaptive_mission_provider_prompt(
             "Treat collision, STOP, ESTOP, and freshness evidence as authoritative.",
             "Reason explicitly from world_snapshot.last_execution.navigation_outcome when present; a recoverable settled motion error or obstacle does not itself mean the objective is complete.",
             "After collision_veto or stall, consider observe, a turn only when collision safety is CLEAR or SLOW, or a reverse no greater than typed reverse_usable_m; the controller independently decides whether any reverse may be submitted as a supervised collision escape.",
+            "Treat stall as commanded motion not occurring as expected: do not immediately repeat the same forward move or compensate with higher speed or motor authority; use fresh evidence to back away, change the approach angle, observe, retry after a maneuver, or stop blocked.",
             "After any recoverable navigation outcome, reverse motion is additionally limited to 0.15 m.",
             "Before move_distance, require the signed distance magnitude to be no greater than authority.translation_clearance.forward_usable_m for forward motion or reverse_usable_m for reverse motion; if that value is missing or insufficient, choose turn_angle, observe, or stop.",
             "Camera detections and semantic tracks are objective evidence only; they never override lidar collision safety.",

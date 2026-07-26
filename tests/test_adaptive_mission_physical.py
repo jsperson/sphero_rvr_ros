@@ -805,6 +805,76 @@ def test_physical_adaptive_mission_rejects_target_error_outside_replan_envelope(
     ] is False
 
 
+def test_physical_adaptive_mission_replans_settled_stall_beyond_target_error_envelope() -> None:
+    cache = _cache()
+    correlation = "physical-adaptive-mission:adaptive-mission-intent:1"
+    transport = FakeRouteTransport(
+        {
+            "route_id": correlation,
+            "status": "failed",
+            "terminal_reason": "stall",
+            "source_sha": SHA,
+            "terminal_settled": True,
+            "measured_distance_m": 0.069,
+            "measured_angle_deg": 0.0,
+            "executed_segments": [
+                {
+                    "correlation_id": correlation,
+                    "status": "failed",
+                    "terminal_distance_error_m": 0.061,
+                    "terminal_angle_error_deg": None,
+                }
+            ],
+            "supervision": {
+                "samples": 42,
+                "collision_state": "CLEAR",
+                "requested": {
+                    "linear_mps": 0.10,
+                    "angular_rad_s": 0.0,
+                },
+                "supervised": {
+                    "linear_mps": 0.074,
+                    "angular_rad_s": 0.0,
+                },
+            },
+        },
+        after_execute=lambda: _refresh_perception(cache),
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="6" * 64,
+            approval_id="operator:" + "6" * 64,
+            operator="scott@example.com",
+        )
+        result = executor.execute(
+            _intent(executor, "move_distance", 0.13),
+            threading.Event(),
+        )
+    finally:
+        executor.close()
+
+    assert result.outcome == "replan"
+    assert result.reason == "stall"
+    outcome = result.snapshot["last_execution"]["navigation_outcome"]
+    assert outcome["classification"] == "recoverable_settled"
+    assert outcome["distance_error_m"] == pytest.approx(0.061)
+    assert outcome["recoverable"] is True
+    assert outcome["fresh_evidence_required"] is True
+    assert result.snapshot["evidence"]["source_receipts"]["camera"][
+        "received_at_s"
+    ] == pytest.approx(100.1)
+
+
 def test_physical_adaptive_mission_rejects_terminal_overshoot_beyond_tolerance() -> None:
     transport = FakeRouteTransport(
         {

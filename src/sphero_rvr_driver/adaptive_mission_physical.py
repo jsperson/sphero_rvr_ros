@@ -965,23 +965,27 @@ class PhysicalAdaptiveMissionExecutor:
             segment_error = _optional_finite(
                 segment.get("terminal_distance_error_m")
             )
-            if normalized_reason == "target_error" and (
-                segment_error is None
-                or not math.isclose(
-                    segment_error,
-                    distance_error,
-                    rel_tol=0.0,
-                    abs_tol=1e-6,
-                )
-            ):
-                return False
+            if normalized_reason == "target_error":
+                if (
+                    segment_error is None
+                    or not math.isclose(
+                        segment_error,
+                        distance_error,
+                        rel_tol=0.0,
+                        abs_tol=1e-6,
+                    )
+                ):
+                    return False
+                if (
+                    distance_error
+                    > self.max_replan_distance_error_m + epsilon
+                ):
+                    return False
+            distance_limit = self.limits.max_translation_per_intent_m
+            if normalized_reason == "target_error":
+                distance_limit += self.max_replan_distance_error_m
             return bool(
-                distance_error
-                <= self.max_replan_distance_error_m + epsilon
-                and abs(measured_distance)
-                <= self.limits.max_translation_per_intent_m
-                + self.max_replan_distance_error_m
-                + epsilon
+                abs(measured_distance) <= distance_limit + epsilon
                 and abs(measured_rotation)
                 <= self.limits.max_rotation_per_intent_deg + epsilon
             )
@@ -991,22 +995,24 @@ class PhysicalAdaptiveMissionExecutor:
         segment_error = _optional_finite(
             segment.get("terminal_angle_error_deg")
         )
-        if normalized_reason == "target_error" and (
-            segment_error is None
-            or not math.isclose(
-                segment_error,
-                angle_error,
-                rel_tol=0.0,
-                abs_tol=1e-6,
-            )
-        ):
-            return False
+        if normalized_reason == "target_error":
+            if (
+                segment_error is None
+                or not math.isclose(
+                    segment_error,
+                    angle_error,
+                    rel_tol=0.0,
+                    abs_tol=1e-6,
+                )
+            ):
+                return False
+            if angle_error > self.max_replan_angle_error_deg + epsilon:
+                return False
+        rotation_limit = self.limits.max_rotation_per_intent_deg
+        if normalized_reason == "target_error":
+            rotation_limit += self.max_replan_angle_error_deg
         return bool(
-            angle_error <= self.max_replan_angle_error_deg + epsilon
-            and abs(measured_rotation)
-            <= self.limits.max_rotation_per_intent_deg
-            + self.max_replan_angle_error_deg
-            + epsilon
+            abs(measured_rotation) <= rotation_limit + epsilon
             and abs(measured_distance)
             <= self.limits.max_translation_per_intent_m + epsilon
         )
