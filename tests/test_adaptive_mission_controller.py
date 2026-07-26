@@ -692,7 +692,8 @@ def test_browser_bundle_exposes_adaptive_mission_objective_lease_and_supervision
     assert "Objective interpreted" in html
     assert "First intent" in html
     assert "leaseDurationLabel(snapshot)" in html
-    assert "Approve ${leaseLabel} lease" in html
+    assert "$('approve').textContent = 'Approve';" in html
+    assert "$('cancel').textContent = 'Cancel';" in html
     assert "requested" in html
     assert "supervised" in html
     assert "Revision ${revision.revision}" in html

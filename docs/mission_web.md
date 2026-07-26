@@ -134,15 +134,17 @@ another untrusted proxy between Serve and this listener, do not expose the port 
 the LAN, and do not use Tailscale Funnel.
 
 The product Pi configuration reports approval-time activation capability while
-the physical session remains locked. Proposal generation persists only the
-prompt and exact reviewed envelope; it does not start sensors or make a stale
-model request. A **Lease minutes** text box sits beside the approval button.
-Its positive value is capped by `RVR_ADAPTIVE_MISSION_LEASE_S` and becomes part
-of the proposal digest; changing it after proposal generation disables approval
-until a replacement proposal is generated. **Approve _selected-duration_ lease**
-is the authenticated authorization
-boundary: it starts the fixed supervised graph, waits for fresh authoritative
-camera/lidar/localization and safety evidence, and only then invokes the model.
+the physical session remains locked. If planning evidence is stale, **Generate
+proposal** starts the fixed no-motion telemetry graph and waits for fresh
+camera/lidar/localization evidence before it submits the proposal. It never
+submits a predictably stale request. A **Lease minutes** text box appears above
+an equal-width **Approve** and **Cancel** button row. Its positive value is
+capped by `RVR_ADAPTIVE_MISSION_LEASE_S` and becomes part of the proposal
+digest; changing it after proposal generation disables approval until a
+replacement proposal is generated. **Approve** is the authenticated
+authorization boundary: it starts the fixed supervised graph, waits for fresh
+authoritative camera/lidar/localization and safety evidence, and only then
+invokes the model.
 The configured default and maximum duration is 15 minutes.
 Missing or unsafe STOP/ESTOP/collision evidence prevents execution. Every
 terminal path stops the graph again, and a relock failure is shown as

@@ -920,6 +920,21 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert page.index('data-testid="lease-duration-minutes"') < page.index(
         'data-testid="approve"'
     )
+    assert '<div class="approval-actions">' in page
+    assert (
+        '<button class="primary" id="approve" data-testid="approve" '
+        'type="button" aria-describedby="approval-hint approval-state" '
+        'disabled>Approve</button>'
+    ) in page
+    assert (
+        '<button class="danger" id="cancel" data-testid="cancel" '
+        'type="button" aria-describedby="request-status request-error" '
+        'disabled>Cancel</button>'
+    ) in page
+    assert (
+        ".approval-actions { display:grid; "
+        "grid-template-columns:repeat(2,minmax(0,1fr))"
+    ) in page
     assert "Lease minutes (max ${leaseMinutesText(maximum)})" in page
     assert "Duration changed: generate a new proposal" in page
     assert "Objective updated. The active lease" in page
@@ -1268,7 +1283,9 @@ def test_live_adaptive_mission_web_never_submits_predictably_stale_planning() ->
     assert client.submissions == []
 
     page = str(build_mission_web_bundle()["index_html"])
-    assert "Planning locked: waiting for fresh camera, lidar, and localization" in page
+    assert "Generate will start telemetry and wait for fresh camera, lidar, and localization" in page
+    assert "waitForPlanningEvidence" in page
+    assert "Starting no-motion telemetry and waiting for fresh camera" in page
     assert "planning.ready !== true" in page
 
 

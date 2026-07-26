@@ -3295,10 +3295,10 @@ _INDEX_HTML = r'''<!doctype html>
     textarea { resize:vertical; min-height:5.5rem; }
     textarea:focus, select:focus, input:focus { border-color:var(--teal); box-shadow:0 0 0 3px rgba(93,228,199,.1); }
     .actions { display:flex; gap:.55rem; flex-wrap:wrap; margin-top:.8rem; }
-    .lease-approval-row { display:flex; align-items:flex-end; gap:.55rem; margin-top:.8rem; }
-    .lease-duration-control { flex:0 0 7.25rem; margin:0; }
+    .lease-duration-control { margin-top:.8rem; }
     .lease-duration-control input { margin-top:.35rem; padding:.62rem .68rem; }
-    .lease-approval-row .primary { flex:1 1 auto; }
+    .approval-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.55rem; margin-top:.8rem; }
+    .approval-actions button { width:100%; min-width:0; }
     .primary, .secondary, .danger { border-radius:.7rem; border:1px solid transparent; padding:.65rem .9rem; font-weight:800; }
     .primary { color:#041a18; background:var(--teal); }
     .secondary { color:var(--ink); background:#182a3d; border-color:#30485e; }
@@ -3477,15 +3477,13 @@ _INDEX_HTML = r'''<!doctype html>
           <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
           <code class="digest" id="approval-required-phrase" hidden></code>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
-          <div class="lease-approval-row">
-            <label class="field-label lease-duration-control" id="lease-duration-control" for="lease-duration-minutes" hidden>
-              <span id="lease-duration-label">Lease minutes</span>
-              <input id="lease-duration-minutes" data-testid="lease-duration-minutes" type="text" inputmode="decimal" autocomplete="off" value="15" aria-describedby="approval-hint approval-state">
-            </label>
-            <button class="primary" id="approve" data-testid="approve" type="button" aria-describedby="approval-hint approval-state" disabled>Approve simulation</button>
-          </div>
-          <div class="actions">
-            <button class="danger" id="cancel" data-testid="cancel" type="button" aria-describedby="request-status request-error" disabled>Cancel mission</button>
+          <label class="field-label lease-duration-control" id="lease-duration-control" for="lease-duration-minutes" hidden>
+            <span id="lease-duration-label">Lease minutes</span>
+            <input id="lease-duration-minutes" data-testid="lease-duration-minutes" type="text" inputmode="decimal" autocomplete="off" value="15" aria-describedby="approval-hint approval-state">
+          </label>
+          <div class="approval-actions">
+            <button class="primary" id="approve" data-testid="approve" type="button" aria-describedby="approval-hint approval-state" disabled>Approve</button>
+            <button class="danger" id="cancel" data-testid="cancel" type="button" aria-describedby="request-status request-error" disabled>Cancel</button>
           </div>
         </section>
         <section class="panel" aria-labelledby="mission-log-heading">
@@ -3686,20 +3684,17 @@ _INDEX_HTML = r'''<!doctype html>
     function renderActionState(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
-      const leaseLabel = leaseDurationLabel(snapshot);
       const leaseActive = adaptiveMission
         && ['APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       const leaseMatchesProposal = leaseDurationMatchesProposal(snapshot);
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
-      const cancelBusy = missionRequestInFlight === 'cancel';
       const planningLocked = adaptiveMission
         && !leaseActive
         && !snapshot.adapter.fixture_only
         && (!snapshot.planning || snapshot.planning.ready !== true);
       $('propose').disabled = Boolean(missionRequestInFlight)
-        || telemetryRequestInFlight
-        || planningLocked;
+        || telemetryRequestInFlight;
       $('propose').textContent = proposalBusy ? 'Generating proposal…' : 'Generate proposal';
       if (!proposalBusy && leaseActive) {
         $('propose').textContent = 'Update objective';
@@ -3718,17 +3713,11 @@ _INDEX_HTML = r'''<!doctype html>
           ? 'false'
           : 'true'
       );
-      $('approve').textContent = approvalBusy
-        ? (stationary ? 'Starting stationary perception…' : 'Confirming…')
-        : stationary ? 'Start stationary perception'
-        : adaptiveMission ? `Approve ${leaseLabel} lease`
-        : snapshot.adapter.rolling_replay ? 'Start rolling replay'
-        : !snapshot.adapter.fixture_only ? 'Approve and run'
-        : 'Approve simulation';
+      $('approve').textContent = 'Approve';
       $('cancel').disabled = Boolean(missionRequestInFlight)
         || telemetryRequestInFlight
         || !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
-      $('cancel').textContent = cancelBusy ? 'Cancelling…' : 'Cancel mission';
+      $('cancel').textContent = 'Cancel';
       if (stationary) {
         const sensor = snapshot.telemetry_control || {};
         $('approval-state').textContent = approvalBusy
@@ -3751,8 +3740,8 @@ _INDEX_HTML = r'''<!doctype html>
             ? 'Lease active: authenticated objective updates keep the original expiry, telemetry, and safety limits.'
           : snapshot.mission.state === 'PROPOSED' && !leaseMatchesProposal
             ? 'Duration changed: generate a new proposal so the lease is included in the reviewed digest.'
-          : planningLocked
-            ? `Planning locked: waiting for fresh camera, lidar, and localization evidence${
+          : planningLocked && snapshot.mission.state !== 'PROPOSED'
+            ? `Generate will start telemetry and wait for fresh camera, lidar, and localization evidence${
                 snapshot.planning && snapshot.planning.reasons && snapshot.planning.reasons.length
                   ? ` (${snapshot.planning.reasons.join(', ')})`
                   : ''
@@ -4156,6 +4145,30 @@ _INDEX_HTML = r'''<!doctype html>
       $('scenario').innerHTML = payload.scenarios.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} — ${escapeHtml(item.description)}</option>`).join('');
     }
 
+    async function waitForPlanningEvidence(timeoutMs = 30000) {
+      const deadline = Date.now() + timeoutMs;
+      while (true) {
+        const snapshot = await api('/api/web/state');
+        render(snapshot);
+        if (snapshot.planning && snapshot.planning.ready === true) {
+          return snapshot;
+        }
+        const control = snapshot.telemetry_control || {};
+        if (['failed','degraded'].includes(String(control.state || '').toLowerCase())) {
+          throw new Error(control.detail || 'Telemetry became degraded while waiting for planning evidence.');
+        }
+        if (Date.now() >= deadline) {
+          const reasons = snapshot.planning && Array.isArray(snapshot.planning.reasons)
+            ? snapshot.planning.reasons.join(', ')
+            : '';
+          throw new Error(
+            `Fresh camera, lidar, and localization evidence was not ready within 30 seconds${reasons ? ` (${reasons})` : ''}.`
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+
     async function propose() {
       if (missionRequestInFlight || telemetryRequestInFlight) return;
       const activeAdaptiveLease = Boolean(
@@ -4163,15 +4176,6 @@ _INDEX_HTML = r'''<!doctype html>
         && current.adapter.adaptive_mission
         && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
       );
-      if (current && current.adapter.adaptive_mission
-          && !activeAdaptiveLease
-          && !current.adapter.fixture_only
-          && (!current.planning || current.planning.ready !== true)) {
-        $('request-error').textContent =
-          'Planning is locked until camera, lidar, and localization evidence are fresh.';
-        return;
-      }
-      if (!current || current.adapter.fixture_only) stopTimer();
       const adaptiveMission = Boolean(
         current && current.adapter.adaptive_mission
       );
@@ -4189,11 +4193,36 @@ _INDEX_HTML = r'''<!doctype html>
           return;
         }
       }
+      stopTimer();
       missionRequestInFlight = 'proposal';
       $('request-error').textContent = '';
-      $('request-status').textContent = 'Generating and persisting the proposal…';
+      $('request-status').textContent = (
+        adaptiveMission
+        && !activeAdaptiveLease
+        && !current.adapter.fixture_only
+        && (!current.planning || current.planning.ready !== true)
+      )
+        ? 'Starting no-motion telemetry and waiting for fresh camera, lidar, and localization evidence…'
+        : 'Generating and persisting the proposal…';
       if (current) renderActionState(current);
       try {
+        if (
+          adaptiveMission
+          && !activeAdaptiveLease
+          && !current.adapter.fixture_only
+          && (!current.planning || current.planning.ready !== true)
+        ) {
+          const control = current.telemetry_control || {};
+          if (!control.active) {
+            const started = await api('/api/web/telemetry', {
+              method:'POST',
+              body:JSON.stringify({active:true}),
+            });
+            render(started);
+          }
+          await waitForPlanningEvidence();
+          $('request-status').textContent = 'Fresh planning evidence is ready. Generating and persisting the proposal…';
+        }
         const requestBody = {
           prompt:$('mission-prompt').value,
           scenario:$('scenario').value,
