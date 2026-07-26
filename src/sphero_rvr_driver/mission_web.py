@@ -2096,7 +2096,7 @@ class LiveMissionWebAdapter:
             )
         elif self.adaptive_mission_enabled:
             required_fresh = (
-                adaptive_readiness.get("planning_ready") is True
+                adaptive_readiness.get("ready") is True
             )
         else:
             required_fresh = bool(

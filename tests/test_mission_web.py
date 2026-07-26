@@ -1314,6 +1314,24 @@ def test_live_adaptive_mission_approval_activation_stages_without_stale_model_ca
     assert "Activating the supervised graph and waiting for fresh" in page
 
 
+def test_approval_activation_does_not_misreport_stale_evidence_as_fresh() -> None:
+    client = FakeAdaptiveMissionLiveMissionClient(
+        planning_ready=False,
+        approval_activation_enabled=True,
+    )
+    adapter = LiveMissionWebAdapter(
+        client,
+        session_id="web-session",
+        operator="scott@example.com",
+    )
+
+    snapshot = adapter.snapshot()
+
+    assert snapshot["planning"]["ready"] is False
+    assert snapshot["safety"]["telemetry_fresh"] is False
+    assert snapshot["camera_preview"]["fresh"] is False
+
+
 def test_live_adaptive_lease_duration_and_objective_update_use_one_active_lease() -> None:
     client = FakeAdaptiveMissionLiveMissionClient(
         planning_ready=False,
