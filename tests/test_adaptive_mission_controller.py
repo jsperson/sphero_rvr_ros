@@ -493,6 +493,9 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
     assert _visual_reasoning_relevance(
         "Find the detected shoe.", snapshot
     ) == (True, "objective:detected_label")
+    assert _visual_reasoning_relevance(
+        "Choose one safe action.", snapshot
+    ) == (False, "not_relevant")
     assert len(provider.latency_history()) == 2
 
 

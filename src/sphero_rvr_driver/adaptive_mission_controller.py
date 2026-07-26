@@ -1039,7 +1039,27 @@ def _visual_reasoning_relevance(
                 value = str(item.get(key, "")).strip().casefold()
                 if len(value) >= 3:
                     labels.add(value)
-    if any(label in objective for label in labels):
+    words = {
+        "".join(character for character in token if character.isalnum())
+        for token in objective.replace("_", " ").replace("-", " ").split()
+    }
+    if any(
+        label_words
+        and label_words.issubset(words)
+        for label in labels
+        for label_words in (
+            {
+                "".join(
+                    character
+                    for character in token
+                    if character.isalnum()
+                )
+                for token in label.replace("_", " ")
+                .replace("-", " ")
+                .split()
+            },
+        )
+    ):
         return True, "objective:detected_label"
     object_terms = {
         "approach",
@@ -1056,10 +1076,6 @@ def _visual_reasoning_relevance(
         "visual",
         "image",
         "pixels",
-    }
-    words = {
-        "".join(character for character in token if character.isalnum())
-        for token in objective.split()
     }
     if words & object_terms:
         return True, "objective:object_directed"

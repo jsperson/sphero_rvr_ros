@@ -266,7 +266,9 @@ def main() -> int:
                             "schema_valid": False,
                             "deterministic_validation": False,
                             "behavior_valid": False,
-                            "failures": [exc.__class__.__name__],
+                            "failures": [
+                                f"{exc.__class__.__name__}: {exc}"
+                            ],
                             "latency": metric,
                         }
                     results.append(result)
