@@ -75,6 +75,10 @@ EXPECTED_DATA_FILES = {
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
     },
+    "share/sphero_rvr_driver/artifacts/phase2_camera_lidar_localization": {
+        "artifacts/phase2_camera_lidar_localization/README.md",
+        "artifacts/phase2_camera_lidar_localization/recorded_calibration_fixture.json",
+    },
     "share/sphero_rvr_driver/systemd/user": {
         "systemd/user/rvr-mission-service.service",
         "systemd/user/rvr-mission-web.service",
@@ -273,6 +277,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "live_mission_service = sphero_rvr_driver.live_mission_service_node:main",
         "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
         "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
+        "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
     } <= console_scripts
 
     lidar_validation = (
