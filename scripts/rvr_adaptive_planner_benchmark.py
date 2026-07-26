@@ -303,19 +303,28 @@ def main() -> int:
             summary[f"{phase}_p50"] = _percentile(values, 0.50)
             summary[f"{phase}_p95"] = _percentile(values, 0.95)
         summaries.append(summary)
+    eligible = [
+        item
+        for item in summaries
+        if item["all_schema_valid"]
+        and item["all_deterministic"]
+        and item["all_behavior_valid"]
+    ]
+    selected = min(
+        eligible,
+        key=lambda item: (
+            item["total_ms_p50"],
+            item["total_ms_p95"],
+            item["model_id"],
+        ),
+        default=None,
+    )
     report = {
         "schema": "sphero_rvr.adaptive_planner_benchmark.v1",
         "recorded_mission_id": args.mission_id,
         "summaries": summaries,
-        "selected_model": next(
-            (
-                item["model_id"]
-                for item in summaries
-                if item["all_schema_valid"]
-                and item["all_deterministic"]
-                and item["all_behavior_valid"]
-            ),
-            None,
+        "selected_model": (
+            selected["model_id"] if selected is not None else None
         ),
     }
     print(json.dumps({"report": report}, sort_keys=True))

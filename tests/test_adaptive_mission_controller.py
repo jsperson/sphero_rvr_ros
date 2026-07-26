@@ -506,6 +506,15 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
     ]
     assert compact["observations"]["perception"]["camera_fresh"] is True
     assert "path" not in compact["observations"]["perception"]["camera_image"]
+    assert "recognized_objects" not in compact["observations"]
+    assert all(
+        "received_at_s" not in receipt
+        for receipt in compact["evidence"]["source_receipts"].values()
+    )
+    assert (
+        "executed_segments"
+        not in compact["last_execution"]["route_terminal"]
+    )
     assert _visual_reasoning_relevance(
         "Find the detected shoe.", snapshot
     ) == (True, "objective:detected_label")

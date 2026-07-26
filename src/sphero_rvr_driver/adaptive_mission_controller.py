@@ -948,50 +948,151 @@ def _decision_evidence_snapshot(
 ) -> dict[str, Any]:
     """Project a world snapshot to typed fields that can affect one decision."""
 
+    def selected(
+        value: Any,
+        keys: tuple[str, ...],
+    ) -> dict[str, Any]:
+        mapping = value if isinstance(value, Mapping) else {}
+        return {
+            key: json.loads(json.dumps(mapping.get(key)))
+            for key in keys
+            if key in mapping
+        }
+
     observations = snapshot.get("observations", {})
     observations = observations if isinstance(observations, Mapping) else {}
     perception = observations.get("perception", {})
     perception = perception if isinstance(perception, Mapping) else {}
     camera_image = perception.get("camera_image", {})
     camera_image = camera_image if isinstance(camera_image, Mapping) else {}
-    image_metadata = {
-        key: camera_image.get(key)
-        for key in (
+    image_metadata = selected(
+        camera_image,
+        (
             "available",
             "frame_id",
             "mime_type",
             "sha256",
             "byte_count",
-        )
-        if key in camera_image
-    }
-    compact_perception = {
-        key: value
-        for key, value in perception.items()
-        if key != "camera_image"
-    }
+        ),
+    )
+    compact_perception = selected(
+        perception,
+        (
+            "available",
+            "camera_frame_id",
+            "camera_fresh",
+            "localization_fresh",
+            "localization_state",
+            "semantic_map_fresh",
+            "semantic_map_revision",
+            "uncertain_track_id",
+        ),
+    )
     compact_perception["camera_image"] = image_metadata
-    compact_observations = {
-        key: observations.get(key)
-        for key in (
+    compact_observations = selected(
+        observations,
+        (
             "forward_clearance_m",
             "left_clearance_m",
             "right_clearance_m",
             "motion_clearance",
             "camera_detections",
             "semantic_tracks",
-            "recognized_objects",
             "recognized_faces",
             "unknown_faces",
             "coverage_note",
-        )
-        if key in observations
-    }
+        ),
+    )
     # Camera freshness and detections are deliberately retained even when no
     # image pixels are relevant to the current decision.
     compact_observations.setdefault("camera_detections", [])
     compact_observations["perception"] = compact_perception
-    return {
+
+    evidence = snapshot.get("evidence", {})
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    compact_evidence = selected(
+        evidence,
+        (
+            "drop_off_detection_available",
+            "localization_fresh",
+            "odometry_age_s",
+            "odometry_fresh",
+            "scan_age_s",
+            "scan_fresh",
+            "transform_fresh",
+            "transform_reason",
+        ),
+    )
+    receipts = evidence.get("source_receipts", {})
+    receipts = receipts if isinstance(receipts, Mapping) else {}
+    compact_evidence["source_receipts"] = {
+        str(name): selected(receipt, ("fresh", "valid"))
+        for name, receipt in receipts.items()
+        if isinstance(receipt, Mapping)
+    }
+
+    last_execution = snapshot.get("last_execution", {})
+    last_execution = (
+        last_execution if isinstance(last_execution, Mapping) else {}
+    )
+    last_intent = selected(
+        last_execution.get("intent"),
+        (
+            "action",
+            "angle_deg",
+            "distance_m",
+            "interpreted_objective",
+            "objective_status",
+            "observation_focus",
+            "rationale",
+        ),
+    )
+    last_movement = selected(
+        last_execution.get("movement"),
+        (
+            "collision_state",
+            "outcome",
+            "reason",
+            "requested",
+            "supervised",
+        ),
+    )
+    last_route = selected(
+        last_execution.get("route_terminal"),
+        (
+            "status",
+            "terminal_reason",
+            "terminal_settled",
+            "measured_angle_deg",
+            "measured_distance_m",
+            "route_displacement_m",
+            "route_heading_change_deg",
+        ),
+    )
+    compact_last_execution = {
+        "intent": last_intent,
+        "movement": last_movement,
+        "navigation_outcome": selected(
+            last_execution.get("navigation_outcome"),
+            (
+                "angle_error_deg",
+                "classification",
+                "collision_state",
+                "distance_error_m",
+                "fresh_evidence_required",
+                "measured_angle_deg",
+                "measured_distance_m",
+                "reason",
+                "recoverable",
+                "requested_angle_deg",
+                "requested_distance_m",
+                "terminal_settled",
+            ),
+        ),
+        "route_terminal": last_route,
+    }
+
+    compact = {
         key: json.loads(json.dumps(snapshot.get(key)))
         for key in (
             "schema",
@@ -999,15 +1100,26 @@ def _decision_evidence_snapshot(
             "mission_id",
             "version",
             "observed_at_s",
-            "evidence",
             "safety",
-            "execution",
-            "last_execution",
             "pose",
             "progress",
         )
         if key in snapshot
-    } | {"observations": json.loads(json.dumps(compact_observations))}
+    }
+    compact["evidence"] = compact_evidence
+    compact["execution"] = selected(
+        snapshot.get("execution"),
+        (
+            "approval_bound",
+            "mode",
+            "motion_authority",
+            "motion_permitted",
+            "physical_execution_enabled",
+        ),
+    )
+    compact["last_execution"] = compact_last_execution
+    compact["observations"] = compact_observations
+    return compact
 
 
 def _visual_reasoning_relevance(
