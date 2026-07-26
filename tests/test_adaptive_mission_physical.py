@@ -535,6 +535,69 @@ def test_physical_adaptive_mission_rejects_move_beyond_typed_usable_clearance() 
     assert clearance["reverse_usable_m"] is None
 
 
+def test_physical_recovery_marks_only_deterministic_reverse_as_collision_escape() -> None:
+    cache = _cache()
+    cache.update(
+        "collision",
+        {
+            "state": "STOPPED",
+            "scan_healthy": True,
+            "scan_age_s": 0.02,
+            "tf_available": True,
+            "tf_reason": "ok",
+            "front_clearance_m": 0.30,
+            "forward_corridor_clearance_m": 0.30,
+            "rear_clearance_m": 1.00,
+            "left_clearance_m": 1.00,
+            "right_clearance_m": 0.80,
+        },
+        received_at_s=100.0,
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=FakeRouteTransport(),
+        now=lambda: 100.0,
+    )
+    try:
+        executor.reset("physical-adaptive-mission")
+        executor.bind_approval(
+            proposal_digest="c" * 64,
+            approval_id="operator:" + "c" * 64,
+            operator="scott@example.com",
+        )
+        snapshot = executor.snapshot("physical-adaptive-mission")
+        recovery = AdaptiveMissionIntent.validated(
+            {
+                "snapshot_id": snapshot["snapshot_id"],
+                "action": "move_distance",
+                "distance_m": -0.15,
+                "angle_deg": 0.0,
+                "observation_focus": "rear corridor",
+                "rationale": "Reverse within typed rear clearance.",
+                "interpreted_objective": "Explore and map the room.",
+                "lease_s": 5.0,
+                "timeout_s": 5.0,
+            },
+            revision=2,
+            snapshot=snapshot,
+            issued_at_s=100.0,
+            provider_id="deterministic-supervised-recovery",
+            model_id="none",
+            limits=AdaptiveMissionLimits(),
+        )
+        route = executor._route_request(recovery)
+    finally:
+        executor.close()
+
+    assert route.supervised_collision_escape is True
+    assert route.segments[0].arguments["distance_m"] == pytest.approx(-0.15)
+    assert route.approval_id.startswith("operator:")
+
+
 def test_physical_adaptive_mission_accepts_bounded_settled_distance_overshoot() -> None:
     cache = _cache()
     transport = FakeRouteTransport(

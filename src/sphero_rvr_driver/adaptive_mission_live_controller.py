@@ -569,6 +569,7 @@ class LiveAdaptiveMissionController:
                 keep_active_after_planner_stop=(
                     self.keep_session_active_until_lease_end
                 ),
+                enable_exploration_recovery=True,
                 activation_event_message=(
                     "Authenticated approval activated the supervised physical "
                     "graph; fresh readiness was verified before the provider call."

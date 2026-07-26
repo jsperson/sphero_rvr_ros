@@ -19,6 +19,7 @@ from sphero_rvr_driver.live_route_runner import (
 )
 from sphero_rvr_driver.live_route_runner_node import _collision_state_value, _encoder_state
 from sphero_rvr_driver.mission_api import ToolResultStatus
+from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.odometry import MotionPrimitiveConfig, OdomMotionState
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -132,6 +133,87 @@ def test_live_route_request_parses_canonical_mission_api_invocations_with_budget
     assert request.max_travel_m == 0.5
     assert request.source_sha == "abc123"
     assert [segment.tool_id for segment in request.segments] == ["move_distance", "turn_angle"]
+
+
+def test_supervised_collision_escape_admits_only_approved_reverse_route() -> None:
+    request = LiveRouteRequest(
+        route_id="recovery-reverse",
+        max_runtime_s=5.0,
+        max_travel_m=0.25,
+        source_sha="test-sha",
+        approval_id="operator:approved",
+        supervised_collision_escape=True,
+        segments=(
+            RouteSegmentRequest(
+                "recovery-reverse",
+                "move_distance",
+                {
+                    "distance_m": -0.15,
+                    "speed_mps": 0.10,
+                    "timeout_s": 5.0,
+                },
+            ),
+        ),
+    )
+    runner = LiveRouteRunner()
+
+    command = runner.start(
+        request,
+        _state(
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            collision="STOPPED",
+        ),
+    )
+
+    assert runner.active is True
+    assert command.linear_x == 0.0
+    command = runner.update(
+        _state(
+            0.01,
+            0.0,
+            0.0,
+            0.0,
+            collision="STOPPED",
+        )
+    )
+    assert command.linear_x < 0.0
+
+    with pytest.raises(
+        MissionValidationError,
+        match="one approved reverse segment",
+    ):
+        LiveRouteRequest(
+            route_id="unsafe-recovery",
+            max_runtime_s=5.0,
+            max_travel_m=0.25,
+            supervised_collision_escape=True,
+            segments=(
+                RouteSegmentRequest(
+                    "unsafe-recovery",
+                    "move_distance",
+                    {
+                        "distance_m": 0.15,
+                        "speed_mps": 0.10,
+                        "timeout_s": 5.0,
+                    },
+                ),
+            ),
+        )
+    with pytest.raises(
+        MissionValidationError,
+        match="must be boolean",
+    ):
+        LiveRouteRequest(
+            route_id="ambiguous-recovery",
+            max_runtime_s=5.0,
+            max_travel_m=0.25,
+            approval_id="operator:approved",
+            supervised_collision_escape="false",  # type: ignore[arg-type]
+            segments=request.segments,
+        )
 
 
 def test_dynamic_translation_cap_uses_tf_corrected_base_link_corridor() -> None:

@@ -589,6 +589,7 @@ class CollisionStopSupervisor:
         self._latest_command: Optional[TwistCommand] = None
         self._latest_command_at: Optional[float] = None
         self._clear_since: Optional[float] = None
+        self._latched_stop_reason = ""
         self._scan_stamp_tracker = ScanStampTracker()
         self._last_decision = self._decision(
             CollisionState.STARTUP,
@@ -691,14 +692,54 @@ class CollisionStopSupervisor:
         else:
             self._clear_since = None
 
-        if self.state is CollisionState.STOPPED:
-            if self.config.reset_policy is ResetPolicy.AUTO_AFTER_CLEAR and self._release_elapsed(now):
-                return self._decision(CollisionState.CLEAR, "auto_released", TwistCommand(), command, health, nearest)
-            return self._decision(CollisionState.STOPPED, "reset_required", TwistCommand(), command, health, nearest, reset_required=True)
-
         front_stop_distance = self._front_stop_distance(bounded)
         rear_stop_distance = self._rear_stop_distance(bounded)
         trajectory_check: Optional[TrajectoryCheck] = None
+
+        if self.state is CollisionState.STOPPED:
+            if (
+                self._latched_stop_reason == "front_stop"
+                and bounded.linear_x < 0.0
+            ):
+                if _within(rear, rear_stop_distance):
+                    return self._decision(
+                        CollisionState.STOPPED,
+                        "reverse_escape_rear_blocked",
+                        TwistCommand(),
+                        command,
+                        health,
+                        nearest,
+                        reset_required=True,
+                    )
+                trajectory_check = evaluate_projected_trajectory(
+                    self._latest_scan,
+                    self.config,
+                    bounded,
+                )
+                if trajectory_check.blocked:
+                    return self._decision(
+                        CollisionState.STOPPED,
+                        "reverse_escape_trajectory_blocked",
+                        TwistCommand(),
+                        command,
+                        health,
+                        nearest,
+                        trajectory=trajectory_check,
+                        reset_required=True,
+                    )
+                return self._decision(
+                    CollisionState.SLOW,
+                    "front_stop_reverse_escape",
+                    bounded,
+                    command,
+                    health,
+                    nearest,
+                    trajectory=trajectory_check,
+                    scale=1.0,
+                )
+            if self.config.reset_policy is ResetPolicy.AUTO_AFTER_CLEAR and self._release_elapsed(now):
+                return self._decision(CollisionState.CLEAR, "auto_released", TwistCommand(), command, health, nearest)
+            return self._decision(CollisionState.STOPPED, "reset_required", TwistCommand(), command, health, nearest, reset_required=True)
 
         if bounded.linear_x > 0.0 and _within(front, front_stop_distance):
             self._clear_since = None
@@ -814,6 +855,15 @@ class CollisionStopSupervisor:
         previous = self.state
         self.previous_state = previous
         self.state = state
+        if (
+            state is CollisionState.STOPPED
+            and reset_required
+            and reason != "reset_required"
+            and previous is not CollisionState.STOPPED
+        ):
+            self._latched_stop_reason = reason
+        elif state is not CollisionState.STOPPED:
+            self._latched_stop_reason = ""
         self._last_decision = ArbitrationDecision(
             state=state,
             previous_state=previous,

@@ -88,10 +88,15 @@ class LiveRouteRequest:
     max_travel_m: float
     source_sha: str = "unknown"
     approval_id: str = ""
+    supervised_collision_escape: bool = False
 
     def __post_init__(self) -> None:
         if not str(self.route_id).strip():
             raise MissionValidationError("route_id is required")
+        if not isinstance(self.supervised_collision_escape, bool):
+            raise MissionValidationError(
+                "supervised_collision_escape must be boolean"
+            )
         object.__setattr__(self, "segments", tuple(self.segments))
         if not self.segments:
             raise MissionValidationError("live route requires at least one segment")
@@ -118,6 +123,17 @@ class LiveRouteRequest:
                     raise MissionValidationError("turn_angle.angle_deg must be non-zero and finite")
         if travel > float(self.max_travel_m) + 1e-9:
             raise MissionValidationError("route exceeds max_travel_m budget")
+        if self.supervised_collision_escape:
+            if (
+                len(self.segments) != 1
+                or self.segments[0].tool_id != "move_distance"
+                or float(self.segments[0].arguments.get("distance_m", 0.0))
+                >= 0.0
+                or not str(self.approval_id).strip()
+            ):
+                raise MissionValidationError(
+                    "supervised collision escape requires one approved reverse segment"
+                )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -127,6 +143,7 @@ class LiveRouteRequest:
             "max_travel_m": self.max_travel_m,
             "source_sha": self.source_sha,
             "approval_id": self.approval_id,
+            "supervised_collision_escape": self.supervised_collision_escape,
             "segments": [segment.to_json_dict() for segment in self.segments],
         }
 
@@ -409,7 +426,15 @@ class LiveRouteRunner:
             cancel=state.cancel,
             stop=state.stop,
             estop=state.estop,
-            collision_veto=_collision_veto(state.collision_state),
+            collision_veto=(
+                _collision_veto(state.collision_state)
+                and not (
+                    str(state.collision_state).upper()
+                    == CollisionState.STOPPED.value
+                    and self._request is not None
+                    and self._request.supervised_collision_escape
+                )
+            ),
         )
         self._active.telemetry = telemetry
         if (
@@ -587,7 +612,15 @@ class LiveRouteRunner:
                 if scan_eval.reason.startswith("stale_scan")
                 else RouteTerminalReason.UNSAFE_CLEARANCE.value
             )
-        if _collision_veto(state.collision_state):
+        if (
+            _collision_veto(state.collision_state)
+            and not (
+                str(state.collision_state).upper()
+                == CollisionState.STOPPED.value
+                and self._request is not None
+                and self._request.supervised_collision_escape
+            )
+        ):
             return RouteTerminalReason.COLLISION_VETO.value
         return None
 
@@ -608,6 +641,12 @@ class LiveRouteRunner:
         # collision supervisor is actively bounding the command.  Treat only
         # its stop/fault states as vetoes so route progress remains observable
         # while that bounded command is applied.
+        if (
+            collision_state is CollisionState.STOPPED
+            and self._request is not None
+            and self._request.supervised_collision_escape
+        ):
+            return None
         if collision_state not in {CollisionState.CLEAR, CollisionState.SLOW}:
             if collision_state is CollisionState.STARTUP:
                 return RouteTerminalReason.MISSING_COLLISION_STATE.value
@@ -991,6 +1030,9 @@ def route_request_from_json(payload: str, *, source_sha: str = "unknown") -> Liv
         max_travel_m=max_travel_m,
         source_sha=str(data.get("source_sha") or source_sha),
         approval_id=str(data.get("approval_id", "")),
+        supervised_collision_escape=data.get(  # type: ignore[arg-type]
+            "supervised_collision_escape", False
+        ),
     )
 
 

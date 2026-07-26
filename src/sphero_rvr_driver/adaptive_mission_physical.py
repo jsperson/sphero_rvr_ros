@@ -476,6 +476,9 @@ class PhysicalAdaptiveMissionExecutor:
                 before,
                 mission_id=self._mission_id,
                 require_motion=True,
+                allow_supervised_collision_escape=(
+                    _is_supervised_collision_escape(intent)
+                ),
             )
         except MissionValidationError as exc:
             return self._nonmotion_result(
@@ -702,6 +705,9 @@ class PhysicalAdaptiveMissionExecutor:
             ),
             source_sha=self.source_sha,
             approval_id=self._approval_id,
+            supervised_collision_escape=(
+                _is_supervised_collision_escape(intent)
+            ),
         )
 
     def _terminal_result(
@@ -1016,6 +1022,14 @@ def _stop_active(control: Mapping[str, Any], collision_state: str) -> bool:
         control.get("stop_active", False)
         or state in {"STOP", "STOPPED"}
         or collision_state in {"STOP", "STOPPED"}
+    )
+
+
+def _is_supervised_collision_escape(intent: AdaptiveMissionIntent) -> bool:
+    return bool(
+        intent.provider_id == "deterministic-supervised-recovery"
+        and intent.action == "move_distance"
+        and intent.distance_m < 0.0
     )
 
 

@@ -89,6 +89,7 @@ def _collision_mapping(value: Any) -> dict[str, Any]:
             "front_slow_max_angle_deg": "forward_corridor_max_angle_deg",
             "stop_distance_m": "collision_stop_distance_m",
             "slow_distance_m": "collision_slow_distance_m",
+            "rear": "rear_clearance_m",
             "left": "left_clearance_m",
             "right": "right_clearance_m",
             "trajectory_clearance_margin_m": "trajectory_clearance_margin_m",

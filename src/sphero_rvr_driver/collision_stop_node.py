@@ -451,6 +451,7 @@ def main(args=None):
                 f"front_slow_max_angle_deg={self._config.front_slow_max_angle_deg} "
                 f"stop_distance_m={self._config.stop_distance_m} "
                 f"slow_distance_m={self._config.slow_distance_m} "
+                f"rear={decision.nearest.get('rear')} "
                 f"left={decision.nearest.get('left')} "
                 f"right={decision.nearest.get('right')} "
                 f"trajectory_clearance_margin_m={self._config.trajectory_clearance_margin_m} "

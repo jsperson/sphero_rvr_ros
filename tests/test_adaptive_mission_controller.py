@@ -17,11 +17,13 @@ from sphero_rvr_driver.mission_web import (
     make_server,
 )
 from sphero_rvr_driver.adaptive_mission_controller import (
+    AdaptiveMissionController,
     ReplayCollisionSupervisor,
     ReplayAdaptiveMissionExecutor,
     AdaptiveMissionApprovalEnvelope,
     AdaptiveMissionIntent,
     AdaptiveMissionLimits,
+    MovementDecision,
     _adaptive_mission_provider_prompt,
     make_world_snapshot,
     validate_world_snapshot,
@@ -166,6 +168,42 @@ class SemanticReplayAdaptiveMissionExecutor(ReplayAdaptiveMissionExecutor):
         return make_world_snapshot(snapshot)
 
 
+class RecoveryReplayAdaptiveMissionExecutor(ReplayAdaptiveMissionExecutor):
+    def snapshot(self, mission_id: str) -> Mapping[str, Any]:
+        snapshot = dict(super().snapshot(mission_id))
+        snapshot.pop("schema", None)
+        snapshot.pop("snapshot_id", None)
+        observations = dict(snapshot["observations"])
+        observations["motion_clearance"] = {
+            "translation_reserve_m": 0.40,
+            "forward_usable_m": 1.0,
+            "reverse_usable_m": 0.30,
+        }
+        snapshot["observations"] = observations
+        return make_world_snapshot(snapshot)
+
+
+class StallOnceSupervisor(ReplayCollisionSupervisor):
+    def supervise(
+        self,
+        intent: AdaptiveMissionIntent,
+        snapshot: Mapping[str, Any],
+        limits: AdaptiveMissionLimits,
+    ) -> MovementDecision:
+        if self.calls == 0:
+            self.calls += 1
+            return MovementDecision(
+                "failed",
+                "stall",
+                limits.linear_speed_mps,
+                0.0,
+                0.0,
+                0.0,
+                "CLEAR",
+            )
+        return super().supervise(intent, snapshot, limits)
+
+
 def _wait_terminal(adapter: AdaptiveMissionAdapter, timeout_s: float = 3.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -174,6 +212,19 @@ def _wait_terminal(adapter: AdaptiveMissionAdapter, timeout_s: float = 3.0) -> d
             return snapshot
         time.sleep(0.005)
     raise AssertionError("adaptive mission did not reach a terminal state")
+
+
+def _wait_controller_terminal(
+    controller: AdaptiveMissionController,
+    timeout_s: float = 3.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        snapshot = controller.snapshot()
+        if snapshot["terminal"]:
+            return snapshot
+        time.sleep(0.005)
+    raise AssertionError("adaptive mission controller did not become terminal")
 
 
 def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_safety_authority() -> None:
@@ -229,6 +280,45 @@ def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None
         validate_world_snapshot(
             malformed,
             mission_id="malformed-semantics",
+        )
+
+
+def test_collision_escape_never_overrides_operator_stop_or_estop() -> None:
+    base = dict(
+        ReplayAdaptiveMissionExecutor().snapshot(
+            "collision-escape-safety"
+        )
+    )
+    base.pop("schema", None)
+    base.pop("snapshot_id", None)
+    base["safety"] = {
+        **dict(base["safety"]),
+        "collision_state": "STOPPED",
+        "stop_active": True,
+        "control_state": "STOP",
+    }
+    stopped = make_world_snapshot(base)
+
+    with pytest.raises(MissionValidationError, match="STOP is active"):
+        validate_world_snapshot(
+            stopped,
+            mission_id="collision-escape-safety",
+            require_motion=True,
+            allow_supervised_collision_escape=True,
+        )
+
+    base["safety"] = {
+        **dict(base["safety"]),
+        "control_state": "READY",
+        "estop_latched": True,
+    }
+    estopped = make_world_snapshot(base)
+    with pytest.raises(MissionValidationError, match="ESTOP is latched"):
+        validate_world_snapshot(
+            estopped,
+            mission_id="collision-escape-safety",
+            require_motion=True,
+            allow_supervised_collision_escape=True,
         )
 
 
@@ -431,6 +521,76 @@ def test_collision_supervisor_vetoes_llm_and_records_zero_supervised_motion(
     assert movement["requested"]["linear_mps"] == pytest.approx(0.10)
     assert movement["supervised"]["linear_mps"] == 0.0
     assert movement["motor_topic_publisher"] == "lidar_collision_stop_supervisor"
+
+
+@pytest.mark.parametrize(
+    "supervisor",
+    [
+        ReplayCollisionSupervisor(collision_on_intent=1),
+        StallOnceSupervisor(),
+    ],
+    ids=["collision", "stall"],
+)
+def test_exploration_recovery_reverses_turns_and_replans_after_failure(
+    supervisor,
+) -> None:
+    provider = SequenceProvider(
+        [("move_distance", 0.20), ("stop", 0.0)]
+    )
+    executor = RecoveryReplayAdaptiveMissionExecutor(
+        supervisor=supervisor
+    )
+    mission_id = f"recovery-{type(supervisor).__name__}"
+    first_snapshot = executor.snapshot(mission_id)
+    first_raw = provider.choose(PROMPT, first_snapshot)
+    approved_at = time.time()
+    first_intent = AdaptiveMissionIntent.validated(
+        first_raw,
+        revision=1,
+        snapshot=first_snapshot,
+        issued_at_s=approved_at,
+        provider_id=provider.provider_id,
+        model_id=provider.model_id,
+        limits=executor.limits,
+    )
+    controller = AdaptiveMissionController(
+        mission_id=mission_id,
+        prompt="Explore and map the room",
+        proposal_digest="a" * 64,
+        operator="operator@example.com",
+        authenticated=True,
+        authentication_source="tailscale-serve",
+        approved_at_s=approved_at,
+        first_snapshot=first_snapshot,
+        first_intent=first_intent,
+        provider=provider,
+        executor=executor,
+        enable_exploration_recovery=True,
+    )
+    try:
+        controller.start()
+        terminal = _wait_controller_terminal(controller)
+    finally:
+        controller.close()
+
+    revisions = terminal["result"]["intent_revisions"]
+    assert terminal["status"] == "complete"
+    assert [revision["action"] for revision in revisions] == [
+        "move_distance",
+        "move_distance",
+        "turn_angle",
+        "stop",
+    ]
+    assert revisions[1]["distance_m"] == pytest.approx(-0.15)
+    assert revisions[1]["provider_id"] == (
+        "deterministic-supervised-recovery"
+    )
+    assert revisions[2]["angle_deg"] == pytest.approx(45.0)
+    assert provider.calls == 2
+    event_types = [event["event_type"] for event in terminal["events"]]
+    assert "recovery_started" in event_types
+    assert "recovery_reverse_completed" in event_types
+    assert "recovery_completed" in event_types
 
 
 def test_stale_updated_snapshot_stops_before_another_provider_call(tmp_path) -> None:

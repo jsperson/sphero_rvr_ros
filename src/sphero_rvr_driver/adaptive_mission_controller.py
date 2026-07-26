@@ -110,6 +110,7 @@ def validate_world_snapshot(
     mission_id: str,
     require_motion: bool = False,
     require_execution_safety: bool = True,
+    allow_supervised_collision_escape: bool = False,
 ) -> None:
     if str(snapshot.get("schema", "")) != ADAPTIVE_MISSION_WORLD_SCHEMA:
         raise MissionValidationError("adaptive mission world snapshot schema is invalid")
@@ -175,12 +176,27 @@ def validate_world_snapshot(
     for name in ("scan_fresh", "transform_fresh", "odometry_fresh"):
         if evidence.get(name) is not True:
             raise MissionValidationError(f"stale evidence: {name}")
-    if safety.get("stop_active") is True:
+    collision_state = str(safety.get("collision_state", "")).upper()
+    control_state = str(safety.get("control_state", "")).upper()
+    collision_escape = bool(
+        allow_supervised_collision_escape
+        and collision_state in {"STOP", "STOPPED", "BLOCKED"}
+        and control_state not in {
+            "STOP",
+            "STOPPED",
+            "ESTOP",
+            "ESTOPPED",
+            "LATCHED",
+        }
+    )
+    if safety.get("stop_active") is True and not collision_escape:
         raise MissionValidationError("STOP is active")
     if safety.get("estop_latched") is True:
         raise MissionValidationError("ESTOP is latched")
-    collision_state = str(safety.get("collision_state", "")).upper()
-    if collision_state not in _CLEAR_COLLISION_STATES:
+    if (
+        collision_state not in _CLEAR_COLLISION_STATES
+        and not collision_escape
+    ):
         raise MissionValidationError(f"collision supervisor is {collision_state or 'UNKNOWN'}")
     if require_motion and execution.get("motion_permitted") is not True:
         raise MissionValidationError("motion is not permitted by the executor snapshot")
@@ -653,6 +669,15 @@ class AdaptiveMissionApprovalEnvelope:
                 "telemetry_stops_when_lease_ends": True,
                 "authenticated_objective_updates_within_lease": True,
                 "first_intent_requires_fresh_post_approval_evidence": True,
+                "bounded_exploration_recovery": {
+                    "trigger": "collision_or_stall",
+                    "maximum_attempts": 2,
+                    "maximum_reverse_m": 0.15,
+                    "maximum_turn_deg": 45.0,
+                    "requires_typed_rear_clearance": True,
+                    "supervised_motion_only": True,
+                    "fresh_evidence_then_llm_replan": True,
+                },
                 "motion_authority": False,
                 "physical_execution_enabled": bool(
                     self.physical_execution_enabled
@@ -1045,6 +1070,9 @@ class AdaptiveMissionController:
         checkpoint: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
         owns_executor: bool = True,
         keep_active_after_planner_stop: bool = False,
+        enable_exploration_recovery: bool = False,
+        max_exploration_recoveries: int = 2,
+        recovery_reverse_m: float = 0.15,
         activation_event_message: str = "",
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -1070,6 +1098,24 @@ class AdaptiveMissionController:
         self._keep_active_after_planner_stop = bool(
             keep_active_after_planner_stop
         )
+        self._enable_exploration_recovery = bool(
+            enable_exploration_recovery
+        )
+        self._max_exploration_recoveries = int(
+            max_exploration_recoveries
+        )
+        self._recovery_reverse_m = float(recovery_reverse_m)
+        if self._max_exploration_recoveries < 1:
+            raise MissionValidationError(
+                "exploration recovery count must be positive"
+            )
+        if (
+            not math.isfinite(self._recovery_reverse_m)
+            or not 0.0 < self._recovery_reverse_m <= 0.15
+        ):
+            raise MissionValidationError(
+                "exploration recovery reverse distance must be within 0.15 m"
+            )
         self._now = now
         self._mission_expires_at_s = self.approved_at_s + self.limits.mission_lease_s
         self._lock = threading.RLock()
@@ -1096,6 +1142,9 @@ class AdaptiveMissionController:
         self._idle_objective_revision: Optional[int] = None
         self._objective_condition = threading.Condition(self._lock)
         self._requested_terminal: Optional[tuple[str, str]] = None
+        self._recovery_attempts = 0
+        self._recovery_phase = ""
+        self._recovery_trigger_reason = ""
         self._append_event(
             "approval_bound",
             f"Authenticated operator {self.operator} approved lease through "
@@ -1205,6 +1254,7 @@ class AdaptiveMissionController:
     def _run(self) -> None:
         while not self._shutdown.is_set():
             checkpoint: Optional[tuple[str, dict[str, Any]]] = None
+            continue_recovery = False
             with self._lock:
                 if self._terminal:
                     return
@@ -1255,6 +1305,9 @@ class AdaptiveMissionController:
                         self._world,
                         mission_id=self.mission_id,
                         require_motion=intent.action in {"move_distance", "turn_angle"},
+                        allow_supervised_collision_escape=(
+                            _is_supervised_collision_escape_intent(intent)
+                        ),
                     )
                 except MissionValidationError as exc:
                     self._finish("blocked", f"stale_or_unsafe_evidence: {exc}")
@@ -1300,17 +1353,97 @@ class AdaptiveMissionController:
                         requested_status, _ = self._requested_terminal
                         self._finish(requested_status, execution.reason)
                         return
-                    terminal_status = {
-                        "blocked": "blocked",
-                        "stale": "blocked",
-                        "cancelled": "cancelled",
-                        "timeout": "timeout",
-                    }.get(execution.outcome, "failed")
-                    if "cleanup_uncertain" in execution.reason:
-                        terminal_status = "recovery_required"
-                    self._finish(terminal_status, execution.reason)
-                    return
-                checkpoint = ("intent_result", self._projection())
+                    recovery_intent, recovery_error = (
+                        self._recovery_after_failure(
+                            intent,
+                            execution.reason,
+                        )
+                    )
+                    if recovery_intent is not None:
+                        self._active_intent = recovery_intent
+                        self._append_event(
+                            "recovery_started",
+                            "A supervised exploration recovery will reverse "
+                            f"{abs(recovery_intent.distance_m):.2f} m after "
+                            f"{execution.reason}, then turn toward the clearer "
+                            "side and reacquire evidence before LLM replanning.",
+                        )
+                        checkpoint = (
+                            "recovery_started",
+                            self._projection(),
+                        )
+                        continue_recovery = True
+                    elif recovery_error:
+                        self._append_event(
+                            "recovery_unavailable",
+                            recovery_error,
+                        )
+                    if continue_recovery:
+                        pass
+                    else:
+                        terminal_status = {
+                            "blocked": "blocked",
+                            "stale": "blocked",
+                            "cancelled": "cancelled",
+                            "timeout": "timeout",
+                        }.get(execution.outcome, "failed")
+                        if "cleanup_uncertain" in execution.reason:
+                            terminal_status = "recovery_required"
+                        terminal_reason = execution.reason
+                        if self._recovery_phase:
+                            terminal_reason = (
+                                "exploration_recovery_failed_after_"
+                                f"{self._recovery_trigger_reason}: "
+                                f"{execution.reason}"
+                            )
+                        self._finish(terminal_status, terminal_reason)
+                        return
+                if continue_recovery:
+                    pass
+                elif self._recovery_phase == "reverse":
+                    try:
+                        recovery_turn = self._make_recovery_turn_intent()
+                    except MissionValidationError as exc:
+                        self._append_event(
+                            "recovery_unavailable",
+                            "Reverse recovery completed, but a safe turn could "
+                            f"not be validated: {exc}",
+                        )
+                        self._finish(
+                            "blocked",
+                            "exploration_recovery_turn_unavailable: "
+                            f"{exc}",
+                        )
+                        return
+                    self._recovery_phase = "turn"
+                    self._active_intent = recovery_turn
+                    self._append_event(
+                        "recovery_reverse_completed",
+                        "The bounded reverse completed under collision "
+                        "supervision; fresh evidence selected the clearer "
+                        f"{'left' if recovery_turn.angle_deg > 0.0 else 'right'} "
+                        "turn corridor.",
+                    )
+                    checkpoint = (
+                        "recovery_reverse_completed",
+                        self._projection(),
+                    )
+                    continue_recovery = True
+                elif self._recovery_phase == "turn":
+                    self._append_event(
+                        "recovery_completed",
+                        "The bounded recovery turn completed under supervision; "
+                        "the updated snapshot will be sent to the LLM for "
+                        "replanning.",
+                    )
+                    self._recovery_phase = ""
+                    self._recovery_trigger_reason = ""
+                    checkpoint = (
+                        "recovery_completed",
+                        self._projection(),
+                    )
+                else:
+                    checkpoint = ("intent_result", self._projection())
                 if intent.action == "stop":
                     if not self._keep_active_after_planner_stop:
                         self._finish("complete", "planner_stop")
@@ -1333,17 +1466,20 @@ class AdaptiveMissionController:
                 if self._now() >= self._mission_expires_at_s:
                     self._finish("timeout", "mission_lease_expired")
                     return
-                try:
-                    validate_world_snapshot(
-                        self._world,
-                        mission_id=self.mission_id,
-                        require_motion=False,
-                    )
-                except MissionValidationError as exc:
-                    self._finish("blocked", f"stale_or_unsafe_evidence: {exc}")
-                    return
+                if not continue_recovery:
+                    try:
+                        validate_world_snapshot(
+                            self._world,
+                            mission_id=self.mission_id,
+                            require_motion=False,
+                        )
+                    except MissionValidationError as exc:
+                        self._finish("blocked", f"stale_or_unsafe_evidence: {exc}")
+                        return
             if checkpoint is not None:
                 self._emit_checkpoint(*checkpoint)
+            if continue_recovery:
+                continue
             if intent.action == "stop":
                 continue
             next_intent = self._choose_next_intent()
@@ -1365,6 +1501,166 @@ class AdaptiveMissionController:
                 )
                 checkpoint = ("llm_revision", self._projection())
             self._emit_checkpoint(*checkpoint)
+
+    def _recovery_after_failure(
+        self,
+        failed_intent: AdaptiveMissionIntent,
+        reason: str,
+    ) -> tuple[Optional[AdaptiveMissionIntent], str]:
+        if self._recovery_phase:
+            return None, ""
+        normalized_reason = str(reason).strip().lower()
+        recoverable = (
+            "stall" in normalized_reason
+            or "collision_veto" in normalized_reason
+        )
+        if (
+            not self._enable_exploration_recovery
+            or not recoverable
+            or not _is_exploration_objective(
+                self.prompt,
+                failed_intent.interpreted_objective,
+            )
+        ):
+            return None, ""
+        if self._recovery_attempts >= self._max_exploration_recoveries:
+            return (
+                None,
+                "The bounded exploration recovery limit was reached; "
+                "automatic motion remains stopped.",
+            )
+        try:
+            validate_world_snapshot(
+                self._world,
+                mission_id=self.mission_id,
+                require_motion=True,
+                allow_supervised_collision_escape=True,
+            )
+            observations = self._world.get("observations", {})
+            clearance = (
+                observations.get("motion_clearance", {})
+                if isinstance(observations, Mapping)
+                else {}
+            )
+            if not isinstance(clearance, Mapping):
+                raise MissionValidationError(
+                    "typed reverse clearance is unavailable"
+                )
+            usable = _finite(
+                clearance.get("reverse_usable_m"),
+                "exploration recovery reverse usable translation",
+            )
+            distance = min(
+                self._recovery_reverse_m,
+                self.limits.max_translation_per_intent_m,
+                usable,
+            )
+            if distance < 0.05:
+                raise MissionValidationError(
+                    "rear corridor permits less than 0.05 m of recovery"
+                )
+            issued_at = self._now()
+            recovery = AdaptiveMissionIntent.validated(
+                {
+                    "snapshot_id": self._world["snapshot_id"],
+                    "action": "move_distance",
+                    "distance_m": -distance,
+                    "angle_deg": 0.0,
+                    "observation_focus": (
+                        "rear clearance and post-recovery obstacle geometry"
+                    ),
+                    "rationale": (
+                        "Deterministic supervised recovery after "
+                        f"{reason}: reverse only within typed rear clearance."
+                    ),
+                    "interpreted_objective": (
+                        failed_intent.interpreted_objective
+                    ),
+                    "lease_s": self.limits.max_intent_lease_s,
+                    "timeout_s": self.limits.max_intent_timeout_s,
+                },
+                revision=len(self._revisions) + 1,
+                snapshot=self._world,
+                issued_at_s=issued_at,
+                provider_id="deterministic-supervised-recovery",
+                model_id="none",
+                limits=self.limits,
+            )
+        except MissionValidationError as exc:
+            return (
+                None,
+                "Recovery was not attempted because current supervised "
+                f"evidence could not authorize it: {exc}",
+            )
+        self._recovery_attempts += 1
+        self._recovery_phase = "reverse"
+        self._recovery_trigger_reason = str(reason)
+        return recovery, ""
+
+    def _make_recovery_turn_intent(self) -> AdaptiveMissionIntent:
+        validate_world_snapshot(
+            self._world,
+            mission_id=self.mission_id,
+            require_motion=True,
+        )
+        observations = self._world.get("observations", {})
+        if not isinstance(observations, Mapping):
+            raise MissionValidationError(
+                "typed obstacle geometry is unavailable"
+            )
+        left = _optional_finite_number(
+            observations.get("left_clearance_m")
+        )
+        right = _optional_finite_number(
+            observations.get("right_clearance_m")
+        )
+        if left is None and right is None:
+            raise MissionValidationError(
+                "left and right clearance are unavailable"
+            )
+        turn_left = bool(
+            right is None
+            or (
+                left is not None
+                and (
+                    left > right
+                    or (
+                        math.isclose(left, right)
+                        and self._recovery_attempts % 2 == 1
+                    )
+                )
+            )
+        )
+        angle = min(
+            45.0,
+            self.limits.max_rotation_per_intent_deg,
+        ) * (1.0 if turn_left else -1.0)
+        issued_at = self._now()
+        return AdaptiveMissionIntent.validated(
+            {
+                "snapshot_id": self._world["snapshot_id"],
+                "action": "turn_angle",
+                "distance_m": 0.0,
+                "angle_deg": angle,
+                "observation_focus": (
+                    "obstacle geometry after the recovery turn"
+                ),
+                "rationale": (
+                    "Deterministic supervised recovery selects the "
+                    f"{'left' if turn_left else 'right'} corridor from the "
+                    "typed left and right lidar clearances."
+                ),
+                "interpreted_objective": self.prompt,
+                "lease_s": self.limits.max_intent_lease_s,
+                "timeout_s": self.limits.max_intent_timeout_s,
+            },
+            revision=len(self._revisions) + 1,
+            snapshot=self._world,
+            issued_at_s=issued_at,
+            provider_id="deterministic-supervised-recovery",
+            model_id="none",
+            limits=self.limits,
+        )
 
     def _wait_for_updated_objective(
         self, idle_revision: int
@@ -1714,6 +2010,39 @@ def _finite(value: Any, name: str) -> float:
     if not math.isfinite(number):
         raise MissionValidationError(f"{name} must be finite")
     return number
+
+
+def _optional_finite_number(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def _is_supervised_collision_escape_intent(
+    intent: AdaptiveMissionIntent,
+) -> bool:
+    return bool(
+        intent.provider_id == "deterministic-supervised-recovery"
+        and intent.action == "move_distance"
+        and intent.distance_m < 0.0
+    )
+
+
+def _is_exploration_objective(*values: str) -> bool:
+    text = " ".join(str(value).lower() for value in values)
+    tokens = {
+        token.strip(".,:;!?()[]{}")
+        for token in text.split()
+    }
+    return bool(
+        "map" in tokens
+        or any(
+            marker in text
+            for marker in ("explor", "mapping", "survey")
+        )
+    )
 
 
 def _snapshot_event_message(snapshot: Mapping[str, Any]) -> str:

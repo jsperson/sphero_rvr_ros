@@ -260,7 +260,7 @@ def test_ros_payload_parsers_accept_canonical_collision_text_and_reject_malforme
         "CLEAR reason=idle scan_age=0.1 front=1.27 front_slow=1.26 "
         "front_slow_min_angle_deg=-35 front_slow_max_angle_deg=35 "
         "stop_distance_m=0.35 slow_distance_m=0.6 "
-        "left=0.31 right=1.2 trajectory_clearance_margin_m=0.02 "
+        "rear=1.4 left=0.31 right=1.2 trajectory_clearance_margin_m=0.02 "
         "trajectory_horizon_s=0.75 trajectory_min_clearance_m=0.01 "
         "trajectory_collision_time_s=None"
     ) == {
@@ -269,7 +269,7 @@ def test_ros_payload_parsers_accept_canonical_collision_text_and_reject_malforme
             "CLEAR reason=idle scan_age=0.1 front=1.27 front_slow=1.26 "
             "front_slow_min_angle_deg=-35 front_slow_max_angle_deg=35 "
             "stop_distance_m=0.35 slow_distance_m=0.6 "
-            "left=0.31 right=1.2 trajectory_clearance_margin_m=0.02 "
+            "rear=1.4 left=0.31 right=1.2 trajectory_clearance_margin_m=0.02 "
             "trajectory_horizon_s=0.75 trajectory_min_clearance_m=0.01 "
             "trajectory_collision_time_s=None"
             ),
@@ -281,6 +281,7 @@ def test_ros_payload_parsers_accept_canonical_collision_text_and_reject_malforme
         "forward_corridor_max_angle_deg": 35.0,
         "collision_stop_distance_m": 0.35,
         "collision_slow_distance_m": 0.6,
+        "rear_clearance_m": 1.4,
         "left_clearance_m": 0.31,
         "right_clearance_m": 1.2,
         "trajectory_clearance_margin_m": 0.02,

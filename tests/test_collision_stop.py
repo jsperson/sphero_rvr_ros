@@ -271,6 +271,74 @@ def test_front_stop_latches_until_clear_release_time_and_manual_reset():
     assert accepted.decision.output == TwistCommand(0.0, 0.0)
 
 
+def test_front_stop_allows_only_rear_clear_supervised_reverse_escape():
+    supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=0.0)
+    supervisor.update_scan(
+        scan_with(front=0.30, rear=1.20, stamp=0.0),
+        now=0.0,
+    )
+    stopped = supervisor.apply_command(
+        TwistCommand(0.10, 0.0),
+        now=0.0,
+    )
+    assert stopped.state is CollisionState.STOPPED
+    assert stopped.reason == "front_stop"
+
+    supervisor.update_scan(
+        scan_with(front=0.30, rear=1.20, stamp=0.1),
+        now=0.1,
+    )
+    escaped = supervisor.apply_command(
+        TwistCommand(-0.10, 0.0),
+        now=0.1,
+    )
+
+    assert escaped.state is CollisionState.SLOW
+    assert escaped.reason == "front_stop_reverse_escape"
+    assert escaped.output == TwistCommand(-0.10, 0.0)
+    assert escaped.trajectory is not None
+    assert escaped.trajectory.blocked is False
+
+
+def test_front_stop_reverse_escape_remains_zero_when_rear_is_blocked():
+    supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=0.0)
+    supervisor.update_scan(
+        scan_with(front=0.30, rear=0.20, stamp=0.0),
+        now=0.0,
+    )
+    supervisor.apply_command(TwistCommand(0.10, 0.0), now=0.0)
+    supervisor.update_scan(
+        scan_with(front=0.30, rear=0.20, stamp=0.1),
+        now=0.1,
+    )
+
+    held = supervisor.apply_command(TwistCommand(-0.10, 0.0), now=0.1)
+
+    assert held.state is CollisionState.STOPPED
+    assert held.reason == "reverse_escape_rear_blocked"
+    assert held.output == TwistCommand()
+    assert held.reset_required is True
+
+
+def test_nonfinite_stop_latch_cannot_be_released_by_reverse_escape():
+    supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=0.0)
+    supervisor.update_scan(
+        scan_with(front=1.20, rear=1.20, stamp=0.0),
+        now=0.0,
+    )
+    stopped = supervisor.apply_command(
+        TwistCommand(math.nan, 0.0),
+        now=0.0,
+    )
+    assert stopped.reason == "non_finite_command"
+
+    held = supervisor.apply_command(TwistCommand(-0.10, 0.0), now=0.1)
+
+    assert held.state is CollisionState.STOPPED
+    assert held.reason == "reset_required"
+    assert held.output == TwistCommand()
+
+
 def test_slow_band_scales_forward_without_changing_turn():
     cfg = CollisionStopConfig(stop_distance_m=0.35, slow_distance_m=0.60, min_forward_scale=0.0)
     supervisor = CollisionStopSupervisor(cfg, now=0.0)
