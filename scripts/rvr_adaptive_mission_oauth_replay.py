@@ -99,6 +99,7 @@ def main() -> int:
                 "action": item["action"],
                 "distance_m": item["distance_m"],
                 "angle_deg": item["angle_deg"],
+                "objective_status": item["objective_status"],
                 "rationale": item["rationale"],
                 "movement": item.get("execution", {}).get("movement", {}),
             }

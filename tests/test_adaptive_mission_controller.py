@@ -254,7 +254,11 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
         "stop",
         "turn_angle",
     ]
-    assert request["authority"]["translation_clearance"] == {}
+    assert request["authority"]["translation_clearance"] == {
+        "translation_reserve_m": 0.40,
+        "forward_usable_m": 1.40,
+        "reverse_usable_m": 0.80,
+    }
     configured = json.loads(
         _adaptive_mission_provider_prompt(
             "Observe safely.",

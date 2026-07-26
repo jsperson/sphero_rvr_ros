@@ -975,6 +975,11 @@ class ReplayAdaptiveMissionExecutor:
                     "forward_clearance_m": 1.8,
                     "left_clearance_m": 1.2,
                     "right_clearance_m": 0.9,
+                    "motion_clearance": {
+                        "translation_reserve_m": 0.40,
+                        "forward_usable_m": 1.40,
+                        "reverse_usable_m": 0.80,
+                    },
                     "camera_detections": [],
                     "semantic_tracks": [],
                     "recognized_objects": [],
