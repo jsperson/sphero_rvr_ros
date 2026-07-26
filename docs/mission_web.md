@@ -137,7 +137,10 @@ The product Pi configuration reports approval-time activation capability while
 the physical session remains locked. If planning evidence is stale, **Generate
 proposal** starts the fixed no-motion telemetry graph and waits for fresh
 camera/lidar/localization evidence before it submits the proposal. It never
-submits a predictably stale request. A **Lease minutes** text box appears above
+submits a predictably stale request. Once the proposal succeeds or fails, the
+web service stops and verifies the temporary no-motion telemetry graph; sensing
+does not remain active while an Adaptive mission proposal awaits approval. A
+**Lease minutes** text box appears above
 an equal-width **Approve** and **Cancel** button row. Its positive value is
 capped by `RVR_ADAPTIVE_MISSION_LEASE_S` and becomes part of the proposal
 digest; changing it after proposal generation disables approval until a
@@ -145,6 +148,10 @@ replacement proposal is generated. **Approve** is the authenticated
 authorization boundary: it starts the fixed supervised graph, waits for fresh
 authoritative camera/lidar/localization and safety evidence, and only then
 invokes the model.
+The first provider call is bounded by the time remaining on that approved
+lease. Lease expiry interrupts an in-flight initial decision and begins
+fail-closed graph relock instead of waiting for the provider's ordinary
+120-second timeout.
 The configured default and maximum duration is 15 minutes.
 Missing or unsafe STOP/ESTOP/collision evidence prevents execution. Every
 terminal path stops the graph again, and a relock failure is shown as

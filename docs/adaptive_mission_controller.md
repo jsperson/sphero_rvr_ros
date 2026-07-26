@@ -127,6 +127,12 @@ rotation, intent-count, or provider-call budget inside the active lease. Every
 individual intent remains bounded to 0.25 m, 45 degrees, and 5 seconds. Speed
 ceilings remain 0.10 m/s and 0.4 rad/s.
 
+The first isolated provider decision is part of the approved mission lease.
+Its provider deadline is clamped to the remaining lease, and a deadline guard
+interrupts the provider at expiry before the supervised graph is relocked.
+The controller checks expiry both before and after that call, so a provider's
+larger default timeout can never extend physical-session authority.
+
 Settled navigation outcomes are separated from physical command termination.
 After an ordinary odometry overshoot, undershoot, target residual, or
 non-collision stall has stopped and supplied correlated terminal evidence, the

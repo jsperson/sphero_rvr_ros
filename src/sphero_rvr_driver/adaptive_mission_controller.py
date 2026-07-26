@@ -595,6 +595,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         *,
         decision_id: str,
         safety_rejection: Optional[Mapping[str, Any]],
+        decision_timeout_s: Optional[float] = None,
     ) -> Mapping[str, Any]:
         """Run one explicitly identified isolated provider decision."""
 
@@ -603,6 +604,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
             snapshot,
             safety_rejection=safety_rejection,
             decision_id=decision_id,
+            decision_timeout_s=decision_timeout_s,
         )
 
     def _choose(
@@ -612,10 +614,24 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         *,
         safety_rejection: Optional[Mapping[str, Any]],
         decision_id: Optional[str],
+        decision_timeout_s: Optional[float] = None,
     ) -> Mapping[str, Any]:
         total_started = time.perf_counter()
         preparation_started = total_started
         isolated_decision_id = str(decision_id or uuid.uuid4().hex)
+        effective_timeout_s = self.timeout_s
+        if decision_timeout_s is not None:
+            requested_timeout_s = float(decision_timeout_s)
+            if (
+                not math.isfinite(requested_timeout_s)
+                or requested_timeout_s <= 0.0
+            ):
+                raise MissionValidationError(
+                    "adaptive mission provider decision timeout must be positive and finite"
+                )
+            effective_timeout_s = min(
+                effective_timeout_s, requested_timeout_s
+            )
         outcome = _navigation_outcome(snapshot)
         metric: dict[str, Any] = {
             "schema": "sphero_rvr.adaptive_planning_latency.v1",
@@ -637,6 +653,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
             "reasoning_effort": self.reasoning_effort,
             "integration": self.integration,
             "compact_input": self.compact_input,
+            "decision_timeout_s": effective_timeout_s,
             "prompt_image_preparation_ms": 0.0,
             "oauth_client_startup_ms": 0.0,
             "inference_ms": 0.0,
@@ -715,7 +732,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                             if camera_path is not None
                             else None
                         ),
-                        timeout_s=self.timeout_s,
+                        timeout_s=effective_timeout_s,
                     )
                     inference_elapsed_ms = (
                         time.perf_counter() - inference_started
@@ -730,6 +747,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                         provider_prompt=provider_prompt,
                         root=root,
                         camera_path=camera_path,
+                        timeout_s=effective_timeout_s,
                     )
                     metric["oauth_client_startup_ms"] = startup_ms
                     metric["inference_ms"] = inference_ms
@@ -764,6 +782,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         provider_prompt: str,
         root: Path,
         camera_path: Optional[Path],
+        timeout_s: float,
     ) -> tuple[str, float, float]:
         executable = resolve_codex_executable(self.codex_command)
         if executable is None:
@@ -824,7 +843,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                 text=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=self.timeout_s,
+                timeout=float(timeout_s),
                 env=env,
                 cwd=root,
                 check=False,
@@ -956,6 +975,7 @@ def choose_validated_adaptive_intent(
     supervised_collision_escape: Optional[bool] = None,
     safety_rejection: Optional[Mapping[str, Any]] = None,
     decision_id: Optional[str] = None,
+    provider_timeout_s: Optional[float] = None,
     issue_clock: Callable[[], float] = time.time,
 ) -> tuple[dict[str, Any], AdaptiveMissionIntent]:
     """Run provider inference and deterministic rover intent validation.
@@ -971,6 +991,7 @@ def choose_validated_adaptive_intent(
             snapshot,
             safety_rejection=safety_rejection,
             decision_id=decision_id,
+            decision_timeout_s=provider_timeout_s,
         )
     )
     effective_issued_at_s = (
@@ -1024,6 +1045,7 @@ def _choose_provider_intent(
     *,
     safety_rejection: Optional[Mapping[str, Any]],
     decision_id: Optional[str] = None,
+    decision_timeout_s: Optional[float] = None,
 ) -> Mapping[str, Any]:
     identified_choose = getattr(provider, "choose_for_decision", None)
     if callable(identified_choose) and decision_id:
@@ -1032,6 +1054,7 @@ def _choose_provider_intent(
             snapshot,
             decision_id=str(decision_id),
             safety_rejection=safety_rejection,
+            decision_timeout_s=decision_timeout_s,
         )
     if safety_rejection is None:
         return provider.choose(prompt, snapshot)

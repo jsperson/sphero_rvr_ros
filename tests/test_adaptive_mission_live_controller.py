@@ -238,6 +238,34 @@ class SlowFirstDecisionProvider(SequenceProvider):
         return super().choose(prompt, snapshot)
 
 
+class LeaseBlockingProvider(SequenceProvider):
+    def __init__(self) -> None:
+        super().__init__([("stop", 0.0)])
+        self.cancelled = threading.Event()
+        self.decision_timeout_s: Optional[float] = None
+
+    def choose_for_decision(
+        self,
+        prompt: str,
+        snapshot: Mapping[str, Any],
+        *,
+        decision_id: str,
+        safety_rejection: Optional[Mapping[str, Any]],
+        decision_timeout_s: Optional[float] = None,
+    ) -> Mapping[str, Any]:
+        del decision_id, safety_rejection
+        assert prompt == self.expected_prompt
+        self.calls += 1
+        self.decision_timeout_s = decision_timeout_s
+        assert self.cancelled.wait(timeout=1.0)
+        raise MissionValidationError(
+            "provider cancelled at the mission lease deadline"
+        )
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+
+
 class ClearanceRecoveryProvider(SequenceProvider):
     def choose(
         self, prompt: str, snapshot: Mapping[str, Any]
@@ -797,6 +825,76 @@ def test_first_intent_lease_starts_after_slow_provider_inference(
     assert revision["issued_at_s"] == pytest.approx(approved_at_s + 6.0)
     assert revision["expires_at_s"] - revision["issued_at_s"] == pytest.approx(
         5.0
+    )
+
+
+def test_first_provider_call_is_cancelled_at_mission_lease_deadline(
+    tmp_path,
+) -> None:
+    limits = AdaptiveMissionLimits(mission_lease_s=0.12)
+    provider = LeaseBlockingProvider()
+    cache = LiveStateCache()
+    lifecycle = RecordingSessionLifecycle(cache, provider)
+    service = MissionService(
+        tmp_path / "first-provider-lease.sqlite3",
+        source_sha=SHA,
+        deployed_sha=SHA,
+        mode="live",
+        live_execution_enabled=True,
+        adaptive_mission_limits=limits.to_json_dict(),
+    )
+    transport = FakeRouteTransport()
+    transport.cache = cache
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+        execution_enabled=True,
+        transport=transport,
+        limits=limits,
+    )
+    controller = LiveAdaptiveMissionController(
+        service,
+        provider,
+        executor,
+        execution_enabled=True,
+        limits=limits,
+        session_lifecycle=lifecycle,
+        activation_timeout_s=1.0,
+    )
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="first-provider-lease",
+            mission_id="first-provider-lease-mission",
+        )
+        started = time.monotonic()
+        _approve(controller, proposed)
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {"failed", "recovery_required"},
+            timeout_s=1.0,
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        controller.close()
+        service.close()
+
+    assert elapsed < 0.5
+    assert terminal["status"] == "failed"
+    assert "lease expired during the first intent" in terminal[
+        "terminal_reason"
+    ]
+    assert provider.cancelled.is_set()
+    assert provider.decision_timeout_s is not None
+    assert 0.0 < provider.decision_timeout_s <= limits.mission_lease_s
+    assert transport.requests == []
+    assert lifecycle.active is False
+    assert any(
+        "activation failure" in reason
+        for reason in lifecycle.deactivations
     )
 
 

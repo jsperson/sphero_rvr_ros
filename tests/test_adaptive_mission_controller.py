@@ -875,6 +875,48 @@ def test_app_server_provider_reuses_client_but_sends_compact_isolated_evidence(
     )
 
 
+def test_isolated_provider_decision_uses_call_specific_deadline(
+    monkeypatch,
+) -> None:
+    snapshot = ReplayAdaptiveMissionExecutor().snapshot(
+        "provider-decision-deadline"
+    )
+
+    class FakeAppServer:
+        def __init__(self, **_kwargs) -> None:
+            self.calls = []
+
+        def run_turn(self, **kwargs):
+            self.calls.append(kwargs)
+            return json.dumps(_raw(snapshot, "stop")), 0.0, 0
+
+        def cancel(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "sphero_rvr_driver.adaptive_mission_controller.CodexAppServerClient",
+        FakeAppServer,
+    )
+    provider = CodexOAuthAdaptiveMissionIntentProvider(timeout_s=120.0)
+
+    provider.choose_for_decision(
+        "Stop safely.",
+        snapshot,
+        decision_id="lease-bounded-decision",
+        safety_rejection=None,
+        decision_timeout_s=0.25,
+    )
+
+    assert provider._client is not None
+    assert provider._client.calls[0]["timeout_s"] == pytest.approx(0.25)
+    assert provider.latency_history()[0]["decision_timeout_s"] == pytest.approx(
+        0.25
+    )
+
+
 def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None:
     snapshot = dict(ReplayAdaptiveMissionExecutor().snapshot("malformed-semantics"))
     snapshot.pop("schema", None)

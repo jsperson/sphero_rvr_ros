@@ -689,6 +689,90 @@ def test_active_adaptive_lease_owns_telemetry_until_terminal_shutdown() -> None:
     assert telemetry_control.requests == []
 
 
+def test_adaptive_proposal_stops_preapproval_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeAdaptiveMissionLiveMissionClient(
+        planning_ready=True,
+        approval_activation_enabled=True,
+    )
+    adapter = LiveMissionWebAdapter(
+        client,
+        session_id="web-session",
+        operator="scott@example.com",
+    )
+    telemetry_control = FakeTelemetryControl()
+    telemetry_control.active = True
+    monkeypatch.setattr(
+        "sphero_rvr_driver.mission_web._wait_for_telemetry_evidence_stale",
+        lambda _adapter: None,
+    )
+
+    proposed = json.loads(
+        handle_mission_web_request(
+            "POST",
+            "/api/web/mission/propose",
+            json.dumps(
+                {
+                    "prompt": "Inspect the room without moving before approval.",
+                    "scenario": "live",
+                    "mission_lease_s": 120.0,
+                }
+            ),
+            adapter,
+            telemetry_control,
+        ).body
+    )
+
+    assert proposed["mission"]["state"] == "PLANNING"
+    assert telemetry_control.active is False
+    assert [request[0] for request in telemetry_control.requests] == [False]
+    assert proposed["telemetry_control"]["active"] is False
+
+
+def test_failed_adaptive_proposal_still_stops_preapproval_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeAdaptiveMissionLiveMissionClient(
+        planning_ready=True,
+        approval_activation_enabled=True,
+    )
+    adapter = LiveMissionWebAdapter(client)
+    telemetry_control = FakeTelemetryControl()
+    telemetry_control.active = True
+
+    def fail_proposal(*_args, **_kwargs):
+        raise MissionWebError("proposal failed")
+
+    monkeypatch.setattr(
+        adapter,
+        "propose",
+        fail_proposal,
+    )
+    monkeypatch.setattr(
+        "sphero_rvr_driver.mission_web._wait_for_telemetry_evidence_stale",
+        lambda _adapter: None,
+    )
+
+    with pytest.raises(MissionWebError, match="proposal failed"):
+        handle_mission_web_request(
+            "POST",
+            "/api/web/mission/propose",
+            json.dumps(
+                {
+                    "prompt": "Inspect the room.",
+                    "scenario": "live",
+                    "mission_lease_s": 120.0,
+                }
+            ),
+            adapter,
+            telemetry_control,
+        )
+
+    assert telemetry_control.active is False
+    assert [request[0] for request in telemetry_control.requests] == [False]
+
+
 def test_stationary_sensor_route_rejects_unconfigured_and_non_boolean_requests() -> None:
     adapter = LiveMissionWebAdapter(
         FakeLiveMissionClient(stationary_perception_enabled=True)

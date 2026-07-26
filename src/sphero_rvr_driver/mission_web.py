@@ -2826,11 +2826,37 @@ def handle_mission_web_request(
                     "mission_lease_s must be a JSON number"
                 )
             propose_arguments["mission_lease_s"] = float(lease_value)
-        result = adapter.propose(
-            str(payload.get("prompt", "")),
-            str(payload.get("scenario", "success")),
-            **propose_arguments,
+        before_proposal = adapter.snapshot()
+        stop_preapproval_telemetry = (
+            telemetry_control is not None
+            and _is_adaptive_preapproval(before_proposal)
+            and bool(telemetry_control.status().get("active", False))
         )
+        try:
+            result = adapter.propose(
+                str(payload.get("prompt", "")),
+                str(payload.get("scenario", "success")),
+                **propose_arguments,
+            )
+        finally:
+            if stop_preapproval_telemetry:
+                cleanup_snapshot = adapter.snapshot()
+                telemetry_control.set_active(
+                    False,
+                    authority_snapshot=cleanup_snapshot,
+                )
+                try:
+                    _wait_for_telemetry_evidence_stale(adapter)
+                except MissionWebError as exc:
+                    mark_degraded = getattr(
+                        telemetry_control, "mark_degraded", None
+                    )
+                    if callable(mark_degraded):
+                        mark_degraded(
+                            "Pre-approval telemetry stopped, but authoritative "
+                            f"evidence did not become stale: {exc}"
+                        )
+                    raise
     elif normalized_path == "/api/web/mission/approve":
         result = adapter.approve(
             str(payload.get("approval_phrase", "")),
@@ -2878,6 +2904,21 @@ def handle_mission_web_request(
     else:
         raise MissionWebError(f"POST route is not exposed: {normalized_path}")
     return _json_response(200, _with_telemetry_control(result, telemetry_control))
+
+
+def _is_adaptive_preapproval(snapshot: Mapping[str, Any]) -> bool:
+    adapter = snapshot.get("adapter", {})
+    mission = snapshot.get("mission", {})
+    if not isinstance(adapter, Mapping) or not isinstance(
+        mission, Mapping
+    ):
+        return False
+    return bool(
+        adapter.get("adaptive_mission", False)
+        and adapter.get("approval_activation_enabled", False)
+        and str(mission.get("state", "")).upper()
+        not in {"APPROVED", "QUEUED", "RUNNING"}
+    )
 
 
 def _wait_for_telemetry_evidence_stale(

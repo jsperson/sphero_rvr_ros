@@ -526,9 +526,13 @@ class LiveAdaptiveMissionController:
                     raise MissionValidationError(
                         "operator cancelled during first Adaptive mission plan"
                     )
-                if self._clock_s() >= float(
+                approval_expires_at_s = float(
                     approval.get("expires_at_s", 0.0)
-                ):
+                )
+                provider_time_remaining_s = (
+                    approval_expires_at_s - self._clock_s()
+                )
+                if provider_time_remaining_s <= 0.0:
                     raise MissionValidationError(
                         "Adaptive mission lease expired before the first intent"
                     )
@@ -551,6 +555,26 @@ class LiveAdaptiveMissionController:
                     "provider_call": len(initial_decisions) + 1,
                 }
                 initial_decisions.append(decision_record)
+                provider_lease_expired = threading.Event()
+
+                def cancel_provider_at_lease_expiry(
+                    expired_event: threading.Event = (
+                        provider_lease_expired
+                    ),
+                ) -> None:
+                    expired_event.set()
+                    cancel_provider = getattr(
+                        self.provider, "cancel", None
+                    )
+                    if callable(cancel_provider):
+                        cancel_provider()
+
+                provider_deadline = threading.Timer(
+                    provider_time_remaining_s,
+                    cancel_provider_at_lease_expiry,
+                )
+                provider_deadline.daemon = True
+                provider_deadline.start()
                 try:
                     raw, first_intent = choose_validated_adaptive_intent(
                         self.provider,
@@ -561,9 +585,11 @@ class LiveAdaptiveMissionController:
                         limits=mission_limits,
                         safety_rejection=pending_safety_rejection,
                         decision_id=decision_id,
+                        provider_timeout_s=provider_time_remaining_s,
                         issue_clock=self._clock_s,
                     )
                 except RecoverableSafetyRejection as exc:
+                    provider_deadline.cancel()
                     decision_record["status"] = "safety_rejected"
                     consecutive_safety_rejections += 1
                     refreshed = dict(
@@ -617,11 +643,31 @@ class LiveAdaptiveMissionController:
                         ) from exc
                     continue
                 except Exception as exc:
-                    decision_record["status"] = "failed"
+                    lease_expired = (
+                        provider_lease_expired.is_set()
+                        or self._clock_s() >= approval_expires_at_s
+                    )
+                    decision_record["status"] = (
+                        "lease_expired" if lease_expired else "failed"
+                    )
                     decision_record["error_type"] = (
                         exc.__class__.__name__
                     )
+                    if lease_expired:
+                        raise MissionValidationError(
+                            "Adaptive mission lease expired during the first intent"
+                        ) from exc
                     raise
+                finally:
+                    provider_deadline.cancel()
+                if (
+                    provider_lease_expired.is_set()
+                    or self._clock_s() >= approval_expires_at_s
+                ):
+                    decision_record["status"] = "lease_expired"
+                    raise MissionValidationError(
+                        "Adaptive mission lease expired during the first intent"
+                    )
                 decision_record["status"] = "validated"
                 decision_record["intent_revision"] = first_intent.revision
                 consecutive_safety_rejections = 0
@@ -630,9 +676,7 @@ class LiveAdaptiveMissionController:
                     raise MissionValidationError(
                         "operator cancelled during first Adaptive mission plan"
                     )
-                if self._clock_s() >= float(
-                    approval.get("expires_at_s", 0.0)
-                ):
+                if self._clock_s() >= approval_expires_at_s:
                     raise MissionValidationError(
                         "Adaptive mission lease expired before the first intent"
                     )
