@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import queue
 import shutil
 import subprocess
@@ -135,7 +136,7 @@ class CodexAppServerClient:
 
     def _start_unlocked(self) -> None:
         self._stop_unlocked()
-        executable = shutil.which(self.codex_command)
+        executable = resolve_codex_executable(self.codex_command)
         if executable is None:
             raise MissionValidationError(
                 "Codex CLI is not installed; Adaptive mission requires the real OAuth provider"
@@ -482,3 +483,20 @@ def codex_oauth_environment() -> dict[str, str]:
         for name, value in os.environ.items()
         if name in allowed
     }
+
+
+def resolve_codex_executable(command: str) -> Optional[str]:
+    """Resolve Codex without depending on an interactive-shell PATH."""
+
+    requested = os.path.expanduser(str(command))
+    if os.path.sep in requested:
+        candidate = Path(requested)
+        return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+    discovered = shutil.which(requested)
+    if discovered is not None:
+        return discovered
+    if requested == "codex":
+        candidate = Path.home() / ".local" / "bin" / "codex"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None

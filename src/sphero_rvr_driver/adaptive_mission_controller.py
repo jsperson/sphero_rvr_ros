@@ -23,7 +23,11 @@ import threading
 import time
 from typing import Any, Callable, Mapping, Optional, Protocol
 
-from .codex_app_server import CodexAppServerClient, codex_oauth_environment
+from .codex_app_server import (
+    CodexAppServerClient,
+    codex_oauth_environment,
+    resolve_codex_executable,
+)
 from .mission_api import MissionValidationError
 from .prompt_drive import ALLOWED_REASONING_EFFORTS, DEFAULT_CODEX_MODEL_ID
 
@@ -601,7 +605,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         root: Path,
         camera_path: Optional[Path],
     ) -> tuple[str, float, float]:
-        executable = shutil.which(self.codex_command)
+        executable = resolve_codex_executable(self.codex_command)
         if executable is None:
             raise MissionValidationError(
                 "Codex CLI is not installed; Adaptive mission requires the real OAuth provider"

@@ -12,7 +12,10 @@ import urllib.request
 
 import pytest
 
-from sphero_rvr_driver.codex_app_server import codex_oauth_environment
+from sphero_rvr_driver.codex_app_server import (
+    codex_oauth_environment,
+    resolve_codex_executable,
+)
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_service import MissionService
 from sphero_rvr_driver.mission_web import (
@@ -70,6 +73,19 @@ def test_codex_oauth_environment_excludes_credentials(monkeypatch) -> None:
     assert environment["PATH"] == "/usr/bin"
     assert "OPENAI_API_KEY" not in environment
     assert "UNRELATED_OAUTH_TOKEN" not in environment
+
+
+def test_codex_resolution_falls_back_to_user_local_bin(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / ".local" / "bin" / "codex"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    assert resolve_codex_executable("codex") == str(executable)
 
 
 class SequenceProvider:
