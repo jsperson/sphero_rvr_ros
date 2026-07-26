@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import threading
 import time
@@ -18,6 +19,7 @@ from sphero_rvr_driver.stationary_perception import (
 )
 from sphero_rvr_driver.stationary_perception_node import (
     SemanticTrackStore,
+    persist_camera_attachment,
     scan_occupancy,
     select_trackable_detections,
     stationary_localization,
@@ -29,6 +31,39 @@ MISSION = (
     "evidence, and never move."
 )
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_camera_attachment_is_digest_bound_private_and_retention_bounded(
+    tmp_path,
+) -> None:
+    first_payload = b"\xff\xd8first-camera-frame\xff\xd9"
+    first = persist_camera_attachment(
+        tmp_path,
+        "live-camera-00000001",
+        first_payload,
+        maximum_files=2,
+    )
+    second = persist_camera_attachment(
+        tmp_path,
+        "live-camera-00000002",
+        b"\xff\xd8second-camera-frame\xff\xd9",
+        maximum_files=2,
+    )
+    third = persist_camera_attachment(
+        tmp_path,
+        "live-camera-00000003",
+        b"\xff\xd8third-camera-frame\xff\xd9",
+        maximum_files=2,
+    )
+
+    assert first["sha256"] == hashlib.sha256(first_payload).hexdigest()
+    assert first["mime_type"] == "image/jpeg"
+    assert first["byte_count"] == len(first_payload)
+    assert Path(third["path"]).read_bytes().endswith(b"\xff\xd9")
+    assert Path(third["path"]).stat().st_mode & 0o777 == 0o600
+    assert not Path(first["path"]).exists()
+    assert Path(second["path"]).exists()
+    assert Path(third["path"]).exists()
 
 
 def _update_live_sources(cache: LiveStateCache, version: int) -> None:

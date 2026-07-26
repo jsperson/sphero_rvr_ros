@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
+import subprocess
 import threading
 import time
 from typing import Any, Mapping
@@ -18,6 +21,7 @@ from sphero_rvr_driver.mission_web import (
 )
 from sphero_rvr_driver.adaptive_mission_controller import (
     AdaptiveMissionController,
+    CodexOAuthAdaptiveMissionIntentProvider,
     ReplayCollisionSupervisor,
     ReplayAdaptiveMissionExecutor,
     AdaptiveMissionApprovalEnvelope,
@@ -25,6 +29,7 @@ from sphero_rvr_driver.adaptive_mission_controller import (
     AdaptiveMissionLimits,
     MovementDecision,
     _adaptive_mission_provider_prompt,
+    _verified_camera_attachment,
     make_world_snapshot,
     validate_world_snapshot,
 )
@@ -251,6 +256,8 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
     assert "do not immediately repeat the same forward move" in rules
     assert "compensate with higher speed or motor authority" in rules
     assert "retry after a maneuver" in rules
+    assert "likely fixed obstacle" in rules
+    assert "likely minor surface feature" in rules
     assert request["authority"]["allowed_intents"] == [
         "move_distance",
         "observe",
@@ -270,6 +277,122 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
         )
     )
     assert configured["authority"]["mission_lease_s"] == 120.0
+
+
+def test_oauth_provider_copies_only_digest_bound_camera_attachment(
+    tmp_path,
+) -> None:
+    payload = b"\xff\xd8oauth-camera-observation\xff\xd9"
+    source = tmp_path / "sensor-frame.jpg"
+    source.write_bytes(payload)
+    base = dict(
+        ReplayAdaptiveMissionExecutor().snapshot(
+            "camera-oauth-attachment"
+        )
+    )
+    base.pop("schema", None)
+    base.pop("snapshot_id", None)
+    observations = dict(base["observations"])
+    perception = dict(observations["perception"])
+    perception["camera_frame_id"] = "live-camera-00000007"
+    perception["camera_image"] = {
+        "available": True,
+        "frame_id": "live-camera-00000007",
+        "path": str(source),
+        "mime_type": "image/jpeg",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "byte_count": len(payload),
+    }
+    observations["perception"] = perception
+    base["observations"] = observations
+    snapshot = make_world_snapshot(base)
+    provider_root = tmp_path / "provider"
+    provider_root.mkdir()
+
+    copied = _verified_camera_attachment(snapshot, provider_root)
+
+    assert copied == provider_root / "camera-observation.jpg"
+    assert copied.read_bytes() == payload
+    assert copied.stat().st_mode & 0o777 == 0o600
+    source.write_bytes(b"mutated")
+    with pytest.raises(
+        MissionValidationError,
+        match="attachment digest is invalid",
+    ):
+        _verified_camera_attachment(snapshot, provider_root)
+
+
+def test_real_oauth_provider_passes_verified_camera_to_codex(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    payload = b"\xff\xd8multimodal-oauth-frame\xff\xd9"
+    source = tmp_path / "live-frame.jpg"
+    source.write_bytes(payload)
+    base = dict(
+        ReplayAdaptiveMissionExecutor().snapshot(
+            "multimodal-oauth-mission"
+        )
+    )
+    base.pop("schema", None)
+    base.pop("snapshot_id", None)
+    observations = dict(base["observations"])
+    perception = dict(observations["perception"])
+    perception["camera_frame_id"] = "live-camera-00000008"
+    perception["camera_image"] = {
+        "available": True,
+        "frame_id": "live-camera-00000008",
+        "path": str(source),
+        "mime_type": "image/jpeg",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "byte_count": len(payload),
+    }
+    observations["perception"] = perception
+    base["observations"] = observations
+    snapshot = make_world_snapshot(base)
+    codex_calls = []
+
+    def fake_run(command, **kwargs):
+        if command[1:3] == ["login", "status"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="Logged in using ChatGPT\n",
+                stderr="",
+            )
+        codex_calls.append(list(command))
+        image_index = command.index("--image") + 1
+        assert Path(command[image_index]).read_bytes() == payload
+        output_index = command.index("--output-last-message") + 1
+        Path(command[output_index]).write_text(
+            json.dumps(_raw(snapshot, "observe")),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "sphero_rvr_driver.adaptive_mission_controller.shutil.which",
+        lambda _: "/usr/bin/codex",
+    )
+    monkeypatch.setattr(
+        "sphero_rvr_driver.adaptive_mission_controller.subprocess.run",
+        fake_run,
+    )
+    provider = CodexOAuthAdaptiveMissionIntentProvider(
+        codex_command="codex",
+        timeout_s=5.0,
+    )
+
+    chosen = provider.choose("Explore from visual evidence.", snapshot)
+
+    assert chosen["action"] == "observe"
+    assert len(codex_calls) == 1
+    assert "--image" in codex_calls[0]
 
 
 def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None:

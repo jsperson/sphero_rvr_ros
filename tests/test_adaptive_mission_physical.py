@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from pathlib import Path
@@ -297,6 +298,10 @@ def test_physical_adaptive_mission_fuses_only_fresh_localized_semantic_evidence(
         "localization_fresh": True,
         "localization_state": "valid",
         "camera_frame_id": "live-camera-42",
+        "camera_image": {
+            "available": False,
+            "reason": "camera_stale_or_attachment_unavailable",
+        },
         "semantic_map_revision": 17,
         "uncertain_track_id": "object-0001",
         "identity_policy": (
@@ -312,6 +317,51 @@ def test_physical_adaptive_mission_fuses_only_fresh_localized_semantic_evidence(
     assert observations["unknown_faces"][0]["track_id"] == "face-0002"
     assert observations["unknown_faces"][0]["label"] == "unknown"
     assert observations["camera_detections"][0]["track_id"] == "shoe-detection"
+
+
+def test_physical_adaptive_mission_binds_fresh_camera_attachment(
+    tmp_path,
+) -> None:
+    cache = _cache()
+    payload = b"\xff\xd8bounded-camera-evidence\xff\xd9"
+    image_path = tmp_path / "live-camera-attachment.jpg"
+    image_path.write_bytes(payload)
+    cache.update(
+        "camera",
+        {
+            "frame_id": "live-camera-00000042",
+            "detections": [],
+            "image_attachment": {
+                "schema": "sphero_rvr.camera_image_attachment.v1",
+                "frame_id": "live-camera-00000042",
+                "path": str(image_path),
+                "mime_type": "image/jpeg",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "byte_count": len(payload),
+            },
+        },
+        received_at_s=100.0,
+    )
+    executor = PhysicalAdaptiveMissionExecutor(
+        cache,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        execution_enabled=False,
+        now=lambda: 100.0,
+    )
+    try:
+        snapshot = executor.snapshot("camera-attachment-mission")
+    finally:
+        executor.close()
+
+    assert snapshot["observations"]["perception"]["camera_image"] == {
+        "available": True,
+        "frame_id": "live-camera-00000042",
+        "path": str(image_path),
+        "mime_type": "image/jpeg",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "byte_count": len(payload),
+    }
 
 
 def test_physical_adaptive_mission_withholds_stale_semantic_tracks_from_llm() -> None:

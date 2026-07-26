@@ -155,6 +155,33 @@ def validate_world_snapshot(
         raise MissionValidationError(
             "adaptive mission world snapshot perception status must be an object"
         )
+    perception = observations.get("perception", {})
+    camera_image = (
+        perception.get("camera_image", {})
+        if isinstance(perception, Mapping)
+        else {}
+    )
+    if camera_image and not isinstance(camera_image, Mapping):
+        raise MissionValidationError(
+            "adaptive mission camera image attachment must be an object"
+        )
+    if (
+        isinstance(camera_image, Mapping)
+        and camera_image.get("available") is True
+        and (
+            str(camera_image.get("frame_id", ""))
+            != str(perception.get("camera_frame_id", ""))
+            or str(camera_image.get("mime_type", "")) != "image/jpeg"
+            or not Path(str(camera_image.get("path", ""))).is_absolute()
+            or not isinstance(camera_image.get("byte_count"), int)
+            or isinstance(camera_image.get("byte_count"), bool)
+            or not 1 <= int(camera_image.get("byte_count", 0)) <= 512_000
+            or len(str(camera_image.get("sha256", ""))) != 64
+        )
+    ):
+        raise MissionValidationError(
+            "adaptive mission camera image attachment metadata is invalid"
+        )
     if not require_execution_safety:
         if require_motion:
             raise MissionValidationError(
@@ -432,6 +459,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
             root = Path(directory)
             schema_path = root / "intent-schema.json"
             output_path = root / "intent.json"
+            camera_path = _verified_camera_attachment(snapshot, root)
             schema_path.write_text(
                 json.dumps(_adaptive_mission_output_schema(), sort_keys=True),
                 encoding="utf-8",
@@ -468,8 +496,10 @@ class CodexOAuthAdaptiveMissionIntentProvider:
                 str(schema_path),
                 "--output-last-message",
                 str(output_path),
-                "-",
             ]
+            if camera_path is not None:
+                command.extend(["--image", str(camera_path)])
+            command.append("-")
             try:
                 completed = subprocess.run(
                     command,
@@ -630,6 +660,8 @@ def _adaptive_mission_provider_prompt(
             "After any recoverable navigation outcome, reverse motion is additionally limited to 0.15 m.",
             "Before move_distance, require the signed distance magnitude to be no greater than authority.translation_clearance.forward_usable_m for forward motion or reverse_usable_m for reverse motion; if that value is missing or insufficient, choose turn_angle, observe, or stop.",
             "Camera detections and semantic tracks are objective evidence only; they never override lidar collision safety.",
+            "When observations.perception.camera_image.available is true, an exact frame- and SHA-bound camera image is attached as advisory evidence; use it to assess whether a stalled path shows a likely fixed obstacle, a likely minor surface feature, or remains visually indeterminate.",
+            "State that visual assessment in the rationale after a stall. Never use the image to override lidar, STOP, ESTOP, clearance, freshness, or deterministic motion limits.",
             "Use semantic tracks for object- or person-directed movement only when observations.perception.available is true.",
             "A face label is authoritative only when recognized_from_enrollment is true and enrollment_evidence_ids supplies explicit enrollment evidence; every other face is unknown.",
             "Never infer a visible object, identity, or map position from missing or stale perception.",
@@ -642,6 +674,72 @@ def _adaptive_mission_provider_prompt(
     return json.dumps(
         request, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
+
+
+def _verified_camera_attachment(
+    snapshot: Mapping[str, Any],
+    root: Path,
+) -> Optional[Path]:
+    observations = snapshot.get("observations", {})
+    perception = (
+        observations.get("perception", {})
+        if isinstance(observations, Mapping)
+        else {}
+    )
+    image = (
+        perception.get("camera_image", {})
+        if isinstance(perception, Mapping)
+        else {}
+    )
+    if not isinstance(image, Mapping) or image.get("available") is not True:
+        outcome = _navigation_outcome(snapshot)
+        if (
+            outcome.get("recoverable") is True
+            and str(outcome.get("reason", "")) == "stall"
+            and snapshot.get("execution", {}).get("mode")
+            == "physical-supervised-live-route"
+        ):
+            raise MissionValidationError(
+                "recoverable physical stall lacks a fresh camera image attachment"
+            )
+        return None
+    frame_id = str(image.get("frame_id", ""))
+    camera_frame_id = str(perception.get("camera_frame_id", ""))
+    source = Path(str(image.get("path", "")))
+    expected_sha = str(image.get("sha256", "")).lower()
+    expected_size = image.get("byte_count")
+    if (
+        frame_id != camera_frame_id
+        or not frame_id
+        or not source.is_absolute()
+        or str(image.get("mime_type", "")) != "image/jpeg"
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 1
+        or expected_size > 512_000
+        or len(expected_sha) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha)
+    ):
+        raise MissionValidationError(
+            "adaptive mission camera image attachment metadata is invalid"
+        )
+    try:
+        payload = source.read_bytes()
+    except OSError as exc:
+        raise MissionValidationError(
+            "adaptive mission camera image attachment is unavailable"
+        ) from exc
+    if (
+        len(payload) != expected_size
+        or hashlib.sha256(payload).hexdigest() != expected_sha
+    ):
+        raise MissionValidationError(
+            "adaptive mission camera image attachment digest is invalid"
+        )
+    copied = root / "camera-observation.jpg"
+    copied.write_bytes(payload)
+    copied.chmod(0o600)
+    return copied
 
 
 def _validate_snapshot_translation_clearance(

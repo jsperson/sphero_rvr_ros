@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 import math
+from pathlib import Path
 import threading
 import time
 from typing import Any, Mapping, Optional, Protocol
@@ -1343,6 +1344,10 @@ def _perception_observations(
     object_tracks = [
         item for item in tracks if item.get("kind") != "face"
     ]
+    camera_image = _camera_image_attachment(
+        camera,
+        camera_fresh=camera_fresh,
+    )
     return {
         "camera_detections": detections,
         "semantic_tracks": tracks,
@@ -1356,6 +1361,7 @@ def _perception_observations(
             "localization_fresh": localization_fresh,
             "localization_state": localization_state,
             "camera_frame_id": camera.get("frame_id"),
+            "camera_image": camera_image,
             "semantic_map_revision": semantic.get("revision"),
             "uncertain_track_id": str(
                 camera.get("uncertain_track_id")
@@ -1366,6 +1372,46 @@ def _perception_observations(
                 "face labels are authoritative only with explicit enrollment evidence"
             ),
         },
+    }
+
+
+def _camera_image_attachment(
+    camera: Mapping[str, Any],
+    *,
+    camera_fresh: bool,
+) -> dict[str, Any]:
+    unavailable = {
+        "available": False,
+        "reason": "camera_stale_or_attachment_unavailable",
+    }
+    if not camera_fresh:
+        return unavailable
+    attachment = _mapping(camera.get("image_attachment"))
+    frame_id = str(camera.get("frame_id", ""))
+    path = str(attachment.get("path", ""))
+    mime_type = str(attachment.get("mime_type", ""))
+    sha256 = str(attachment.get("sha256", "")).lower()
+    byte_count = _nonnegative_int(attachment.get("byte_count"))
+    if (
+        attachment.get("schema")
+        != "sphero_rvr.camera_image_attachment.v1"
+        or str(attachment.get("frame_id", "")) != frame_id
+        or not frame_id
+        or not Path(path).is_absolute()
+        or mime_type != "image/jpeg"
+        or len(sha256) != 64
+        or any(character not in "0123456789abcdef" for character in sha256)
+        or byte_count < 1
+        or byte_count > 512_000
+    ):
+        return unavailable
+    return {
+        "available": True,
+        "frame_id": frame_id,
+        "path": path,
+        "mime_type": mime_type,
+        "sha256": sha256,
+        "byte_count": byte_count,
     }
 
 

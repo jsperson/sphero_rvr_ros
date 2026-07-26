@@ -14,13 +14,77 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 import threading
 import time
 from typing import Any, Mapping, Optional, Sequence
 
 from .perception_navigation import LocalizationEstimate, LocalizationState, Pose2D
 from .shoe_detector import DetectorThresholds, detect_shoes_in_rgb
+
+
+CAMERA_ATTACHMENT_SCHEMA = "sphero_rvr.camera_image_attachment.v1"
+MAX_CAMERA_ATTACHMENT_BYTES = 512_000
+MAX_RETAINED_CAMERA_ATTACHMENTS = 96
+
+
+def persist_camera_attachment(
+    evidence_dir: Path,
+    frame_id: str,
+    jpeg_bytes: bytes,
+    *,
+    maximum_files: int = MAX_RETAINED_CAMERA_ATTACHMENTS,
+) -> dict[str, Any]:
+    """Atomically retain one bounded camera frame for OAuth image input."""
+
+    name = str(frame_id)
+    if (
+        not name.startswith("live-camera-")
+        or not name.removeprefix("live-camera-").isdigit()
+    ):
+        raise ValueError("camera attachment frame id is invalid")
+    payload = bytes(jpeg_bytes)
+    if not payload or len(payload) > MAX_CAMERA_ATTACHMENT_BYTES:
+        raise ValueError("camera attachment size is invalid")
+    if maximum_files < 2:
+        raise ValueError("camera attachment retention must keep at least two files")
+    root = Path(evidence_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / f"{name}.jpg"
+    temporary_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{name}-",
+            suffix=".tmp",
+            dir=root,
+            delete=False,
+        ) as temporary:
+            temporary.write(payload)
+            temporary.flush()
+            temporary_name = temporary.name
+        os.chmod(temporary_name, 0o600)
+        os.replace(temporary_name, target)
+    finally:
+        if temporary_name:
+            Path(temporary_name).unlink(missing_ok=True)
+    retained = sorted(
+        root.glob("live-camera-*.jpg"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for expired in retained[maximum_files:]:
+        expired.unlink(missing_ok=True)
+    return {
+        "schema": CAMERA_ATTACHMENT_SCHEMA,
+        "frame_id": name,
+        "path": str(target),
+        "mime_type": "image/jpeg",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "byte_count": len(payload),
+    }
 
 
 @dataclass
@@ -853,12 +917,27 @@ def main(args=None):
                 encoded_ok, encoded = cv2.imencode(
                     ".jpg", thumbnail, [int(cv2.IMWRITE_JPEG_QUALITY), 72]
                 )
+                encoded_bytes = (
+                    b"" if not encoded_ok else encoded.tobytes()
+                )
                 thumbnail_data_url = (
                     ""
                     if not encoded_ok
                     else "data:image/jpeg;base64,"
-                    + base64.b64encode(encoded.tobytes()).decode("ascii")
+                    + base64.b64encode(encoded_bytes).decode("ascii")
                 )
+                image_attachment: dict[str, Any] = {}
+                if encoded_bytes:
+                    try:
+                        image_attachment = persist_camera_attachment(
+                            self._evidence_dir,
+                            frame_id,
+                            encoded_bytes,
+                        )
+                    except (OSError, ValueError) as exc:
+                        self.get_logger().warning(
+                            f"camera attachment unavailable: {exc}"
+                        )
                 camera = {
                     "schema": "sphero_rvr.live_camera_perception.v1",
                     "frame_id": frame_id,
@@ -872,6 +951,7 @@ def main(args=None):
                     "tracks": tracks,
                     "uncertain_track_id": uncertain_track,
                     "thumbnail_data_url": thumbnail_data_url,
+                    "image_attachment": image_attachment,
                     "motion_authority": False,
                     "physical_execution_enabled": False,
                 }
