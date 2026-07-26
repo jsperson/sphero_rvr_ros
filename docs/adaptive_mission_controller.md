@@ -44,8 +44,10 @@ Tailscale Serve, records `tailscale-serve` as its authentication source, and
 binds that principal to the persisted proposal digest. A client-supplied
 identity header on an ordinary loopback server is not trusted.
 
-The mission lease defaults to 900 seconds and is deployment-configurable with
-`RVR_ADAPTIVE_MISSION_LEASE_S` up to that reviewed ceiling. The configured
+The mission lease defaults to 900 seconds and the deployment configures that
+default/maximum with `RVR_ADAPTIVE_MISSION_LEASE_S` up to the reviewed
+900-second ceiling. The browser may select a positive duration no greater than
+that maximum. The selected
 value is bound into the proposal digest, approval expiration, provider
 authority, UI, and persisted result. There is no cumulative translation,
 rotation, intent-count, or provider-call budget inside the active lease. Every
@@ -54,11 +56,19 @@ ceilings remain 0.10 m/s and 0.4 rad/s.
 
 Approval starts the fixed supervised graph, which owns camera/lidar telemetry
 for the whole active lease and across every replan. The browser cannot toggle
-telemetry independently while that lease owns the graph. Lease expiry or any
-earlier terminal/cancel/restart outcome ends the lease and verifies graph and
-telemetry shutdown.
+telemetry independently while that lease owns the graph. A model `stop` ends
+movement for the current objective but leaves the approved session safely idle,
+with telemetry running and ready for another objective. Lease expiry, explicit
+cancellation, a safety terminal, or restart recovery ends the session and
+verifies graph and telemetry shutdown.
 
-STOP, ESTOP, collision veto, stale evidence, cancellation, executor timeout,
+The approving operator may submit a new objective while the lease is active.
+This updates the running controller at a replanning boundary without creating
+a second lease, changing the original expiry, restarting the graph, or
+interrupting telemetry. An in-flight response for an older objective is
+discarded and fresh typed evidence is reacquired before another model call.
+
+Hardware STOP, ESTOP, collision veto, stale evidence, cancellation, executor timeout,
 mission-lease expiry, persistence failure, process restart, and provider or
 network failure are terminal. The controller never automatically resumes.
 Restart recovery is owned by `MissionService`, which changes a persisted

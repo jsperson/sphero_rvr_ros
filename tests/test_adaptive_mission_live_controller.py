@@ -151,6 +151,44 @@ class SequenceProvider:
         )
 
 
+class ObjectiveUpdateProvider:
+    provider_id = "injected-objective-update-provider"
+    model_id = "deterministic-objective-update-model"
+    reasoning_effort = "fixture"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+        self.second_call_started = threading.Event()
+        self.release_second_call = threading.Event()
+
+    def choose(
+        self, prompt: str, snapshot: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        self.prompts.append(str(prompt))
+        call = len(self.prompts)
+        if call == 1:
+            return _raw(snapshot, "move_distance", 0.10)
+        if call == 2:
+            self.second_call_started.set()
+            assert self.release_second_call.wait(timeout=2.0)
+            return _raw(snapshot, "turn_angle", 30.0)
+        return _raw(snapshot, "stop", 0.0)
+
+
+class ContinuousLeaseProvider(SequenceProvider):
+    def __init__(self) -> None:
+        super().__init__([("stop", 0.0), ("stop", 0.0)])
+        self.prompts: list[str] = []
+
+    def choose(
+        self, prompt: str, snapshot: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        self.prompts.append(str(prompt))
+        self.snapshots.append(str(snapshot["snapshot_id"]))
+        self.calls += 1
+        return _raw(snapshot, "stop", 0.0)
+
+
 class RecordingSessionLifecycle:
     activation_capable = True
 
@@ -365,6 +403,7 @@ def _build(
     cache: Optional[LiveStateCache] = None,
     transport: Optional[FakeRouteTransport] = None,
     limits: Optional[AdaptiveMissionLimits] = None,
+    keep_session_active_until_lease_end: bool = False,
 ):
     authority_limits = limits or AdaptiveMissionLimits()
     service = MissionService(
@@ -395,6 +434,9 @@ def _build(
         execution_enabled=True,
         limits=authority_limits,
         activation_timeout_s=1.0,
+        keep_session_active_until_lease_end=(
+            keep_session_active_until_lease_end
+        ),
     )
     return service, controller, route_transport
 
@@ -459,6 +501,7 @@ def test_authenticated_approval_activates_fresh_evidence_before_first_provider_c
         execution_enabled=True,
         session_lifecycle=lifecycle,
         activation_timeout_s=1.0,
+        keep_session_active_until_lease_end=False,
     )
     try:
         proposed = controller.submit(
@@ -535,6 +578,7 @@ def test_terminal_is_recovery_required_when_physical_session_cannot_relock(
         execution_enabled=True,
         session_lifecycle=lifecycle,
         activation_timeout_s=1.0,
+        keep_session_active_until_lease_end=False,
     )
     try:
         proposed = controller.submit(
@@ -596,6 +640,175 @@ def test_configured_lease_is_bound_to_proposal_approval_and_terminal_relock(
 
     assert terminal["result"]["limits"]["mission_lease_s"] == 120.0
     assert terminal["result"]["physical_session_relock"]["verified"] is True
+
+
+def test_browser_selected_shorter_lease_is_digest_bound_and_cannot_exceed_maximum(
+    tmp_path,
+) -> None:
+    provider = SequenceProvider([("stop", 0.0)])
+    service, controller, _ = _build(tmp_path, provider)
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="selected-lease",
+            mission_id="selected-lease-mission",
+            mission_lease_s=120.0,
+        )
+        assert proposed["proposal"]["limits"]["mission_lease_s"] == 120.0
+        assert proposed["proposal"]["contract"][
+            "authenticated_objective_updates_within_lease"
+        ] is True
+        approved = _approve(controller, proposed)
+        assert (
+            approved["approval"]["expires_at_s"]
+            - approved["approval"]["approved_at_s"]
+        ) == pytest.approx(120.0)
+        terminal = _wait_status(
+            controller, proposed["mission_id"], {"complete"}
+        )
+
+        with pytest.raises(
+            MissionValidationError, match="configured 900-second maximum"
+        ):
+            controller.submit(
+                PROMPT,
+                session_id="too-long",
+                mission_id="too-long-mission",
+                mission_lease_s=901.0,
+            )
+    finally:
+        controller.close()
+        service.close()
+
+    assert terminal["result"]["limits"]["mission_lease_s"] == 120.0
+
+
+def test_planner_stop_keeps_telemetry_lease_idle_for_later_objective(
+    tmp_path,
+) -> None:
+    limits = AdaptiveMissionLimits(mission_lease_s=0.6)
+    provider = ContinuousLeaseProvider()
+    service, controller, transport = _build(
+        tmp_path,
+        provider,
+        limits=limits,
+        keep_session_active_until_lease_end=True,
+    )
+    updated_prompt = "Inspect the left side while keeping the same lease."
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="continuous-idle-lease",
+            mission_id="continuous-idle-lease-mission",
+        )
+        approved = _approve(controller, proposed)
+        expires_at_s = approved["approval"]["expires_at_s"]
+
+        deadline = time.monotonic() + 2.0
+        idle = {}
+        while time.monotonic() < deadline:
+            idle = controller.status(proposed["mission_id"])
+            projection = idle.get("result", {})
+            if (
+                idle["status"] == "running"
+                and isinstance(projection, Mapping)
+                and projection.get("lease_waiting_for_objective") is True
+            ):
+                break
+            time.sleep(0.005)
+        else:
+            raise AssertionError("lease did not remain idle after planner stop")
+
+        assert idle["approval"]["expires_at_s"] == expires_at_s
+        assert controller.service_snapshot()["live_execution_enabled"] is True
+        updated = controller.submit(
+            updated_prompt,
+            session_id="continuous-idle-lease",
+            operator="scott@example.com",
+            authentication_source="tailscale-serve",
+        )
+        assert updated["mission_id"] == proposed["mission_id"]
+        assert updated["approval"]["expires_at_s"] == expires_at_s
+
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {"timeout"},
+            timeout_s=2.0,
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert provider.prompts == [PROMPT, updated_prompt]
+    assert transport.requests == []
+    assert terminal["terminal_reason"] == "mission_lease_expired"
+    assert terminal["approval"]["expires_at_s"] == expires_at_s
+    assert terminal["result"]["physical_session_relock"]["verified"] is True
+    event_types = {
+        event["event_type"]
+        for event in terminal["result"]["events"]
+    }
+    assert "objective_complete" in event_types
+    assert "objective_updated" in event_types
+
+
+def test_authenticated_objective_update_keeps_active_lease_and_discards_inflight_plan(
+    tmp_path,
+) -> None:
+    provider = ObjectiveUpdateProvider()
+    service, controller, transport = _build(tmp_path, provider)  # type: ignore[arg-type]
+    updated_prompt = "Continue mapping, then stop after the next fresh observation."
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="continuous-lease",
+            mission_id="continuous-lease-mission",
+            mission_lease_s=120.0,
+        )
+        approved = _approve(controller, proposed)
+        expires_at_s = approved["approval"]["expires_at_s"]
+        assert provider.second_call_started.wait(timeout=2.0)
+
+        updated = controller.submit(
+            updated_prompt,
+            session_id="continuous-lease",
+            operator="scott@example.com",
+            authentication_source="tailscale-serve",
+        )
+        assert updated["mission_id"] == proposed["mission_id"]
+        assert updated["status"] == "running"
+        assert updated["approval"]["expires_at_s"] == expires_at_s
+        assert updated["prompt"] == updated_prompt
+
+        provider.release_second_call.set()
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {
+                "complete",
+                "failed",
+                "blocked",
+                "timeout",
+                "recovery_required",
+            },
+        )
+    finally:
+        provider.release_second_call.set()
+        controller.close()
+        service.close()
+
+    assert terminal["status"] == "complete", terminal
+    assert provider.prompts == [PROMPT, PROMPT, updated_prompt]
+    assert terminal["approval"]["expires_at_s"] == expires_at_s
+    assert terminal["result"]["limits"]["mission_lease_s"] == 120.0
+    assert len(transport.requests) == 1
+    event_types = {
+        event["event_type"]
+        for event in terminal["result"]["events"]
+    }
+    assert "objective_updated" in event_types
+    assert "llm_revision_discarded" in event_types
 
 
 def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path) -> None:
@@ -761,6 +974,7 @@ def test_locked_live_adaptive_mission_plans_observation_from_fresh_sensors(
         provider,
         executor,
         execution_enabled=False,
+        keep_session_active_until_lease_end=False,
     )
     try:
         submitted = controller.submit(
@@ -809,6 +1023,7 @@ def test_locked_live_adaptive_mission_rejects_stale_observation_sources(
         provider,
         executor,
         execution_enabled=False,
+        keep_session_active_until_lease_end=False,
     )
     try:
         proposed = controller.submit(

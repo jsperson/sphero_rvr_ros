@@ -65,7 +65,15 @@ class PromptMissionController:
         session_id: str,
         source: str = "web",
         mission_id: Optional[str] = None,
+        mission_lease_s: Optional[float] = None,
+        operator: str = "",
+        authentication_source: str = "",
     ) -> dict[str, Any]:
+        del operator, authentication_source
+        if mission_lease_s is not None:
+            raise MissionValidationError(
+                "mission lease duration is supported only by Adaptive missions"
+            )
         with self._lock:
             self._ensure_open()
             identifier = str(mission_id or f"prompt-{uuid.uuid4().hex}")

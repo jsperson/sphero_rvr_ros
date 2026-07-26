@@ -6,7 +6,7 @@ import threading
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
-from typing import Mapping
+from typing import Mapping, Optional
 
 import pytest
 
@@ -134,6 +134,8 @@ class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
         )
         self.planning_ready = planning_ready
         self.approval_activation_enabled = approval_activation_enabled
+        self.lease_requests: list[Optional[float]] = []
+        self.objective_updates: list[tuple[str, str, str]] = []
         digest = "d" * 64
         self.proposal = {
             "schema": "sphero_rvr.adaptive_mission_proposal.v1",
@@ -156,6 +158,36 @@ class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
                 "angular_speed_rad_s": 0.4,
             },
         }
+
+    def submit_prompt(
+        self,
+        prompt,
+        *,
+        session_id,
+        source,
+        mission_id=None,
+        mission_lease_s=None,
+        operator="",
+        authentication_source="",
+    ):
+        del mission_id
+        if (
+            self.mission is not None
+            and self.mission.get("status") == "running"
+        ):
+            self.objective_updates.append(
+                (prompt, operator, authentication_source)
+            )
+            self.mission["prompt"] = prompt
+            return self.mission
+        self.lease_requests.append(mission_lease_s)
+        if mission_lease_s is not None:
+            self.proposal["limits"]["mission_lease_s"] = float(
+                mission_lease_s
+            )
+        self.submissions.append((prompt, session_id, source))
+        self.mission = self._snapshot("planning", proposal={})
+        return self.mission
 
     def service_snapshot(self):
         snapshot = super().service_snapshot()
@@ -880,6 +912,13 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'data-testid="mission-prompt"' in page
     assert 'data-testid="scenario"' in page
     assert 'data-testid="approve"' in page
+    assert 'data-testid="lease-duration-minutes"' in page
+    assert page.index('data-testid="lease-duration-minutes"') < page.index(
+        'data-testid="approve"'
+    )
+    assert "Lease minutes (max ${leaseMinutesText(maximum)})" in page
+    assert "Duration changed: generate a new proposal" in page
+    assert "Objective updated. The active lease" in page
     assert 'aria-label="Fixture room map showing rover, route, path, obstacles, and objects"' in page
     assert "Authoritative live room map unavailable" in page
     assert "The browser uses the Pi-local mission-service boundary" in page
@@ -1273,6 +1312,67 @@ def test_live_adaptive_mission_approval_activation_stages_without_stale_model_ca
     page = str(build_mission_web_bundle()["index_html"])
     assert "approval starts the supervised graph" in page
     assert "Activating the supervised graph and waiting for fresh" in page
+
+
+def test_live_adaptive_lease_duration_and_objective_update_use_one_active_lease() -> None:
+    client = FakeAdaptiveMissionLiveMissionClient(
+        planning_ready=False,
+        approval_activation_enabled=True,
+    )
+    adapter = LiveMissionWebAdapter(
+        client,
+        session_id="web-session",
+        operator="untrusted-fallback",
+    )
+    adapter.set_request_identity(
+        "scott@example.com", authenticated=True
+    )
+
+    planning = adapter.propose(
+        "Explore the room",
+        "live",
+        mission_lease_s=120.0,
+    )
+    assert planning["mission"]["state"] == "PLANNING"
+    assert client.lease_requests == [120.0]
+    proposed = adapter.snapshot()
+    assert proposed["proposal"]["limits"]["mission_lease_s"] == 120.0
+    adapter.approve("", confirm_current_proposal=True)
+
+    updated = adapter.propose(
+        "Inspect the open area on the left",
+        "live",
+    )
+
+    assert updated["mission"]["state"] == "RUNNING"
+    assert updated["mission"]["mission_id"] == "live-mission"
+    assert client.objective_updates == [
+        (
+            "Inspect the open area on the left",
+            "scott@example.com",
+            "tailscale-serve",
+        )
+    ]
+
+
+def test_web_router_rejects_non_numeric_lease_duration() -> None:
+    adapter = MockReplayMissionAdapter()
+
+    with pytest.raises(
+        MissionWebError, match="mission_lease_s must be a JSON number"
+    ):
+        handle_mission_web_request(
+            "POST",
+            "/api/web/mission/propose",
+            json.dumps(
+                {
+                    "prompt": PROMPT,
+                    "scenario": "success",
+                    "mission_lease_s": "15",
+                }
+            ),
+            adapter,
+        )
 
 
 def test_adaptive_mission_terminal_projection_preserves_truthful_loop_metrics() -> None:

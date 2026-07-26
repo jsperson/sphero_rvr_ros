@@ -651,6 +651,7 @@ class AdaptiveMissionApprovalEnvelope:
                 "approval_activates_supervised_graph": True,
                 "telemetry_managed_for_lease": True,
                 "telemetry_stops_when_lease_ends": True,
+                "authenticated_objective_updates_within_lease": True,
                 "first_intent_requires_fresh_post_approval_evidence": True,
                 "motion_authority": False,
                 "physical_execution_enabled": bool(
@@ -1043,6 +1044,7 @@ class AdaptiveMissionController:
         limits: Optional[AdaptiveMissionLimits] = None,
         checkpoint: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
         owns_executor: bool = True,
+        keep_active_after_planner_stop: bool = False,
         activation_event_message: str = "",
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -1065,6 +1067,9 @@ class AdaptiveMissionController:
         self.limits = limits or AdaptiveMissionLimits()
         self._checkpoint = checkpoint
         self._owns_executor = bool(owns_executor)
+        self._keep_active_after_planner_stop = bool(
+            keep_active_after_planner_stop
+        )
         self._now = now
         self._mission_expires_at_s = self.approved_at_s + self.limits.mission_lease_s
         self._lock = threading.RLock()
@@ -1087,6 +1092,9 @@ class AdaptiveMissionController:
         self._provider_calls_completed = 1
         self._inference_in_flight = False
         self._execution_in_flight = False
+        self._objective_revision = 0
+        self._idle_objective_revision: Optional[int] = None
+        self._objective_condition = threading.Condition(self._lock)
         self._requested_terminal: Optional[tuple[str, str]] = None
         self._append_event(
             "approval_bound",
@@ -1136,9 +1144,45 @@ class AdaptiveMissionController:
     def collision_stop(self) -> None:
         self._request_terminal("blocked", "collision_veto")
 
+    def update_objective(
+        self, prompt: str, *, operator: str
+    ) -> dict[str, Any]:
+        objective = str(prompt).strip()
+        principal = str(operator).strip()
+        if not objective or len(objective) > 500:
+            raise MissionValidationError(
+                "updated Adaptive mission objective must contain 1 to 500 characters"
+            )
+        with self._lock:
+            if self._terminal:
+                raise MissionValidationError(
+                    "a terminal Adaptive mission lease cannot accept a new objective"
+                )
+            if principal != self.operator:
+                raise MissionValidationError(
+                    "only the operator who approved the lease may update its objective"
+                )
+            if objective == self.prompt:
+                return self._projection()
+            previous = self.prompt
+            self.prompt = objective
+            self._objective_revision += 1
+            self._objective_condition.notify_all()
+            self._append_event(
+                "objective_updated",
+                f"Authenticated operator {principal} updated the objective from "
+                f"{previous!r} to {objective!r}; the original lease expiry and "
+                "safety limits remain unchanged.",
+            )
+            checkpoint = self._projection()
+        self._emit_checkpoint("objective_updated", checkpoint)
+        return checkpoint
+
     def close(self, *, timeout_s: float = 10.0) -> None:
         self._shutdown.set()
         self._cancellation.set()
+        with self._objective_condition:
+            self._objective_condition.notify_all()
         cancel_executor = getattr(self.executor, "cancel", None)
         if callable(cancel_executor):
             cancel_executor()
@@ -1172,8 +1216,40 @@ class AdaptiveMissionController:
                     return
                 intent = self._active_intent
                 if intent is None:
-                    self._finish("failed", "missing_intent")
+                    if not self._keep_active_after_planner_stop:
+                        self._finish("failed", "missing_intent")
+                        return
+                    idle_revision = self._idle_objective_revision
+                else:
+                    idle_revision = None
+            if intent is None:
+                if idle_revision is None:
+                    with self._lock:
+                        self._finish(
+                            "failed", "missing_idle_objective_revision"
+                        )
                     return
+                next_intent = self._wait_for_updated_objective(
+                    idle_revision
+                )
+                if next_intent is None:
+                    return
+                with self._lock:
+                    if self._terminal or self._cancellation.is_set():
+                        if not self._terminal:
+                            self._finish_requested_terminal()
+                        return
+                    self._active_intent = next_intent
+                    self._idle_objective_revision = None
+                    self._append_event(
+                        "llm_revision",
+                        f"LLM chose revision {next_intent.revision}: "
+                        f"{next_intent.action} — {next_intent.rationale}",
+                    )
+                    checkpoint = ("llm_revision", self._projection())
+                self._emit_checkpoint(*checkpoint)
+                continue
+            with self._lock:
                 try:
                     validate_world_snapshot(
                         self._world,
@@ -1236,8 +1312,24 @@ class AdaptiveMissionController:
                     return
                 checkpoint = ("intent_result", self._projection())
                 if intent.action == "stop":
-                    self._finish("complete", "planner_stop")
-                    return
+                    if not self._keep_active_after_planner_stop:
+                        self._finish("complete", "planner_stop")
+                        return
+                    self._active_intent = None
+                    self._idle_objective_revision = (
+                        self._objective_revision
+                    )
+                    self._append_event(
+                        "objective_complete",
+                        "The model ended movement for the current objective. "
+                        "The authenticated physical session remains safely idle "
+                        "with telemetry on until the original lease expires, is "
+                        "cancelled, or receives another objective.",
+                    )
+                    checkpoint = (
+                        "objective_complete",
+                        self._projection(),
+                    )
                 if self._now() >= self._mission_expires_at_s:
                     self._finish("timeout", "mission_lease_expired")
                     return
@@ -1250,61 +1342,14 @@ class AdaptiveMissionController:
                 except MissionValidationError as exc:
                     self._finish("blocked", f"stale_or_unsafe_evidence: {exc}")
                     return
-                self._provider_calls_started += 1
-                self._inference_in_flight = True
-                self._append_event(
-                    "llm_revision_started",
-                    f"Provider call {self._provider_calls_started} received updated "
-                    f"snapshot {str(self._world.get('snapshot_id', ''))[:12]}.",
-                )
             if checkpoint is not None:
                 self._emit_checkpoint(*checkpoint)
-            try:
-                future = self._provider_pool.submit(
-                    self.provider.choose, self.prompt, self._world
-                )
-                self._provider_future = future
-                while not future.done():
-                    if self._shutdown.wait(0.02):
-                        future.cancel()
-                        return
-                    with self._lock:
-                        if self._terminal:
-                            future.cancel()
-                            return
-                        if self._cancellation.is_set():
-                            self._finish_requested_terminal()
-                            future.cancel()
-                            return
-                        if self._now() >= self._mission_expires_at_s:
-                            self._finish("timeout", "mission_lease_expired")
-                            future.cancel()
-                            return
-                raw = future.result()
-                self._provider_future = None
-                issued_at = self._now()
-                next_intent = AdaptiveMissionIntent.validated(
-                    raw,
-                    revision=len(self._revisions) + 1,
-                    snapshot=self._world,
-                    issued_at_s=issued_at,
-                    provider_id=self.provider.provider_id,
-                    model_id=self.provider.model_id,
-                    limits=self.limits,
-                )
-            except Exception as exc:
-                with self._lock:
-                    self._provider_future = None
-                    self._inference_in_flight = False
-                    if not self._terminal:
-                        self._finish(
-                            "failed",
-                            f"provider_failure: {exc.__class__.__name__}: {exc}",
-                        )
+            if intent.action == "stop":
+                continue
+            next_intent = self._choose_next_intent()
+            if next_intent is None:
                 return
             with self._lock:
-                self._provider_calls_completed += 1
-                self._inference_in_flight = False
                 if self._terminal or self._cancellation.is_set():
                     if not self._terminal:
                         self._finish_requested_terminal()
@@ -1320,6 +1365,169 @@ class AdaptiveMissionController:
                 )
                 checkpoint = ("llm_revision", self._projection())
             self._emit_checkpoint(*checkpoint)
+
+    def _wait_for_updated_objective(
+        self, idle_revision: int
+    ) -> Optional[AdaptiveMissionIntent]:
+        while not self._shutdown.is_set():
+            with self._objective_condition:
+                if self._terminal:
+                    return None
+                if self._cancellation.is_set():
+                    self._finish_requested_terminal()
+                    return None
+                remaining_s = (
+                    self._mission_expires_at_s - self._now()
+                )
+                if remaining_s <= 0.0:
+                    self._finish(
+                        "timeout", "mission_lease_expired"
+                    )
+                    return None
+                if self._objective_revision > idle_revision:
+                    break
+                self._objective_condition.wait(
+                    timeout=min(0.1, remaining_s)
+                )
+        try:
+            refreshed = dict(self.executor.snapshot(self.mission_id))
+            validate_world_snapshot(
+                refreshed,
+                mission_id=self.mission_id,
+                require_motion=False,
+            )
+        except Exception as exc:
+            with self._lock:
+                self._finish(
+                    "blocked",
+                    f"updated_objective_evidence_unavailable: {exc}",
+                )
+            return None
+        with self._lock:
+            self._world = json.loads(json.dumps(refreshed))
+            self._snapshots.append(json.loads(json.dumps(self._world)))
+            self._append_event(
+                "snapshot",
+                _snapshot_event_message(self._world),
+            )
+            checkpoint = self._projection()
+        self._emit_checkpoint(
+            "objective_update_replan", checkpoint
+        )
+        return self._choose_next_intent()
+
+    def _choose_next_intent(self) -> Optional[AdaptiveMissionIntent]:
+        while not self._shutdown.is_set():
+            with self._lock:
+                if self._terminal:
+                    return None
+                if self._cancellation.is_set():
+                    self._finish_requested_terminal()
+                    return None
+                if self._now() >= self._mission_expires_at_s:
+                    self._finish("timeout", "mission_lease_expired")
+                    return None
+                self._provider_calls_started += 1
+                self._inference_in_flight = True
+                provider_prompt = self.prompt
+                objective_revision = self._objective_revision
+                provider_snapshot = json.loads(
+                    json.dumps(self._world)
+                )
+                intent_revision = len(self._revisions) + 1
+                self._append_event(
+                    "llm_revision_started",
+                    f"Provider call {self._provider_calls_started} received updated "
+                    f"snapshot {str(provider_snapshot.get('snapshot_id', ''))[:12]}.",
+                )
+            try:
+                future = self._provider_pool.submit(
+                    self.provider.choose,
+                    provider_prompt,
+                    provider_snapshot,
+                )
+                self._provider_future = future
+                while not future.done():
+                    if self._shutdown.wait(0.02):
+                        future.cancel()
+                        return None
+                    with self._lock:
+                        if self._terminal:
+                            future.cancel()
+                            return None
+                        if self._cancellation.is_set():
+                            self._finish_requested_terminal()
+                            future.cancel()
+                            return None
+                        if self._now() >= self._mission_expires_at_s:
+                            self._finish(
+                                "timeout", "mission_lease_expired"
+                            )
+                            future.cancel()
+                            return None
+                raw = future.result()
+                self._provider_future = None
+                next_intent = AdaptiveMissionIntent.validated(
+                    raw,
+                    revision=intent_revision,
+                    snapshot=provider_snapshot,
+                    issued_at_s=self._now(),
+                    provider_id=self.provider.provider_id,
+                    model_id=self.provider.model_id,
+                    limits=self.limits,
+                )
+            except Exception as exc:
+                with self._lock:
+                    self._provider_future = None
+                    self._inference_in_flight = False
+                    if not self._terminal:
+                        self._finish(
+                            "failed",
+                            f"provider_failure: {exc.__class__.__name__}: {exc}",
+                        )
+                return None
+            with self._lock:
+                self._provider_calls_completed += 1
+                self._inference_in_flight = False
+                objective_changed = (
+                    objective_revision != self._objective_revision
+                )
+                if not objective_changed:
+                    return next_intent
+                self._append_event(
+                    "llm_revision_discarded",
+                    "An in-flight model response for the previous objective "
+                    "was discarded; fresh evidence will be reacquired before "
+                    "replanning without changing the lease.",
+                )
+            try:
+                refreshed = dict(self.executor.snapshot(self.mission_id))
+                validate_world_snapshot(
+                    refreshed,
+                    mission_id=self.mission_id,
+                    require_motion=False,
+                )
+            except Exception as exc:
+                with self._lock:
+                    self._finish(
+                        "blocked",
+                        f"updated_objective_evidence_unavailable: {exc}",
+                    )
+                return None
+            with self._lock:
+                self._world = json.loads(json.dumps(refreshed))
+                self._snapshots.append(
+                    json.loads(json.dumps(self._world))
+                )
+                self._append_event(
+                    "snapshot",
+                    _snapshot_event_message(self._world),
+                )
+                checkpoint = self._projection()
+            self._emit_checkpoint(
+                "objective_update_replan", checkpoint
+            )
+        return None
 
     def _finish(self, status: str, reason: str) -> None:
         if self._terminal:
@@ -1341,6 +1549,7 @@ class AdaptiveMissionController:
             if self._terminal:
                 return
             self._requested_terminal = (str(status), str(reason))
+            self._objective_condition.notify_all()
             if not self._execution_in_flight:
                 self._finish_requested_terminal()
 
@@ -1403,6 +1612,11 @@ class AdaptiveMissionController:
                 if self._active_intent is None
                 else self._active_intent.to_json_dict()
             ),
+            "lease_waiting_for_objective": bool(
+                self._keep_active_after_planner_stop
+                and self._active_intent is None
+                and not self._terminal
+            ),
             "intent_revisions": json.loads(json.dumps(self._revisions)),
             "inference": {
                 "in_flight": self._inference_in_flight,
@@ -1445,6 +1659,7 @@ class AdaptiveMissionController:
                 "authenticated": True,
                 "authentication_source": self.authentication_source,
             },
+            "current_objective": self.prompt,
             "events": json.loads(json.dumps(self._events)),
             "map": map_payload,
             "result": result,

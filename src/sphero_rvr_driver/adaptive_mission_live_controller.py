@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from typing import Any, Mapping, Optional, Protocol
@@ -102,6 +103,7 @@ class LiveAdaptiveMissionController:
         limits: Optional[AdaptiveMissionLimits] = None,
         session_lifecycle: Optional[AdaptiveMissionSessionLifecycle] = None,
         activation_timeout_s: float = 30.0,
+        keep_session_active_until_lease_end: bool = True,
         clock_s: Any = time.time,
     ) -> None:
         self.service = service
@@ -113,6 +115,9 @@ class LiveAdaptiveMissionController:
             _AlreadyActiveSessionLifecycle(self.execution_enabled)
         )
         self.activation_timeout_s = float(activation_timeout_s)
+        self.keep_session_active_until_lease_end = bool(
+            keep_session_active_until_lease_end
+        )
         self._clock_s = clock_s
         if self.execution_enabled != self.service.live_execution_enabled:
             raise MissionValidationError(
@@ -147,20 +152,38 @@ class LiveAdaptiveMissionController:
         session_id: str,
         source: str = "web",
         mission_id: Optional[str] = None,
+        mission_lease_s: Optional[float] = None,
+        operator: str = "",
+        authentication_source: str = "",
     ) -> dict[str, Any]:
         with self._lock:
             self._ensure_open()
-            if (
+            update_active_lease = (
                 self._active_execution_id is not None
-                or self._threads
-                or self._staged
-            ):
+            )
+        if update_active_lease:
+            return self._update_active_objective(
+                prompt,
+                session_id=session_id,
+                mission_lease_s=mission_lease_s,
+                operator=operator,
+                authentication_source=authentication_source,
+            )
+        with self._lock:
+            self._ensure_open()
+            if self._active_execution_id is not None:
+                raise MissionValidationError(
+                    "the active lease changed while the request was being "
+                    "prepared; retry the objective update"
+                )
+            if self._threads or self._staged:
                 raise MissionValidationError(
                     "another physical adaptive mission is already active or awaiting approval"
                 )
             identifier = str(
                 mission_id or f"adaptive-mission-live-{uuid.uuid4().hex}"
             )
+            mission_limits = self._requested_limits(mission_lease_s)
             snapshot = self.service.begin_prompt_mission(
                 mission_id=identifier,
                 session_id=session_id,
@@ -181,7 +204,7 @@ class LiveAdaptiveMissionController:
                 executor_mode=self.executor.mode,
                 starting_snapshot_id="pending-approval-activation",
                 first_intent={},
-                limits=self.limits,
+                limits=mission_limits,
                 physical_execution_enabled=self.execution_enabled,
             ).proposal()
             snapshot = self.service.record_adaptive_mission_proposal(
@@ -189,8 +212,61 @@ class LiveAdaptiveMissionController:
             )
             self._staged[identifier] = {
                 "proposal": json.loads(json.dumps(proposal)),
+                "limits": mission_limits,
             }
             return snapshot
+
+    def _update_active_objective(
+        self,
+        prompt: str,
+        *,
+        session_id: str,
+        mission_lease_s: Optional[float],
+        operator: str,
+        authentication_source: str,
+    ) -> dict[str, Any]:
+        if mission_lease_s is not None:
+            raise MissionValidationError(
+                "an active lease keeps its original duration; objective updates "
+                "cannot extend or replace it"
+            )
+        with self._lock:
+            self._ensure_open()
+            mission_id = str(self._active_execution_id or "")
+        if not mission_id:
+            raise MissionValidationError(
+                "the active lease ended before the objective update"
+            )
+        persisted = self.service.prompt_status(mission_id)
+        approval = persisted.get("approval", {})
+        objective = str(prompt).strip()
+        principal = str(operator).strip()
+        identity_source = str(authentication_source).strip()
+        if (
+            str(persisted.get("session_id", "")) != str(session_id).strip()
+            or not isinstance(approval, Mapping)
+            or principal != str(approval.get("operator", ""))
+            or identity_source != "tailscale-serve"
+        ):
+            raise MissionValidationError(
+                "active lease objective updates require the authenticated approving operator"
+            )
+        updated = self.service.update_adaptive_mission_objective(
+            mission_id,
+            prompt=objective,
+            operator=principal,
+            authentication_source=identity_source,
+        )
+        with self._lock:
+            controller = self._controllers.get(mission_id)
+            activation_pending = mission_id in self._staged
+        if controller is not None:
+            controller.update_objective(objective, operator=principal)
+        elif activation_pending:
+            with self._lock:
+                if mission_id in self._staged:
+                    self._staged[mission_id]["objective"] = objective
+        return updated
 
     def approve(
         self,
@@ -221,6 +297,7 @@ class LiveAdaptiveMissionController:
                 raise MissionValidationError(
                     "a persisted Adaptive mission proposal is required before approval"
                 )
+            mission_limits = self._proposal_limits(proposal)
             approval_requested_at = float(self._clock_s())
             snapshot = self.service.approve_adaptive_mission(
                 mission_id,
@@ -228,7 +305,7 @@ class LiveAdaptiveMissionController:
                 operator=operator,
                 authentication_source=authentication_source,
                 expires_at_s=(
-                    approval_requested_at + self.limits.mission_lease_s
+                    approval_requested_at + mission_limits.mission_lease_s
                 ),
             )
             self._active_execution_id = mission_id
@@ -370,6 +447,11 @@ class LiveAdaptiveMissionController:
                 raise MissionValidationError(
                     "approved Adaptive mission persistence is incomplete"
                 )
+            mission_limits = self._proposal_limits(proposal)
+            if isinstance(
+                self.provider, CodexOAuthAdaptiveMissionIntentProvider
+            ):
+                self.provider.limits = mission_limits
             cancellation = self._activation_cancel[mission_id]
             self.session_lifecycle.activate(
                 mission_id=mission_id,
@@ -403,7 +485,43 @@ class LiveAdaptiveMissionController:
                 require_motion=False,
                 require_execution_safety=True,
             )
-            raw = dict(self.provider.choose(str(mission["prompt"]), snapshot))
+            active_objective = str(mission["prompt"])
+            while True:
+                if cancellation.is_set():
+                    raise MissionValidationError(
+                        "operator cancelled during first Adaptive mission plan"
+                    )
+                if self._clock_s() >= float(
+                    approval.get("expires_at_s", 0.0)
+                ):
+                    raise MissionValidationError(
+                        "Adaptive mission lease expired before the first intent"
+                    )
+                active_objective = str(
+                    self.service.prompt_status(mission_id).get(
+                        "prompt", active_objective
+                    )
+                )
+                raw = dict(
+                    self.provider.choose(active_objective, snapshot)
+                )
+                if cancellation.is_set():
+                    raise MissionValidationError(
+                        "operator cancelled during first Adaptive mission plan"
+                    )
+                if self._clock_s() >= float(
+                    approval.get("expires_at_s", 0.0)
+                ):
+                    raise MissionValidationError(
+                        "Adaptive mission lease expired before the first intent"
+                    )
+                latest_objective = str(
+                    self.service.prompt_status(mission_id).get(
+                        "prompt", active_objective
+                    )
+                )
+                if latest_objective == active_objective:
+                    break
             approved_at = float(approval["approved_at_s"])
             first_intent = AdaptiveMissionIntent.validated(
                 raw,
@@ -412,7 +530,7 @@ class LiveAdaptiveMissionController:
                 issued_at_s=float(self._clock_s()),
                 provider_id=self.provider.provider_id,
                 model_id=self.provider.model_id,
-                limits=self.limits,
+                limits=mission_limits,
             )
             self.executor.bind_approval(
                 proposal_digest=str(approval.get("proposal_digest", "")),
@@ -421,7 +539,7 @@ class LiveAdaptiveMissionController:
             )
             controller = AdaptiveMissionController(
                 mission_id=mission_id,
-                prompt=str(proposal["prompt"]),
+                prompt=active_objective,
                 proposal_digest=str(proposal["proposal_digest"]),
                 operator=str(approval["operator"]),
                 authenticated=True,
@@ -433,11 +551,14 @@ class LiveAdaptiveMissionController:
                 first_intent=first_intent,
                 provider=self.provider,
                 executor=self.executor,
-                limits=self.limits,
+                limits=mission_limits,
                 checkpoint=lambda kind, projection: self._checkpoint(
                     mission_id, kind, projection
                 ),
                 owns_executor=False,
+                keep_active_after_planner_stop=(
+                    self.keep_session_active_until_lease_end
+                ),
                 activation_event_message=(
                     "Authenticated approval activated the supervised physical "
                     "graph; fresh readiness was verified before the provider call."
@@ -556,6 +677,71 @@ class LiveAdaptiveMissionController:
         )
         self._threads[mission_id] = thread
         thread.start()
+
+    def _requested_limits(
+        self, requested_lease_s: Optional[float]
+    ) -> AdaptiveMissionLimits:
+        if requested_lease_s is None:
+            return self.limits
+        if isinstance(requested_lease_s, bool):
+            raise MissionValidationError(
+                "Adaptive mission lease duration must be a number of seconds"
+            )
+        try:
+            lease_s = float(requested_lease_s)
+        except (TypeError, ValueError) as exc:
+            raise MissionValidationError(
+                "Adaptive mission lease duration must be a number of seconds"
+            ) from exc
+        if (
+            not math.isfinite(lease_s)
+            or lease_s <= 0.0
+            or lease_s > self.limits.mission_lease_s
+        ):
+            raise MissionValidationError(
+                "Adaptive mission lease duration must be positive and no "
+                f"greater than the configured {self.limits.mission_lease_s:g}-second maximum"
+            )
+        return AdaptiveMissionLimits(
+            mission_lease_s=lease_s,
+            max_translation_per_intent_m=(
+                self.limits.max_translation_per_intent_m
+            ),
+            max_rotation_per_intent_deg=(
+                self.limits.max_rotation_per_intent_deg
+            ),
+            max_intent_timeout_s=self.limits.max_intent_timeout_s,
+            max_intent_lease_s=self.limits.max_intent_lease_s,
+            linear_speed_mps=self.limits.linear_speed_mps,
+            angular_speed_rad_s=self.limits.angular_speed_rad_s,
+        )
+
+    def _proposal_limits(
+        self, proposal: Mapping[str, Any]
+    ) -> AdaptiveMissionLimits:
+        payload = proposal.get("limits", {})
+        if not isinstance(payload, Mapping):
+            raise MissionValidationError(
+                "Adaptive mission proposal limits are unavailable"
+            )
+        expected = self.limits.to_json_dict()
+        for name in (
+            "max_translation_per_intent_m",
+            "max_rotation_per_intent_deg",
+            "max_intent_timeout_s",
+            "max_intent_lease_s",
+            "linear_speed_mps",
+            "angular_speed_rad_s",
+        ):
+            try:
+                matches = float(payload.get(name)) == float(expected[name])
+            except (TypeError, ValueError):
+                matches = False
+            if not matches:
+                raise MissionValidationError(
+                    "Adaptive mission proposal changed a reviewed safety limit"
+                )
+        return self._requested_limits(payload.get("mission_lease_s"))
 
     def _deactivate_session(self, *, reason: str) -> str:
         try:

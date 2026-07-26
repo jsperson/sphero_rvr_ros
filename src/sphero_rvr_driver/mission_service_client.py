@@ -67,6 +67,9 @@ class MissionServiceClient:
         session_id: str,
         source: str = "web",
         mission_id: Optional[str] = None,
+        mission_lease_s: Optional[float] = None,
+        operator: str = "",
+        authentication_source: str = "",
     ) -> Mapping[str, Any]:
         payload: dict[str, Any] = {
             "prompt": prompt,
@@ -75,6 +78,12 @@ class MissionServiceClient:
         }
         if mission_id is not None:
             payload["mission_id"] = mission_id
+        if mission_lease_s is not None:
+            payload["mission_lease_s"] = mission_lease_s
+        if operator:
+            payload["operator"] = operator
+        if authentication_source:
+            payload["authentication_source"] = authentication_source
         return self.call("prompt_submit", **payload)
 
     def prompt_status(self, mission_id: str) -> Mapping[str, Any]:

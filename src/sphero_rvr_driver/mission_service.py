@@ -65,6 +65,31 @@ _PROMPT_TERMINAL_STATUSES = {
     "recovery_required",
 }
 
+_DEFAULT_ADAPTIVE_LIMITS = {
+    "mission_lease_s": 900.0,
+    "max_translation_per_intent_m": 0.25,
+    "max_rotation_per_intent_deg": 45.0,
+    "max_intent_timeout_s": 5.0,
+    "max_intent_lease_s": 5.0,
+    "linear_speed_mps": 0.10,
+    "angular_speed_rad_s": 0.4,
+}
+
+
+def _finite_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return False
+    try:
+        left_value = float(left)
+        right_value = float(right)
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(left_value)
+        and math.isfinite(right_value)
+        and left_value == right_value
+    )
+
 
 @dataclass(frozen=True)
 class ExecutorBinding:
@@ -835,9 +860,42 @@ class MissionService:
                 if self.adaptive_mission_limits is not None
                 else AdaptiveMissionLimits().to_json_dict()
             )
-            if payload.get("limits") != installed_limits:
+            proposal_limits = payload.get("limits", {})
+            lease_s = (
+                proposal_limits.get("mission_lease_s")
+                if isinstance(proposal_limits, Mapping)
+                else None
+            )
+            installed_lease_s = installed_limits.get(
+                "mission_lease_s"
+            )
+            nonlease_limits_match = isinstance(
+                proposal_limits, Mapping
+            ) and all(
+                (
+                    proposal_limits.get(name)
+                    == installed_limits.get(name)
+                )
+                if installed_limits.get(name) is None
+                else _finite_equal(
+                    proposal_limits.get(name),
+                    installed_limits.get(name),
+                )
+                for name in installed_limits
+                if name != "mission_lease_s"
+            )
+            try:
+                lease_within_profile = (
+                    not isinstance(lease_s, bool)
+                    and math.isfinite(float(lease_s))
+                    and 0.0 < float(lease_s)
+                    <= float(installed_lease_s)
+                )
+            except (TypeError, ValueError):
+                lease_within_profile = False
+            if not lease_within_profile or not nonlease_limits_match:
                 raise MissionValidationError(
-                    "Adaptive mission proposal limits do not match the installed authority profile"
+                    "Adaptive mission proposal exceeds or changes the installed authority profile"
                 )
             contract = payload.get("contract")
             if not isinstance(contract, Mapping):
@@ -959,21 +1017,43 @@ class MissionService:
             expected_lease_s = float(
                 (
                     self.adaptive_mission_limits
-                    or {"mission_lease_s": 900.0}
+                    or _DEFAULT_ADAPTIVE_LIMITS
                 ).get("mission_lease_s", 0.0)
+            )
+            proposal_limits = proposal.get("limits", {})
+            configured_limits = (
+                self.adaptive_mission_limits
+                or _DEFAULT_ADAPTIVE_LIMITS
+            )
+            safety_limits_match = isinstance(
+                proposal_limits, Mapping
+            ) and all(
+                _finite_equal(
+                    proposal_limits.get(name),
+                    configured_limits.get(name),
+                )
+                for name in (
+                    "max_translation_per_intent_m",
+                    "max_rotation_per_intent_deg",
+                    "max_intent_timeout_s",
+                    "max_intent_lease_s",
+                    "linear_speed_mps",
+                    "angular_speed_rad_s",
+                )
             )
             if (
                 not math.isfinite(requested_expires)
                 or not math.isfinite(lease_s)
                 or not math.isfinite(expected_lease_s)
                 or not 0.0 < lease_s <= 900.0
-                or lease_s != expected_lease_s
+                or lease_s > expected_lease_s
+                or not safety_limits_match
                 or requested_expires < now + lease_s - 5.0
                 or requested_expires > now + lease_s
             ):
                 raise MissionValidationError(
-                    "Adaptive mission approval must request the complete "
-                    f"configured {lease_s:g}-second lease"
+                    "Adaptive mission approval must match the persisted lease "
+                    "and every reviewed safety limit"
                 )
             expires = now + lease_s
             approval = {
@@ -1002,6 +1082,65 @@ class MissionService:
                 )
             return self.prompt_status(mission_id)
 
+    def update_adaptive_mission_objective(
+        self,
+        mission_id: str,
+        *,
+        prompt: str,
+        operator: str,
+        authentication_source: str,
+    ) -> dict[str, Any]:
+        """Update the objective without replacing or extending its active lease."""
+
+        objective = str(prompt).strip()
+        principal = str(operator).strip()
+        identity_source = str(authentication_source).strip()
+        if not objective or len(objective) > 500:
+            raise MissionValidationError(
+                "updated Adaptive mission objective must contain 1 to 500 characters"
+            )
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] not in {"approved", "queued", "running"}:
+                raise MissionValidationError(
+                    "only an active Adaptive mission lease may update its objective"
+                )
+            proposal = _json_load(row["proposal_json"], {})
+            approval = _json_load(row["approval_json"], {})
+            if (
+                proposal.get("schema")
+                != "sphero_rvr.adaptive_mission_proposal.v1"
+                or principal != str(approval.get("operator", ""))
+                or identity_source != "tailscale-serve"
+            ):
+                raise MissionValidationError(
+                    "active objective update is not bound to the authenticated lease operator"
+                )
+            previous = str(row["prompt"])
+            if objective == previous:
+                return self.prompt_status(mission_id)
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET prompt=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (objective, self._now(), mission_id),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "adaptive_objective_updated",
+                    {
+                        "reason": (
+                            f"Authenticated operator {principal} updated the "
+                            f"objective from {previous!r} to {objective!r}; "
+                            "the active lease expiry is unchanged."
+                        ),
+                        "objective": objective,
+                        "operator": principal,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
     def record_adaptive_mission_checkpoint(
         self,
         mission_id: str,
@@ -1014,9 +1153,14 @@ class MissionService:
         payload = json.loads(_json_dump(dict(checkpoint)))
         with self._lock:
             row = self._prompt_row(mission_id)
-            if row["status"] not in {"running", "cancel_requested"}:
+            if row["status"] not in {
+                "approved",
+                "queued",
+                "running",
+                "cancel_requested",
+            }:
                 raise MissionValidationError(
-                    "Adaptive mission checkpoint requires a running mission"
+                    "Adaptive mission checkpoint requires an active approved mission"
                 )
             if str(payload.get("mission_id", "")) != str(mission_id):
                 raise MissionValidationError(
@@ -1624,6 +1768,8 @@ class MissionService:
                                     "motion_authority",
                                     "physical_execution_enabled",
                                     "provider_call_started",
+                                    "objective",
+                                    "operator",
                                 )
                                 if key in payload
                             },
@@ -2324,11 +2470,26 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
         if operation.startswith("prompt_") and self.prompt_controller is None:
             raise MissionValidationError("prompt mission controller is not configured")
         if operation == "prompt_submit":
+            submit_arguments: dict[str, Any] = {
+                "session_id": str(request.get("session_id", "")),
+                "source": str(request.get("source", "web")),
+                "mission_id": (
+                    None
+                    if request.get("mission_id") is None
+                    else str(request["mission_id"])
+                ),
+                "operator": str(request.get("operator", "")),
+                "authentication_source": str(
+                    request.get("authentication_source", "")
+                ),
+            }
+            if "mission_lease_s" in request:
+                submit_arguments["mission_lease_s"] = request[
+                    "mission_lease_s"
+                ]
             return self.prompt_controller.submit(
                 str(request.get("prompt", "")),
-                session_id=str(request.get("session_id", "")),
-                source=str(request.get("source", "web")),
-                mission_id=None if request.get("mission_id") is None else str(request["mission_id"]),
+                **submit_arguments,
             )
         if operation == "prompt_status":
             return self.prompt_controller.status(str(request.get("mission_id", "")))

@@ -351,11 +351,16 @@ The supported product flow is the approval-activation configuration above:
 generate a bound proposal while locked, then let authenticated approval start
 and later stop the fixed supervised unit automatically.
 
-Set `RVR_ADAPTIVE_MISSION_LEASE_S=900.0` for the default 15-minute lease or a
-smaller positive duration when deploying a reviewed shorter session. The value
-cannot exceed 900 seconds. It is passed into the proposal, OAuth authority
-prompt, approval expiration, UI label, and terminal record. Telemetry remains
-lease-managed and cannot be toggled off between replans.
+Set `RVR_ADAPTIVE_MISSION_LEASE_S=900.0` for a default and maximum 15-minute
+lease, or a smaller positive deployment maximum. The value cannot exceed 900
+seconds. The browser's **Lease minutes** box may select any positive duration
+up to that maximum; the selected value is passed into the proposal, OAuth
+authority prompt, approval expiration, UI label, and terminal record.
+Telemetry remains lease-managed and cannot be toggled off between replans or
+authenticated objective updates. An objective update never extends the
+original expiry. A model `stop` commands no further motion but keeps the
+session and telemetry safely idle until that expiry, so the approving operator
+can submit another objective without generating or approving a new lease.
 
 While Scott is present, prepare the supervised ROS graph and verify fresh odom,
 collision `CLEAR`, STOP `READY`, ESTOP `CLEAR`, route-runner request/status graph

@@ -287,7 +287,13 @@ class MissionWebAdapter(Protocol):
 
     def snapshot(self) -> Mapping[str, Any]: ...
 
-    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]: ...
+    def propose(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        mission_lease_s: Optional[float] = None,
+    ) -> Mapping[str, Any]: ...
 
     def approve(
         self,
@@ -708,7 +714,17 @@ class MockReplayMissionAdapter:
         with self._lock:
             return self._snapshot_unlocked()
 
-    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
+    def propose(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        mission_lease_s: Optional[float] = None,
+    ) -> Mapping[str, Any]:
+        if mission_lease_s is not None:
+            raise MissionWebError(
+                "lease duration is supported only by Adaptive missions"
+            )
         with self._lock:
             try:
                 chosen = MockScenario(str(scenario))
@@ -926,7 +942,17 @@ class RollingReplayMissionAdapter:
         with self._lock:
             return self._snapshot_unlocked()
 
-    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
+    def propose(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        mission_lease_s: Optional[float] = None,
+    ) -> Mapping[str, Any]:
+        if mission_lease_s is not None:
+            raise MissionWebError(
+                "lease duration is supported only by Adaptive missions"
+            )
         if str(scenario) != RollingReplayScenario.LLM_DRIVING.value:
             raise MissionWebError("rolling replay accepts only its LLM-driving scenario")
         objective = str(prompt).strip()
@@ -1243,6 +1269,7 @@ class AdaptiveMissionAdapter:
         self.operator = str(operator).strip()
         self.allow_loopback_test_approval = bool(allow_loopback_test_approval)
         self.limits = limits or AdaptiveMissionLimits()
+        self._mission_limits = self.limits
         if not all(
             (self.source_sha, self.deployed_sha, self.session_id, self.operator)
         ):
@@ -1309,13 +1336,39 @@ class AdaptiveMissionAdapter:
         with self._lock:
             return self._snapshot_unlocked()
 
-    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
+    def propose(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        mission_lease_s: Optional[float] = None,
+    ) -> Mapping[str, Any]:
         if str(scenario) != AdaptiveMissionScenario.EXPLORE.value:
             raise MissionWebError("adaptive mission accepts only adaptive exploration")
         objective = str(prompt).strip()
         if not objective:
             raise MissionWebError("mission prompt is required")
         with self._lock:
+            if (
+                self._controller is not None
+                and not self._controller.snapshot().get("terminal", False)
+            ):
+                if mission_lease_s is not None:
+                    raise MissionWebError(
+                        "an active lease keeps its original duration"
+                    )
+                operator, _ = self._approval_identity()
+                self._controller.update_objective(
+                    objective, operator=operator
+                )
+                return self._snapshot_unlocked()
+            self._mission_limits = self._requested_limits(
+                mission_lease_s
+            )
+            if isinstance(
+                self.provider, CodexOAuthAdaptiveMissionIntentProvider
+            ):
+                self.provider.limits = self._mission_limits
             if self._controller is not None:
                 self._controller.close()
             self._controller = None
@@ -1348,7 +1401,7 @@ class AdaptiveMissionAdapter:
                     issued_at_s=time.time(),
                     provider_id=self.provider.provider_id,
                     model_id=self.provider.model_id,
-                    limits=self.limits,
+                    limits=self._mission_limits,
                 )
             except Exception as exc:
                 self._planning_error = (
@@ -1373,7 +1426,7 @@ class AdaptiveMissionAdapter:
                 executor_mode=self._executor.mode,
                 starting_snapshot_id=str(staged_snapshot["snapshot_id"]),
                 first_intent=self._staged_raw_intent,
-                limits=self.limits,
+                limits=self._mission_limits,
             )
             self._proposal = envelope.proposal()
             if self._proposal["schema"] != ADAPTIVE_MISSION_PROPOSAL_SCHEMA:
@@ -1411,7 +1464,7 @@ class AdaptiveMissionAdapter:
                 issued_at_s=approved_at,
                 provider_id=self.provider.provider_id,
                 model_id=self.provider.model_id,
-                limits=self.limits,
+                limits=self._mission_limits,
             )
             operator, authentication_source = self._approval_identity()
             self._service.approve_rolling_replay_mission(
@@ -1433,7 +1486,7 @@ class AdaptiveMissionAdapter:
                 first_intent=first_intent,
                 provider=self.provider,
                 executor=self._executor,
-                limits=self.limits,
+                limits=self._mission_limits,
                 checkpoint=self._persist_checkpoint,
             )
             self._controller.start()
@@ -1581,9 +1634,9 @@ class AdaptiveMissionAdapter:
         )
         mission_lease = (
             {
-                "duration_s": self.limits.mission_lease_s,
+                "duration_s": self._mission_limits.mission_lease_s,
                 "status": "awaiting_authenticated_approval",
-                "remaining_s": self.limits.mission_lease_s,
+                "remaining_s": self._mission_limits.mission_lease_s,
             }
             if projection is None
             else projection.get("mission_lease", {})
@@ -1609,6 +1662,8 @@ class AdaptiveMissionAdapter:
                 "source_sha": self.source_sha,
                 "deployed_sha": self.deployed_sha,
                 "approval_authentication": authentication_source,
+                "adaptive_mission_lease_s": self.limits.mission_lease_s,
+                "adaptive_mission_lease_max_s": self.limits.mission_lease_s,
             },
             "scenario": AdaptiveMissionScenario.EXPLORE.value,
             "proposal": self._proposal,
@@ -1722,6 +1777,44 @@ class AdaptiveMissionAdapter:
             },
         }
 
+    def _requested_limits(
+        self, requested_lease_s: Optional[float]
+    ) -> AdaptiveMissionLimits:
+        if requested_lease_s is None:
+            return self.limits
+        if isinstance(requested_lease_s, bool):
+            raise MissionWebError(
+                "Adaptive mission lease duration must be numeric"
+            )
+        try:
+            lease_s = float(requested_lease_s)
+        except (TypeError, ValueError) as exc:
+            raise MissionWebError(
+                "Adaptive mission lease duration must be numeric"
+            ) from exc
+        if (
+            not math.isfinite(lease_s)
+            or lease_s <= 0.0
+            or lease_s > self.limits.mission_lease_s
+        ):
+            raise MissionWebError(
+                "Adaptive mission lease duration must be positive and no "
+                f"greater than {self.limits.mission_lease_s:g} seconds"
+            )
+        return AdaptiveMissionLimits(
+            mission_lease_s=lease_s,
+            max_translation_per_intent_m=(
+                self.limits.max_translation_per_intent_m
+            ),
+            max_rotation_per_intent_deg=(
+                self.limits.max_rotation_per_intent_deg
+            ),
+            max_intent_timeout_s=self.limits.max_intent_timeout_s,
+            max_intent_lease_s=self.limits.max_intent_lease_s,
+            linear_speed_mps=self.limits.linear_speed_mps,
+            angular_speed_rad_s=self.limits.angular_speed_rad_s,
+        )
+
 
 class LiveMissionWebAdapter:
     """Default-disabled browser adapter over the Pi-local Unix socket only."""
@@ -1826,7 +1919,13 @@ class LiveMissionWebAdapter:
             )
             return self._translate(None if mission is None else dict(mission))
 
-    def propose(self, prompt: str, scenario: str) -> Mapping[str, Any]:
+    def propose(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        mission_lease_s: Optional[float] = None,
+    ) -> Mapping[str, Any]:
         if str(scenario) != LiveScenario.LIVE.value:
             raise MissionWebError("live adapter accepts only the Pi mission-service scenario")
         with self._lock:
@@ -1860,10 +1959,33 @@ class LiveMissionWebAdapter:
                         "lidar, and localization evidence are fresh"
                         + (f": {detail}" if detail else "")
                     )
+                submit_arguments: dict[str, Any] = {
+                    "session_id": self.session_id,
+                    "source": "web",
+                }
+                if mission_lease_s is not None:
+                    submit_arguments["mission_lease_s"] = mission_lease_s
+                active_update = False
+                if self._mission_id is not None:
+                    active_mission = self.client.prompt_status(
+                        self._mission_id
+                    )
+                    active_update = (
+                        isinstance(active_mission, Mapping)
+                        and str(active_mission.get("status", "")).lower()
+                        in {"approved", "queued", "running"}
+                    )
+                if active_update:
+                    submit_arguments["operator"] = self._operator_identity()
+                    submit_arguments[
+                        "authentication_source"
+                    ] = (
+                        "tailscale-serve"
+                        if self._operator_authenticated()
+                        else ""
+                    )
                 snapshot = self.client.submit_prompt(
-                    prompt,
-                    session_id=self.session_id,
-                    source="web",
+                    prompt, **submit_arguments
                 )
             except MissionValidationError as exc:
                 raise MissionWebError(str(exc)) from exc
@@ -2096,6 +2218,9 @@ class LiveMissionWebAdapter:
                     {
                         "adaptive_mission": True,
                         "adaptive_mission_lease_s": self._service_snapshot.get(
+                            "adaptive_mission_lease_s", 900.0
+                        ),
+                        "adaptive_mission_lease_max_s": self._service_snapshot.get(
                             "adaptive_mission_lease_s", 900.0
                         ),
                         "rolling_replay": True,
@@ -2681,7 +2806,21 @@ def handle_mission_web_request(
         raise MissionWebError(f"live or direct command route is not exposed: {normalized_path}")
     payload = _json_object(body)
     if normalized_path == "/api/web/mission/propose":
-        result = adapter.propose(str(payload.get("prompt", "")), str(payload.get("scenario", "success")))
+        propose_arguments: dict[str, Any] = {}
+        if "mission_lease_s" in payload:
+            lease_value = payload["mission_lease_s"]
+            if isinstance(lease_value, bool) or not isinstance(
+                lease_value, (int, float)
+            ):
+                raise MissionWebError(
+                    "mission_lease_s must be a JSON number"
+                )
+            propose_arguments["mission_lease_s"] = float(lease_value)
+        result = adapter.propose(
+            str(payload.get("prompt", "")),
+            str(payload.get("scenario", "success")),
+            **propose_arguments,
+        )
     elif normalized_path == "/api/web/mission/approve":
         result = adapter.approve(
             str(payload.get("approval_phrase", "")),
@@ -3145,6 +3284,10 @@ _INDEX_HTML = r'''<!doctype html>
     textarea { resize:vertical; min-height:5.5rem; }
     textarea:focus, select:focus, input:focus { border-color:var(--teal); box-shadow:0 0 0 3px rgba(93,228,199,.1); }
     .actions { display:flex; gap:.55rem; flex-wrap:wrap; margin-top:.8rem; }
+    .lease-approval-row { display:flex; align-items:flex-end; gap:.55rem; margin-top:.8rem; }
+    .lease-duration-control { flex:0 0 7.25rem; margin:0; }
+    .lease-duration-control input { margin-top:.35rem; padding:.62rem .68rem; }
+    .lease-approval-row .primary { flex:1 1 auto; }
     .primary, .secondary, .danger { border-radius:.7rem; border:1px solid transparent; padding:.65rem .9rem; font-weight:800; }
     .primary { color:#041a18; background:var(--teal); }
     .secondary { color:var(--ink); background:#182a3d; border-color:#30485e; }
@@ -3323,8 +3466,14 @@ _INDEX_HTML = r'''<!doctype html>
           <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
           <code class="digest" id="approval-required-phrase" hidden></code>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
-          <div class="actions">
+          <div class="lease-approval-row">
+            <label class="field-label lease-duration-control" id="lease-duration-control" for="lease-duration-minutes" hidden>
+              <span id="lease-duration-label">Lease minutes</span>
+              <input id="lease-duration-minutes" data-testid="lease-duration-minutes" type="text" inputmode="decimal" autocomplete="off" value="15" aria-describedby="approval-hint approval-state">
+            </label>
             <button class="primary" id="approve" data-testid="approve" type="button" aria-describedby="approval-hint approval-state" disabled>Approve simulation</button>
+          </div>
+          <div class="actions">
             <button class="danger" id="cancel" data-testid="cancel" type="button" aria-describedby="request-status request-error" disabled>Cancel mission</button>
           </div>
         </section>
@@ -3357,6 +3506,9 @@ _INDEX_HTML = r'''<!doctype html>
     let telemetryRequestInFlight = false;
     let missionRequestInFlight = '';
     let pollConnectionError = false;
+    let leaseDurationDirty = false;
+    let leaseDurationHydrated = false;
+    let hydratedLeaseMissionId = null;
 
     async function api(path, options = {}) {
       const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
@@ -3407,6 +3559,57 @@ _INDEX_HTML = r'''<!doctype html>
         return `${minutes}-minute`;
       }
       return `${seconds}-second`;
+    }
+
+    function leaseMinutesText(seconds) {
+      const minutes = Number(seconds) / 60;
+      if (!Number.isFinite(minutes) || minutes <= 0) return '15';
+      return Number.isInteger(minutes)
+        ? String(minutes)
+        : String(Number(minutes.toFixed(3)));
+    }
+
+    function configuredLeaseMaximumSeconds(snapshot) {
+      const seconds = finiteNumber(
+        snapshot
+        && snapshot.adapter
+        && (
+          snapshot.adapter.adaptive_mission_lease_max_s
+          || snapshot.adapter.adaptive_mission_lease_s
+        )
+      );
+      return seconds !== null && seconds > 0 ? seconds : 900;
+    }
+
+    function requestedLeaseSeconds(snapshot) {
+      const raw = $('lease-duration-minutes').value.trim();
+      if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw)) {
+        throw new Error('Lease duration must be a number of minutes.');
+      }
+      const minutes = Number(raw);
+      const seconds = minutes * 60;
+      const maximum = configuredLeaseMaximumSeconds(snapshot);
+      if (!Number.isFinite(seconds) || seconds <= 0 || seconds > maximum) {
+        throw new Error(
+          `Lease duration must be greater than 0 and no more than ${leaseMinutesText(maximum)} minutes.`
+        );
+      }
+      return seconds;
+    }
+
+    function leaseDurationMatchesProposal(snapshot) {
+      if (!snapshot || !snapshot.adapter.adaptive_mission) return true;
+      const proposed = finiteNumber(
+        snapshot.proposal
+        && snapshot.proposal.limits
+        && snapshot.proposal.limits.mission_lease_s
+      );
+      if (proposed === null) return false;
+      try {
+        return Math.abs(requestedLeaseSeconds(snapshot) - proposed) < 0.001;
+      } catch (error) {
+        return false;
+      }
     }
 
     function setSafetyTone(id, tone) {
@@ -3478,20 +3681,37 @@ _INDEX_HTML = r'''<!doctype html>
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
       const leaseLabel = leaseDurationLabel(snapshot);
+      const leaseActive = adaptiveMission
+        && ['APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
+      const leaseMatchesProposal = leaseDurationMatchesProposal(snapshot);
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
       const cancelBusy = missionRequestInFlight === 'cancel';
       const planningLocked = adaptiveMission
+        && !leaseActive
         && !snapshot.adapter.fixture_only
         && (!snapshot.planning || snapshot.planning.ready !== true);
       $('propose').disabled = Boolean(missionRequestInFlight)
         || telemetryRequestInFlight
         || planningLocked;
       $('propose').textContent = proposalBusy ? 'Generating proposal…' : 'Generate proposal';
+      if (!proposalBusy && leaseActive) {
+        $('propose').textContent = 'Update objective';
+      }
       $('approve').disabled = Boolean(missionRequestInFlight)
         || telemetryRequestInFlight
         || snapshot.mission.state !== 'PROPOSED'
-        || !snapshot.approval.enabled;
+        || !snapshot.approval.enabled
+        || !leaseMatchesProposal;
+      $('lease-duration-minutes').disabled = Boolean(missionRequestInFlight)
+        || telemetryRequestInFlight
+        || leaseActive;
+      $('lease-duration-minutes').setAttribute(
+        'aria-invalid',
+        leaseMatchesProposal || snapshot.mission.state !== 'PROPOSED'
+          ? 'false'
+          : 'true'
+      );
       $('approve').textContent = approvalBusy
         ? (stationary ? 'Starting stationary perception…' : 'Confirming…')
         : stationary ? 'Start stationary perception'
@@ -3521,6 +3741,10 @@ _INDEX_HTML = r'''<!doctype html>
           && snapshot.proposal.schema === 'sphero_rvr.adaptive_mission_proposal.v1';
         $('approval-state').textContent = approvalBusy
           ? 'Binding the prompt, SHAs, lease, speed ceilings, safety policy, starting snapshot, and first intent.'
+          : leaseActive
+            ? 'Lease active: authenticated objective updates keep the original expiry, telemetry, and safety limits.'
+          : snapshot.mission.state === 'PROPOSED' && !leaseMatchesProposal
+            ? 'Duration changed: generate a new proposal so the lease is included in the reviewed digest.'
           : planningLocked
             ? `Planning locked: waiting for fresh camera, lidar, and localization evidence${
                 snapshot.planning && snapshot.planning.reasons && snapshot.planning.reasons.length
@@ -3568,12 +3792,37 @@ _INDEX_HTML = r'''<!doctype html>
         && Boolean(snapshot.adapter.approval_activation_enabled);
       const physicalAdaptiveMission = adaptiveMission && live;
       const leaseLabel = leaseDurationLabel(snapshot);
+      $('lease-duration-control').hidden = !adaptiveMission;
+      if (adaptiveMission) {
+        const maximum = configuredLeaseMaximumSeconds(snapshot);
+        $('lease-duration-label').textContent =
+          `Lease minutes (max ${leaseMinutesText(maximum)})`;
+        if (
+          !leaseDurationHydrated
+          || (
+            missionId !== hydratedLeaseMissionId
+            && !leaseDurationDirty
+          )
+        ) {
+          const selected = finiteNumber(
+            proposal
+            && proposal.limits
+            && proposal.limits.mission_lease_s
+          ) || finiteNumber(
+            snapshot.adapter.adaptive_mission_lease_s
+          ) || maximum;
+          $('lease-duration-minutes').value = leaseMinutesText(selected);
+          leaseDurationDirty = false;
+          leaseDurationHydrated = true;
+          hydratedLeaseMissionId = missionId;
+        }
+      }
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
       badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
       $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
       $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution. Authenticated objective updates reuse the same expiry.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning, cumulative travel, and authenticated objective updates only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
       $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? `The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, ${leaseLabel} lease, speed ceilings, and safety policy. Telemetry remains lease-managed until the lease ends. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.` : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
@@ -3903,7 +4152,13 @@ _INDEX_HTML = r'''<!doctype html>
 
     async function propose() {
       if (missionRequestInFlight || telemetryRequestInFlight) return;
+      const activeAdaptiveLease = Boolean(
+        current
+        && current.adapter.adaptive_mission
+        && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
+      );
       if (current && current.adapter.adaptive_mission
+          && !activeAdaptiveLease
           && !current.adapter.fixture_only
           && (!current.planning || current.planning.ready !== true)) {
         $('request-error').textContent =
@@ -3911,17 +4166,44 @@ _INDEX_HTML = r'''<!doctype html>
         return;
       }
       if (!current || current.adapter.fixture_only) stopTimer();
+      const adaptiveMission = Boolean(
+        current && current.adapter.adaptive_mission
+      );
+      const leaseActive = Boolean(
+        adaptiveMission
+        && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
+      );
+      let leaseSeconds = null;
+      if (adaptiveMission && !leaseActive) {
+        try {
+          leaseSeconds = requestedLeaseSeconds(current);
+        } catch (error) {
+          $('request-error').textContent = error.message;
+          renderActionState(current);
+          return;
+        }
+      }
       missionRequestInFlight = 'proposal';
       $('request-error').textContent = '';
       $('request-status').textContent = 'Generating and persisting the proposal…';
       if (current) renderActionState(current);
       try {
-        const snapshot = await api('/api/web/mission/propose', {method:'POST', body:JSON.stringify({prompt:$('mission-prompt').value, scenario:$('scenario').value})});
+        const requestBody = {
+          prompt:$('mission-prompt').value,
+          scenario:$('scenario').value,
+        };
+        if (leaseSeconds !== null) {
+          requestBody.mission_lease_s = leaseSeconds;
+        }
+        const snapshot = await api('/api/web/mission/propose', {method:'POST', body:JSON.stringify(requestBody)});
         $('approval-input').value = '';
         promptDirty = false;
+        if (!leaseActive) leaseDurationDirty = false;
         missionRequestInFlight = '';
         render(snapshot);
-        $('request-status').textContent = snapshot.mission.state === 'PLANNING'
+        $('request-status').textContent = leaseActive
+          ? 'Objective updated. The active lease, telemetry, expiry, and safety limits continue unchanged.'
+          : snapshot.mission.state === 'PLANNING'
           ? 'Planning is in progress on the Pi. This page will keep polling for a proposal or actionable failure.'
           : snapshot.proposal && snapshot.proposal.decision === 'reject'
           ? `Proposal rejected: ${snapshot.proposal.summary || snapshot.mission.terminal_reason || 'No executable proposal was produced.'}`
@@ -4058,6 +4340,10 @@ _INDEX_HTML = r'''<!doctype html>
     $('cancel').addEventListener('click', cancelMission);
     $('telemetry-toggle').addEventListener('click', toggleTelemetry);
     $('mission-prompt').addEventListener('input', () => { promptDirty = true; });
+    $('lease-duration-minutes').addEventListener('input', () => {
+      leaseDurationDirty = true;
+      if (current) renderActionState(current);
+    });
     Promise.all([loadScenarios(), api('/api/web/state')]).then(([,snapshot]) => {
       render(snapshot);
       if (shouldContinuouslyPoll(snapshot)) startTimer();

@@ -136,14 +136,26 @@ the LAN, and do not use Tailscale Funnel.
 The product Pi configuration reports approval-time activation capability while
 the physical session remains locked. Proposal generation persists only the
 prompt and exact reviewed envelope; it does not start sensors or make a stale
-model request. **Approve _configured-duration_ lease** is the authenticated authorization
+model request. A **Lease minutes** text box sits beside the approval button.
+Its positive value is capped by `RVR_ADAPTIVE_MISSION_LEASE_S` and becomes part
+of the proposal digest; changing it after proposal generation disables approval
+until a replacement proposal is generated. **Approve _selected-duration_ lease**
+is the authenticated authorization
 boundary: it starts the fixed supervised graph, waits for fresh authoritative
 camera/lidar/localization and safety evidence, and only then invokes the model.
-The default duration is 15 minutes and the button reflects
-`RVR_ADAPTIVE_MISSION_LEASE_S`.
+The configured default and maximum duration is 15 minutes.
 Missing or unsafe STOP/ESTOP/collision evidence prevents execution. Every
 terminal path stops the graph again, and a relock failure is shown as
 `RECOVERY_REQUIRED`.
+
+While a lease is active, **Generate proposal** becomes **Update objective**.
+An authenticated update keeps the same mission ID, operator, expiration,
+telemetry owner, and safety limits. If an older model call is still in flight,
+its response is discarded, fresh evidence is reacquired, and replanning uses
+the new objective. The update never restarts or extends the lease.
+A model `stop` leaves the rover stopped and the lease visibly running in a
+safe idle state; a later **Update objective** resumes fresh-evidence replanning
+under the same expiry.
 
 When stationary or adaptive perception is configured, the safety strip includes
 an authenticated **Camera + lidar** telemetry toggle. It starts only the fixed
@@ -167,8 +179,9 @@ metadata are explicitly labeled stale.
 While an approved Adaptive mission lease is active, telemetry is instead
 lease-managed by `rvr-adaptive-mission.service`. The UI shows it as on and
 disables the manual toggle, so neither a poll nor a browser action can stop
-sensing between LLM revisions. Lease completion, cancellation, timeout,
-terminal failure, or restart recovery stops the graph and telemetry together.
+sensing between LLM revisions, model `stop` idle periods, or authenticated
+objective updates. Lease completion, cancellation, terminal safety failure, or
+restart recovery stops the graph and telemetry together.
 
 Proposal, stationary confirmation, cancellation, and sensor requests disable
 their controls while in flight and announce progress, success, or a specific
