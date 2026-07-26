@@ -11,6 +11,7 @@ from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_service import MissionService
 from sphero_rvr_driver.adaptive_mission_live_controller import LiveAdaptiveMissionController
 from sphero_rvr_driver.adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
+from sphero_rvr_driver.adaptive_mission_controller import AdaptiveMissionLimits
 
 
 SHA = "reviewed-adaptive-mission-live-sha"
@@ -363,13 +364,16 @@ def _build(
     *,
     cache: Optional[LiveStateCache] = None,
     transport: Optional[FakeRouteTransport] = None,
+    limits: Optional[AdaptiveMissionLimits] = None,
 ):
+    authority_limits = limits or AdaptiveMissionLimits()
     service = MissionService(
         tmp_path / "adaptive-mission-live.sqlite3",
         source_sha=SHA,
         deployed_sha=SHA,
         mode="live",
         live_execution_enabled=True,
+        adaptive_mission_limits=authority_limits.to_json_dict(),
     )
     active_cache = cache or _cache()
     route_transport = transport or FakeRouteTransport()
@@ -382,12 +386,14 @@ def _build(
         reviewed_sha=SHA,
         execution_enabled=True,
         transport=route_transport,
+        limits=authority_limits,
     )
     controller = LiveAdaptiveMissionController(
         service,
         provider,
         executor,
         execution_enabled=True,
+        limits=authority_limits,
         activation_timeout_s=1.0,
     )
     return service, controller, route_transport
@@ -555,6 +561,43 @@ def test_terminal_is_recovery_required_when_physical_session_cannot_relock(
     }
 
 
+def test_configured_lease_is_bound_to_proposal_approval_and_terminal_relock(
+    tmp_path,
+) -> None:
+    limits = AdaptiveMissionLimits(mission_lease_s=120.0)
+    provider = SequenceProvider([("stop", 0.0)])
+    service, controller, _ = _build(
+        tmp_path,
+        provider,
+        limits=limits,
+    )
+    try:
+        proposed = controller.submit(
+            PROMPT,
+            session_id="configured-lease",
+            mission_id="configured-lease-mission",
+        )
+        assert proposed["proposal"]["limits"]["mission_lease_s"] == 120.0
+        assert "2-minute adaptive mission lease" in proposed["proposal"]["summary"]
+        assert controller.service_snapshot()["adaptive_mission_lease_s"] == 120.0
+        approved = _approve(controller, proposed)
+        approval = approved["approval"]
+        assert approval["expires_at_s"] - approval["approved_at_s"] == pytest.approx(
+            120.0
+        )
+        terminal = _wait_status(
+            controller,
+            proposed["mission_id"],
+            {"complete"},
+        )
+    finally:
+        controller.close()
+        service.close()
+
+    assert terminal["result"]["limits"]["mission_lease_s"] == 120.0
+    assert terminal["result"]["physical_session_relock"]["verified"] is True
+
+
 def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path) -> None:
     provider = SequenceProvider(
         [
@@ -584,6 +627,12 @@ def test_live_adaptive_mission_replans_through_one_authenticated_lease(tmp_path)
         ] is True
         assert proposed["proposal"]["contract"][
             "first_intent_requires_fresh_post_approval_evidence"
+        ] is True
+        assert proposed["proposal"]["contract"][
+            "telemetry_managed_for_lease"
+        ] is True
+        assert proposed["proposal"]["contract"][
+            "telemetry_stops_when_lease_ends"
         ] is True
         assert provider.calls == 0
         assert proposed["proposal"]["executor_mode"] == (

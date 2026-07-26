@@ -147,6 +147,7 @@ class MissionService:
         mode: str = "replay",
         executor_bindings: Optional[Mapping[str, ExecutorBinding]] = None,
         live_execution_enabled: bool = False,
+        adaptive_mission_limits: Optional[Mapping[str, Any]] = None,
         session_budgets: MissionBudgets = MissionBudgets(
             max_steps=8,
             max_runtime_s=120.0,
@@ -189,6 +190,11 @@ class MissionService:
         self.deployed_sha = deployed_provenance
         self.session_budgets = session_budgets
         self.live_execution_enabled = bool(live_execution_enabled)
+        self.adaptive_mission_limits = (
+            json.loads(_json_dump(dict(adaptive_mission_limits)))
+            if adaptive_mission_limits is not None
+            else None
+        )
         self._clock_s = clock_s or time.time
         self._lock = threading.RLock()
         self._executor_bindings: dict[str, ExecutorBinding] = {}
@@ -824,7 +830,12 @@ class MissionService:
                 )
             from .adaptive_mission_controller import AdaptiveMissionLimits
 
-            if payload.get("limits") != AdaptiveMissionLimits().to_json_dict():
+            installed_limits = (
+                self.adaptive_mission_limits
+                if self.adaptive_mission_limits is not None
+                else AdaptiveMissionLimits().to_json_dict()
+            )
+            if payload.get("limits") != installed_limits:
                 raise MissionValidationError(
                     "Adaptive mission proposal limits do not match the installed authority profile"
                 )
@@ -843,6 +854,8 @@ class MissionService:
                 or contract.get("per_intent_approval") is not False
                 or contract.get("approval_activates_supervised_graph")
                 is not True
+                or contract.get("telemetry_managed_for_lease") is not True
+                or contract.get("telemetry_stops_when_lease_ends") is not True
                 or contract.get(
                     "first_intent_requires_fresh_post_approval_evidence"
                 )
@@ -943,15 +956,24 @@ class MissionService:
                 .get("limits", {})
                 .get("mission_lease_s", 0.0)
             )
+            expected_lease_s = float(
+                (
+                    self.adaptive_mission_limits
+                    or {"mission_lease_s": 900.0}
+                ).get("mission_lease_s", 0.0)
+            )
             if (
                 not math.isfinite(requested_expires)
                 or not math.isfinite(lease_s)
-                or lease_s != 900.0
+                or not math.isfinite(expected_lease_s)
+                or not 0.0 < lease_s <= 900.0
+                or lease_s != expected_lease_s
                 or requested_expires < now + lease_s - 5.0
                 or requested_expires > now + lease_s
             ):
                 raise MissionValidationError(
-                    "Adaptive mission approval must request the complete 15-minute lease"
+                    "Adaptive mission approval must request the complete "
+                    f"configured {lease_s:g}-second lease"
                 )
             expires = now + lease_s
             approval = {

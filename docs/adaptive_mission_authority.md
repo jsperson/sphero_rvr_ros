@@ -79,9 +79,11 @@ A changed prompt, increased speed, changed safety policy, changed execution
 mode, expired mission lease, process restart, or different deployed SHA requires
 a new proposal and approval. Restart never resumes motion automatically.
 
-The initial Adaptive mission mission lease is 15 minutes. It may end earlier and may be
-renewed only with a new approval. The whole-mission lease bounds unattended
-software state; it is not a cumulative-distance limit.
+The Adaptive mission lease defaults to 15 minutes and is configurable up to
+that reviewed ceiling. It may end earlier and may be renewed only with a new
+approval. The whole-mission lease bounds unattended software state; it is not
+a cumulative-distance limit. Camera/lidar telemetry remains owned by the
+supervised graph for the active lease and shuts down when the lease ends.
 
 ## Motion envelope
 

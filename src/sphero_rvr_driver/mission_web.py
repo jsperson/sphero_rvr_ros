@@ -172,7 +172,7 @@ ADAPTIVE_MISSION_SCENARIOS: tuple[ScenarioDefinition, ...] = (
     ScenarioDefinition(
         AdaptiveMissionScenario.EXPLORE,
         "Adaptive room exploration",
-        "One approved 15-minute lease with a real OAuth planner choosing one bounded intent from every updated snapshot.",
+        "One approved configured lease with a real OAuth planner choosing one bounded intent from every updated snapshot.",
     ),
 )
 
@@ -2095,6 +2095,9 @@ class LiveMissionWebAdapter:
                 **(
                     {
                         "adaptive_mission": True,
+                        "adaptive_mission_lease_s": self._service_snapshot.get(
+                            "adaptive_mission_lease_s", 900.0
+                        ),
                         "rolling_replay": True,
                         "real_llm_provider": self._service_snapshot.get(
                             "provider_id"
@@ -2694,6 +2697,19 @@ def handle_mission_web_request(
         if "active" not in payload or not isinstance(payload["active"], bool):
             raise MissionWebError("telemetry request requires a boolean active value")
         authority_snapshot = adapter.snapshot()
+        adapter_state = authority_snapshot.get("adapter", {})
+        physical_session = (
+            adapter_state.get("physical_session", {})
+            if isinstance(adapter_state, Mapping)
+            else {}
+        )
+        if isinstance(physical_session, Mapping) and bool(
+            physical_session.get("active", False)
+        ):
+            raise MissionWebError(
+                "telemetry is managed by the active mission lease and cannot "
+                "be changed independently"
+            )
         telemetry_control.set_active(
             bool(payload["active"]),
             authority_snapshot=authority_snapshot,
@@ -2759,7 +2775,37 @@ def _with_telemetry_control(
         }
     else:
         status = dict(telemetry_control.status())
-    status["start_permitted"] = _telemetry_start_permitted(snapshot)
+    adapter = snapshot.get("adapter", {})
+    physical_session = (
+        adapter.get("physical_session", {})
+        if isinstance(adapter, Mapping)
+        else {}
+    )
+    lease_managed = bool(
+        isinstance(physical_session, Mapping)
+        and physical_session.get("active", False)
+    )
+    if lease_managed:
+        status.update(
+            {
+                "available": True,
+                "active": True,
+                "transitioning": bool(
+                    physical_session.get("transitioning", False)
+                ),
+                "state": "lease_managed",
+                "detail": (
+                    "On for the active mission lease; telemetry shuts down "
+                    "automatically when the lease ends."
+                ),
+                "verified_stopped": False,
+                "unit": ADAPTIVE_MISSION_UNIT,
+                "managed_by_lease": True,
+            }
+        )
+    status["start_permitted"] = (
+        False if lease_managed else _telemetry_start_permitted(snapshot)
+    )
     result["telemetry_control"] = status
     return result
 
@@ -3342,6 +3388,27 @@ _INDEX_HTML = r'''<!doctype html>
       return Number.isFinite(number) ? number : null;
     }
 
+    function leaseDurationLabel(snapshot) {
+      const seconds = finiteNumber(
+        (
+          snapshot
+          && snapshot.proposal
+          && snapshot.proposal.limits
+          && snapshot.proposal.limits.mission_lease_s
+        ) || (
+          snapshot
+          && snapshot.adapter
+          && snapshot.adapter.adaptive_mission_lease_s
+        )
+      );
+      if (seconds === null || seconds <= 0) return '15-minute';
+      if (seconds >= 60 && seconds % 60 === 0) {
+        const minutes = seconds / 60;
+        return `${minutes}-minute`;
+      }
+      return `${seconds}-second`;
+    }
+
     function setSafetyTone(id, tone) {
       const cell = $(id).closest('.safety-cell');
       cell.classList.toggle('warning', tone === 'warning');
@@ -3375,20 +3442,25 @@ _INDEX_HTML = r'''<!doctype html>
         && snapshot.map.localization.fresh
       );
       const active = Boolean(control.active || sensorDataFresh || degraded);
+      const leaseManaged = Boolean(control.managed_by_lease);
       const transitioning = telemetryRequestInFlight || Boolean(control.transitioning);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
       button.setAttribute('aria-describedby', 'telemetry-status');
       button.textContent = transitioning
         ? (active ? 'Stopping…' : 'Starting…')
+        : leaseManaged ? 'Telemetry lease-managed'
         : (active ? 'Turn telemetry off' : 'Turn telemetry on');
       button.disabled = transitioning
         || Boolean(missionRequestInFlight)
+        || leaseManaged
         || !control.available
         || (!active && !control.start_permitted);
       label.textContent = transitioning
         ? (active ? 'Stopping telemetry' : 'Starting telemetry')
         : degraded
           ? (control.detail || 'Telemetry lifecycle is degraded; shutdown is not verified')
+        : leaseManaged
+          ? (control.detail || 'On for the active mission lease')
         : active
           ? (sensorDataFresh ? 'On · data fresh' : 'On · waiting for fresh data')
           : control.verified_stopped
@@ -3405,6 +3477,7 @@ _INDEX_HTML = r'''<!doctype html>
     function renderActionState(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
+      const leaseLabel = leaseDurationLabel(snapshot);
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
       const cancelBusy = missionRequestInFlight === 'cancel';
@@ -3422,7 +3495,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('approve').textContent = approvalBusy
         ? (stationary ? 'Starting stationary perception…' : 'Confirming…')
         : stationary ? 'Start stationary perception'
-        : adaptiveMission ? 'Approve 15-minute lease'
+        : adaptiveMission ? `Approve ${leaseLabel} lease`
         : snapshot.adapter.rolling_replay ? 'Start rolling replay'
         : !snapshot.adapter.fixture_only ? 'Approve and run'
         : 'Approve simulation';
@@ -3494,13 +3567,14 @@ _INDEX_HTML = r'''<!doctype html>
       const approvalActivation = live
         && Boolean(snapshot.adapter.approval_activation_enabled);
       const physicalAdaptiveMission = adaptiveMission && live;
+      const leaseLabel = leaseDurationLabel(snapshot);
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
       badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
       $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
       $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? 'One authenticated approval starts the supervised graph, waits for fresh evidence, and then begins bounded model-driven execution.' : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : 'One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the 15-minute lease ends. Every intent remains bounded.') : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
-      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? 'The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, 15-minute lease, speed ceilings, and safety policy. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.' : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, OAuth, persistence, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
+      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning and cumulative travel only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? `The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, ${leaseLabel} lease, speed ceilings, and safety policy. Telemetry remains lease-managed until the lease ends. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.` : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -3916,6 +3990,8 @@ _INDEX_HTML = r'''<!doctype html>
 
     async function toggleTelemetry() {
       if (!current || telemetryRequestInFlight || missionRequestInFlight) return;
+      if (current.telemetry_control
+          && current.telemetry_control.managed_by_lease) return;
       const currentlyActive = Boolean(
         (current.telemetry_control && current.telemetry_control.active)
         || (current.camera_preview

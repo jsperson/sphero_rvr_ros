@@ -136,9 +136,11 @@ the LAN, and do not use Tailscale Funnel.
 The product Pi configuration reports approval-time activation capability while
 the physical session remains locked. Proposal generation persists only the
 prompt and exact reviewed envelope; it does not start sensors or make a stale
-model request. **Approve 15-minute lease** is the authenticated authorization
+model request. **Approve _configured-duration_ lease** is the authenticated authorization
 boundary: it starts the fixed supervised graph, waits for fresh authoritative
 camera/lidar/localization and safety evidence, and only then invokes the model.
+The default duration is 15 minutes and the button reflects
+`RVR_ADAPTIVE_MISSION_LEASE_S`.
 Missing or unsafe STOP/ESTOP/collision evidence prevents execution. Every
 terminal path stops the graph again, and a relock failure is shown as
 `RECOVERY_REQUIRED`.
@@ -161,6 +163,12 @@ sensor descendants and the `/dev/rplidar` owner are gone, and authoritative map
 and camera evidence is no longer fresh. A timeout or failed postcondition remains
 visible as a degraded lifecycle error rather than `Off`; retained pixels and
 metadata are explicitly labeled stale.
+
+While an approved Adaptive mission lease is active, telemetry is instead
+lease-managed by `rvr-adaptive-mission.service`. The UI shows it as on and
+disables the manual toggle, so neither a poll nor a browser action can stop
+sensing between LLM revisions. Lease completion, cancellation, timeout,
+terminal failure, or restart recovery stops the graph and telemetry together.
 
 Proposal, stationary confirmation, cancellation, and sensor requests disable
 their controls while in flight and announce progress, success, or a specific

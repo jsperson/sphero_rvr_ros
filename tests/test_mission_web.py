@@ -613,6 +613,46 @@ def test_stationary_sensor_route_controls_only_no_motion_stationary_perception_s
     assert [request[0] for request in telemetry_control.requests] == [True, False]
 
 
+def test_active_adaptive_lease_owns_telemetry_until_terminal_shutdown() -> None:
+    adapter = LiveMissionWebAdapter(
+        FakeAdaptiveMissionLiveMissionClient(
+            approval_activation_enabled=False
+        )
+    )
+    telemetry_control = FakeTelemetryControl()
+
+    snapshot = json.loads(
+        handle_mission_web_request(
+            "GET",
+            "/api/web/state",
+            "",
+            adapter,
+            telemetry_control,
+        ).body
+    )
+
+    assert snapshot["adapter"]["physical_session"]["active"] is True
+    assert snapshot["telemetry_control"]["active"] is True
+    assert snapshot["telemetry_control"]["managed_by_lease"] is True
+    assert snapshot["telemetry_control"]["unit"] == (
+        "rvr-adaptive-mission.service"
+    )
+    assert snapshot["telemetry_control"]["start_permitted"] is False
+    assert "shuts down automatically when the lease ends" in (
+        snapshot["telemetry_control"]["detail"]
+    )
+
+    with pytest.raises(MissionWebError, match="managed by the active mission lease"):
+        handle_mission_web_request(
+            "POST",
+            TELEMETRY_CONTROL_PATH,
+            json.dumps({"active": False}),
+            adapter,
+            telemetry_control,
+        )
+    assert telemetry_control.requests == []
+
+
 def test_stationary_sensor_route_rejects_unconfigured_and_non_boolean_requests() -> None:
     adapter = LiveMissionWebAdapter(
         FakeLiveMissionClient(stationary_perception_enabled=True)
@@ -868,6 +908,8 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'id="telemetry-toggle"' in page
     assert "Turn telemetry on" in page
     assert "Turn telemetry off" in page
+    assert "Telemetry lease-managed" in page
+    assert "leaseDurationLabel(snapshot)" in page
     assert "const sensorDataFresh = Boolean(" in page
     assert "snapshot.map.localization.fresh" in page
     assert "['failed','degraded'].includes" in page

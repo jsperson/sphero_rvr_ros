@@ -310,6 +310,7 @@ class LiveAdaptiveMissionController:
             "planning_enabled": True,
             "live_execution_enabled": bool(session.get("active", False)),
             "approval_activation_enabled": self.execution_enabled,
+            "adaptive_mission_lease_s": self.limits.mission_lease_s,
             "physical_session": session,
             "motion_authority": False,
             "direct_ros_commands_allowed": False,
@@ -571,9 +572,13 @@ class LiveAdaptiveMissionController:
 
 
 def default_adaptive_mission_provider(
-    *, model: Optional[str], reasoning_effort: str
+    *,
+    model: Optional[str],
+    reasoning_effort: str,
+    limits: Optional[AdaptiveMissionLimits] = None,
 ) -> CodexOAuthAdaptiveMissionIntentProvider:
     return CodexOAuthAdaptiveMissionIntentProvider(
         model=model,
         reasoning_effort=reasoning_effort,
+        limits=limits,
     )

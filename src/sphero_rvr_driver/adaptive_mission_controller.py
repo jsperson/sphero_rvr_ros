@@ -328,6 +328,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         reasoning_effort: str = "low",
         codex_command: str = "codex",
         timeout_s: float = 120.0,
+        limits: Optional[AdaptiveMissionLimits] = None,
     ) -> None:
         if reasoning_effort not in ALLOWED_REASONING_EFFORTS:
             raise MissionValidationError(
@@ -339,6 +340,7 @@ class CodexOAuthAdaptiveMissionIntentProvider:
         self.reasoning_effort = reasoning_effort
         self.codex_command = str(codex_command)
         self.timeout_s = float(timeout_s)
+        self.limits = limits or AdaptiveMissionLimits()
         self._oauth_checked = False
         self._oauth_lock = threading.Lock()
 
@@ -399,7 +401,9 @@ class CodexOAuthAdaptiveMissionIntentProvider:
             try:
                 completed = subprocess.run(
                     command,
-                    input=_adaptive_mission_provider_prompt(prompt, snapshot),
+                    input=_adaptive_mission_provider_prompt(
+                        prompt, snapshot, limits=self.limits
+                    ),
                     text=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
@@ -501,8 +505,12 @@ def _adaptive_mission_output_schema() -> dict[str, Any]:
 
 
 def _adaptive_mission_provider_prompt(
-    prompt: str, snapshot: Mapping[str, Any]
+    prompt: str,
+    snapshot: Mapping[str, Any],
+    *,
+    limits: Optional[AdaptiveMissionLimits] = None,
 ) -> str:
+    authority_limits = limits or AdaptiveMissionLimits()
     observations = snapshot.get("observations", {})
     motion_clearance = (
         observations.get("motion_clearance", {})
@@ -521,7 +529,7 @@ def _adaptive_mission_provider_prompt(
             "intent_lease_s": 5.0,
             "linear_speed_ceiling_mps": 0.10,
             "angular_speed_ceiling_rad_s": 0.4,
-            "mission_lease_s": 900.0,
+            "mission_lease_s": authority_limits.mission_lease_s,
             "cumulative_travel": "unlimited until mission lease expires",
             "translation_clearance": (
                 dict(motion_clearance)
@@ -628,7 +636,8 @@ class AdaptiveMissionApprovalEnvelope:
             "segments": [],
             "decision": "propose",
             "summary": (
-                "Approve one 15-minute adaptive mission lease. Approval activates "
+                f"Approve one {_duration_label(self.limits.mission_lease_s)} "
+                "adaptive mission lease. Approval activates "
                 "the supervised sensor and motion graph; the LLM is called only "
                 "after fresh camera, lidar, localization, and safety evidence arrive. "
                 "Deterministic validation, the executor, and collision supervision "
@@ -640,6 +649,8 @@ class AdaptiveMissionApprovalEnvelope:
                 "one_authenticated_approval": True,
                 "per_intent_approval": False,
                 "approval_activates_supervised_graph": True,
+                "telemetry_managed_for_lease": True,
+                "telemetry_stops_when_lease_ends": True,
                 "first_intent_requires_fresh_post_approval_evidence": True,
                 "motion_authority": False,
                 "physical_execution_enabled": bool(
@@ -649,6 +660,16 @@ class AdaptiveMissionApprovalEnvelope:
             },
         }
         return {**body, "proposal_digest": canonical_digest(body)}
+
+
+def _duration_label(duration_s: float) -> str:
+    seconds = float(duration_s)
+    if seconds >= 60.0 and seconds % 60.0 == 0.0:
+        minutes = seconds / 60.0
+        value = int(minutes) if minutes.is_integer() else minutes
+        return f"{value}-minute"
+    value = int(seconds) if seconds.is_integer() else seconds
+    return f"{value}-second"
 
 
 @dataclass(frozen=True)

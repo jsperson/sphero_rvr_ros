@@ -44,10 +44,19 @@ Tailscale Serve, records `tailscale-serve` as its authentication source, and
 binds that principal to the persisted proposal digest. A client-supplied
 identity header on an ordinary loopback server is not trusted.
 
-The mission lease is 900 seconds. There is no cumulative translation,
-rotation, intent-count, or provider-call budget inside that lease. Every
+The mission lease defaults to 900 seconds and is deployment-configurable with
+`RVR_ADAPTIVE_MISSION_LEASE_S` up to that reviewed ceiling. The configured
+value is bound into the proposal digest, approval expiration, provider
+authority, UI, and persisted result. There is no cumulative translation,
+rotation, intent-count, or provider-call budget inside the active lease. Every
 individual intent remains bounded to 0.25 m, 45 degrees, and 5 seconds. Speed
 ceilings remain 0.10 m/s and 0.4 rad/s.
+
+Approval starts the fixed supervised graph, which owns camera/lidar telemetry
+for the whole active lease and across every replan. The browser cannot toggle
+telemetry independently while that lease owns the graph. Lease expiry or any
+earlier terminal/cancel/restart outcome ends the lease and verifies graph and
+telemetry shutdown.
 
 STOP, ESTOP, collision veto, stale evidence, cancellation, executor timeout,
 mission-lease expiry, persistence failure, process restart, and provider or

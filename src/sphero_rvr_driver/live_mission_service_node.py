@@ -347,6 +347,11 @@ def main(args=None):
                     self.get_parameter("planning_angular_speed_deg_s").value
                 ),
             )
+            adaptive_limits = AdaptiveMissionLimits(
+                mission_lease_s=float(
+                    self.get_parameter("adaptive_mission_lease_s").value
+                )
+            )
             ros_route_executor = (
                 RosLiveRouteExecutor(
                     request_topic=str(self.get_parameter("route_request_topic").value),
@@ -374,7 +379,7 @@ def main(args=None):
                     reviewed_sha=reviewed_sha,
                     execution_enabled=live_execution_enabled,
                     transport=ros_route_executor,
-                    limits=AdaptiveMissionLimits(),
+                    limits=adaptive_limits,
                     max_source_age_s=min(max_source_age_s, 0.30),
                     cleanup_timeout_s=float(
                         self.get_parameter(
@@ -402,6 +407,7 @@ def main(args=None):
                     mode="live",
                     executor_bindings=bindings,
                     live_execution_enabled=live_execution_enabled,
+                    adaptive_mission_limits=adaptive_limits.to_json_dict(),
                 )
 
             controller_factory = None
@@ -435,10 +441,11 @@ def main(args=None):
                         CodexOAuthAdaptiveMissionIntentProvider(
                             model=model_id,
                             reasoning_effort=reasoning_effort,
+                            limits=adaptive_limits,
                         ),
                         adaptive_mission_executor,  # type: ignore[arg-type]
                         execution_enabled=live_execution_enabled,
-                        limits=AdaptiveMissionLimits(),
+                        limits=adaptive_limits,
                         session_lifecycle=adaptive_session,
                         activation_timeout_s=float(
                             self.get_parameter(
@@ -566,6 +573,7 @@ def main(args=None):
             self.declare_parameter("approval_activation_enabled", False)
             self.declare_parameter("approval_activation_reviewed_sha", "")
             self.declare_parameter("approval_activation_timeout_s", 30.0)
+            self.declare_parameter("adaptive_mission_lease_s", 900.0)
             self.declare_parameter("approval_ttl_s", 60.0)
             self.declare_parameter("route_graph_timeout_s", 5.0)
             self.declare_parameter("route_cleanup_timeout_s", 3.0)

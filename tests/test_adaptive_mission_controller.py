@@ -203,6 +203,14 @@ def test_adaptive_mission_provider_prompt_exposes_semantics_without_granting_saf
         "turn_angle",
     ]
     assert request["authority"]["translation_clearance"] == {}
+    configured = json.loads(
+        _adaptive_mission_provider_prompt(
+            "Observe safely.",
+            snapshot,
+            limits=AdaptiveMissionLimits(mission_lease_s=120.0),
+        )
+    )
+    assert configured["authority"]["mission_lease_s"] == 120.0
 
 
 def test_adaptive_mission_rejects_malformed_semantic_observation_shape() -> None:
@@ -683,7 +691,8 @@ def test_browser_bundle_exposes_adaptive_mission_objective_lease_and_supervision
     assert "Instruction received" in html
     assert "Objective interpreted" in html
     assert "First intent" in html
-    assert "Approve 15-minute lease" in html
+    assert "leaseDurationLabel(snapshot)" in html
+    assert "Approve ${leaseLabel} lease" in html
     assert "requested" in html
     assert "supervised" in html
     assert "Revision ${revision.revision}" in html

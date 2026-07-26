@@ -442,6 +442,7 @@ def test_user_services_keep_approval_activation_exact_sha_bound_and_default_off(
     assert "RVR_APPROVAL_ACTIVATION_ENABLED=false" in environment
     assert "RVR_APPROVAL_ACTIVATION_REVIEWED_SHA=" in environment
     assert "RVR_APPROVAL_ACTIVATION_TIMEOUT_S=30.0" in environment
+    assert "RVR_ADAPTIVE_MISSION_LEASE_S=900.0" in environment
     assert "RVR_ADAPTIVE_MISSION_ENABLED=false" in environment
     assert "RVR_PLANNING_MAX_MOTION_CALLS=3" in environment
     assert "RVR_PLANNING_MAX_TRANSLATION_M=0.5" in environment
@@ -451,6 +452,7 @@ def test_user_services_keep_approval_activation_exact_sha_bound_and_default_off(
     assert '${RVR_LIVE_EXECUTION_REVIEWED_SHA:-disabled}' in mission_unit
     assert '${RVR_APPROVAL_ACTIVATION_ENABLED:-false}' in mission_unit
     assert '${RVR_APPROVAL_ACTIVATION_REVIEWED_SHA:-disabled}' in mission_unit
+    assert '${RVR_ADAPTIVE_MISSION_LEASE_S:-900.0}' in mission_unit
     assert '${RVR_ADAPTIVE_MISSION_ENABLED:-false}' in mission_unit
     assert '${RVR_PLANNING_MAX_MOTION_CALLS:-3}' in mission_unit
     mission_config = (REPO_ROOT / "config/mission_service.yaml").read_text()
@@ -459,6 +461,7 @@ def test_user_services_keep_approval_activation_exact_sha_bound_and_default_off(
     assert "approval_activation_enabled: false" in mission_config
     assert "approval_activation_reviewed_sha:" in mission_config
     assert "approval_activation_timeout_s: 30.0" in mission_config
+    assert "adaptive_mission_lease_s: 900.0" in mission_config
     assert "planning_max_motion_calls: 3" in mission_config
     assert "planning_max_translation_per_call_m: 0.5" in mission_config
     assert 'source "$RVR_ROS_WORKSPACE/install/setup.bash"' in mission_unit

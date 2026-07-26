@@ -48,6 +48,8 @@ live_mission_service:
     approval_activation_enabled: false
     approval_activation_reviewed_sha: ""
     approval_activation_timeout_s: 30.0
+    # Configurable up to the reviewed 15-minute authority ceiling.
+    adaptive_mission_lease_s: 900.0
     approval_ttl_s: 60.0
     route_graph_timeout_s: 5.0
     route_cleanup_timeout_s: 3.0
