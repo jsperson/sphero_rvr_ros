@@ -378,6 +378,12 @@ class LiveAdaptiveMissionController:
     def service_snapshot(self) -> dict[str, Any]:
         readiness = self.executor.readiness()
         session = dict(self.session_lifecycle.status())
+        evidence_planning_ready = (
+            readiness.get("planning_ready") is True
+        )
+        evidence_planning_reasons = list(
+            readiness.get("planning_reasons", [])
+        )
         return {
             "api_version": "mission_api.v2",
             "mode": "live/adaptive-mission",
@@ -397,6 +403,10 @@ class LiveAdaptiveMissionController:
             "reasoning_effort": self.provider.reasoning_effort,
             "adaptive_mission_readiness": {
                 **readiness,
+                "evidence_planning_ready": evidence_planning_ready,
+                "evidence_planning_reasons": (
+                    evidence_planning_reasons
+                ),
                 "planning_ready": True,
                 "planning_reasons": [],
                 "activation_capable": self.execution_enabled,

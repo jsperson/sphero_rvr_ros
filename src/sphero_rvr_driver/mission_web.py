@@ -2096,7 +2096,11 @@ class LiveMissionWebAdapter:
             )
         elif self.adaptive_mission_enabled:
             required_fresh = (
-                adaptive_readiness.get("ready") is True
+                adaptive_readiness.get(
+                    "evidence_planning_ready",
+                    adaptive_readiness.get("planning_ready"),
+                )
+                is True
             )
         else:
             required_fresh = bool(
@@ -2270,11 +2274,18 @@ class LiveMissionWebAdapter:
                 ),
                 "ready": required_fresh,
                 "reasons": list(
-                    adaptive_readiness.get("planning_reasons", [])
+                    adaptive_readiness.get(
+                        "evidence_planning_reasons",
+                        adaptive_readiness.get("planning_reasons", []),
+                    )
                 )
                 if self.adaptive_mission_enabled
                 and isinstance(
-                    adaptive_readiness.get("planning_reasons", []), list
+                    adaptive_readiness.get(
+                        "evidence_planning_reasons",
+                        adaptive_readiness.get("planning_reasons", []),
+                    ),
+                    list,
                 )
                 else [],
             },
@@ -3637,12 +3648,7 @@ _INDEX_HTML = r'''<!doctype html>
       if (!controllable) return;
       const degraded = ['failed', 'degraded'].includes(String(control.state || '').toLowerCase());
       const sensorDataFresh = Boolean(
-        snapshot.camera_preview
-        && snapshot.camera_preview.fresh
-        && snapshot.map
-        && snapshot.map.available
-        && snapshot.map.localization
-        && snapshot.map.localization.fresh
+        snapshot.safety && snapshot.safety.telemetry_fresh
       );
       const active = Boolean(control.active || sensorDataFresh || degraded);
       const leaseManaged = Boolean(control.managed_by_lease);

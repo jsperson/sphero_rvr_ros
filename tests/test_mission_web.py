@@ -211,6 +211,10 @@ class FakeAdaptiveMissionLiveMissionClient(FakeLiveMissionClient):
                 "adaptive_mission_readiness": {
                     "ready": self.planning_ready,
                     "reasons": [] if self.planning_ready else ["lidar"],
+                    "evidence_planning_ready": self.planning_ready,
+                    "evidence_planning_reasons": (
+                        [] if self.planning_ready else ["lidar"]
+                    ),
                     "planning_ready": self.planning_ready,
                     "planning_reasons": (
                         [] if self.planning_ready else ["lidar"]
@@ -950,7 +954,7 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "Telemetry lease-managed" in page
     assert "leaseDurationLabel(snapshot)" in page
     assert "const sensorDataFresh = Boolean(" in page
-    assert "snapshot.map.localization.fresh" in page
+    assert "snapshot.safety && snapshot.safety.telemetry_fresh" in page
     assert "['failed','degraded'].includes" in page
     assert "/api/web/telemetry" in page
     assert 'id="request-status" role="status" aria-live="polite"' in page

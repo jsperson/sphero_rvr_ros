@@ -523,6 +523,9 @@ def test_authenticated_approval_activates_fresh_evidence_before_first_provider_c
         assert before["live_execution_enabled"] is False
         assert before["approval_activation_enabled"] is True
         assert before["adaptive_mission_readiness"]["planning_ready"] is True
+        assert before["adaptive_mission_readiness"][
+            "evidence_planning_ready"
+        ] is False
 
         approved = _approve(controller, proposed)
         assert approved["status"] == "approved"
