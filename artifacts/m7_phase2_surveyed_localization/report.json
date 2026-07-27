@@ -1,0 +1,1233 @@
+{
+  "checks": {
+    "all_sample_gates_passed": true,
+    "ambiguous_association_rejected": true,
+    "bearing_only_never_contains_point": true,
+    "cleanup_complete": true,
+    "every_method_band_has_three_distinct_surveyed_configurations": true,
+    "no_tolerance_widening": true,
+    "stationary_no_motion_authority": true
+  },
+  "coverage": {
+    "floor_projection:far": true,
+    "floor_projection:mid": true,
+    "floor_projection:near": true,
+    "lidar_range:far": true,
+    "lidar_range:mid": true,
+    "lidar_range:near": true
+  },
+  "distributions": {
+    "floor_projection": {
+      "far": {
+        "distinct_surveyed_configuration_count": 3,
+        "distinct_target_count": 1,
+        "error_m": {
+          "maximum": 0.042430714443295464,
+          "median": 0.037045170418112526,
+          "minimum": 0.03590762897954967,
+          "p95": 0.041892160040777164,
+          "rmse": 0.03856625467256954
+        },
+        "provisional_bound_m": {
+          "maximum": 0.05,
+          "minimum": 0.05
+        },
+        "recommendation": "retain_provisional_bound",
+        "recommendation_widens_provisional_bound": false,
+        "recommended_reviewed_tolerance_m": null,
+        "sample_count": 3
+      },
+      "mid": {
+        "distinct_surveyed_configuration_count": 3,
+        "distinct_target_count": 1,
+        "error_m": {
+          "maximum": 0.016547492338626946,
+          "median": 0.009915576606128934,
+          "minimum": 0.0022316620282227693,
+          "p95": 0.015884300765377144,
+          "rmse": 0.011211875810008187
+        },
+        "provisional_bound_m": {
+          "maximum": 0.05,
+          "minimum": 0.05
+        },
+        "recommendation": "tighten_to_physical_evidence",
+        "recommendation_widens_provisional_bound": false,
+        "recommended_reviewed_tolerance_m": 0.026,
+        "sample_count": 3
+      },
+      "near": {
+        "distinct_surveyed_configuration_count": 3,
+        "distinct_target_count": 1,
+        "error_m": {
+          "maximum": 0.02515202192154904,
+          "median": 0.014301094624259521,
+          "minimum": 0.009891782013526222,
+          "p95": 0.024066929191820085,
+          "rmse": 0.017654016215366112
+        },
+        "provisional_bound_m": {
+          "maximum": 0.05,
+          "minimum": 0.05
+        },
+        "recommendation": "tighten_to_physical_evidence",
+        "recommendation_widens_provisional_bound": false,
+        "recommended_reviewed_tolerance_m": 0.035,
+        "sample_count": 3
+      }
+    },
+    "lidar_range": {
+      "far": {
+        "distinct_surveyed_configuration_count": 3,
+        "distinct_target_count": 1,
+        "error_m": {
+          "maximum": 0.030422083057686608,
+          "median": 0.026441465340464446,
+          "minimum": 0.012968307486580307,
+          "p95": 0.03002402128596439,
+          "rmse": 0.02444607143616509
+        },
+        "provisional_bound_m": {
+          "maximum": 0.06838163644244472,
+          "minimum": 0.06830652706785098
+        },
+        "recommendation": "tighten_to_physical_evidence",
+        "recommendation_widens_provisional_bound": false,
+        "recommended_reviewed_tolerance_m": 0.041,
+        "sample_count": 3
+      },
+      "mid": {
+        "distinct_surveyed_configuration_count": 3,
+        "distinct_target_count": 1,
+        "error_m": {
+          "maximum": 0.01709580723043507,
+          "median": 0.016262889826762984,
+          "minimum": 0.0090910742985124,
+          "p95": 0.01701251549006786,
+          "rmse": 0.014599039263808877
+        },
+        "provisional_bound_m": {
+          "maximum": 0.05641692669482958,
+          "minimum": 0.05630767979127008
+        },
+        "recommendation": "tighten_to_physical_evidence",
+        "recommendation_widens_provisional_bound": false,
+        "recommended_reviewed_tolerance_m": 0.028,
+        "sample_count": 3
+      },
+      "near": {
+        "distinct_surveyed_configuration_count": 3,
+        "distinct_target_count": 1,
+        "error_m": {
+          "maximum": 0.02364396811725597,
+          "median": 0.01745184289828234,
+          "minimum": 0.00944786906136891,
+          "p95": 0.023024755595358607,
+          "rmse": 0.017821955361079365
+        },
+        "provisional_bound_m": {
+          "maximum": 0.04440810882801764,
+          "minimum": 0.04420681526592079
+        },
+        "recommendation": "tighten_to_physical_evidence",
+        "recommendation_widens_provisional_bound": false,
+        "recommended_reviewed_tolerance_m": 0.034,
+        "sample_count": 3
+      }
+    }
+  },
+  "passed": true,
+  "samples": [
+    {
+      "error_bound_m": 0.04428543314009064,
+      "error_m": 0.02364396811725597,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "near",
+      "relative_target_point": {
+        "x": 0.355,
+        "y": 0.03900000000000001
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.3032398682582665,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26
+        ],
+        "evidence_ids": [
+          "image-1785182728420804347",
+          "scan-1785182728407114660"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.33914891359243876,
+          "y": 0.0069828077462171095
+        },
+        "range_m": 0.34200000762939453,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785182728420804347,
+          "lidar": 1785182728407114660,
+          "pose": 1785182728420804347
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.018542512564740526,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-near-rover-right-050",
+      "sensor_delta_ms": 13.689687,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.35713582850226605,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.02515202192154904,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "near",
+      "relative_target_point": {
+        "x": 0.355,
+        "y": 0.03900000000000001
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.2980803089556235,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785182728420804347"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.3617460160367723,
+          "y": 0.01308566914862283
+        },
+        "range_m": 0.3175100633939243,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785182728420804347,
+          "pose": 1785182728420804347
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.017830127959500525,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-near-rover-right-050",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.35713582850226605,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.04420681526592079,
+      "error_m": 0.01745184289828234,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "near",
+      "relative_target_point": {
+        "x": 0.355,
+        "y": -0.011
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.10446686625595719,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "evidence_ids": [
+          "image-1785182920233378626",
+          "scan-1785182920211820451"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.34034204853405503,
+          "y": -0.0007961168747248554
+        },
+        "range_m": 0.33649998903274536,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785182920233378626,
+          "lidar": 1785182920211820451,
+          "pose": 1785182920233378626
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.018526310039223372,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-near-center",
+      "sensor_delta_ms": 21.558175,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.35517038164801973,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.014301094624259521,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "near",
+      "relative_target_point": {
+        "x": 0.355,
+        "y": -0.011
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.10345492182598057,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785182920233378626"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.361717095180982,
+          "y": 0.0013464506883829087
+        },
+        "range_m": 0.30511092845831606,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785182920233378626,
+          "pose": 1785182920233378626
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.017410935279483727,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-near-center",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.35517038164801973,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.04440810882801764,
+      "error_m": 0.00944786906136891,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "near",
+      "relative_target_point": {
+        "x": 0.355,
+        "y": -0.061
+      },
+      "result": {
+        "bearing": {
+          "center_rad": -0.08193124639833954,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          704,
+          705,
+          706,
+          707,
+          708,
+          709,
+          710
+        ],
+        "evidence_ids": [
+          "image-1785183147670509848",
+          "scan-1785183147634454820"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.348860747437449,
+          "y": -0.003419692596171711
+        },
+        "range_m": 0.3479999899864197,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785183147670509848,
+          "lidar": 1785183147634454820,
+          "pose": 1785183147670509848
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.01856047096832145,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-near-rover-left-050",
+      "sensor_delta_ms": 36.055028,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.3602027207004411,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.009891782013526222,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "near",
+      "relative_target_point": {
+        "x": 0.355,
+        "y": -0.061
+      },
+      "result": {
+        "bearing": {
+          "center_rad": -0.08032325701753594,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785183147670509848"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.36205845828321354,
+          "y": -0.004619007931046984
+        },
+        "range_m": 0.3048036998993148,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785183147670509848,
+          "pose": 1785183147670509848
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.01740063486812114,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-near-rover-left-050",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.3602027207004411,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05635021851901802,
+      "error_m": 0.0090910742985124,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "mid",
+      "relative_target_point": {
+        "x": 0.6576,
+        "y": 0.03900000000000001
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.11613311612411331,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12
+        ],
+        "evidence_ids": [
+          "image-1785181427306047181",
+          "scan-1785181427280375660"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.3454228674692072,
+          "y": -0.010496713879094538
+        },
+        "range_m": 0.6462500095367432,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785181427306047181,
+          "lidar": 1785181427280375660,
+          "pose": 1785181427306047181
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.01980446723099524,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-mid-rover-right-050",
+      "sensor_delta_ms": 25.671521,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.6587554629754504,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.0022316620282227693,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "mid",
+      "relative_target_point": {
+        "x": 0.6576,
+        "y": 0.03900000000000001
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.11375132641212957,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785181427306047181"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.35249263120640345,
+          "y": -0.011975082527125869
+        },
+        "range_m": 0.6007375230073722,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785181427306047181,
+          "pose": 1785181427306047181
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.028558446776428735,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-mid-rover-right-050",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.6587554629754504,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05630767979127008,
+      "error_m": 0.016262889826762984,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "mid",
+      "relative_target_point": {
+        "x": 0.6576,
+        "y": -0.011
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.048790386928985484,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "evidence_ids": [
+          "image-1785181617185317163",
+          "scan-1785181617194362732"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.34611825579830086,
+          "y": 0.0029365687905852245
+        },
+        "range_m": 0.6449999809265137,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785181617185317163,
+          "lidar": 1785181617194362732,
+          "pose": 1785181617185317163
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.019797907492086212,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-mid-center",
+      "sensor_delta_ms": 9.045569,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.6576919947817519,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.009915576606128934,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "mid",
+      "relative_target_point": {
+        "x": 0.6576,
+        "y": -0.011
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.04847626086627545,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785181617185317163"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.35317437131743495,
+          "y": -0.0011734355938623035
+        },
+        "range_m": 0.5982396496714105,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785181617185317163,
+          "pose": 1785181617185317163
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.028457932154728402,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-mid-center",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.6576919947817519,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05641692669482958,
+      "error_m": 0.01709580723043507,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "mid",
+      "relative_target_point": {
+        "x": 0.6576,
+        "y": -0.061
+      },
+      "result": {
+        "bearing": {
+          "center_rad": -0.024750170410122202,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          712,
+          713,
+          714,
+          715,
+          716,
+          717,
+          718
+        ],
+        "evidence_ids": [
+          "image-1785181832840594200",
+          "scan-1785181832852963286"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.34852966375396593,
+          "y": 0.005019416655093534
+        },
+        "range_m": 0.6477500200271606,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785181832840594200,
+          "lidar": 1785181832852963286,
+          "pose": 1785181832840594200
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.019812352680764558,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-mid-rover-left-050",
+      "sensor_delta_ms": 12.369086,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.6604231673707396,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.016547492338626946,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "mid",
+      "relative_target_point": {
+        "x": 0.6576,
+        "y": -0.061
+      },
+      "result": {
+        "bearing": {
+          "center_rad": -0.02437091344824749,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785181832840594200"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.35809553644434117,
+          "y": 0.00515213980791189
+        },
+        "range_m": 0.6026369931230098,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785181832840594200,
+          "pose": 1785181832840594200
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.028634924530615096,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-mid-rover-left-050",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.6604231673707396,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.06833575375546957,
+      "error_m": 0.030422083057686608,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "far",
+      "relative_target_point": {
+        "x": 0.9576,
+        "y": 0.03900000000000001
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.10738563865993228,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13
+        ],
+        "evidence_ids": [
+          "image-1785182497752758385",
+          "scan-1785182497703383191"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.34195979030301094,
+          "y": 0.016717255966713668
+        },
+        "range_m": 0.9427500069141388,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785182497752758385,
+          "lidar": 1785182497703383191,
+          "pose": 1785182497752758385
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.021634331741149607,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-far-rover-right-050",
+      "sensor_delta_ms": 49.375194,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.9583938438867395,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.042430714443295464,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "far",
+      "relative_target_point": {
+        "x": 0.9576,
+        "y": 0.03900000000000001
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.10667291245684131,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785182497752758385"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.38423277534937605,
+          "y": 0.01927090349150512
+        },
+        "range_m": 0.9339037354733559,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785182497752758385,
+          "pose": 1785182497752758385
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.04235543012988271,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-far-rover-right-050",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.9583938438867395,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.06830652706785098,
+      "error_m": 0.026441465340464446,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "far",
+      "relative_target_point": {
+        "x": 0.9576,
+        "y": -0.011
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.04291192338360226,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "evidence_ids": [
+          "image-1785182276291919014",
+          "scan-1785182276215962380"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.34436800945548385,
+          "y": 0.013423223721630573
+        },
+        "range_m": 0.9442499876022339,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785182276291919014,
+          "lidar": 1785182276215962380,
+          "pose": 1785182276291919014
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.02164485756136382,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-far-center",
+      "sensor_delta_ms": 75.956634,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.9576631766962745,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.037045170418112526,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "far",
+      "relative_target_point": {
+        "x": 0.9576,
+        "y": -0.011
+      },
+      "result": {
+        "bearing": {
+          "center_rad": 0.04266919917067854,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785182276291919014"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.3853353754802358,
+          "y": 0.009531056239265253
+        },
+        "range_m": 0.9305448501170611,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785182276291919014,
+          "pose": 1785182276291919014
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.042213726445856574,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-far-center",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.9576631766962745,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.06838163644244472,
+      "error_m": 0.012968307486580307,
+      "expected_method": "lidar_range",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "far",
+      "relative_target_point": {
+        "x": 0.9576,
+        "y": -0.061
+      },
+      "result": {
+        "bearing": {
+          "center_rad": -0.012986704035855915,
+          "half_angle_rad": 0.03490658503988659
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [
+          714,
+          715,
+          716,
+          717,
+          718
+        ],
+        "evidence_ids": [
+          "image-1785182023462749737",
+          "scan-1785182023442868176"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "lidar_range",
+        "point": {
+          "frame": "map",
+          "x": 0.3448491442500571,
+          "y": -0.002337553327131592
+        },
+        "range_m": 0.9447500109672546,
+        "reason": "single_contiguous_lidar_cluster",
+        "source_timestamps_ns": {
+          "image": 1785182023462749737,
+          "lidar": 1785182023442868176,
+          "pose": 1785182023462749737
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.021648368957287414,
+          "range_sigma_m": 0.01,
+          "sources": [
+            "pixel",
+            "lidar_range",
+            "camera_lidar_extrinsic",
+            "synchronization",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "lidar-far-rover-left-050",
+      "sensor_delta_ms": 19.881561,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.9595409110611178,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": 0.05,
+      "error_m": 0.03590762897954967,
+      "expected_method": "floor_projection",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "far",
+      "relative_target_point": {
+        "x": 0.9576,
+        "y": -0.061
+      },
+      "result": {
+        "bearing": {
+          "center_rad": -0.014273973684473735,
+          "half_angle_rad": 0.02537282036871085
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785182023462749737"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "floor_projection",
+        "point": {
+          "frame": "map",
+          "x": 0.3858214482829261,
+          "y": 0.0065591769850691095
+        },
+        "range_m": 0.9302787171086426,
+        "reason": "calibrated_floor_intersection",
+        "source_timestamps_ns": {
+          "image": 1785182023462749737,
+          "pose": 1785182023462749737
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": 0.04220250043256185,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "floor_plane",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "floor-far-rover-left-050",
+      "sensor_delta_ms": null,
+      "survey_uncertainty_m": 0.01,
+      "surveyed_range_m": 0.9595409110611178,
+      "target_id": "checkerboard-fixed-01"
+    },
+    {
+      "error_bound_m": null,
+      "error_m": null,
+      "expected_method": "bearing_only",
+      "passed": true,
+      "pose_age_ms": 0.0,
+      "range_band": "near",
+      "relative_target_point": {
+        "x": 0.355,
+        "y": -0.061
+      },
+      "result": {
+        "bearing": {
+          "center_rad": -0.17024264906007702,
+          "half_angle_rad": 0.06027940540859744
+        },
+        "calibration_id": "m7_camera_info:248689398fadfb27",
+        "cluster_indices": [],
+        "evidence_ids": [
+          "image-1785183493991194403",
+          "scan-1785183493914845086"
+        ],
+        "map_revision": "m7-survey-grid-20260726",
+        "method": "bearing_only",
+        "point": null,
+        "range_m": null,
+        "reason": "ambiguous_lidar_clusters",
+        "source_timestamps_ns": {
+          "image": 1785183493991194403,
+          "lidar": 1785183493914845086,
+          "pose": 1785183493991194403
+        },
+        "uncertainty": {
+          "bearing_sigma_rad": 0.012686410184355425,
+          "position_sigma_m": null,
+          "range_sigma_m": null,
+          "sources": [
+            "pixel",
+            "camera_extrinsic",
+            "robot_pose"
+          ]
+        }
+      },
+      "sample_id": "ambiguity-physical-occluder-control",
+      "sensor_delta_ms": 76.349317,
+      "surveyed_range_m": 0.3602027207004411,
+      "target_id": "checkerboard-fixed-01"
+    }
+  ],
+  "schema": "sphero_rvr.m7_phase2_surveyed_localization_report.v1",
+  "scope": {
+    "motor_authority": false,
+    "moving_perception_validated": false,
+    "physical_navigation_approved": false,
+    "rover_driver_started": false,
+    "stationary_sensors_only": true,
+    "surveyed_physical_localization": true
+  },
+  "session_sha256": "613be7ca7602270499dad1605b589b26f7c0ef5aac817241d04f8c88d28edc51",
+  "source_sha": "a9ebc70314f9f2caf5b971b4c07e623a0a8e1047"
+}

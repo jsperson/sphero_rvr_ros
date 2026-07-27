@@ -26,7 +26,7 @@ Important inputs:
 ```text
 camera_info_url:=file:///home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml
 camera_x:=0.0587375 camera_y:=-0.0301625 camera_z:=0.114300
-camera_roll:=0.0 camera_pitch:=0.0 camera_yaw:=0.0
+camera_roll:=0.0 camera_pitch:=-0.0523598775598299 camera_yaw:=0.0
 camera_frame_id:=camera_link
 camera_optical_frame_id:=camera_optical_frame
 ```
@@ -66,7 +66,7 @@ ros2 launch sphero_rvr_driver lidar.launch.py --show-args
 Important inputs:
 
 ```text
-laser_x:=-0.0074295 laser_y:=-0.009525 laser_z:=0.190500
+laser_x:=0.004500 laser_y:=-0.011000 laser_z:=0.190500
 laser_roll:=0.0 laser_pitch:=0.0 laser_yaw:=3.1239668018215028
 frame_id:=laser
 base_frame:=base_link
@@ -195,6 +195,28 @@ meters/radians.
 
 ### Lidar: `base_link -> laser`
 
+The 2026-07-27 tread-contact survey measured from the lidar scan origin to the
+most forward, rearward, right, and left tread-contact extents. The first
+readings included a `0.109 m` laser-measure reference offset. A direct
+remeasurement of the forward extent and a target-distance closure exposed the
+configuration error; removing the same additive offset from all four readings
+produced:
+
+| Direction from lidar | Distance |
+| --- | ---: |
+| forward | `0.091 m` |
+| rearward | `0.100 m` |
+| right | `0.104 m` |
+| left | `0.126 m` |
+
+The corrected tread footprint is therefore `0.191 m` long and `0.230 m` wide.
+Because the configuration error was the same additive offset on both sides of
+each axis, it cancels in the midpoint calculation. The midpoint still places
+the lidar `0.0045 m` forward and `0.0110 m` right of `base_link`, so the
+reviewed translation remains
+`base_link -> laser = [0.0045, -0.0110, 0.1905] m`. The yaw measurement is
+unchanged.
+
 1. Mark the RVR `base_link` origin at the tread-footprint center on the floor
    projection; do not use an undefined payload-deck drawing datum.
 2. Mark the RPLIDAR scan origin, not merely the case center if the datasheet
@@ -216,6 +238,20 @@ meters/radians.
    ```
 
 ### Camera: `base_link -> camera_link`
+
+The 2026-07-27 stationary surveyed-floor calibration replaces the previous
+zero-pitch assumption with `camera_pitch=-0.0523598775598299 rad` (`-3.0
+degrees`). The calibration observation used the fixed vertical checkerboard at
+a measured `0.655 m` from the lidar scan origin with `0.050 m` lateral
+separation. Its reviewed face-to-floor contact was image pixel `(460, 466)`.
+With the measured camera translation and calibrated CameraInfo, the old
+zero-pitch transform projected that contact about `0.130 m` from surveyed
+ground truth. A pitch sweep placed the minimum at approximately `-3.04
+degrees`; the retained `-3.0 degree` value projected the calibration point
+within `0.003 m` and reduced all three previously recorded near observations
+below `0.031 m`. Those observations are calibration evidence, not independent
+M7.2 acceptance samples; acceptance must be recaptured under an exact source
+SHA that publishes the corrected transform.
 
 1. Mark the camera optical center as closely as practical. Use the module/lens
    datasheet when the optical center is not the board center.

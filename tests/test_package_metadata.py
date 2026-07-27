@@ -21,6 +21,7 @@ EXPECTED_DATA_FILES = {
         "launch/camera.launch.py",
         "launch/mission_service.launch.py",
         "launch/stationary_perception.launch.py",
+        "launch/m7_stationary_localization.launch.py",
     },
     "share/sphero_rvr_driver/config": {
         "config/rvr.yaml",
@@ -74,6 +75,7 @@ EXPECTED_DATA_FILES = {
         "docs/hierarchical_exploration_phase4.md",
         "docs/hierarchical_exploration_milestone7.md",
         "docs/hierarchical_exploration_milestone7_phase1.md",
+        "docs/hierarchical_exploration_milestone7_phase2.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -294,6 +296,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
         "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
         "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
+        "rvr_m7_surveyed_localization = sphero_rvr_driver.m7_surveyed_localization:main",
     } <= console_scripts
 
     lidar_validation = (

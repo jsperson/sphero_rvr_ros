@@ -14,7 +14,7 @@ Required semantic projection inputs:
 
 - VS04 `shoe_detector_evaluation.json` with per-frame `frame_id`, `detections`, bbox/confidence/status, and evidence-frame naming.
 - Measured CameraInfo from `/camera_node/camera_info`; empty intrinsics are rejected via `require_configured_camera_info()`.
-- Measured static mount defaults from `docs/camera_lidar_calibration.md`: `base_link -> camera_link` translation `[0.0587375, -0.0301625, 0.114300]`, zero roll/pitch/yaw, and `camera_link -> camera_optical_frame` optical convention.
+- Measured static mount defaults from `docs/camera_lidar_calibration.md`: `base_link -> camera_link` translation `[0.0587375, -0.0301625, 0.114300]`, roll/yaw zero, pitch `-0.0523598775598299 rad`, and the `camera_link -> camera_optical_frame` optical convention.
 - Timestamped robot poses in `map`: exact or interpolated inside the supplied pose history only. Requests before the first pose or after the last pose raise errors instead of extrapolating believable nonsense.
 
 ## Projection model
