@@ -151,6 +151,9 @@ three surveyed target positions per point-producing method and range band must
 be recorded. The existing synchronization, pose-age, ambiguity rejection, and
 bearing-only-never-a-point gates remain mandatory. Tolerances may tighten from
 physical evidence; widening them requires an explicit review and rationale.
+For unambiguous collection, the reviewed bands are fixed as near
+`[0.30, 0.55) m`, mid `[0.55, 0.85) m`, and far `[0.85, 1.20] m`. See
+[hierarchical_exploration_milestone7_phase2.md](hierarchical_exploration_milestone7_phase2.md).
 
 M7.3 and M7.4 are motor-capable physical validations and each needs its own
 exact-SHA approval and attended cleanup. Approval for either does not approve

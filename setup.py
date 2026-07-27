@@ -22,6 +22,7 @@ setup(
                 "launch/stationary_perception.launch.py",
                 "launch/adaptive_mission_perception.launch.py",
                 "launch/hierarchical_exploration_replay.launch.py",
+                "launch/m7_stationary_localization.launch.py",
             ],
         ),
         (
@@ -100,6 +101,7 @@ setup(
                 "docs/hierarchical_exploration_phase4.md",
                 "docs/hierarchical_exploration_milestone7.md",
                 "docs/hierarchical_exploration_milestone7_phase1.md",
+                "docs/hierarchical_exploration_milestone7_phase2.md",
             ],
         ),
         (
@@ -194,6 +196,7 @@ setup(
             "rvr_hierarchical_phase3_replay_validate = sphero_rvr_driver.hierarchical_phase3_replay_validation:main",
             "rvr_hierarchical_phase4_replay = sphero_rvr_driver.hierarchical_phase4_replay:main",
             "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
+            "rvr_m7_surveyed_localization = sphero_rvr_driver.m7_surveyed_localization:main",
         ],
     },
 )
