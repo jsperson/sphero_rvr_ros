@@ -189,6 +189,7 @@ class TrajectoryCheck:
     collision_time_s: Optional[float] = None
     collision_point_x_m: Optional[float] = None
     collision_point_y_m: Optional[float] = None
+    moving_away_point_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -510,27 +511,57 @@ def evaluate_projected_trajectory(
     rear = config.footprint_rear_m + margin
     left = config.footprint_left_m + margin
     right = config.footprint_right_m + margin
-    minimum_clearance = math.inf
-
-    for step in range(step_count + 1):
-        elapsed_s = horizon_s * step / step_count
-        pose_x, pose_y, pose_yaw = _constant_twist_pose(
+    poses = tuple(
+        _constant_twist_pose(
             linear_x,
             angular_z,
-            elapsed_s,
+            horizon_s * step / step_count,
         )
-        cos_yaw = math.cos(pose_yaw)
-        sin_yaw = math.sin(pose_yaw)
-        for point_x, point_y in points:
-            dx = point_x - pose_x
-            dy = point_y - pose_y
-            local_x = cos_yaw * dx + sin_yaw * dy
-            local_y = -sin_yaw * dx + cos_yaw * dy
-            outside_x = max(local_x - front, -rear - local_x, 0.0)
-            outside_y = max(local_y - left, -right - local_y, 0.0)
-            clearance = math.hypot(outside_x, outside_y)
+        for step in range(step_count + 1)
+    )
+    minimum_clearance = math.inf
+    moving_away_point_count = 0
+
+    for point_x, point_y in points:
+        initial_signed_clearance = _signed_footprint_clearance(
+            point_x,
+            point_y,
+            front=front,
+            rear=rear,
+            left=left,
+            right=right,
+        )
+        if (
+            initial_signed_clearance <= 0.0
+            and _trajectory_moves_away_from_overlapped_point(
+                point_x,
+                point_y,
+                command=command,
+                poses=poses,
+                front=front,
+                rear=rear,
+                left=left,
+                right=right,
+            )
+        ):
+            moving_away_point_count += 1
+            continue
+        for step, pose in enumerate(poses):
+            local_x, local_y = _point_in_pose_frame(point_x, point_y, pose)
+            clearance = max(
+                0.0,
+                _signed_footprint_clearance(
+                    local_x,
+                    local_y,
+                    front=front,
+                    rear=rear,
+                    left=left,
+                    right=right,
+                ),
+            )
             minimum_clearance = min(minimum_clearance, clearance)
             if clearance <= 0.0:
+                elapsed_s = horizon_s * step / step_count
                 return TrajectoryCheck(
                     True,
                     horizon_s,
@@ -538,13 +569,103 @@ def evaluate_projected_trajectory(
                     collision_time_s=elapsed_s,
                     collision_point_x_m=point_x,
                     collision_point_y_m=point_y,
+                    moving_away_point_count=moving_away_point_count,
                 )
 
+    if moving_away_point_count == len(points):
+        return TrajectoryCheck(
+            True,
+            horizon_s,
+            None,
+            collision_time_s=0.0,
+            moving_away_point_count=moving_away_point_count,
+        )
     return TrajectoryCheck(
         False,
         horizon_s,
         minimum_clearance if math.isfinite(minimum_clearance) else None,
+        moving_away_point_count=moving_away_point_count,
     )
+
+
+def _trajectory_moves_away_from_overlapped_point(
+    point_x: float,
+    point_y: float,
+    *,
+    command: TwistCommand,
+    poses: Sequence[tuple[float, float, float]],
+    front: float,
+    rear: float,
+    left: float,
+    right: float,
+) -> bool:
+    """Return true only when the complete sampled path moves away from a point."""
+
+    if len(poses) < 2:
+        return False
+    previous_signed: Optional[float] = None
+    signed_increased = False
+    tolerance = 1e-9
+    for pose in poses:
+        local_x, local_y = _point_in_pose_frame(point_x, point_y, pose)
+        signed = _signed_footprint_clearance(
+            local_x,
+            local_y,
+            front=front,
+            rear=rear,
+            left=left,
+            right=right,
+        )
+        if previous_signed is not None:
+            if signed < previous_signed - tolerance:
+                return False
+            signed_increased = signed_increased or signed > previous_signed + tolerance
+        previous_signed = signed
+    # Relative radial separation from base_link changes at -linear_x * point_x;
+    # angular velocity cancels because rotation alone preserves radius.  This
+    # admits translation away from a trailing/front point even when the nearest
+    # rectangular edge stays momentarily unchanged, while tangential motion
+    # does not qualify unless signed footprint clearance itself increases.
+    radial_separation_rate = -float(command.linear_x) * point_x
+    return signed_increased or radial_separation_rate > tolerance
+
+
+def _point_in_pose_frame(
+    point_x: float,
+    point_y: float,
+    pose: tuple[float, float, float],
+) -> tuple[float, float]:
+    pose_x, pose_y, pose_yaw = pose
+    dx = point_x - pose_x
+    dy = point_y - pose_y
+    cos_yaw = math.cos(pose_yaw)
+    sin_yaw = math.sin(pose_yaw)
+    return (
+        cos_yaw * dx + sin_yaw * dy,
+        -sin_yaw * dx + cos_yaw * dy,
+    )
+
+
+def _signed_footprint_clearance(
+    local_x: float,
+    local_y: float,
+    *,
+    front: float,
+    rear: float,
+    left: float,
+    right: float,
+) -> float:
+    outside_x = max(local_x - front, -rear - local_x, 0.0)
+    outside_y = max(local_y - left, -right - local_y, 0.0)
+    if outside_x > 0.0 or outside_y > 0.0:
+        return math.hypot(outside_x, outside_y)
+    penetration = min(
+        front - local_x,
+        local_x + rear,
+        left - local_y,
+        local_y + right,
+    )
+    return -penetration
 
 
 def _valid_base_points(
