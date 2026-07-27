@@ -128,3 +128,9 @@ def test_milestone7_phase1_graph_audit_contract_is_no_motion() -> None:
         "goal = NavigateThroughPoses.Goal()", 1
     )[0]
     assert "send_goal" not in audit_block
+
+    nav2_config = (REPO_ROOT / "config" / "hierarchical_nav2.yaml").read_text()
+    assert nav2_config.count("initial_transform_timeout: 15.0") == 2
+    assert "nav2_cmd_lease_s: 0.25" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
