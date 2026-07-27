@@ -3,13 +3,16 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 from sphero_rvr_driver.m7_surveyed_localization import (
+    CLEANUP_AUDIT_SCHEMA,
     MAX_POSE_AGE_NS,
     RANGE_BANDS,
     REPORT_SCHEMA,
     SAFE_AUTHORITY,
+    audit_stationary_cleanup,
     build_capture_plan,
     build_sample_from_snapshot,
     build_session_template,
@@ -190,13 +193,28 @@ def _complete_session() -> dict:
         for ordinal in range(3)
     ]
     session["samples"].append(_ambiguous_sample())
-    session["cleanup"] = {
+    cleanup = {
         "completed": True,
         "camera_stopped": True,
         "lidar_stopped": True,
         "rosbag_stopped": True,
         "prohibited_nodes_absent": True,
         "rover_serial_owner_absent": True,
+    }
+    session["cleanup"] = cleanup
+    session["cleanup_audit"] = {
+        "schema": CLEANUP_AUDIT_SCHEMA,
+        "source_sha": SOURCE_SHA,
+        "passed": True,
+        "checks": {
+            "exact_source_sha": True,
+            "source_checkout_clean": True,
+            "stationary_sensor_and_motion_processes_absent": True,
+            "prohibited_ros_nodes_absent": True,
+            "motion_topic_publishers_absent": True,
+            "sensor_and_rover_devices_ownerless": True,
+        },
+        "cleanup": dict(cleanup),
     }
     return session
 
@@ -395,6 +413,12 @@ def test_stationary_launch_is_default_off_and_has_no_motion_surface() -> None:
     launch_text = (
         REPO_ROOT / "launch" / "m7_stationary_localization.launch.py"
     ).read_text()
+    module_text = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "m7_surveyed_localization.py"
+    ).read_text()
 
     assert 'default_value="false"' in launch_text
     assert "IfCondition(enabled)" in launch_text
@@ -408,6 +432,8 @@ def test_stationary_launch_is_default_off_and_has_no_motion_surface() -> None:
         "physical_execution_enabled",
     ):
         assert prohibited not in launch_text
+    assert "create_subscription" in module_text
+    assert "create_publisher" not in module_text
 
 
 def test_authority_or_cleanup_claim_cannot_be_omitted() -> None:
@@ -419,6 +445,105 @@ def test_authority_or_cleanup_claim_cannot_be_omitted() -> None:
     session = _complete_session()
     session["cleanup"]["camera_stopped"] = False
     assert evaluate_session(session)["passed"] is False
+
+
+@dataclass
+class _Completed:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+def _audit_runner(
+    argv: list[str],
+    *,
+    capture_output: bool,
+    text: bool,
+    check: bool,
+    timeout: float,
+) -> _Completed:
+    del capture_output, text, check, timeout
+    command = tuple(argv)
+    if command[-2:] == ("rev-parse", "HEAD"):
+        return _Completed(0, f"{SOURCE_SHA}\n")
+    if command[-2:] == ("status", "--porcelain"):
+        return _Completed(0)
+    if command[:3] == ("ps", "-eo", "pid=,args="):
+        return _Completed(0, "1 /sbin/init\n")
+    if command[-2:] == ("node", "list"):
+        return _Completed(0)
+    if command[-2:] == ("topic", "list"):
+        return _Completed(0, "/rosout\n")
+    if "topic" in command and "info" in command:
+        return _Completed(1, stderr="Unknown topic")
+    if command[0] == "fuser":
+        return _Completed(1)
+    raise AssertionError(f"unexpected audit command: {command}")
+
+
+def test_generated_cleanup_audit_proves_process_graph_and_device_shutdown() -> None:
+    report = audit_stationary_cleanup(
+        source_sha=SOURCE_SHA,
+        source_repo=Path("/source"),
+        runner=_audit_runner,
+    )
+
+    assert report["passed"] is True
+    assert all(report["checks"].values())
+    assert report["cleanup"] == {
+        "completed": True,
+        "camera_stopped": True,
+        "lidar_stopped": True,
+        "rosbag_stopped": True,
+        "prohibited_nodes_absent": True,
+        "rover_serial_owner_absent": True,
+    }
+    assert report["findings"]["motion_topic_publishers"] == {
+        "/cmd_vel": 0,
+        "/cmd_vel_motor": 0,
+        "/nav2_cmd_vel_request": 0,
+    }
+
+
+def test_cleanup_audit_fails_closed_when_a_motion_publisher_cannot_be_counted() -> None:
+    def runner(
+        argv: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+        timeout: float,
+    ) -> _Completed:
+        result = _audit_runner(
+            argv,
+            capture_output=capture_output,
+            text=text,
+            check=check,
+            timeout=timeout,
+        )
+        if tuple(argv[-4:]) == ("topic", "info", "-v", "/cmd_vel"):
+            return _Completed(0, "Type: geometry_msgs/msg/Twist\n")
+        return result
+
+    report = audit_stationary_cleanup(
+        source_sha=SOURCE_SHA,
+        source_repo=Path("/source"),
+        runner=runner,
+    )
+
+    assert report["passed"] is False
+    assert report["checks"]["motion_topic_publishers_absent"] is False
+    assert report["cleanup"]["completed"] is False
+
+
+def test_session_rejects_hand_entered_cleanup_without_generated_audit() -> None:
+    session = _complete_session()
+    session["cleanup_audit"] = {}
+
+    report = evaluate_session(session)
+
+    assert report["passed"] is False
+    assert "cleanup_audit schema is invalid" in report["error"]
 
 
 def test_sample_copy_does_not_mutate_shared_fixture() -> None:

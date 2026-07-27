@@ -12,9 +12,13 @@ import argparse
 import hashlib
 import json
 import math
+import os
+import platform
 import re
-import time
+import socket
 import statistics
+import subprocess
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +41,7 @@ SESSION_SCHEMA = "sphero_rvr.m7_phase2_surveyed_localization_session.v1"
 REPORT_SCHEMA = "sphero_rvr.m7_phase2_surveyed_localization_report.v1"
 CAPTURE_PLAN_SCHEMA = "sphero_rvr.m7_phase2_stationary_capture_plan.v1"
 SNAPSHOT_SCHEMA = "sphero_rvr.m7_phase2_stationary_snapshot.v1"
+CLEANUP_AUDIT_SCHEMA = "sphero_rvr.m7_phase2_cleanup_audit.v1"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 METHODS = ("lidar_range", "floor_projection")
@@ -115,6 +120,27 @@ PROHIBITED_CAPTURE_TERMS = (
     "physical_execution",
     "motion_authority",
 )
+PROHIBITED_PROCESS_TERMS = (
+    "rplidar_composition",
+    "camera_node",
+    "rvr_node",
+    "live_route_runner",
+    "lidar_collision_stop_supervisor",
+    "ros2 bag record",
+)
+PROHIBITED_NODE_TERMS = (
+    "rplidar",
+    "camera_node",
+    "base_to_laser",
+    "base_to_camera",
+    "camera_to_optical",
+    "m7_survey",
+    "rvr_node",
+    "live_route_runner",
+    "collision_stop",
+)
+MOTION_TOPICS = ("/cmd_vel", "/cmd_vel_motor", "/nav2_cmd_vel_request")
+AUDITED_DEVICES = ("/dev/rplidar", "/dev/ttyAMA0", "/dev/ttyS0", "/dev/serial0")
 
 
 class SurveyValidationError(ValueError):
@@ -371,6 +397,183 @@ def build_sample_from_snapshot(
     return value
 
 
+def _run_audit_command(
+    argv: Sequence[str],
+    *,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    try:
+        completed = runner(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10.0,
+        )
+        return {
+            "argv": list(argv),
+            "returncode": int(completed.returncode),
+            "stdout": str(completed.stdout),
+            "stderr": str(completed.stderr),
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "argv": list(argv),
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+        }
+
+
+def _publisher_count(output: str) -> Optional[int]:
+    match = re.search(r"Publisher count:\s*(\d+)", output)
+    return None if match is None else int(match.group(1))
+
+
+def audit_stationary_cleanup(
+    *,
+    source_sha: str,
+    source_repo: Path,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Prove that stationary sensors and every motor-capable surface are gone."""
+
+    _require(SHA_RE.fullmatch(source_sha) is not None, "source_sha must be exact 40-hex")
+    commands: dict[str, Any] = {
+        "git_head": _run_audit_command(
+            ("git", "-C", str(source_repo), "rev-parse", "HEAD"),
+            runner=runner,
+        ),
+        "git_status": _run_audit_command(
+            ("git", "-C", str(source_repo), "status", "--porcelain"),
+            runner=runner,
+        ),
+        "processes": _run_audit_command(
+            ("ps", "-eo", "pid=,args="),
+            runner=runner,
+        ),
+        "ros_nodes": _run_audit_command(
+            ("ros2", "--no-daemon", "node", "list"),
+            runner=runner,
+        ),
+        "ros_topics": _run_audit_command(
+            ("ros2", "--no-daemon", "topic", "list"),
+            runner=runner,
+        ),
+    }
+    for topic in MOTION_TOPICS:
+        commands[f"topic_info:{topic}"] = _run_audit_command(
+            ("ros2", "--no-daemon", "topic", "info", "-v", topic),
+            runner=runner,
+        )
+    for device in AUDITED_DEVICES:
+        commands[f"device_owner:{device}"] = _run_audit_command(
+            ("fuser", device),
+            runner=runner,
+        )
+
+    head_command = commands["git_head"]
+    status_command = commands["git_status"]
+    process_command = commands["processes"]
+    node_command = commands["ros_nodes"]
+    topic_command = commands["ros_topics"]
+    process_lines = [
+        line.strip()
+        for line in process_command["stdout"].splitlines()
+        if line.strip()
+    ]
+    prohibited_processes = [
+        line
+        for line in process_lines
+        if any(term in line.lower() for term in PROHIBITED_PROCESS_TERMS)
+    ]
+    node_lines = [
+        line.strip()
+        for line in node_command["stdout"].splitlines()
+        if line.strip()
+    ]
+    prohibited_nodes = [
+        line
+        for line in node_lines
+        if any(term in line.lower() for term in PROHIBITED_NODE_TERMS)
+    ]
+    motion_publishers: dict[str, Optional[int]] = {}
+    for topic in MOTION_TOPICS:
+        info = commands[f"topic_info:{topic}"]
+        if info["returncode"] == 0:
+            motion_publishers[topic] = _publisher_count(info["stdout"])
+        elif info["returncode"] == 1:
+            motion_publishers[topic] = 0
+        else:
+            motion_publishers[topic] = None
+    device_owners = {
+        device: commands[f"device_owner:{device}"]["stdout"].strip()
+        for device in AUDITED_DEVICES
+    }
+    device_results_valid = all(
+        commands[f"device_owner:{device}"]["returncode"] in {0, 1}
+        for device in AUDITED_DEVICES
+    )
+    checks = {
+        "exact_source_sha": head_command["returncode"] == 0
+        and head_command["stdout"].strip() == source_sha,
+        "source_checkout_clean": status_command["returncode"] == 0
+        and not status_command["stdout"].strip(),
+        "process_inspection_succeeded": process_command["returncode"] == 0,
+        "stationary_sensor_and_motion_processes_absent": not prohibited_processes,
+        "ros_node_inspection_succeeded": node_command["returncode"] == 0,
+        "prohibited_ros_nodes_absent": not prohibited_nodes,
+        "ros_topic_inspection_succeeded": topic_command["returncode"] == 0,
+        "motion_topic_publishers_absent": all(
+            count == 0 for count in motion_publishers.values()
+        ),
+        "device_owner_inspection_succeeded": device_results_valid,
+        "sensor_and_rover_devices_ownerless": all(
+            not owners for owners in device_owners.values()
+        ),
+    }
+    passed = all(checks.values())
+    return {
+        "schema": CLEANUP_AUDIT_SCHEMA,
+        "source_sha": source_sha,
+        "audited_at_utc": datetime.now(timezone.utc).isoformat(),
+        "environment": {
+            "hostname": socket.gethostname(),
+            "platform": platform.platform(),
+            "python_version": platform.python_version(),
+            "ros_distro": os.environ.get("ROS_DISTRO", ""),
+            "ros_domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
+        },
+        "passed": passed,
+        "checks": checks,
+        "findings": {
+            "prohibited_processes": prohibited_processes,
+            "prohibited_nodes": prohibited_nodes,
+            "motion_topic_publishers": motion_publishers,
+            "device_owners": device_owners,
+        },
+        "cleanup": {
+            "completed": passed,
+            "camera_stopped": process_command["returncode"] == 0
+            and not any("camera_node" in line.lower() for line in process_lines),
+            "lidar_stopped": process_command["returncode"] == 0
+            and not any("rplidar" in line.lower() for line in process_lines)
+            and not device_owners["/dev/rplidar"],
+            "rosbag_stopped": process_command["returncode"] == 0
+            and not any("ros2 bag record" in line.lower() for line in process_lines),
+            "prohibited_nodes_absent": node_command["returncode"] == 0
+            and not prohibited_nodes
+            and all(count == 0 for count in motion_publishers.values()),
+            "rover_serial_owner_absent": device_results_valid
+            and all(
+                not device_owners[device]
+                for device in ("/dev/ttyAMA0", "/dev/ttyS0", "/dev/serial0")
+            ),
+        },
+        "commands": commands,
+    }
+
+
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
@@ -437,6 +640,28 @@ def _verify_contract(session: Mapping[str, Any]) -> None:
 
     _require(session.get("authority") == SAFE_AUTHORITY, "authority must match the stationary no-motion contract")
     _require(session.get("cleanup") == REQUIRED_CLEANUP, "cleanup must prove all sensor and no-motion checks")
+    cleanup_audit = session.get("cleanup_audit")
+    _require(isinstance(cleanup_audit, Mapping), "generated cleanup_audit is required")
+    _require(
+        cleanup_audit.get("schema") == CLEANUP_AUDIT_SCHEMA,
+        "cleanup_audit schema is invalid",
+    )
+    _require(cleanup_audit.get("passed") is True, "cleanup_audit must pass")
+    _require(
+        cleanup_audit.get("source_sha") == provenance["source_sha"],
+        "cleanup_audit source SHA must match the session",
+    )
+    _require(
+        cleanup_audit.get("cleanup") == session["cleanup"],
+        "cleanup must be copied from the generated cleanup_audit",
+    )
+    audit_checks = cleanup_audit.get("checks")
+    _require(
+        isinstance(audit_checks, Mapping)
+        and audit_checks
+        and all(value is True for value in audit_checks.values()),
+        "every generated cleanup audit check must pass",
+    )
 
     declared_bands = session.get("range_bands")
     _require(
@@ -641,9 +866,15 @@ def _evaluate_sample(
 def _distribution(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     errors = [float(row["error_m"]) for row in rows]
     uncertainties = [float(row["survey_uncertainty_m"]) for row in rows]
-    provisional_cap = min(float(row["error_bound_m"]) for row in rows)
+    provisional_bounds = [float(row["error_bound_m"]) for row in rows]
+    strictest_provisional_bound = min(provisional_bounds)
     evidence_candidate = max(max(errors), _percentile(errors, 0.95) + max(uncertainties))
-    recommended = min(provisional_cap, math.ceil(evidence_candidate * 1000.0) / 1000.0)
+    rounded_candidate = math.ceil(evidence_candidate * 1000.0) / 1000.0
+    recommended = (
+        rounded_candidate
+        if rounded_candidate <= strictest_provisional_bound
+        else None
+    )
     return {
         "sample_count": len(rows),
         "distinct_target_count": len({str(row["target_id"]) for row in rows}),
@@ -654,9 +885,18 @@ def _distribution(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "maximum": max(errors),
             "rmse": math.sqrt(statistics.mean(value * value for value in errors)),
         },
-        "provisional_cap_m": provisional_cap,
+        "provisional_bound_m": {
+            "minimum": min(provisional_bounds),
+            "maximum": max(provisional_bounds),
+        },
         "recommended_reviewed_tolerance_m": recommended,
-        "recommendation_widens_provisional_bound": recommended > provisional_cap,
+        "recommendation": (
+            "tighten_to_physical_evidence"
+            if recommended is not None
+            and recommended < strictest_provisional_bound
+            else "retain_provisional_bound"
+        ),
+        "recommendation_widens_provisional_bound": False,
     }
 
 
@@ -855,6 +1095,7 @@ def build_session_template(*, source_sha: str) -> dict[str, Any]:
         },
         "artifacts": [],
         "samples": [],
+        "cleanup_audit": {},
         "cleanup": {key: False for key in REQUIRED_CLEANUP},
     }
 
@@ -911,6 +1152,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sample.add_argument("--surveyed-at-utc", required=True)
     sample.add_argument("--survey-uncertainty-m", type=float, required=True)
     sample.add_argument("--output", type=Path)
+    audit = subparsers.add_parser(
+        "audit",
+        help="record fail-closed post-session process, ROS graph, and device cleanup",
+    )
+    audit.add_argument("--source-sha", required=True)
+    audit.add_argument(
+        "--source-repo",
+        type=Path,
+        default=Path("/home/jsperson/ros2_ws/src/sphero_rvr_ros"),
+    )
+    audit.add_argument("--output", type=Path, required=True)
     evaluate = subparsers.add_parser("evaluate", help="recompute and validate a completed session")
     evaluate.add_argument("session", type=Path)
     evaluate.add_argument("--output", type=Path)
@@ -964,6 +1216,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 2
         _write_or_print(value, args.output)
         return 0
+    if args.command == "audit":
+        try:
+            value = audit_stationary_cleanup(
+                source_sha=args.source_sha,
+                source_repo=args.source_repo,
+            )
+        except SurveyValidationError as exc:
+            print(f"ERROR: {exc}")
+            return 2
+        _write_or_print(value, args.output)
+        return 0 if value["passed"] else 1
     session = json.loads(args.session.read_text())
     report = evaluate_session(session)
     _write_or_print(report, args.output)

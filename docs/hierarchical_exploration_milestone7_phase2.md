@@ -147,7 +147,20 @@ destroys the subscriptions and exits. It never creates a publisher.
 Stop rosbag cleanly before stopping the camera/lidar launch. Verify the three
 sensor/static-transform nodes are gone, the prohibited motion nodes never
 appeared, the RVR serial port has no owner, and no velocity publisher appeared.
-Record those checks in the cleanup artifact and manifest.
+Generate those checks rather than entering cleanup booleans by hand:
+
+```bash
+ros2 run sphero_rvr_driver rvr_m7_surveyed_localization audit \
+  --source-sha EXACT_EXECUTABLE_SOURCE_SHA \
+  --source-repo /home/jsperson/ros2_ws/src/sphero_rvr_ros \
+  --output /tmp/m7-phase2-cleanup.json
+```
+
+The audit fails closed unless the checkout is clean at the exact source SHA,
+sensor/rosbag/motion processes and prohibited ROS nodes are absent, all three
+motion topics have zero publishers, and the lidar plus every candidate rover
+serial device is ownerless. Copy the generated `cleanup` object and complete
+audit into the session manifest and inventory the audit artifact checksum.
 
 ```bash
 ros2 run sphero_rvr_driver rvr_m7_surveyed_localization evaluate \
