@@ -1,0 +1,181 @@
+{
+  "audited_at_utc": "2026-07-27T22:30:42.501734+00:00",
+  "checks": {
+    "device_owner_inspection_succeeded": true,
+    "exact_source_sha": true,
+    "motion_topic_publishers_absent": true,
+    "process_inspection_succeeded": true,
+    "prohibited_ros_nodes_absent": true,
+    "ros_node_inspection_succeeded": true,
+    "ros_topic_inspection_succeeded": true,
+    "sensor_and_rover_devices_ownerless": true,
+    "source_checkout_clean": true,
+    "stationary_sensor_and_motion_processes_absent": true
+  },
+  "cleanup": {
+    "camera_stopped": true,
+    "completed": true,
+    "lidar_stopped": true,
+    "prohibited_nodes_absent": true,
+    "rosbag_stopped": true,
+    "rover_serial_owner_absent": true
+  },
+  "commands": {
+    "device_owner:/dev/rplidar": {
+      "argv": [
+        "fuser",
+        "/dev/rplidar"
+      ],
+      "returncode": 1,
+      "stderr": "",
+      "stdout": ""
+    },
+    "device_owner:/dev/serial0": {
+      "argv": [
+        "fuser",
+        "/dev/serial0"
+      ],
+      "returncode": 1,
+      "stderr": "Specified filename /dev/serial0 does not exist.\n",
+      "stdout": ""
+    },
+    "device_owner:/dev/ttyAMA0": {
+      "argv": [
+        "fuser",
+        "/dev/ttyAMA0"
+      ],
+      "returncode": 1,
+      "stderr": "",
+      "stdout": ""
+    },
+    "device_owner:/dev/ttyS0": {
+      "argv": [
+        "fuser",
+        "/dev/ttyS0"
+      ],
+      "returncode": 1,
+      "stderr": "Specified filename /dev/ttyS0 does not exist.\n",
+      "stdout": ""
+    },
+    "git_head": {
+      "argv": [
+        "git",
+        "-C",
+        "/home/jsperson/ros2_ws/src/sphero_rvr_ros",
+        "rev-parse",
+        "HEAD"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f\n"
+    },
+    "git_status": {
+      "argv": [
+        "git",
+        "-C",
+        "/home/jsperson/ros2_ws/src/sphero_rvr_ros",
+        "status",
+        "--porcelain"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "processes": {
+      "argv": [
+        "ps",
+        "-eo",
+        "pid=,args="
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "      1 /sbin/init fixrtc\n      2 [kthreadd]\n      3 [pool_workqueue_release]\n      4 [kworker/R-rcu_g]\n      5 [kworker/R-rcu_p]\n      6 [kworker/R-slub_]\n      7 [kworker/R-netns]\n     12 [kworker/R-mm_pe]\n     13 [rcu_tasks_kthread]\n     14 [rcu_tasks_rude_kthread]\n     15 [rcu_tasks_trace_kthread]\n     16 [ksoftirqd/0]\n     17 [rcu_preempt]\n     18 [migration/0]\n     19 [cpuhp/0]\n     20 [cpuhp/1]\n     21 [migration/1]\n     22 [ksoftirqd/1]\n     25 [cpuhp/2]\n     26 [migration/2]\n     27 [ksoftirqd/2]\n     30 [cpuhp/3]\n     31 [migration/3]\n     32 [ksoftirqd/3]\n     35 [kdevtmpfs]\n     36 [kworker/R-inet_]\n     38 [kauditd]\n     40 [khungtaskd]\n     42 [oom_reaper]\n     43 [kworker/R-write]\n     44 [kcompactd0]\n     45 [khugepaged]\n     46 [kworker/R-kinte]\n     47 [kworker/R-kbloc]\n     48 [kworker/R-blkcg]\n     51 [kworker/R-tpm_d]\n     52 [kworker/R-edac-]\n     53 [kworker/R-devfr]\n     54 [watchdogd]\n     56 [kworker/R-quota]\n     58 [kswapd0]\n     59 [kworker/R-kthro]\n     63 [hwrng]\n     65 [kworker/R-mld]\n     66 [kworker/R-ipv6_]\n     74 [kworker/R-kstrp]\n     76 [kworker/u9:0-brcmf_wq/mmc1:0001:1]\n    106 [kworker/3:1H-kblockd]\n    107 [kworker/1:1H-kblockd]\n    153 [irq/40-aerdrv]\n    157 [spi10]\n    159 [spi0]\n    160 [kworker/R-sdhci]\n    161 [kworker/R-sdhci]\n    162 [irq/167-mmc1]\n    163 [irq/166-mmc0]\n    165 [kworker/R-mmc_c]\n    190 [kworker/R-md]\n    191 [kworker/R-md_bi]\n    196 [kworker/R-raid5]\n    250 [jbd2/mmcblk0p2-8]\n    251 [kworker/R-ext4-]\n    329 /usr/lib/systemd/systemd-journald\n    356 [kworker/R-kmpat]\n    357 [kworker/R-kmpat]\n    390 /usr/lib/systemd/systemd-udevd\n    396 [psimon]\n    449 [irq/171-1000800000.codec]\n    451 [kworker/R-cfg80]\n    455 [kworker/R-brcmf]\n    456 [brcmf_wdog/mmc1:0001:1]\n    496 [irq/175-vc4 hdmi hpd connected]\n    497 [irq/176-vc4 hdmi hpd disconnected]\n    498 [cec-vc4-hdmi-0]\n    499 [irq/177-vc4 hdmi cec rx]\n    500 [irq/178-vc4 hdmi cec tx]\n    501 [irq/179-vc4 hdmi hpd connected]\n    502 [irq/180-vc4 hdmi hpd disconnected]\n    503 [cec-vc4-hdmi-1]\n    504 [irq/181-vc4 hdmi cec rx]\n    505 [irq/182-vc4 hdmi cec tx]\n    506 [card1-crtc0]\n    507 [card1-crtc1]\n    508 [card1-crtc2]\n    509 [card1-crtc3]\n    525 [kworker/u9:1-hci0]\n    571 /usr/lib/systemd/systemd-resolved\n    582 /usr/lib/systemd/systemd-timesyncd\n    597 /sbin/wpa_supplicant -c /run/netplan/wpa-wlan0.conf -iwlan0 -Dnl80211,wext\n    706 /usr/lib/systemd/systemd-networkd\n    719 avahi-daemon: running [sphero-pi-2.local]\n    720 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only\n    723 /usr/bin/lttng-sessiond\n    724 /usr/lib/polkit-1/polkitd --no-debug\n    732 /usr/lib/systemd/systemd-logind\n    733 /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641\n    734 /usr/libexec/udisks2/udisksd\n    736 avahi-daemon: chroot helper\n    744 /usr/sbin/rsyslogd -n -iNONE\n    763 /usr/bin/lttng-sessiond\n    778 /usr/sbin/wpa_supplicant -u -s -O DIR=/run/wpa_supplicant GROUP=netdev\n    813 /usr/sbin/cron -f -P\n    816 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal\n    825 /usr/sbin/ModemManager\n    838 /usr/lib/systemd/systemd --user\n    840 /sbin/agetty -o -p -- \\u --noclear - linux\n    856 (sd-pam)\n  34378 [kworker/R-tls-s]\n  35452 [kworker/2:0H-kblockd]\n  35617 /usr/bin/dbus-daemon --session --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only\n  35938 /usr/bin/python3 -c from ros2cli.daemon.daemonize import main; main() --name ros2-daemon --ros-domain-id 0 --rmw-implementation rmw_fastrtps_cpp\n  42430 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups\n  42993 [kworker/2:1-events]\n  45418 [kworker/3:1-events]\n  48551 [kworker/u8:1-flush-179:0]\n  54084 [kworker/0:0-cgroup_free]\n  57758 [kworker/0:3-events]\n  59215 [kworker/0:2H-mmc_complete]\n  62584 [kworker/u8:0-events_power_efficient]\n  63120 [kworker/u8:2-events_power_efficient]\n  65941 /snap/snapd/current/usr/lib/snapd/snapd\n  66025 [kworker/1:2-mm_percpu_wq]\n  66129 [psimon]\n  66864 [kworker/3:3-events]\n  70623 [kworker/2:2-events]\n  71594 [kworker/0:1-rcu_gp]\n  72655 [kworker/1:0-events]\n  72681 [kworker/2:2H]\n  73719 [kworker/0:1H]\n  74274 [kworker/3:2-events]\n  74585 [kworker/1:0H]\n  74587 [kworker/u8:3-ext4-rsv-conversion]\n  74588 [kworker/3:0H]\n  76407 [kworker/2:0-events]\n  76456 /usr/bin/python3 /opt/ros/jazzy/bin/ros2 run sphero_rvr_driver live_mission_service --ros-args --params-file /home/jsperson/ros2_ws/install/sphero_rvr_driver/share/sphero_rvr_driver/config/mission_service.yaml -p source_sha:=8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f -p deployed_sha:=8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f -p stationary_perception_enabled:=false -p adaptive_mission_enabled:=true -p live_execution_enabled:=false -p live_execution_reviewed_sha:=disabled -p approval_activation_enabled:=true -p approval_activation_reviewed_sha:=8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f -p approval_activation_timeout_s:=30.0 -p adaptive_mission_lease_s:=900.0 -p planning_max_motion_calls:=3 -p planning_max_translation_m:=0.5 -p planning_max_translation_per_call_m:=0.5 -p planning_max_abs_turn_deg:=180.0 -p planning_max_runtime_s:=45.0 -p planning_linear_speed_mps:=0.08 -p planning_angular_speed_deg_s:=30.0\n  76473 /usr/bin/python3 /opt/ros/jazzy/bin/ros2 run sphero_rvr_driver rvr_mission_web --mode live --host 127.0.0.1 --port 8765 --mission-socket /home/jsperson/.local/state/sphero_rvr/mission-service.sock --session-id rvr-web-console --operator tailscale-serve --public-origin https://sphero-pi-2.tailab4000.ts.net\n  76521 /usr/bin/python3 /home/jsperson/ros2_ws/install/sphero_rvr_driver/lib/sphero_rvr_driver/live_mission_service --ros-args --params-file /home/jsperson/ros2_ws/install/sphero_rvr_driver/share/sphero_rvr_driver/config/mission_service.yaml -p source_sha:=8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f -p deployed_sha:=8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f -p stationary_perception_enabled:=false -p adaptive_mission_enabled:=true -p live_execution_enabled:=false -p live_execution_reviewed_sha:=disabled -p approval_activation_enabled:=true -p approval_activation_reviewed_sha:=8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f -p approval_activation_timeout_s:=30.0 -p adaptive_mission_lease_s:=900.0 -p planning_max_motion_calls:=3 -p planning_max_translation_m:=0.5 -p planning_max_translation_per_call_m:=0.5 -p planning_max_abs_turn_deg:=180.0 -p planning_max_runtime_s:=45.0 -p planning_linear_speed_mps:=0.08 -p planning_angular_speed_deg_s:=30.0\n  76522 /usr/bin/python3 /home/jsperson/ros2_ws/install/sphero_rvr_driver/lib/sphero_rvr_driver/rvr_mission_web --mode live --host 127.0.0.1 --port 8765 --mission-socket /home/jsperson/.local/state/sphero_rvr/mission-service.sock --session-id rvr-web-console --operator tailscale-serve --public-origin https://sphero-pi-2.tailab4000.ts.net\n  76797 [kworker/1:1-cgroup_free]\n  76898 [kworker/0:0H]\n  76899 [kworker/2:1H]\n  76968 [kworker/3:2H]\n  76972 [kworker/0:2-events]\n  76973 [kworker/u8:4-ext4-rsv-conversion]\n  76974 [kworker/u8:5]\n  76984 [kworker/3:0-events]\n  77101 /usr/sbin/tailscaled be-child ssh --login-shell=/bin/bash --uid=1000 --gid=1003 --groups=1003,4,20,24,27,29,44,46,60,100,995,992,107,1000,1001,1002 --local-user=jsperson --home-dir=/home/jsperson --remote-user=jsperson@gmail.com --remote-ip=100.75.70.51 --has-tty=false --tty-name= --force-v1-behavior --cmd=source /opt/ros/jazzy/setup.bash; source /home/jsperson/ros2_ws/install/setup.bash; ros2 run sphero_rvr_driver rvr_m7_attended_validation cleanup-audit --source-sha 8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f --source-repo /home/jsperson/ros2_ws/src/sphero_rvr_ros --output /home/jsperson/rvr_runs/m7-phase3-m7.3-stop-reset-20260727T1712Z/cleanup-final.json\n  77108 /usr/bin/python3 /opt/ros/jazzy/bin/ros2 run sphero_rvr_driver rvr_m7_attended_validation cleanup-audit --source-sha 8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f --source-repo /home/jsperson/ros2_ws/src/sphero_rvr_ros --output /home/jsperson/rvr_runs/m7-phase3-m7.3-stop-reset-20260727T1712Z/cleanup-final.json\n  77126 /usr/bin/python3 /home/jsperson/ros2_ws/install/sphero_rvr_driver/lib/sphero_rvr_driver/rvr_m7_attended_validation cleanup-audit --source-sha 8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f --source-repo /home/jsperson/ros2_ws/src/sphero_rvr_ros --output /home/jsperson/rvr_runs/m7-phase3-m7.3-stop-reset-20260727T1712Z/cleanup-final.json\n  77129 ps -eo pid=,args=\n"
+    },
+    "ros_nodes": {
+      "argv": [
+        "ros2",
+        "node",
+        "list",
+        "--no-daemon"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "/live_mission_service\n"
+    },
+    "ros_topics": {
+      "argv": [
+        "ros2",
+        "topic",
+        "list",
+        "--no-daemon"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "/collision_stop/state\n/mission_api/v2/camera/status\n/mission_api/v2/control_state\n/mission_api/v2/lidar/status\n/mission_api/v2/live_route/status\n/mission_api/v2/localization/status\n/mission_api/v2/map/status\n/mission_api/v2/service/status\n/odom\n/parameter_events\n/rosout\n"
+    },
+    "topic_info:/cmd_vel": {
+      "argv": [
+        "ros2",
+        "topic",
+        "info",
+        "-v",
+        "--no-daemon",
+        "/cmd_vel"
+      ],
+      "returncode": 1,
+      "stderr": "Unknown topic '/cmd_vel'\n",
+      "stdout": ""
+    },
+    "topic_info:/cmd_vel_motor": {
+      "argv": [
+        "ros2",
+        "topic",
+        "info",
+        "-v",
+        "--no-daemon",
+        "/cmd_vel_motor"
+      ],
+      "returncode": 1,
+      "stderr": "Unknown topic '/cmd_vel_motor'\n",
+      "stdout": ""
+    },
+    "topic_info:/nav2_cmd_vel_request": {
+      "argv": [
+        "ros2",
+        "topic",
+        "info",
+        "-v",
+        "--no-daemon",
+        "/nav2_cmd_vel_request"
+      ],
+      "returncode": 1,
+      "stderr": "Unknown topic '/nav2_cmd_vel_request'\n",
+      "stdout": ""
+    }
+  },
+  "environment": {
+    "hostname": "sphero-pi-2",
+    "platform": "Linux-6.8.0-1060-raspi-aarch64-with-glibc2.39",
+    "python_version": "3.12.3",
+    "ros_distro": "jazzy",
+    "ros_domain_id": "0"
+  },
+  "findings": {
+    "device_owners": {
+      "/dev/rplidar": "",
+      "/dev/serial0": "",
+      "/dev/ttyAMA0": "",
+      "/dev/ttyS0": ""
+    },
+    "motion_topic_publishers": {
+      "/cmd_vel": 0,
+      "/cmd_vel_motor": 0,
+      "/nav2_cmd_vel_request": 0
+    },
+    "prohibited_nodes": [],
+    "prohibited_processes": []
+  },
+  "passed": true,
+  "schema": "sphero_rvr.m7_phase2_cleanup_audit.v1",
+  "source_sha": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f"
+}

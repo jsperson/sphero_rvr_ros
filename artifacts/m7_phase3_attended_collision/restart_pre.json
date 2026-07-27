@@ -1,0 +1,62 @@
+{
+  "approval": {
+    "approved": true,
+    "authenticated": true,
+    "authentication_source": "tailscale-serve",
+    "method": "authenticated_one_click",
+    "proposal_digest": "a5c21907d457f7d1b15b1e3cba58b605cd4f967cc9065887aa9d04be085e1332",
+    "server_digest_bound": true
+  },
+  "events": [
+    {
+      "event_type": "received",
+      "message": "web",
+      "sequence": 1281
+    },
+    {
+      "event_type": "planning",
+      "message": "planning",
+      "sequence": 1282
+    },
+    {
+      "event_type": "adaptive_mission_proposal",
+      "message": "adaptive_mission_proposal",
+      "sequence": 1283
+    },
+    {
+      "event_type": "adaptive_mission_approval",
+      "message": "adaptive_mission_approval",
+      "sequence": 1284
+    },
+    {
+      "event_type": "queued",
+      "message": "queued",
+      "sequence": 1285
+    },
+    {
+      "event_type": "running",
+      "message": "running",
+      "sequence": 1286
+    }
+  ],
+  "mission": {
+    "active_intent_action": null,
+    "active_intent_angle_deg": null,
+    "active_intent_distance_m": null,
+    "mission_id": "adaptive-mission-live-367a134b04a84bd6994cd961d7adbd2a",
+    "state": "RUNNING",
+    "terminal": false,
+    "terminal_reason": ""
+  },
+  "physical_session": {
+    "activation_capable": true,
+    "active": true,
+    "detail": "supervised graph active for authenticated approval a5c21907d457",
+    "mission_id": "adaptive-mission-live-367a134b04a84bd6994cd961d7adbd2a",
+    "transitioning": false,
+    "unit": "rvr-adaptive-mission.service"
+  },
+  "schema": "sphero_rvr.m7_phase3_restart_review_extract.v1",
+  "source_artifact_sha256": "175ed4a4c9bcf31ada65c44762700439125bb2f89ca5630e0623b8a502ea3e96",
+  "source_sha": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f"
+}
