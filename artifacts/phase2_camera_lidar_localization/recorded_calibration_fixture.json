@@ -13,6 +13,16 @@
     "operator_target_description": "Broad vertical calibration target centered approximately 18 inches (0.4572 m) ahead of base_link",
     "camera_info_source": "/home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml",
     "camera_info_sha256": "f5c0de153eeb773ce4940d78b4956cd6a12e22de722803af7499038824761310",
+    "lidar_translation_revision": {
+      "measured_at": "2026-07-27",
+      "datum": "lidar scan origin to tread-contact footprint extents",
+      "forward_m": 0.2,
+      "rearward_m": 0.209,
+      "right_m": 0.213,
+      "left_m": 0.235,
+      "derived_base_to_lidar_x_m": 0.0045,
+      "derived_base_to_lidar_y_m": -0.011
+    },
     "evidence_image": "artifacts/vs04_shoe_detector_eval_bag/evidence_frames/bag_frame_0298_1784305472226237684_evidence.png",
     "evidence_image_sha256": "11177e1e31c7359ff94ba2efd78e5bbbdd29e04f57473f48aff86abaf8b8fe83",
     "extraction_note": "The preserved metadata named compressed MCAP while an uncompressed MCAP was also present. Read-only extraction used a temporary symlink and patched temporary metadata; the source bag was not modified."
@@ -51,8 +61,8 @@
       "yaw": 0.0
     },
     "base_to_lidar": {
-      "x": -0.0074295,
-      "y": -0.009525,
+      "x": 0.0045,
+      "y": -0.011,
       "z": 0.1905,
       "roll": 0.0,
       "pitch": 0.0,

@@ -66,7 +66,7 @@ ros2 launch sphero_rvr_driver lidar.launch.py --show-args
 Important inputs:
 
 ```text
-laser_x:=-0.0074295 laser_y:=-0.009525 laser_z:=0.190500
+laser_x:=0.004500 laser_y:=-0.011000 laser_z:=0.190500
 laser_roll:=0.0 laser_pitch:=0.0 laser_yaw:=3.1239668018215028
 frame_id:=laser
 base_frame:=base_link
@@ -194,6 +194,22 @@ extents. Axes are `+x` forward, `+y` left, and `+z` up. Record signs and units i
 meters/radians.
 
 ### Lidar: `base_link -> laser`
+
+The 2026-07-27 tread-contact survey measured from the lidar scan origin to the
+most forward, rearward, right, and left tread-contact extents:
+
+| Direction from lidar | Distance |
+| --- | ---: |
+| forward | `0.200 m` |
+| rearward | `0.209 m` |
+| right | `0.213 m` |
+| left | `0.235 m` |
+
+The tread footprint is therefore `0.409 m` long and `0.448 m` wide. Its
+midpoint places the lidar `0.0045 m` forward and `0.0110 m` right of
+`base_link`, so the reviewed translation is
+`base_link -> laser = [0.0045, -0.0110, 0.1905] m`. The yaw measurement is
+unchanged.
 
 1. Mark the RVR `base_link` origin at the tread-footprint center on the floor
    projection; do not use an undefined payload-deck drawing datum.

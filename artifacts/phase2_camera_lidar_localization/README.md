@@ -11,14 +11,20 @@ Milestone 6 Phase 2. It contains:
 - a deliberately ambiguous two-cluster association case.
 
 The recorded pair's source timestamps differ by `35.038348 ms`, inside the
-`100 ms` gate. The evaluator selects scan indices `1..3`, reports a median
-lidar range of about `0.442 m`, and produces base-frame
-`(0.4346, -0.0019) m`: `0.0227 m` from the approximate operator placement.
+`100 ms` gate. With the 2026-07-27 tread-contact translation revision, the
+evaluator selects scan indices `1..4`, reports a median lidar range of about
+`0.44225 m`, and produces base-frame `(0.44667, -0.00144) m`: `0.01063 m`
+from the approximate operator placement.
 The range-dependent bound is `0.03 m + 0.04 × range`, capped at `0.08 m`;
 it is about `0.0477 m` for this scan.
 Because that placement was measured by the operator rather than a survey
 instrument, this is a recorded replay software gate, not a physical accuracy
 certification.
+
+The translation revision is derived from lidar-origin distances of `0.200 m`
+forward, `0.209 m` rearward, `0.213 m` right, and `0.235 m` left to the
+tread-contact extents. It changes `base_link -> laser` translation to
+`[0.0045, -0.0110, 0.1905] m`; the recorded yaw is unchanged.
 
 The floor case is analytic geometry generated from the measured calibration.
 It checks the implementation but is not represented as recorded floor-object

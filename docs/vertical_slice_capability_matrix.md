@@ -60,7 +60,7 @@ Message samples collected by replaying only `/scan`, `/camera_node/camera_info`,
 | Robot-local CameraInfo file checksum | `f5c0de153eeb773ce4940d78b4956cd6a12e22de722803af7499038824761310  /home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml` on `sphero-pi-2`. |
 | Static TF | `base_link -> camera_link`: translation `[0.0587375, -0.0301625, 0.1143]`, identity rotation. |
 | Static TF | `camera_link -> camera_optical_frame`: translation `[0,0,0]`, optical-frame quaternion approximately `[-0.5, 0.5, -0.5, 0.5]`. |
-| Static TF | `base_link -> laser`: translation `[-0.0074295, -0.009525, 0.1905]`, quaternion `[0, 0, 0.9999611664200241, 0.008812811804695843]` matching measured yaw `3.1239668018215028`. |
+| Static TF | `base_link -> laser`: revised tread-contact translation `[0.0045, -0.0110, 0.1905]`, quaternion `[0, 0, 0.9999611664200241, 0.008812811804695843]` matching measured yaw `3.1239668018215028`. |
 
 Safe replay commands for this bag:
 

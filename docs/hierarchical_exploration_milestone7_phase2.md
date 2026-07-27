@@ -52,6 +52,13 @@ technique, surveyor, time, map coordinate, derived radial range, and stated
 position uncertainty. The evaluator rejects uncertainty greater than `0.02 m`
 and rejects range values inconsistent with the surveyed map geometry.
 
+The revised 2026-07-27 tread-contact survey places the lidar scan origin at
+`(x=+0.0045 m, y=-0.0110 m)` in `base_link`. Operators may use its visible
+rotation axis as the physical datum. For example, the nominal
+`base_link=(0.45, 0.0) m` center placement is `0.4455 m` forward and `0.0110 m`
+left of the lidar axis. Record actual measurements rather than merely copying
+the nominal values.
+
 Preserve these existing gates:
 
 - camera/lidar timestamp delta no greater than `100 ms`;

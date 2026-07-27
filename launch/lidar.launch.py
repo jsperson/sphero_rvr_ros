@@ -81,12 +81,12 @@ def generate_launch_description():
         DeclareLaunchArgument("base_frame", default_value="base_link"),
         DeclareLaunchArgument(
             "laser_x",
-            default_value="-0.0074295",
+            default_value="0.004500",
             description="Measured base_link -> laser x translation in meters.",
         ),
         DeclareLaunchArgument(
             "laser_y",
-            default_value="-0.009525",
+            default_value="-0.011000",
             description="Measured base_link -> laser y translation in meters.",
         ),
         DeclareLaunchArgument(

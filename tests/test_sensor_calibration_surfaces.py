@@ -68,8 +68,8 @@ def test_lidar_launch_names_all_measured_mount_transform_inputs() -> None:
         '"laser_roll"',
         '"laser_pitch"',
         '"laser_yaw"',
-        "-0.0074295",
-        "-0.009525",
+        "0.004500",
+        "-0.011000",
         "0.190500",
         "3.1239668018215028",
         '"--roll", laser_roll',
@@ -77,6 +77,19 @@ def test_lidar_launch_names_all_measured_mount_transform_inputs() -> None:
         '"--yaw", laser_yaw',
     ]:
         assert token in launch_text
+
+
+def test_revised_lidar_translation_is_tread_contact_midpoint() -> None:
+    forward_m = 0.200
+    rearward_m = 0.209
+    right_m = 0.213
+    left_m = 0.235
+
+    lidar_x_from_base_m = (rearward_m - forward_m) / 2.0
+    lidar_y_from_base_m = (right_m - left_m) / 2.0
+
+    assert lidar_x_from_base_m == pytest.approx(0.0045)
+    assert lidar_y_from_base_m == pytest.approx(-0.011)
 
 
 def test_mapping_launch_can_include_camera_without_starting_it_by_default() -> None:

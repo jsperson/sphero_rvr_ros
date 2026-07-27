@@ -58,6 +58,8 @@ def test_fixture_is_recorded_offline_evidence_with_measured_calibration(fixture:
     assert fixture["provenance"]["camera_info_sha256"] == (
         "f5c0de153eeb773ce4940d78b4956cd6a12e22de722803af7499038824761310"
     )
+    assert fixture["calibration"]["base_to_lidar"]["x"] == pytest.approx(0.0045)
+    assert fixture["calibration"]["base_to_lidar"]["y"] == pytest.approx(-0.011)
     assert fixture["calibration"]["base_to_lidar"]["yaw"] == pytest.approx(3.1239668018215028)
     case = fixture["cases"]["recorded_plane_target"]
     delta_ms = abs(case["anchor"]["timestamp_ns"] - case["scan"]["timestamp_ns"]) / 1_000_000
@@ -78,8 +80,8 @@ def test_recorded_plane_target_associates_one_cluster_and_meets_error_gate(fixtu
 
     assert result.method == "lidar_range"
     assert result.reason == "single_contiguous_lidar_cluster"
-    assert result.cluster_indices == (1, 2, 3)
-    assert result.range_m == pytest.approx(0.44200000166893005)
+    assert result.cluster_indices == (1, 2, 3, 4)
+    assert result.range_m == pytest.approx(0.44224999845027924)
     assert result.point is not None
     expected = case["expected_base_point"]
     error_m = math.hypot(result.point.x - expected["x"], result.point.y - expected["y"])
