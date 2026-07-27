@@ -338,20 +338,34 @@ def main(argv=None) -> int:
         if not node.action.wait_for_server(timeout_sec=10.0):
             raise RuntimeError("NavigateThroughPoses action server unavailable")
 
-        lifecycle_states = {}
-        for name, client in node.lifecycle_clients.items():
-            if not client.wait_for_service(timeout_sec=5.0):
-                raise RuntimeError(f"{name} lifecycle service unavailable")
-            future = client.call_async(GetState.Request())
-            if not spin_until(node, future.done, 5.0):
-                raise RuntimeError(f"{name} lifecycle query timed out")
-            response = future.result()
-            lifecycle_states[name] = {
-                "id": int(response.current_state.id),
-                "label": str(response.current_state.label),
-            }
+        def query_lifecycle_states() -> dict:
+            states = {}
+            for name, client in node.lifecycle_clients.items():
+                if not client.wait_for_service(timeout_sec=5.0):
+                    raise RuntimeError(f"{name} lifecycle service unavailable")
+                future = client.call_async(GetState.Request())
+                if not spin_until(node, future.done, 5.0):
+                    raise RuntimeError(f"{name} lifecycle query timed out")
+                response = future.result()
+                states[name] = {
+                    "id": int(response.current_state.id),
+                    "label": str(response.current_state.label),
+                }
+            return states
+
+        lifecycle_states = query_lifecycle_states()
 
         if args.mode == "audit":
+            lifecycle_deadline = time.monotonic() + 15.0
+            while (
+                not all(
+                    state["label"] == "active"
+                    for state in lifecycle_states.values()
+                )
+                and time.monotonic() < lifecycle_deadline
+            ):
+                spin_until(node, lambda: False, 0.25)
+                lifecycle_states = query_lifecycle_states()
             spin_until(node, lambda: False, args.observe_seconds)
             host_safety = _host_safety_snapshot()
             lifecycle_ok = all(
