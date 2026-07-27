@@ -413,7 +413,18 @@ def test_projected_motion_is_directional_for_a_known_overlapped_rear_point():
         cfg,
         TwistCommand(-0.08, 0.0),
     )
-    turning = evaluate_projected_trajectory(
+
+    assert forward.blocked is False
+    assert forward.moving_away_point_count == 1
+    assert reverse.blocked is True
+    assert reverse.collision_time_s == pytest.approx(0.0)
+
+
+def test_projected_turn_in_place_is_directional_next_to_overlapped_point():
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(135.0, 0.15, stamp=0.0)
+
+    turning_toward = evaluate_projected_trajectory(
         scan,
         cfg,
         TwistCommand(0.0, -0.1),
@@ -424,14 +435,35 @@ def test_projected_motion_is_directional_for_a_known_overlapped_rear_point():
         TwistCommand(0.0, 0.1),
     )
 
-    assert forward.blocked is False
-    assert forward.moving_away_point_count == 1
-    assert reverse.blocked is True
-    assert reverse.collision_time_s == pytest.approx(0.0)
-    assert turning.blocked is True
-    assert turning.collision_time_s == pytest.approx(0.0)
+    assert turning_toward.blocked is True
+    assert turning_toward.collision_time_s == pytest.approx(0.0)
     assert turning_away.blocked is False
     assert turning_away.moving_away_point_count == 1
+
+
+def test_projected_curved_escape_requires_sampled_clearance_to_recede():
+    cfg = CollisionStopConfig()
+    # With the point directly beside the rover, forward translation alone is
+    # tangential and cannot use the radial shortcut. The left curve qualifies
+    # only because every sampled footprint clearance increases; the mirrored
+    # curve approaches the same point and must remain blocked.
+    scan = scan_with_point(90.0, 0.15, stamp=0.0)
+
+    curving_away = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.08, 0.2),
+    )
+    curving_toward = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.08, -0.2),
+    )
+
+    assert curving_away.blocked is False
+    assert curving_away.moving_away_point_count == 1
+    assert curving_toward.blocked is True
+    assert curving_toward.collision_time_s == pytest.approx(0.0)
 
 
 def test_projected_motion_is_directional_for_a_known_overlapped_front_point():
@@ -468,6 +500,31 @@ def test_tangential_motion_does_not_claim_to_move_away_from_known_obstacle():
     assert projected.blocked is True
     assert projected.collision_time_s == pytest.approx(0.0)
     assert projected.moving_away_point_count == 0
+
+
+def test_projected_trajectory_fails_closed_when_every_point_would_be_excluded():
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(135.0, 0.15, stamp=0.0)
+    only_overlapped_point = ScanInput(
+        **{
+            **scan.__dict__,
+            "ranges": tuple(
+                value if value < 1.0 else math.inf
+                for value in scan.ranges
+            ),
+        }
+    )
+
+    projected = evaluate_projected_trajectory(
+        only_overlapped_point,
+        cfg,
+        TwistCommand(0.08, 0.0),
+    )
+
+    assert projected.blocked is True
+    assert projected.collision_time_s == pytest.approx(0.0)
+    assert projected.minimum_clearance_m is None
+    assert projected.moving_away_point_count == 1
 
 
 def test_projected_forward_motion_blocks_obstacle_entering_corner_sweep():
