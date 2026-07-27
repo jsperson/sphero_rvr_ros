@@ -60,6 +60,10 @@ from .adaptive_mission_controller import (
     choose_validated_adaptive_intent,
     validate_world_snapshot,
 )
+from .hierarchical_phase4_replay import (
+    PHASE4_PROPOSAL_SCHEMA,
+    PHASE4_RESULT_SCHEMA,
+)
 
 WEB_API_VERSION = "rvr_mission_web.v1"
 MAX_REQUEST_BYTES = 64 * 1024
@@ -116,6 +120,10 @@ class AdaptiveMissionScenario(str, Enum):
     EXPLORE = "adaptive_mission_explore"
 
 
+class Phase4ReplayScenario(str, Enum):
+    EVIDENCE = "hierarchical_phase4_evidence"
+
+
 TERMINAL_STATES = {
     WebMissionState.REJECTED,
     WebMissionState.COMPLETE,
@@ -166,6 +174,14 @@ ROLLING_REPLAY_SCENARIOS: tuple[ScenarioDefinition, ...] = (
         RollingReplayScenario.LLM_DRIVING,
         "Rolling LLM driving replay",
         "Continuous pose, perception, tracking, and mapping while real OAuth LLM revisions run asynchronously.",
+    ),
+)
+
+PHASE4_REPLAY_SCENARIOS: tuple[ScenarioDefinition, ...] = (
+    ScenarioDefinition(
+        Phase4ReplayScenario.EVIDENCE,
+        "Phase 4 persisted evidence",
+        "Read-only real-provider hierarchical replay reopened by mission ID.",
     ),
 )
 
@@ -1239,6 +1255,334 @@ class RollingReplayMissionAdapter:
                     "metrics": projection["metrics"],
                 }
             ),
+        }
+
+
+class Phase4ReplayEvidenceAdapter:
+    """Read-only browser projection of one persisted Phase 4 mission."""
+
+    mode = "hierarchical-phase4-replay"
+    live_execution_enabled = False
+    direct_ros_commands_allowed = False
+    credentials_accepted = False
+
+    def __init__(
+        self,
+        *,
+        database: str | Path,
+        mission_id: str,
+        source_sha: str = "hierarchical-phase4-viewer",
+    ) -> None:
+        self.mission_id = str(mission_id).strip()
+        if not self.mission_id:
+            raise MissionWebError(
+                "Phase 4 evidence viewer requires an exact mission ID"
+            )
+        self._service = MissionService(
+            database,
+            source_sha=str(source_sha),
+            deployed_sha=str(source_sha),
+            mode="replay",
+            live_execution_enabled=False,
+        )
+        mission = self._service.prompt_status(self.mission_id)
+        proposal = mission.get("proposal", {})
+        if (
+            not isinstance(proposal, Mapping)
+            or proposal.get("schema") != PHASE4_PROPOSAL_SCHEMA
+        ):
+            self._service.close()
+            raise MissionWebError(
+                "requested mission is not persisted Phase 4 evidence"
+            )
+
+    def close(self) -> None:
+        self._service.close()
+
+    def scenarios(self) -> Sequence[ScenarioDefinition]:
+        return PHASE4_REPLAY_SCENARIOS
+
+    def snapshot(self) -> Mapping[str, Any]:
+        mission = self._service.prompt_status(self.mission_id)
+        return self._projection(mission)
+
+    def propose(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        mission_lease_s: Optional[float] = None,
+    ) -> Mapping[str, Any]:
+        del prompt, scenario, mission_lease_s
+        raise MissionWebError(
+            "persisted Phase 4 evidence is read-only; run the replay CLI to create a mission"
+        )
+
+    def approve(
+        self,
+        supplied_approval: str,
+        *,
+        confirm_current_proposal: bool = False,
+    ) -> Mapping[str, Any]:
+        del supplied_approval, confirm_current_proposal
+        raise MissionWebError("persisted Phase 4 evidence is read-only")
+
+    def advance(self) -> Mapping[str, Any]:
+        return self.snapshot()
+
+    def cancel(self) -> Mapping[str, Any]:
+        raise MissionWebError("persisted Phase 4 evidence is read-only")
+
+    @staticmethod
+    def _projection(mission: Mapping[str, Any]) -> dict[str, Any]:
+        persisted = mission.get("result", {})
+        if not isinstance(persisted, Mapping):
+            persisted = {}
+        result = (
+            persisted
+            if persisted.get("schema") == PHASE4_RESULT_SCHEMA
+            else {}
+        )
+        decisions = result.get("decisions", persisted.get("decisions", []))
+        if not isinstance(decisions, list):
+            decisions = []
+        snapshots = result.get("snapshots", [])
+        if not isinstance(snapshots, list):
+            snapshots = []
+        world = (
+            snapshots[-1]
+            if snapshots and isinstance(snapshots[-1], Mapping)
+            else persisted.get("world_snapshot", {})
+        )
+        if not isinstance(world, Mapping):
+            world = {}
+        provider = result.get("provider", {})
+        metrics = result.get("metrics", persisted.get("metrics", {}))
+        phase4_events = result.get(
+            "events", persisted.get("phase4_events", [])
+        )
+        if not isinstance(provider, Mapping):
+            provider = {}
+        if not isinstance(metrics, Mapping):
+            metrics = {}
+        if not isinstance(phase4_events, list):
+            phase4_events = []
+        active = decisions[-1] if decisions else None
+        map_payload = result.get("map", {})
+        if not isinstance(map_payload, Mapping) or not map_payload:
+            map_payload = {
+                "available": False,
+                "fixture_only": True,
+                "unavailable_reason": (
+                    "Phase 4 map projection is not present in this checkpoint"
+                ),
+            }
+        state = _web_state(str(mission.get("status", "failed")))
+        terminal = state in {item.value for item in TERMINAL_STATES}
+        proposal = mission.get("proposal", {})
+        approval = mission.get("approval", {})
+        if not isinstance(proposal, Mapping):
+            proposal = {}
+        if not isinstance(approval, Mapping):
+            approval = {}
+        calls = provider.get(
+            "calls", persisted.get("provider_calls", [])
+        )
+        if not isinstance(calls, list):
+            calls = []
+        semantic_tracks = []
+        for track in world.get("tracks", ()):
+            if not isinstance(track, Mapping):
+                continue
+            semantic_tracks.append(
+                {
+                    **dict(track),
+                    "label": str(track.get("class_name", "track")),
+                    "uncertainty_m": track.get("position_sigma_m"),
+                }
+            )
+        log_events = []
+        for sequence, event in enumerate(phase4_events, start=1):
+            if not isinstance(event, Mapping):
+                continue
+            kind = str(event.get("kind", "phase4_event"))
+            details = [
+                str(event[key])
+                for key in (
+                    "action",
+                    "target_id",
+                    "reason",
+                    "generation",
+                )
+                if key in event and event[key] not in ("", None)
+            ]
+            log_events.append(
+                {
+                    "sequence": sequence,
+                    "event_type": kind,
+                    "message": (
+                        " · ".join(details)
+                        if details
+                        else f"Replay time {float(event.get('at_s', 0.0)):.3f} s"
+                    ),
+                }
+            )
+        return {
+            "web_api_version": WEB_API_VERSION,
+            "mission_api_version": MissionApiVersion.V2.value,
+            "prompt_drive_api_version": PROMPT_DRIVE_API_VERSION,
+            "adapter": {
+                "mode": "hierarchical-phase4-replay",
+                "fixture_only": True,
+                "rolling_replay": True,
+                "hierarchical_phase4": True,
+                "read_only": True,
+                "real_llm_provider": bool(
+                    result.get("scope", {}).get(
+                        "real_provider_wall_latency", False
+                    )
+                ),
+                "provider_id": str(
+                    provider.get(
+                        "provider_id", proposal.get("provider_id", "")
+                    )
+                ),
+                "model_id": str(
+                    provider.get(
+                        "model_id", proposal.get("model_id", "")
+                    )
+                ),
+                "reasoning_effort": str(
+                    provider.get(
+                        "reasoning_effort",
+                        proposal.get("reasoning_effort", ""),
+                    )
+                ),
+                "live_execution_enabled": False,
+                "direct_ros_commands_allowed": False,
+                "credentials_accepted": False,
+                "mission_service_persistence": True,
+                "source_sha": str(mission.get("source_sha", "")),
+            },
+            "scenario": Phase4ReplayScenario.EVIDENCE.value,
+            "proposal": dict(proposal),
+            "approval": {
+                "required": False,
+                "enabled": False,
+                "approved": bool(approval.get("approved", False)),
+                "proposal_digest": str(
+                    mission.get("proposal_digest", "")
+                ),
+                "required_phrase": "",
+                "simulation_only": True,
+            },
+            "mission": {
+                "mission_id": str(mission.get("mission_id", "")),
+                "state": state,
+                "progress": min(
+                    1.0,
+                    float(
+                        provider.get(
+                            "calls_completed", len(calls)
+                        )
+                    )
+                    / max(
+                        1.0,
+                        float(
+                            proposal.get("contract", {}).get(
+                                "minimum_real_provider_calls", 4
+                            )
+                        ),
+                    ),
+                ),
+                "terminal": terminal,
+                "terminal_reason": str(
+                    mission.get("terminal_reason", "")
+                ),
+                "result": dict(result),
+            },
+            "artifacts": _terminal_artifacts(
+                result, fixture_only=True
+            ),
+            "safety": {
+                "stop_active": False,
+                "estop_latched": False,
+                "collision_state": "CLEAR",
+                "front_clearance_m": None,
+                "forward_corridor_clearance_m": None,
+                "forward_corridor_min_angle_deg": None,
+                "forward_corridor_max_angle_deg": None,
+                "left_clearance_m": None,
+                "right_clearance_m": None,
+                "trajectory_min_clearance_m": None,
+                "trajectory_horizon_s": 0.75,
+                "telemetry_fresh": bool(
+                    world.get("localization", {}).get("fresh", True)
+                ),
+                "independent_robot_safety": True,
+                "browser_is_sole_safety_mechanism": False,
+            },
+            "events": log_events,
+            "map": dict(map_payload),
+            "camera_preview": {
+                "available": False,
+                "state": "metadata-only",
+                "fresh": False,
+                "frame_id": "",
+                "detections": [
+                    {
+                        "track_id": str(track.get("track_id", "")),
+                        "label": str(track.get("class_name", "track")),
+                    }
+                    for track in world.get("tracks", ())
+                    if isinstance(track, Mapping)
+                ],
+            },
+            "rolling": {
+                "world_snapshot": {
+                    **dict(world),
+                    "semantic_tracks": semantic_tracks,
+                },
+                "decision_snapshots": list(snapshots),
+                "active_intent": (
+                    None
+                    if not isinstance(active, Mapping)
+                    else {
+                        "revision": int(
+                            active.get("decision_generation", len(decisions))
+                        ),
+                        "action": str(active.get("action", "")),
+                        "rationale": str(active.get("rationale", "")),
+                        "snapshot_id": str(active.get("snapshot_id", "")),
+                        "observation_focus": str(
+                            active.get("resolved_target_id", "")
+                        ),
+                    }
+                ),
+                "intent_revisions": list(decisions),
+                "inference": {
+                    "in_flight": False,
+                    "provider_calls_started": len(calls),
+                    "provider_calls_completed": sum(
+                        1 for call in calls if call.get("success") is True
+                    ),
+                    "latency_distribution_s": dict(
+                        provider.get("latency_distribution_s", {})
+                    ),
+                },
+                "metrics": dict(metrics),
+                "events": log_events,
+                "phase4": {
+                    "decisions": list(decisions),
+                    "provider": dict(provider),
+                    "metrics": dict(metrics),
+                    "short_hop_characterization": dict(
+                        result.get("short_hop_characterization", {})
+                    ),
+                    "scope": dict(result.get("scope", {})),
+                    "carryovers": dict(result.get("carryovers", {})),
+                },
+            },
         }
 
 
@@ -3138,7 +3482,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
         "--mode",
-        choices=("mock", "live", "rolling-replay", "adaptive-mission-replay"),
+        choices=(
+            "mock",
+            "live",
+            "rolling-replay",
+            "adaptive-mission-replay",
+            "hierarchical-phase4-replay",
+        ),
         default="mock",
     )
     parser.add_argument(
@@ -3170,6 +3520,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Persistent SQLite evidence used only by rolling-replay mode",
     )
     parser.add_argument("--replay-model", default=None)
+    parser.add_argument(
+        "--phase4-mission-id",
+        help=(
+            "Exact persisted mission ID required by "
+            "hierarchical-phase4-replay mode"
+        ),
+    )
     parser.add_argument(
         "--replay-reasoning-effort",
         choices=ALLOWED_REASONING_EFFORTS,
@@ -3233,6 +3590,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         allowed_origin = (
             None if args.allow_loopback_test_approval else args.public_origin
         )
+        telemetry_control = None
+    elif args.mode == "hierarchical-phase4-replay":
+        if not args.phase4_mission_id:
+            parser.error(
+                "hierarchical-phase4-replay requires --phase4-mission-id"
+            )
+        adapter = Phase4ReplayEvidenceAdapter(
+            database=args.replay_database,
+            mission_id=args.phase4_mission_id,
+            source_sha=_local_source_sha(),
+        )
+        allowed_origin = None
         telemetry_control = None
     else:
         adapter = MockReplayMissionAdapter()
@@ -3532,6 +3901,10 @@ _INDEX_HTML = r'''<!doctype html>
             <li class="empty">No mission activity yet.</li>
           </ol>
         </section>
+        <details class="panel" id="phase4-panel" hidden>
+          <summary>Phase 4 latency, handoff &amp; pause evidence</summary>
+          <div class="detail-body" id="phase4-evidence"></div>
+        </details>
         <details class="panel" id="terminal-panel">
           <summary id="result-heading">Terminal evidence &amp; artifacts</summary>
           <div class="detail-body">
@@ -3724,6 +4097,7 @@ _INDEX_HTML = r'''<!doctype html>
     function renderActionState(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
+      const readOnly = Boolean(snapshot.adapter.read_only);
       const leaseActive = adaptiveMission
         && ['APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       const leaseMatchesProposal = leaseDurationMatchesProposal(snapshot);
@@ -3734,8 +4108,11 @@ _INDEX_HTML = r'''<!doctype html>
         && !snapshot.adapter.fixture_only
         && (!snapshot.planning || snapshot.planning.ready !== true);
       $('propose').disabled = Boolean(missionRequestInFlight)
-        || telemetryRequestInFlight;
-      $('propose').textContent = proposalBusy ? 'Generating proposal…' : 'Generate proposal';
+        || telemetryRequestInFlight
+        || readOnly;
+      $('propose').textContent = readOnly
+        ? 'Read-only evidence'
+        : proposalBusy ? 'Generating proposal…' : 'Generate proposal';
       if (!proposalBusy && leaseActive) {
         $('propose').textContent = 'Update objective';
       }
@@ -3820,6 +4197,7 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const live = !snapshot.adapter.fixture_only;
       const rollingReplay = Boolean(snapshot.adapter.rolling_replay);
+      const phase4 = Boolean(snapshot.adapter.hierarchical_phase4);
       const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const execution = live && snapshot.adapter.live_execution_enabled;
@@ -3854,11 +4232,11 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
-      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
-      $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
-      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution. Authenticated objective updates reuse the same expiry.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning, cumulative travel, and authenticated objective updates only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
-      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? `The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, ${leaseLabel} lease, speed ceilings, and safety policy. Telemetry remains lease-managed until the lease ends. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.` : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
+      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : phase4 ? 'PHASE 4 REAL-PROVIDER EVIDENCE — READ ONLY / NO MOTION AUTHORITY' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : phase4 ? 'Persisted replay' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
+      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : phase4 ? 'Persisted approval receipt' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
+      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution. Authenticated objective updates reuse the same expiry.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning, cumulative travel, and authenticated objective updates only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : phase4 ? 'This mission-ID view is immutable. Create new evidence only with the no-authority Phase 4 replay CLI.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? `The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, ${leaseLabel} lease, speed ceilings, and safety policy. Telemetry remains lease-managed until the lease ends. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.` : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : phase4 ? 'The console reopens durable recorded-map evidence by exact mission ID. Latency is measured from real provider wall time; routes, motor-zero intervals, and coverage are replay-derived. ROS, sensors, serial, and physical authority are absent.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -3919,6 +4297,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('artifact-list').innerHTML = artifacts.map((artifact) => `<li><a href="${escapeHtml(artifact.href)}" target="_blank" rel="noopener">${escapeHtml(artifact.label)}</a> <span class="hint">${escapeHtml(artifact.media_type)}</span></li>`).join('');
       $('terminal-panel').open = Boolean(snapshot.mission.terminal);
       renderMissionLog(snapshot);
+      renderPhase4Evidence(snapshot);
       renderMap(snapshot.map, snapshot);
       renderCamera(snapshot);
       renderActionState(snapshot);
@@ -4018,6 +4397,40 @@ _INDEX_HTML = r'''<!doctype html>
             : snapshot.mission.state === 'PROPOSED'
               ? 'Proposal ready for one authenticated mission-lease approval.'
               : 'Waiting for the next mission action.';
+    }
+
+    function renderPhase4Evidence(snapshot) {
+      const panel = $('phase4-panel');
+      const target = $('phase4-evidence');
+      const phase4 = (snapshot.rolling || {}).phase4;
+      panel.hidden = !phase4;
+      if (!phase4) {
+        target.innerHTML = '';
+        return;
+      }
+      const provider = phase4.provider || {};
+      const latency = provider.latency_distribution_s || {};
+      const metrics = phase4.metrics || {};
+      const shortHop = phase4.short_hop_characterization || {};
+      const decisions = Array.isArray(phase4.decisions) ? phase4.decisions : [];
+      const latencySummary = [
+        statusPill('Calls', provider.calls_completed ?? decisions.length),
+        statusPill('p50', finiteNumber(latency.p50) === null ? 'unavailable' : `${Number(latency.p50).toFixed(3)} s`),
+        statusPill('p95', finiteNumber(latency.p95) === null ? 'unavailable' : `${Number(latency.p95).toFixed(3)} s`),
+        statusPill('Atomic handoffs', metrics.long_leg_atomic_handoffs ?? 0),
+        statusPill('wait_planning', metrics.long_leg_wait_planning_handoffs ?? 0, Number(metrics.long_leg_wait_planning_handoffs || 0) ? 'stale' : ''),
+        statusPill('Controller sessions', metrics.controller_sessions ?? 0),
+        statusPill('Decisions / m', finiteNumber(metrics.decisions_per_m) === null ? 'unavailable' : Number(metrics.decisions_per_m).toFixed(3)),
+        statusPill('Coverage', `${Math.round(Number(metrics.coverage_start || 0) * 100)}% → ${Math.round(Number(metrics.coverage_end || 0) * 100)}%`),
+        statusPill('Short-hop waits', shortHop.wait_planning_count ?? 0, Number(shortHop.wait_planning_count || 0) ? 'stale' : ''),
+      ].join('');
+      const rows = decisions.map((item) => {
+        const timing = item.timing || {};
+        const latencySeconds = finiteNumber(timing.latency_s);
+        const zeroSeconds = finiteNumber(timing.motor_zero_interval_s);
+        return `<li><small>#${escapeHtml(item.call_index)} · ${escapeHtml(item.action)} · ${escapeHtml(timing.handoff_kind || 'decision')}</small>${escapeHtml(item.rationale || '')}<br><span class="hint">target ${escapeHtml(item.resolved_target_id || '')} · latency ${latencySeconds === null ? 'unavailable' : latencySeconds.toFixed(3)} s · motor-zero ${zeroSeconds === null ? 'unavailable' : zeroSeconds.toFixed(3)} s · snapshot ${escapeHtml(String(item.snapshot_id || '').slice(0,12))}</span></li>`;
+      }).join('');
+      target.innerHTML = `<div class="visual-status">${latencySummary}</div><ol class="mission-log">${rows}</ol><p class="hint">${escapeHtml(shortHop.interpretation || '')}</p>`;
     }
 
     function renderCamera(snapshot) {
@@ -4129,6 +4542,7 @@ _INDEX_HTML = r'''<!doctype html>
         const confidenceLabel = confidence !== null ? ` ${Math.round(confidence*100)}%` : '';
         return `<g><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="${uncertaintyRadius}" fill="rgba(244,195,106,.08)" stroke="#f4c36a" stroke-dasharray="5 5" opacity=".75"/><circle cx="${sx(o.x_m)}" cy="${sy(o.y_m)}" r="9" fill="#f4c36a"/><text x="${sx(o.x_m)+14}" y="${sy(o.y_m)-11}" fill="#ffe2a5" font-size="14">${escapeHtml(o.label || track.label || 'track')}${escapeHtml(confidenceLabel)}</text></g>`;
       }).join('');
+      const frontiers = (map.frontiers || []).map((frontier) => `<g><circle cx="${sx(frontier.x_m)}" cy="${sy(frontier.y_m)}" r="8" fill="rgba(125,167,247,.16)" stroke="#7da7f7" stroke-width="2"/><text x="${sx(frontier.x_m)+11}" y="${sy(frontier.y_m)+5}" fill="#a9c3fa" font-size="12">${escapeHtml(String(frontier.frontier_id || '').slice(0,10))}</text></g>`).join('');
       const goal = map.goal_region ? `<circle cx="${sx(map.goal_region.x_m)}" cy="${sy(map.goal_region.y_m)}" r="${Math.max(7, Number(map.goal_region.radius_m || 0)/widthM*(W-pad*2))}" fill="rgba(125,167,247,.13)" stroke="#7da7f7" stroke-width="3"/>` : '';
       const intent = (snapshot.rolling || {}).active_intent || {};
       let corridorMin = finiteNumber(snapshot.safety.forward_corridor_min_angle_deg);
@@ -4177,7 +4591,7 @@ _INDEX_HTML = r'''<!doctype html>
         return;
       }
       svg.setAttribute('aria-label', `Room map showing ${sourceLabel} occupancy, rover heading, safe corridor, route, path, goal, and semantic tracks`);
-      svg.innerHTML = `${frame}${corridorShape}${goal}${obstacles}<polyline points="${points(map.proposed_route || [])}" fill="none" stroke="#7da7f7" stroke-width="5" stroke-dasharray="10 10"/>${(map.traveled_path || []).length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#65e0c2" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(rover.x_m)} ${sy(rover.y_m)}) rotate(${Number(rover.yaw_deg || 0)})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#65e0c2" stroke="#d4fff7" stroke-width="2"/></g>${layerNotice}`;
+      svg.innerHTML = `${frame}${corridorShape}${goal}${obstacles}${frontiers}<polyline points="${points(map.proposed_route || [])}" fill="none" stroke="#7da7f7" stroke-width="5" stroke-dasharray="10 10"/>${(map.traveled_path || []).length > 1 ? `<polyline points="${points(map.traveled_path)}" fill="none" stroke="#65e0c2" stroke-width="8" stroke-linecap="round"/>` : ''}${objects}<g transform="translate(${sx(rover.x_m)} ${sy(rover.y_m)}) rotate(${Number(rover.yaw_deg || 0)})"><path d="M 18 0 L -12 -12 L -7 0 L -12 12 Z" fill="#65e0c2" stroke="#d4fff7" stroke-width="2"/></g>${layerNotice}`;
     }
 
     async function loadScenarios() {

@@ -772,6 +772,7 @@ class MissionService:
             if proposal_schema not in {
                 "sphero_rvr.rolling_replay_proposal.v1",
                 "sphero_rvr.adaptive_mission_proposal.v1",
+                "sphero_rvr.hierarchical_phase4_proposal.v1",
             }:
                 raise MissionValidationError("adaptive replay proposal schema is invalid")
             if str(payload.get("prompt", "")).strip() != row["prompt"]:
@@ -811,6 +812,9 @@ class MissionService:
                     (
                         "adaptive_mission_proposal"
                         if proposal_schema == "sphero_rvr.adaptive_mission_proposal.v1"
+                        else "hierarchical_phase4_proposal"
+                        if proposal_schema
+                        == "sphero_rvr.hierarchical_phase4_proposal.v1"
                         else "rolling_replay_proposal"
                     ),
                     {"proposal": payload, "motion_authority": False},
