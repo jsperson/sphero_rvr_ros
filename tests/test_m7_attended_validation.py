@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
 import json
 import math
@@ -9,9 +10,11 @@ from pathlib import Path
 import pytest
 
 from sphero_rvr_driver.m7_attended_validation import (
+    CLEANUP_AUDIT_SCHEMA,
     EXPECTED_CAMERA_PITCH_RAD,
     FIXED_SAFETY,
     GRAPH_AUDIT_SCHEMA,
+    OBSERVATION_SCHEMA,
     OBSERVED_TOPICS,
     PLAN_SCHEMA,
     REPORT_SCHEMA,
@@ -128,15 +131,55 @@ def _graph(gate: str) -> dict[str, object]:
 
 
 def _cleanup() -> dict[str, object]:
+    commands: dict[str, object] = {
+        "git_head": {
+            "returncode": 0,
+            "stdout": SOURCE_SHA + "\n",
+            "stderr": "",
+        },
+        "git_status": {"returncode": 0, "stdout": "", "stderr": ""},
+        "processes": {
+            "returncode": 0,
+            "stdout": "1 /sbin/init\n",
+            "stderr": "",
+        },
+        "ros_nodes": {
+            "returncode": 0,
+            "stdout": "/live_mission_service\n",
+            "stderr": "",
+        },
+        "ros_topics": {
+            "returncode": 0,
+            "stdout": "/rosout\n",
+            "stderr": "",
+        },
+    }
+    for topic in ("/cmd_vel", "/cmd_vel_motor", "/nav2_cmd_vel_request"):
+        commands[f"topic_info:{topic}"] = {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "Unknown topic",
+        }
+    for device in ("/dev/rplidar", "/dev/ttyAMA0", "/dev/ttyS0", "/dev/serial0"):
+        commands[f"device_owner:{device}"] = {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "",
+        }
     return {
+        "schema": CLEANUP_AUDIT_SCHEMA,
         "source_sha": SOURCE_SHA,
         "passed": True,
         "checks": {
             "exact_source_sha": True,
             "source_checkout_clean": True,
+            "process_inspection_succeeded": True,
             "stationary_sensor_and_motion_processes_absent": True,
+            "ros_node_inspection_succeeded": True,
             "prohibited_ros_nodes_absent": True,
+            "ros_topic_inspection_succeeded": True,
             "motion_topic_publishers_absent": True,
+            "device_owner_inspection_succeeded": True,
             "sensor_and_rover_devices_ownerless": True,
         },
         "cleanup": {
@@ -147,10 +190,96 @@ def _cleanup() -> dict[str, object]:
             "rover_serial_owner_absent": True,
             "completed": True,
         },
+        "commands": commands,
     }
 
 
-def _artifact(gate: str) -> list[dict[str, object]]:
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _collect_evidence_ids(value: object) -> set[str]:
+    if isinstance(value, dict):
+        result: set[str] = set()
+        for key, item in value.items():
+            if key in {"evidence_event_ids", "evidence_ids"} and isinstance(
+                item, list
+            ):
+                result.update(str(event_id) for event_id in item)
+            else:
+                result.update(_collect_evidence_ids(item))
+        return result
+    if isinstance(value, list):
+        result = set()
+        for item in value:
+            result.update(_collect_evidence_ids(item))
+        return result
+    return set()
+
+
+def _observation(gate: str, evidence_ids: set[str]) -> dict[str, object]:
+    required_keys = (
+        (
+            "collision_state",
+            "collision_events",
+            "requested_cmd",
+            "motor_cmd",
+            "odom",
+            "scan",
+            "route_status",
+        )
+        if gate == "m7.3"
+        else tuple(OBSERVED_TOPICS)
+    )
+    ordered_ids = sorted(evidence_ids)
+    present_topic_keys = {
+        event_id.rsplit("--", 1)[1]
+        for event_id in ordered_ids
+        if "--" in event_id and event_id.rsplit("--", 1)[1] in OBSERVED_TOPICS
+    }
+    for key in required_keys:
+        if key not in present_topic_keys:
+            ordered_ids.append(f"{gate}-required-{key}--{key}")
+    events = []
+    for index, event_id in enumerate(ordered_ids):
+        topic_key = event_id.rsplit("--", 1)[1]
+        payload = {"evidence_id": event_id}
+        events.append(
+            {
+                "event_id": event_id,
+                "topic": OBSERVED_TOPICS[topic_key],
+                "receipt_time_s": 1_000.0 + index * 0.01,
+                "elapsed_s": index * 0.01,
+                "payload": payload,
+                "payload_sha256": _canonical_sha256(payload),
+            }
+        )
+    observation: dict[str, object] = {
+        "schema": OBSERVATION_SCHEMA,
+        "source_sha": SOURCE_SHA,
+        "gate": gate,
+        "captured_at_utc": "2026-07-28T00:00:00Z",
+        "duration_s": 120.0,
+        "read_only": True,
+        "motion_authority": False,
+        "physical_execution_enabled": False,
+        "topics": dict(OBSERVED_TOPICS),
+        "events": events,
+    }
+    observation["observation_sha256"] = _canonical_sha256(observation)
+    return observation
+
+
+def _event_ids(gate: str, label: str, *topic_keys: str) -> list[str]:
+    return [f"{gate}-{label}--{topic_key}" for topic_key in topic_keys]
+
+
+def _artifact(
+    gate: str, *, observation_sha256: str
+) -> list[dict[str, object]]:
     return [
         {
             "path": f"/home/jsperson/rvr_runs/{gate}/data_0.mcap",
@@ -161,6 +290,7 @@ def _artifact(gate: str) -> list[dict[str, object]]:
             "path": f"/home/jsperson/rvr_runs/{gate}/observation.json",
             "sha256": "c" * 64,
             "byte_count": 512,
+            "canonical_sha256": observation_sha256,
         },
     ]
 
@@ -182,15 +312,21 @@ def _motion_sample(
         "state": state,
         "front_m": front_m,
         "physical_contact": False,
-        "evidence_event_ids": [f"event-{t_s:.2f}"],
+        "evidence_event_ids": _event_ids(
+            "m7.3",
+            f"motion-{t_s:.2f}",
+            "collision_state",
+            "requested_cmd",
+            "motor_cmd",
+            "scan",
+        ),
     }
 
 
 def _collision() -> dict[str, object]:
-    return {
+    result = {
         "graph_audit": _graph("m7.3"),
         "physical_contact_observed": False,
-        "artifacts": _artifact("m7.3"),
         "trials": {
             "slow": {
                 "samples": [
@@ -200,7 +336,12 @@ def _collision() -> dict[str, object]:
             },
             "collision_stop": {
                 "provider_inference_in_flight": True,
-                "evidence_event_ids": ["provider-1", "collision-1"],
+                "evidence_event_ids": _event_ids(
+                    "m7.3",
+                    "collision-stop",
+                    "collision_events",
+                    "route_status",
+                ),
                 "samples": [
                     _motion_sample(1.0, front_m=0.40),
                     _motion_sample(
@@ -220,13 +361,23 @@ def _collision() -> dict[str, object]:
                 "accepted": False,
                 "state": "STOPPED",
                 "front_m": 0.40,
-                "evidence_event_ids": ["reset-blocked-1"],
+                "evidence_event_ids": _event_ids(
+                    "m7.3",
+                    "reset-blocked",
+                    "collision_state",
+                    "collision_events",
+                ),
             },
             "clear_reset": {
                 "accepted": True,
                 "clear_duration_s": 0.60,
                 "front_m": 0.50,
-                "evidence_event_ids": ["reset-clear-1"],
+                "evidence_event_ids": _event_ids(
+                    "m7.3",
+                    "reset-clear",
+                    "collision_state",
+                    "collision_events",
+                ),
                 "samples_after_reset": [
                     _motion_sample(2.0, requested=0.0, motor=0.0),
                     _motion_sample(2.1, requested=0.0, motor=0.0),
@@ -236,24 +387,62 @@ def _collision() -> dict[str, object]:
                 "zero_latency_s": 0.28,
                 "motor_zero": True,
                 "driver_watchdog_s": 0.50,
-                "evidence_event_ids": ["stale-1", "motor-zero-1"],
+                "provider_inference_in_flight": True,
+                "evidence_event_ids": _event_ids(
+                    "m7.3",
+                    "stale-command",
+                    "requested_cmd",
+                    "motor_cmd",
+                    "route_status",
+                ),
             },
             "operator_stop": {
                 "zero_latency_s": 0.04,
                 "motor_zero": True,
                 "provider_inference_in_flight": True,
-                "evidence_event_ids": ["stop-service-1", "motor-zero-2"],
+                "evidence_event_ids": _event_ids(
+                    "m7.3",
+                    "operator-stop",
+                    "collision_events",
+                    "motor_cmd",
+                    "route_status",
+                ),
             },
             "operator_estop": {
                 "zero_latency_s": 0.03,
                 "motor_zero": True,
                 "provider_inference_in_flight": True,
                 "latched_until_explicit_clear": True,
-                "evidence_event_ids": ["estop-service-1", "motor-zero-3"],
+                "evidence_event_ids": _event_ids(
+                    "m7.3",
+                    "operator-estop",
+                    "collision_events",
+                    "motor_cmd",
+                    "route_status",
+                ),
+            },
+            "restart_recovery": {
+                "pre_restart_state": "RUNNING",
+                "post_restart_state": "recovery_required",
+                "motor_zero": True,
+                "route_resumed": False,
+                "evidence_event_ids": _event_ids(
+                    "m7.3",
+                    "restart-recovery",
+                    "motor_cmd",
+                    "route_status",
+                ),
             },
         },
         "cleanup_audit": _cleanup(),
     }
+    observation = _observation("m7.3", _collect_evidence_ids(result))
+    result["observation"] = observation
+    result["artifacts"] = _artifact(
+        "m7.3",
+        observation_sha256=str(observation["observation_sha256"]),
+    )
+    return result
 
 
 def _pitch(pitch_rad: float, error_m: float) -> dict[str, object]:
@@ -279,7 +468,13 @@ def _detection(method: str = "floor_projection") -> dict[str, object]:
             "position_sigma_m": None if method == "bearing_only" else 0.04,
             "bearing_sigma_rad": 0.02,
         },
-        "evidence_ids": ["live-camera-00000012-shoe-01", "scan-0012"],
+        "evidence_ids": _event_ids(
+            "m7.4",
+            "mapped-detection",
+            "camera",
+            "scan",
+            "localization",
+        ),
         "source_timestamps_ns": {
             "image": 2_000_000_000,
             "lidar": 2_050_000_000,
@@ -306,7 +501,21 @@ def _perception_sample(
         "state": "CLEAR",
         "front_m": 1.2,
         "physical_contact": False,
-        "evidence_event_ids": [f"moving-event-{index}"],
+        "evidence_event_ids": _event_ids(
+            "m7.4",
+            f"moving-sample-{index}",
+            "collision_state",
+            "requested_cmd",
+            "motor_cmd",
+            "odom",
+            "scan",
+            "camera",
+            "lidar",
+            "localization",
+            "semantic_map",
+            "tf",
+            "tf_static",
+        ),
         "freshness_s": {
             "lidar": 0.04,
             "camera": 0.20,
@@ -363,7 +572,7 @@ def _moving_perception() -> dict[str, object]:
             detections=[_detection()],
         ),
     ]
-    return {
+    result = {
         "graph_audit": _graph("m7.4"),
         "pitch_checks": {
             "before": _pitch(EXPECTED_CAMERA_PITCH_RAD, 0.040),
@@ -377,7 +586,12 @@ def _moving_perception() -> dict[str, object]:
                 "map_revision": "slam-map-1",
                 "replan_required": True,
                 "contains_motion_geometry": False,
-                "evidence_event_ids": ["map-event-1", "track-event-1"],
+                "evidence_event_ids": _event_ids(
+                    "m7.4",
+                    "new-track-replan",
+                    "semantic_map",
+                    "route_status",
+                ),
             }
         ],
         "stale_veto": {
@@ -385,11 +599,23 @@ def _moving_perception() -> dict[str, object]:
             "motor_zero": True,
             "zero_latency_s": 0.08,
             "provider_inference_in_flight": True,
-            "evidence_event_ids": ["stale-localization-1", "motor-zero-4"],
+            "evidence_event_ids": _event_ids(
+                "m7.4",
+                "stale-localization",
+                "localization",
+                "motor_cmd",
+                "route_status",
+            ),
         },
-        "artifacts": _artifact("m7.4"),
         "cleanup_audit": _cleanup(),
     }
+    observation = _observation("m7.4", _collect_evidence_ids(result))
+    result["observation"] = observation
+    result["artifacts"] = _artifact(
+        "m7.4",
+        observation_sha256=str(observation["observation_sha256"]),
+    )
+    return result
 
 
 def _complete_session() -> dict[str, object]:
@@ -528,7 +754,12 @@ def test_collision_reset_never_replays_old_command_and_estop_must_latch() -> Non
 
 
 def test_all_independent_veto_trials_must_run_while_inference_is_in_flight() -> None:
-    for trial in ("collision_stop", "operator_stop", "operator_estop"):
+    for trial in (
+        "collision_stop",
+        "stale_command",
+        "operator_stop",
+        "operator_estop",
+    ):
         session = _complete_session()
         session["m7_3_collision"]["trials"][trial][
             "provider_inference_in_flight"
@@ -540,6 +771,18 @@ def test_all_independent_veto_trials_must_run_while_inference_is_in_flight() -> 
         "provider_inference_in_flight"
     ] = False
     assert evaluate_session(session)["passed"] is False
+
+
+def test_restart_enters_recovery_required_without_resuming_old_route() -> None:
+    session = _complete_session()
+    restart = session["m7_3_collision"]["trials"]["restart_recovery"]
+    restart["post_restart_state"] = "RUNNING"
+    restart["route_resumed"] = True
+
+    report = evaluate_session(session)
+
+    assert report["passed"] is False
+    assert "recovery_required" in report["error"]
 
 
 def test_moving_perception_requires_fresh_sources_transforms_and_real_motion() -> None:
@@ -630,6 +873,42 @@ def test_raw_bag_checksums_and_generated_cleanup_are_mandatory() -> None:
         "motion_topic_publishers_absent"
     ] = False
     assert evaluate_session(session)["passed"] is False
+
+
+def test_compact_evidence_is_bound_to_hashed_read_only_observer_events() -> None:
+    session = _complete_session()
+    event = session["m7_3_collision"]["observation"]["events"][0]
+    event["payload"] = {"tampered": True}
+    report = evaluate_session(session)
+    assert report["passed"] is False
+    assert "observation digest" in report["error"]
+
+    session = _complete_session()
+    session["m7_4_moving_perception"]["samples"][1]["evidence_event_ids"] = [
+        "not-in-observation"
+    ]
+    report = evaluate_session(session)
+    assert report["passed"] is False
+    assert "outside the bound observation" in report["error"]
+
+    session = _complete_session()
+    sample = session["m7_4_moving_perception"]["samples"][1]
+    sample["evidence_event_ids"] = [
+        event_id
+        for event_id in sample["evidence_event_ids"]
+        if event_id.endswith("--requested_cmd")
+    ]
+    report = evaluate_session(session)
+    assert report["passed"] is False
+    assert "every required source topic" in report["error"]
+
+    session = _complete_session()
+    session["m7_4_moving_perception"]["artifacts"][1][
+        "canonical_sha256"
+    ] = "0" * 64
+    report = evaluate_session(session)
+    assert report["passed"] is False
+    assert "observation artifact" in report["error"]
 
 
 def test_plan_is_nonexecuting_and_preserves_two_approval_boundaries() -> None:
@@ -742,6 +1021,31 @@ def test_graph_audit_claims_are_recomputed_from_raw_command_output() -> None:
 
     assert report["passed"] is False
     assert "exclusive_cmd_vel_publisher" in report["error"]
+
+    session = _complete_session()
+    command = session["m7_3_collision"]["graph_audit"]["commands"][
+        "topic_info:/cmd_vel"
+    ]
+    command["stdout"] = str(command["stdout"]).replace(
+        "Node name: live_route_runner", "Node name: rogue_publisher", 1
+    )
+    report = evaluate_session(session)
+    assert report["passed"] is False
+    assert "correct_cmd_vel_owners" in report["error"]
+
+
+def test_cleanup_is_recomputed_from_raw_process_topic_and_device_inspections() -> None:
+    session = _complete_session()
+    device = session["m7_3_collision"]["cleanup_audit"]["commands"][
+        "device_owner:/dev/ttyAMA0"
+    ]
+    device["returncode"] = 0
+    device["stderr"] = " 4242"
+
+    report = evaluate_session(session)
+
+    assert report["passed"] is False
+    assert "sensor_and_rover_devices_ownerless" in report["error"]
 
 
 def test_observer_source_has_subscriptions_only_and_no_authority_surfaces() -> None:

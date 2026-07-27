@@ -22,6 +22,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from .m7_surveyed_localization import (
+    CLEANUP_AUDIT_SCHEMA,
+    audit_stationary_cleanup,
+)
+
 
 SESSION_SCHEMA = "sphero_rvr.m7_phase3_attended_validation_session.v1"
 REPORT_SCHEMA = "sphero_rvr.m7_phase3_attended_validation_report.v1"
@@ -72,6 +77,39 @@ OBSERVED_TOPICS = {
     "tf": "/tf",
     "tf_static": "/tf_static",
 }
+M7_3_REQUIRED_OBSERVATION_TOPICS = {
+    OBSERVED_TOPICS[name]
+    for name in (
+        "collision_state",
+        "collision_events",
+        "requested_cmd",
+        "motor_cmd",
+        "odom",
+        "scan",
+        "route_status",
+    )
+}
+M7_4_REQUIRED_OBSERVATION_TOPICS = set(OBSERVED_TOPICS.values())
+COLLISION_SAMPLE_TOPICS = {
+    OBSERVED_TOPICS[name]
+    for name in ("collision_state", "requested_cmd", "motor_cmd", "scan")
+}
+MOVING_SAMPLE_TOPICS = {
+    OBSERVED_TOPICS[name]
+    for name in (
+        "collision_state",
+        "requested_cmd",
+        "motor_cmd",
+        "odom",
+        "scan",
+        "camera",
+        "lidar",
+        "localization",
+        "semantic_map",
+        "tf",
+        "tf_static",
+    )
+}
 
 MOTOR_NODE_NAMES = {
     "/sphero_rvr_driver",
@@ -79,6 +117,37 @@ MOTOR_NODE_NAMES = {
     "/live_route_runner",
     "/range_motion_controller",
 }
+
+CLEANUP_MOTION_TOPICS = (
+    "/cmd_vel",
+    "/cmd_vel_motor",
+    "/nav2_cmd_vel_request",
+)
+CLEANUP_DEVICES = (
+    "/dev/rplidar",
+    "/dev/ttyAMA0",
+    "/dev/ttyS0",
+    "/dev/serial0",
+)
+CLEANUP_PROCESS_TERMS = (
+    "rplidar_composition",
+    "camera_node",
+    "slam_toolbox",
+    "rvr_node",
+    "live_route_runner",
+    "lidar_collision_stop_supervisor",
+    "ros2 bag record",
+    "m7_phase3_read_only_observer",
+)
+CLEANUP_NODE_TERMS = (
+    "rplidar",
+    "camera_node",
+    "slam_toolbox",
+    "rvr_node",
+    "live_route_runner",
+    "collision_stop",
+    "m7_phase3_read_only_observer",
+)
 
 
 class M7AttendedValidationError(ValueError):
@@ -200,6 +269,7 @@ def build_plan(*, source_sha: str) -> dict[str, Any]:
             "obtain independent review of the exact candidate",
             "obtain explicit M7.3 exact-SHA approval",
             "run attended collision slow/stop/manual-reset/no-contact trials",
+            "prove restart enters recovery_required without resuming a route",
             "stop and complete generated cleanup audit",
             "review M7.3 evidence and obtain separate M7.4 approval",
             "re-verify camera pitch and far floor projection before handling",
@@ -242,6 +312,7 @@ def build_session_template(*, source_sha: str) -> dict[str, Any]:
         },
         "m7_3_collision": {
             "graph_audit": {},
+            "observation": {},
             "trials": {},
             "physical_contact_observed": None,
             "artifacts": [],
@@ -249,6 +320,7 @@ def build_session_template(*, source_sha: str) -> dict[str, Any]:
         },
         "m7_4_moving_perception": {
             "graph_audit": {},
+            "observation": {},
             "pitch_checks": {},
             "samples": [],
             "replan_events": [],
@@ -376,9 +448,132 @@ def _validate_approvals(
     return by_gate
 
 
-def _validate_artifacts(value: Any, *, label: str) -> None:
+def _observation_sha256(value: Mapping[str, Any]) -> str:
+    body = dict(value)
+    body.pop("observation_sha256", None)
+    return _canonical_sha256(body)
+
+
+def _validate_observation(
+    value: Any, *, source_sha: str, gate: str
+) -> dict[str, str]:
+    _require(isinstance(value, Mapping), f"{gate} observation is required")
+    _require(
+        value.get("schema") == OBSERVATION_SCHEMA,
+        f"{gate} observation schema is invalid",
+    )
+    _require(
+        _exact_sha(value.get("source_sha"), f"{gate}.observation.source_sha")
+        == source_sha,
+        f"{gate} observation source SHA mismatch",
+    )
+    _require(value.get("gate") == gate, f"{gate} observation gate is wrong")
+    _require(value.get("read_only") is True, f"{gate} observation is not read-only")
+    _require(
+        value.get("motion_authority") is False,
+        f"{gate} observation cannot claim motion authority",
+    )
+    _require(
+        value.get("physical_execution_enabled") is False,
+        f"{gate} observer cannot enable physical execution",
+    )
+    _require(
+        value.get("topics") == OBSERVED_TOPICS,
+        f"{gate} observation topic inventory is not exact",
+    )
+    _require(
+        str(value.get("captured_at_utc", "")).strip(),
+        f"{gate} observation capture time is required",
+    )
+    duration = _finite(value.get("duration_s"), f"{gate}.observation.duration_s")
+    _require(
+        0.5 <= duration <= 301.0,
+        f"{gate} observation duration is outside the bounded capture window",
+    )
+    digest = str(value.get("observation_sha256", "")).strip().lower()
+    _require(
+        SHA256_RE.fullmatch(digest) is not None
+        and digest == _observation_sha256(value),
+        f"{gate} observation digest is invalid",
+    )
+
+    events = value.get("events")
+    _require(isinstance(events, list) and events, f"{gate} observation events are required")
+    event_topics_by_id: dict[str, str] = {}
+    event_topics: set[str] = set()
+    previous_elapsed = -math.inf
+    for event in events:
+        _require(isinstance(event, Mapping), f"{gate} observation event is invalid")
+        event_id = str(event.get("event_id", "")).strip()
+        _require(
+            event_id and event_id not in event_topics_by_id,
+            f"{gate} observation event IDs must be nonempty and unique",
+        )
+        topic = str(event.get("topic", "")).strip()
+        _require(
+            topic in OBSERVED_TOPICS.values(),
+            f"{gate} observation contains an unsupported topic",
+        )
+        _finite(event.get("receipt_time_s"), f"{gate}.{event_id}.receipt_time_s")
+        elapsed = _finite(event.get("elapsed_s"), f"{gate}.{event_id}.elapsed_s")
+        _require(
+            0.0 <= elapsed <= duration and elapsed >= previous_elapsed,
+            f"{gate} observation event timing is invalid",
+        )
+        previous_elapsed = elapsed
+        payload = event.get("payload")
+        _require(
+            str(event.get("payload_sha256", "")).strip().lower()
+            == _canonical_sha256(payload),
+            f"{gate} observation event payload digest is invalid",
+        )
+        event_topics_by_id[event_id] = topic
+        event_topics.add(topic)
+    required_topics = (
+        M7_3_REQUIRED_OBSERVATION_TOPICS
+        if gate == "m7.3"
+        else M7_4_REQUIRED_OBSERVATION_TOPICS
+    )
+    _require(
+        required_topics.issubset(event_topics),
+        f"{gate} observation is missing required live topics",
+    )
+    return event_topics_by_id
+
+
+def _require_event_ids(
+    value: Any,
+    *,
+    label: str,
+    observation_events: Mapping[str, str],
+    required_topics: Optional[set[str]] = None,
+) -> list[str]:
+    _require(
+        isinstance(value, list)
+        and value
+        and all(str(item).strip() for item in value),
+        f"{label} must bind raw observer event IDs",
+    )
+    event_ids = [str(item).strip() for item in value]
+    _require(
+        set(event_ids).issubset(observation_events),
+        f"{label} references an event outside the bound observation",
+    )
+    if required_topics:
+        referenced_topics = {observation_events[event_id] for event_id in event_ids}
+        _require(
+            required_topics.issubset(referenced_topics),
+            f"{label} does not bind every required source topic",
+        )
+    return event_ids
+
+
+def _validate_artifacts(
+    value: Any, *, label: str, observation_sha256: str
+) -> None:
     _require(isinstance(value, list) and value, f"{label} artifacts are required")
     has_bag = False
+    has_observation = False
     paths: set[str] = set()
     for item in value:
         _require(isinstance(item, Mapping), f"{label} artifact must be an object")
@@ -389,7 +584,16 @@ def _validate_artifacts(value: Any, *, label: str) -> None:
         _require(int(item.get("byte_count", 0)) > 0, f"{label} artifact byte_count must be positive")
         paths.add(path)
         has_bag = has_bag or path.endswith(".mcap")
+        if path.endswith("observation.json"):
+            has_observation = (
+                str(item.get("canonical_sha256", "")).strip().lower()
+                == observation_sha256
+            )
     _require(has_bag, f"{label} requires a raw rosbag MCAP artifact")
+    _require(
+        has_observation,
+        f"{label} observation artifact is not bound to the inline evidence",
+    )
 
 
 def _validate_graph_audit(
@@ -458,14 +662,26 @@ def _validate_graph_audit(
         and _topic_count(str(motor.get("stdout", "")), "Publisher") == 1,
         "driver_is_motor_subscriber": motor.get("returncode") == 0
         and _topic_count(str(motor.get("stdout", "")), "Subscription") == 1,
-        "correct_cmd_vel_owners": {
-            "live_route_runner",
-            "lidar_collision_stop_supervisor",
-        }.issubset(_topic_node_names(str(cmd_vel.get("stdout", "")))),
-        "correct_motor_owners": {
-            "lidar_collision_stop_supervisor",
-            "sphero_rvr_driver",
-        }.issubset(_topic_node_names(str(motor.get("stdout", "")))),
+        "correct_cmd_vel_owners": (
+            _topic_endpoint_node_names(
+                str(cmd_vel.get("stdout", "")), "Publisher"
+            )
+            == {"live_route_runner"}
+            and _topic_endpoint_node_names(
+                str(cmd_vel.get("stdout", "")), "Subscription"
+            )
+            == {"lidar_collision_stop_supervisor"}
+        ),
+        "correct_motor_owners": (
+            _topic_endpoint_node_names(
+                str(motor.get("stdout", "")), "Publisher"
+            )
+            == {"lidar_collision_stop_supervisor"}
+            and _topic_endpoint_node_names(
+                str(motor.get("stdout", "")), "Subscription"
+            )
+            == {"sphero_rvr_driver"}
+        ),
         "nav2_private_publisher_absent_before_m7_5": (
             nav2.get("returncode") == 1
             or _topic_count(str(nav2.get("stdout", "")), "Publisher") == 0
@@ -487,7 +703,13 @@ def _validate_graph_audit(
         )
 
 
-def _samples(value: Any, label: str) -> list[Mapping[str, Any]]:
+def _samples(
+    value: Any,
+    label: str,
+    *,
+    observation_events: Mapping[str, str],
+    required_topics: set[str],
+) -> list[Mapping[str, Any]]:
     _require(isinstance(value, list) and value, f"{label} samples are required")
     result: list[Mapping[str, Any]] = []
     previous = -math.inf
@@ -503,12 +725,11 @@ def _samples(value: Any, label: str) -> list[Mapping[str, Any]]:
             "motor_angular_z",
         ):
             _finite(sample.get(name), f"{label}.{name}")
-        evidence_event_ids = sample.get("evidence_event_ids")
-        _require(
-            isinstance(evidence_event_ids, list)
-            and evidence_event_ids
-            and all(str(item).strip() for item in evidence_event_ids),
-            f"{label} sample must bind raw observer event IDs",
+        _require_event_ids(
+            sample.get("evidence_event_ids"),
+            label=f"{label} sample",
+            observation_events=observation_events,
+            required_topics=required_topics,
         )
         _require(sample.get("physical_contact") is False, f"{label} recorded physical contact")
         result.append(sample)
@@ -525,7 +746,15 @@ def _first_matching(
 def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
     _require(isinstance(value, Mapping), "m7_3_collision is required")
     _validate_graph_audit(value.get("graph_audit"), source_sha=source_sha, gate="m7.3")
-    _validate_artifacts(value.get("artifacts"), label="m7.3")
+    observation = value.get("observation")
+    observation_events = _validate_observation(
+        observation, source_sha=source_sha, gate="m7.3"
+    )
+    _validate_artifacts(
+        value.get("artifacts"),
+        label="m7.3",
+        observation_sha256=str(observation["observation_sha256"]),
+    )
     _require(
         value.get("physical_contact_observed") is False,
         "M7.3 requires an explicit no-contact observation",
@@ -540,10 +769,16 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
         "stale_command",
         "operator_stop",
         "operator_estop",
+        "restart_recovery",
     }
     _require(set(trials) == required_trials, "M7.3 trial set is not exact")
 
-    slow = _samples(trials["slow"].get("samples"), "slow")
+    slow = _samples(
+        trials["slow"].get("samples"),
+        "slow",
+        observation_events=observation_events,
+        required_topics=COLLISION_SAMPLE_TOPICS,
+    )
     slow_sample = _first_matching(
         slow,
         lambda item: (
@@ -556,7 +791,12 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
     )
     _require(slow_sample is not None, "M7.3 did not prove physical SLOW scaling")
 
-    stop = _samples(trials["collision_stop"].get("samples"), "collision_stop")
+    stop = _samples(
+        trials["collision_stop"].get("samples"),
+        "collision_stop",
+        observation_events=observation_events,
+        required_topics=COLLISION_SAMPLE_TOPICS,
+    )
     request = _first_matching(
         stop, lambda item: float(item["requested_linear_x"]) > 0.0
     )
@@ -592,18 +832,26 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
         trials["collision_stop"].get("provider_inference_in_flight") is True,
         "collision STOP must be observed while inference is in flight",
     )
-    _require(
-        isinstance(trials["collision_stop"].get("evidence_event_ids"), list)
-        and trials["collision_stop"]["evidence_event_ids"],
-        "collision STOP must bind provider and supervisor events",
+    _require_event_ids(
+        trials["collision_stop"].get("evidence_event_ids"),
+        label="collision STOP",
+        observation_events=observation_events,
+        required_topics={
+            OBSERVED_TOPICS["collision_events"],
+            OBSERVED_TOPICS["route_status"],
+        },
     )
 
     blocked_reset = trials["blocked_reset"]
     _require(blocked_reset.get("accepted") is False, "blocked reset must be rejected")
-    _require(
-        isinstance(blocked_reset.get("evidence_event_ids"), list)
-        and blocked_reset["evidence_event_ids"],
-        "blocked reset must bind raw events",
+    _require_event_ids(
+        blocked_reset.get("evidence_event_ids"),
+        label="blocked reset",
+        observation_events=observation_events,
+        required_topics={
+            OBSERVED_TOPICS["collision_state"],
+            OBSERVED_TOPICS["collision_events"],
+        },
     )
     _require(str(blocked_reset.get("state")) == "STOPPED", "blocked reset must remain STOPPED")
     _require(
@@ -614,10 +862,14 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
 
     clear_reset = trials["clear_reset"]
     _require(clear_reset.get("accepted") is True, "clear manual reset must be accepted")
-    _require(
-        isinstance(clear_reset.get("evidence_event_ids"), list)
-        and clear_reset["evidence_event_ids"],
-        "clear reset must bind raw events",
+    _require_event_ids(
+        clear_reset.get("evidence_event_ids"),
+        label="clear reset",
+        observation_events=observation_events,
+        required_topics={
+            OBSERVED_TOPICS["collision_state"],
+            OBSERVED_TOPICS["collision_events"],
+        },
     )
     _require(
         _finite(clear_reset.get("clear_duration_s"), "clear_reset.clear_duration_s")
@@ -629,7 +881,12 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
         >= FIXED_SAFETY["release_distance_m"],
         "clear reset did not exceed the release distance",
     )
-    post_reset = _samples(clear_reset.get("samples_after_reset"), "clear_reset")
+    post_reset = _samples(
+        clear_reset.get("samples_after_reset"),
+        "clear_reset",
+        observation_events=observation_events,
+        required_topics=COLLISION_SAMPLE_TOPICS,
+    )
     _require(
         all(
             abs(float(item["motor_linear_x"])) <= 1e-9
@@ -646,15 +903,24 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
         "stale command zero exceeded the fixed bound",
     )
     _require(stale.get("motor_zero") is True, "stale command did not produce motor zero")
-    _require(
-        isinstance(stale.get("evidence_event_ids"), list)
-        and stale["evidence_event_ids"],
-        "stale command must bind raw events",
+    _require_event_ids(
+        stale.get("evidence_event_ids"),
+        label="stale command",
+        observation_events=observation_events,
+        required_topics={
+            OBSERVED_TOPICS["requested_cmd"],
+            OBSERVED_TOPICS["motor_cmd"],
+            OBSERVED_TOPICS["route_status"],
+        },
     )
     _require(
         _finite(stale.get("driver_watchdog_s"), "stale_command.driver_watchdog_s")
         >= 0.5,
         "stale command evidence does not preserve the driver backstop",
+    )
+    _require(
+        stale.get("provider_inference_in_flight") is True,
+        "stale-command veto must be observed while inference is in flight",
     )
 
     service_latencies: dict[str, float] = {}
@@ -666,10 +932,15 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
             f"{name} zero latency exceeded the fixed bound",
         )
         _require(event.get("motor_zero") is True, f"{name} did not produce motor zero")
-        _require(
-            isinstance(event.get("evidence_event_ids"), list)
-            and event["evidence_event_ids"],
-            f"{name} must bind raw events",
+        _require_event_ids(
+            event.get("evidence_event_ids"),
+            label=name,
+            observation_events=observation_events,
+            required_topics={
+                OBSERVED_TOPICS["collision_events"],
+                OBSERVED_TOPICS["motor_cmd"],
+                OBSERVED_TOPICS["route_status"],
+            },
         )
         _require(
             event.get("provider_inference_in_flight") is True,
@@ -681,12 +952,40 @@ def _validate_collision(value: Any, *, source_sha: str) -> dict[str, Any]:
         "ESTOP was not proven latched",
     )
 
+    restart = trials["restart_recovery"]
+    _require(
+        restart.get("pre_restart_state") == "RUNNING",
+        "restart evidence must begin from an active mission",
+    )
+    _require(
+        restart.get("post_restart_state") == "recovery_required",
+        "restart must enter recovery_required",
+    )
+    _require(
+        restart.get("motor_zero") is True,
+        "restart recovery did not preserve motor zero",
+    )
+    _require(
+        restart.get("route_resumed") is False,
+        "restart cannot resume the previous route",
+    )
+    _require_event_ids(
+        restart.get("evidence_event_ids"),
+        label="restart recovery",
+        observation_events=observation_events,
+        required_topics={
+            OBSERVED_TOPICS["motor_cmd"],
+            OBSERVED_TOPICS["route_status"],
+        },
+    )
+
     _validate_cleanup(value.get("cleanup_audit"), source_sha=source_sha, label="m7.3")
     return {
         "slow_min_motor_mps": min(float(item["motor_linear_x"]) for item in slow if float(item["motor_linear_x"]) > 0.0),
         "collision_zero_latency_s": stop_latency,
         "operator_zero_latency_s": service_latencies,
         "physical_contact_observed": False,
+        "restart_state": "recovery_required",
     }
 
 
@@ -720,7 +1019,9 @@ def _validate_pitch_check(value: Any, *, label: str) -> dict[str, float]:
     return {"pitch_rad": pitch, "far_floor_error_m": error, "target_range_m": target_range}
 
 
-def _validate_localized_detection(value: Any) -> None:
+def _validate_localized_detection(
+    value: Any, *, observation_events: Mapping[str, str]
+) -> None:
     _require(isinstance(value, Mapping), "localized detection must be an object")
     method = str(value.get("method", ""))
     _require(
@@ -740,8 +1041,16 @@ def _validate_localized_detection(value: Any) -> None:
     _finite(uncertainty.get("bearing_sigma_rad"), "detection.bearing_sigma_rad")
     if method != "bearing_only":
         _finite(uncertainty.get("position_sigma_m"), "detection.position_sigma_m")
-    evidence_ids = value.get("evidence_ids")
-    _require(isinstance(evidence_ids, list) and evidence_ids, "mapped detection evidence IDs are required")
+    _require_event_ids(
+        value.get("evidence_ids"),
+        label="mapped detection",
+        observation_events=observation_events,
+        required_topics={
+            OBSERVED_TOPICS["camera"],
+            OBSERVED_TOPICS["scan"],
+            OBSERVED_TOPICS["localization"],
+        },
+    )
     timestamps = value.get("source_timestamps_ns")
     _require(isinstance(timestamps, Mapping) and "image" in timestamps, "mapped detection source timestamps are required")
     _require(str(value.get("calibration_id", "")).strip(), "mapped detection calibration ID is required")
@@ -751,7 +1060,15 @@ def _validate_localized_detection(value: Any) -> None:
 def _validate_moving_perception(value: Any, *, source_sha: str) -> dict[str, Any]:
     _require(isinstance(value, Mapping), "m7_4_moving_perception is required")
     _validate_graph_audit(value.get("graph_audit"), source_sha=source_sha, gate="m7.4")
-    _validate_artifacts(value.get("artifacts"), label="m7.4")
+    observation = value.get("observation")
+    observation_events = _validate_observation(
+        observation, source_sha=source_sha, gate="m7.4"
+    )
+    _validate_artifacts(
+        value.get("artifacts"),
+        label="m7.4",
+        observation_sha256=str(observation["observation_sha256"]),
+    )
     pitch_checks = value.get("pitch_checks")
     _require(isinstance(pitch_checks, Mapping), "M7.4 pitch_checks are required")
     before = _validate_pitch_check(pitch_checks.get("before"), label="before")
@@ -762,7 +1079,12 @@ def _validate_moving_perception(value: Any, *, source_sha: str) -> dict[str, Any
         "camera pitch drift exceeded the reviewed handling bound",
     )
 
-    samples = _samples(value.get("samples"), "moving_perception")
+    samples = _samples(
+        value.get("samples"),
+        "moving_perception",
+        observation_events=observation_events,
+        required_topics=MOVING_SAMPLE_TOPICS,
+    )
     _require(len(samples) >= 5, "M7.4 requires at least five ordered moving samples")
     moving_indices = {
         index
@@ -817,7 +1139,10 @@ def _validate_moving_perception(value: Any, *, source_sha: str) -> dict[str, Any
         detections = sample.get("localized_detections")
         _require(isinstance(detections, list), "localized_detections must be a list")
         for detection in detections:
-            _validate_localized_detection(detection)
+            _validate_localized_detection(
+                detection,
+                observation_events=observation_events,
+            )
             if detection.get("method") != "bearing_only":
                 point_detection_count += 1
         tracks = sample.get("tracks")
@@ -858,6 +1183,21 @@ def _validate_moving_perception(value: Any, *, source_sha: str) -> dict[str, Any
         for event in replan_events
     )
     _require(matched_replan, "M7.4 replan evidence is not bound to a new stable track")
+    for event in replan_events:
+        if (
+            isinstance(event, Mapping)
+            and event.get("trigger") == "new_stable_detection"
+            and str(event.get("track_id")) in new_tracks
+        ):
+            _require_event_ids(
+                event.get("evidence_event_ids"),
+                label="M7.4 replan",
+                observation_events=observation_events,
+                required_topics={
+                    OBSERVED_TOPICS["semantic_map"],
+                    OBSERVED_TOPICS["route_status"],
+                },
+            )
 
     stale = value.get("stale_veto")
     _require(isinstance(stale, Mapping), "M7.4 stale_veto is required")
@@ -865,11 +1205,19 @@ def _validate_moving_perception(value: Any, *, source_sha: str) -> dict[str, Any
         str(stale.get("source")) in {"lidar", "localization", "camera", "map"},
         "M7.4 stale veto source is unsupported",
     )
+    stale_topic_key = (
+        "semantic_map" if str(stale.get("source")) == "map" else str(stale.get("source"))
+    )
     _require(stale.get("motor_zero") is True, "M7.4 stale evidence did not force motor zero")
-    _require(
-        isinstance(stale.get("evidence_event_ids"), list)
-        and stale["evidence_event_ids"],
-        "M7.4 stale veto must bind raw events",
+    _require_event_ids(
+        stale.get("evidence_event_ids"),
+        label="M7.4 stale veto",
+        observation_events=observation_events,
+        required_topics={
+            OBSERVED_TOPICS[stale_topic_key],
+            OBSERVED_TOPICS["motor_cmd"],
+            OBSERVED_TOPICS["route_status"],
+        },
     )
     stale_latency = _finite(stale.get("zero_latency_s"), "stale_veto.zero_latency_s")
     _require(
@@ -895,35 +1243,138 @@ def _validate_moving_perception(value: Any, *, source_sha: str) -> dict[str, Any
 
 def _validate_cleanup(value: Any, *, source_sha: str, label: str) -> None:
     _require(isinstance(value, Mapping), f"{label} cleanup audit is required")
+    _require(
+        value.get("schema") == CLEANUP_AUDIT_SCHEMA,
+        f"{label} cleanup audit schema is invalid",
+    )
     _require(value.get("passed") is True, f"{label} cleanup audit must pass")
     _require(
         _exact_sha(value.get("source_sha"), f"{label}.cleanup.source_sha")
         == source_sha,
         f"{label} cleanup source SHA mismatch",
     )
+    commands = value.get("commands")
+    _require(isinstance(commands, Mapping), f"{label} cleanup commands are required")
+    required_commands = {
+        "git_head",
+        "git_status",
+        "processes",
+        "ros_nodes",
+        "ros_topics",
+        *(f"topic_info:{topic}" for topic in CLEANUP_MOTION_TOPICS),
+        *(f"device_owner:{device}" for device in CLEANUP_DEVICES),
+    }
+    _require(
+        required_commands.issubset(commands),
+        f"{label} cleanup command inventory is incomplete",
+    )
+    for name in required_commands:
+        _require(
+            isinstance(commands[name], Mapping),
+            f"{label} cleanup command {name} is invalid",
+        )
+
+    head = commands["git_head"]
+    status = commands["git_status"]
+    processes = commands["processes"]
+    nodes = commands["ros_nodes"]
+    topics = commands["ros_topics"]
+    process_lines = [
+        line.strip()
+        for line in str(processes.get("stdout", "")).splitlines()
+        if line.strip()
+    ]
+    node_lines = [
+        line.strip()
+        for line in str(nodes.get("stdout", "")).splitlines()
+        if line.strip()
+    ]
+    prohibited_processes = [
+        line
+        for line in process_lines
+        if any(term in line.lower() for term in CLEANUP_PROCESS_TERMS)
+    ]
+    prohibited_nodes = [
+        line
+        for line in node_lines
+        if any(term in line.lower() for term in CLEANUP_NODE_TERMS)
+    ]
+    motion_publishers: dict[str, Optional[int]] = {}
+    for topic in CLEANUP_MOTION_TOPICS:
+        command = commands[f"topic_info:{topic}"]
+        if command.get("returncode") == 0:
+            motion_publishers[topic] = _topic_count(
+                str(command.get("stdout", "")), "Publisher"
+            )
+        elif command.get("returncode") == 1:
+            motion_publishers[topic] = 0
+        else:
+            motion_publishers[topic] = None
+    device_owners = {
+        device: (
+            (
+                str(commands[f"device_owner:{device}"].get("stdout", ""))
+                + str(commands[f"device_owner:{device}"].get("stderr", ""))
+            ).strip()
+            if commands[f"device_owner:{device}"].get("returncode") == 0
+            else ""
+        )
+        for device in CLEANUP_DEVICES
+    }
+    device_inspection_valid = all(
+        commands[f"device_owner:{device}"].get("returncode") in {0, 1}
+        for device in CLEANUP_DEVICES
+    )
+    recomputed = {
+        "exact_source_sha": head.get("returncode") == 0
+        and str(head.get("stdout", "")).strip() == source_sha,
+        "source_checkout_clean": status.get("returncode") == 0
+        and not str(status.get("stdout", "")).strip(),
+        "process_inspection_succeeded": processes.get("returncode") == 0,
+        "stationary_sensor_and_motion_processes_absent": not prohibited_processes,
+        "ros_node_inspection_succeeded": nodes.get("returncode") == 0,
+        "prohibited_ros_nodes_absent": not prohibited_nodes,
+        "ros_topic_inspection_succeeded": topics.get("returncode") == 0,
+        "motion_topic_publishers_absent": all(
+            count == 0 for count in motion_publishers.values()
+        ),
+        "device_owner_inspection_succeeded": device_inspection_valid,
+        "sensor_and_rover_devices_ownerless": all(
+            not owner for owner in device_owners.values()
+        ),
+    }
     checks = value.get("checks")
     _require(isinstance(checks, Mapping), f"{label} cleanup checks are required")
-    required = (
-        "exact_source_sha",
-        "source_checkout_clean",
-        "stationary_sensor_and_motion_processes_absent",
-        "prohibited_ros_nodes_absent",
-        "motion_topic_publishers_absent",
-        "sensor_and_rover_devices_ownerless",
-    )
-    for name in required:
-        _require(checks.get(name) is True, f"{label} cleanup failed {name}")
+    for name, recomputed_value in recomputed.items():
+        _require(
+            recomputed_value is True and checks.get(name) is True,
+            f"{label} cleanup failed {name}",
+        )
+
     cleanup = value.get("cleanup")
     _require(isinstance(cleanup, Mapping), f"{label} cleanup state is required")
-    for name in (
-        "camera_stopped",
-        "lidar_stopped",
-        "rosbag_stopped",
-        "prohibited_nodes_absent",
-        "rover_serial_owner_absent",
-        "completed",
-    ):
-        _require(cleanup.get(name) is True, f"{label} cleanup failed {name}")
+    recomputed_cleanup = {
+        "camera_stopped": processes.get("returncode") == 0
+        and not any("camera_node" in line.lower() for line in process_lines),
+        "lidar_stopped": processes.get("returncode") == 0
+        and not any("rplidar" in line.lower() for line in process_lines)
+        and not device_owners["/dev/rplidar"],
+        "rosbag_stopped": processes.get("returncode") == 0
+        and not any("ros2 bag record" in line.lower() for line in process_lines),
+        "prohibited_nodes_absent": nodes.get("returncode") == 0
+        and not prohibited_nodes
+        and all(count == 0 for count in motion_publishers.values()),
+        "rover_serial_owner_absent": device_inspection_valid
+        and all(
+            not device_owners[device]
+            for device in ("/dev/ttyAMA0", "/dev/ttyS0", "/dev/serial0")
+        ),
+        "completed": all(recomputed.values()),
+    }
+    _require(
+        cleanup == recomputed_cleanup,
+        f"{label} cleanup state is not derived from raw inspections",
+    )
 
 
 def evaluate_session(
@@ -1070,6 +1521,17 @@ def _topic_node_names(output: str) -> set[str]:
     }
 
 
+def _topic_endpoint_node_names(output: str, kind: str) -> set[str]:
+    _require(kind in {"Publisher", "Subscription"}, "topic endpoint kind is invalid")
+    start = output.find(f"{kind} count:")
+    if start < 0:
+        return set()
+    other = "Subscription" if kind == "Publisher" else "Publisher"
+    end = output.find(f"{other} count:", start + 1)
+    section = output[start:] if end < 0 else output[start:end]
+    return _topic_node_names(section)
+
+
 def generate_graph_audit(
     *,
     source_sha: str,
@@ -1154,21 +1616,29 @@ def generate_graph_audit(
             "exclusive_cmd_vel_publisher": cmd_vel_publishers == 1,
             "exclusive_motor_publisher": motor_publishers == 1,
             "driver_is_motor_subscriber": motor_subscribers == 1,
-            "correct_cmd_vel_owners": {
-                "live_route_runner",
-                "lidar_collision_stop_supervisor",
-            }.issubset(
-                _topic_node_names(
-                    str(topic_results["/cmd_vel"].get("stdout", ""))
+            "correct_cmd_vel_owners": (
+                _topic_endpoint_node_names(
+                    str(topic_results["/cmd_vel"].get("stdout", "")),
+                    "Publisher",
                 )
+                == {"live_route_runner"}
+                and _topic_endpoint_node_names(
+                    str(topic_results["/cmd_vel"].get("stdout", "")),
+                    "Subscription",
+                )
+                == {"lidar_collision_stop_supervisor"}
             ),
-            "correct_motor_owners": {
-                "lidar_collision_stop_supervisor",
-                "sphero_rvr_driver",
-            }.issubset(
-                _topic_node_names(
-                    str(topic_results["/cmd_vel_motor"].get("stdout", ""))
+            "correct_motor_owners": (
+                _topic_endpoint_node_names(
+                    str(topic_results["/cmd_vel_motor"].get("stdout", "")),
+                    "Publisher",
                 )
+                == {"lidar_collision_stop_supervisor"}
+                and _topic_endpoint_node_names(
+                    str(topic_results["/cmd_vel_motor"].get("stdout", "")),
+                    "Subscription",
+                )
+                == {"sphero_rvr_driver"}
             ),
             "nav2_private_publisher_absent_before_m7_5": nav2_publishers in {None, 0},
             "serial_owner_present": serial.get("returncode") == 0
@@ -1405,7 +1875,7 @@ def capture_ros_observation(
             node.destroy_subscription(subscription)
         node.destroy_node()
         rclpy.shutdown()
-    return {
+    observation = {
         "schema": OBSERVATION_SCHEMA,
         "source_sha": source,
         "gate": gate,
@@ -1419,6 +1889,8 @@ def capture_ros_observation(
         "topics": dict(OBSERVED_TOPICS),
         "events": events,
     }
+    observation["observation_sha256"] = _observation_sha256(observation)
+    return observation
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1450,6 +1922,14 @@ def _parser() -> argparse.ArgumentParser:
     audit.add_argument("--stage", choices=("preflight", "active"), required=True)
     audit.add_argument("--output", type=Path)
 
+    cleanup = subparsers.add_parser(
+        "cleanup-audit",
+        help="record fail-closed post-session process, graph, and device cleanup",
+    )
+    cleanup.add_argument("--source-sha", required=True)
+    cleanup.add_argument("--source-repo", type=Path, required=True)
+    cleanup.add_argument("--output", type=Path)
+
     evaluate = subparsers.add_parser(
         "evaluate", help="evaluate M7.3 alone or the complete sequential session"
     )
@@ -1478,6 +1958,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 source_repo=args.source_repo,
                 gate=args.gate,
                 stage=args.stage,
+            )
+        elif args.command == "cleanup-audit":
+            result = audit_stationary_cleanup(
+                source_sha=args.source_sha,
+                source_repo=args.source_repo,
             )
         else:
             result = evaluate_session(

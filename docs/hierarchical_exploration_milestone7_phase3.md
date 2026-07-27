@@ -39,6 +39,13 @@ Approval for M7.3 does not approve M7.4. Neither approval grants M7.5 physical
 hierarchical binding or the canonical mission. The passing M7.3-only report
 emits an evidence SHA-256; the later M7.4 approval must bind that exact digest,
 so M7.4 cannot be pre-approved independently of the reviewed collision result.
+Every compact sample, veto, reset, restart, detection, and replan reference
+must resolve to a checksum-verified event in the inline read-only observation.
+The observation artifact records its canonical digest separately from its file
+checksum. A reference set must also cover the required source roles: for
+example, every moving sample binds collision state, requested and downstream
+motor commands, odometry, scan, camera/lidar/localization/map status, and both
+dynamic and static transforms.
 
 ## Non-executing preparation
 
@@ -108,22 +115,34 @@ M7.3 acceptance requires:
 - after clearance at or beyond `0.45 m` for at least `0.50 s`, manual reset is
   accepted but never replays the old command;
 - stale command reaches motor zero within `0.35 s`, before the `0.50 s` driver
-  watchdog;
+  watchdog, including while provider inference is held in flight;
 - operator STOP and ESTOP each reach motor zero within `0.30 s`; ESTOP remains
   latched until explicit clear;
 - collision, STOP, and ESTOP remain responsive while a provider call is
   deliberately held in flight;
+- restarting an active mission produces `recovery_required`, motor zero, and
+  never resumes the previous route;
 - active graph audit proves one `/cmd_vel` publisher, one
-  `/cmd_vel_motor` publisher/subscriber chain, the expected nodes, exact SHA,
-  and rover serial ownership;
+  `/cmd_vel_motor` publisher/subscriber chain, exact publisher/subscriber node
+  roles, the expected nodes, exact SHA, and rover serial ownership;
 - the raw bag, observation, approvals, measurements, and final generated
   cleanup are checksum-bound.
 
 After the trials, stop route authority, driver, supervisor, lidar, camera,
-SLAM, rosbag, and observer. Generate cleanup using the existing fail-closed
-M7.2 cleanup command. It must prove all motion/sensor processes, publishers,
-nodes, and device owners absent. Review M7.3 evidence before requesting M7.4
-approval:
+SLAM, rosbag, and observer. Generate cleanup with:
+
+```bash
+ros2 run sphero_rvr_driver rvr_m7_attended_validation cleanup-audit \
+  --source-sha EXACT_CANDIDATE_SHA \
+  --source-repo /home/jsperson/ros2_ws/src/sphero_rvr_ros \
+  --output /tmp/m7-phase3-m7.3-cleanup.json
+```
+
+The evaluator recomputes every cleanup result from the retained Git, process,
+ROS node/topic, publisher-count, and `fuser` command outputs; hand-entered
+passing booleans are insufficient. It must prove all motion/sensor processes,
+publishers, nodes, and device owners absent. Review M7.3 evidence before
+requesting M7.4 approval:
 
 ```bash
 ros2 run sphero_rvr_driver rvr_m7_attended_validation evaluate \
@@ -178,7 +197,8 @@ result must remain within `0.5 degrees` of `-3 degrees`, drift no more than
 floor-projection bound.
 
 Generate and checksum the final cleanup audit. The lidar must be powered down
-when the goal finishes.
+when the goal finishes. Use the same `cleanup-audit` command with the M7.4
+output path.
 
 ## Evaluation
 
@@ -192,12 +212,14 @@ ros2 run sphero_rvr_driver rvr_m7_attended_validation evaluate \
 ```
 
 The evaluator recomputes the collision timing, slow scaling, reset behavior,
-moving distance, new stable track, replan binding, freshness, pitch drift, and
-point/bearing invariants. The manifest cannot change fixed thresholds or
-approval limits. The M7.3-only evaluation requires only the M7.3 approval and
-evidence. The complete evaluation additionally fails closed unless the M7.4
-approval binds the accepted M7.3 evidence digest and both active graph audits,
-raw bags, and generated cleanup audits are present.
+restart recovery, moving distance, new stable track, replan binding, freshness,
+pitch drift, and point/bearing invariants. It also recomputes observation event
+and payload digests, compact-event references, exact endpoint ownership, and
+cleanup from raw command output. The manifest cannot change fixed thresholds
+or approval limits. The M7.3-only evaluation requires only the M7.3 approval
+and evidence. The complete evaluation additionally fails closed unless the
+M7.4 approval binds the accepted M7.3 evidence digest and both active graph
+audits, raw bags, and generated cleanup audits are present.
 
 ## Software verification
 
