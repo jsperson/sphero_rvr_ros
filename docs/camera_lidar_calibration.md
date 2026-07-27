@@ -26,7 +26,7 @@ Important inputs:
 ```text
 camera_info_url:=file:///home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml
 camera_x:=0.0587375 camera_y:=-0.0301625 camera_z:=0.114300
-camera_roll:=0.0 camera_pitch:=0.0 camera_yaw:=0.0
+camera_roll:=0.0 camera_pitch:=-0.0523598775598299 camera_yaw:=0.0
 camera_frame_id:=camera_link
 camera_optical_frame_id:=camera_optical_frame
 ```
@@ -238,6 +238,20 @@ unchanged.
    ```
 
 ### Camera: `base_link -> camera_link`
+
+The 2026-07-27 stationary surveyed-floor calibration replaces the previous
+zero-pitch assumption with `camera_pitch=-0.0523598775598299 rad` (`-3.0
+degrees`). The calibration observation used the fixed vertical checkerboard at
+a measured `0.655 m` from the lidar scan origin with `0.050 m` lateral
+separation. Its reviewed face-to-floor contact was image pixel `(460, 466)`.
+With the measured camera translation and calibrated CameraInfo, the old
+zero-pitch transform projected that contact about `0.130 m` from surveyed
+ground truth. A pitch sweep placed the minimum at approximately `-3.04
+degrees`; the retained `-3.0 degree` value projected the calibration point
+within `0.003 m` and reduced all three previously recorded near observations
+below `0.031 m`. Those observations are calibration evidence, not independent
+M7.2 acceptance samples; acceptance must be recaptured under an exact source
+SHA that publishes the corrected transform.
 
 1. Mark the camera optical center as closely as practical. Use the module/lens
    datasheet when the optical center is not the board center.

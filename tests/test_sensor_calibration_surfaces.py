@@ -35,6 +35,7 @@ def test_camera_launch_exposes_calibration_url_and_static_tf_without_starting_rv
         "0.0587375",
         "-0.0301625",
         "0.114300",
+        "-0.0523598775598299",
         '"camera_x"',
         '"camera_y"',
         '"camera_z"',

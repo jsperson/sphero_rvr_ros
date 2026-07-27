@@ -105,8 +105,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "camera_pitch",
-            default_value="0.0",
-            description="Measured base_link -> camera_link pitch in radians.",
+            default_value="-0.0523598775598299",
+            description=(
+                "Surveyed base_link -> camera_link pitch in radians; the "
+                "2026-07-27 floor-contact calibration measured a 3 degree "
+                "upward optical tilt."
+            ),
         ),
         DeclareLaunchArgument(
             "camera_yaw",

@@ -58,7 +58,7 @@ Message samples collected by replaying only `/scan`, `/camera_node/camera_info`,
 | CameraInfo dimensions/model | `width=800`, `height=600`, `distortion_model=plumb_bob`, nonzero K/D. |
 | Bag CameraInfo normalized checksum | `a00b1dabfe61274c7f6dcb74f69a8c1efeca4078c5dd0f058f4660bbff257359` over width/height/distortion/K/D/R/P/binning/ROI JSON-normalized fields. |
 | Robot-local CameraInfo file checksum | `f5c0de153eeb773ce4940d78b4956cd6a12e22de722803af7499038824761310  /home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml` on `sphero-pi-2`. |
-| Static TF | `base_link -> camera_link`: translation `[0.0587375, -0.0301625, 0.1143]`, identity rotation. |
+| Static TF | Historical replay capture: `base_link -> camera_link` translation `[0.0587375, -0.0301625, 0.1143]`, identity rotation. Live defaults now retain the same translation with surveyed pitch `-0.0523598775598299 rad`; see `camera_lidar_calibration.md`. |
 | Static TF | `camera_link -> camera_optical_frame`: translation `[0,0,0]`, optical-frame quaternion approximately `[-0.5, 0.5, -0.5, 0.5]`. |
 | Static TF | `base_link -> laser`: revised tread-contact translation `[0.0045, -0.0110, 0.1905]`, quaternion `[0, 0, 0.9999611664200241, 0.008812811804695843]` matching measured yaw `3.1239668018215028`. |
 
