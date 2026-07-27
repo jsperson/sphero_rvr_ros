@@ -98,6 +98,7 @@ setup(
                 "docs/hierarchical_exploration_phase2.md",
                 "docs/hierarchical_exploration_phase3.md",
                 "docs/hierarchical_exploration_phase4.md",
+                "docs/hierarchical_exploration_milestone7.md",
             ],
         ),
         (
