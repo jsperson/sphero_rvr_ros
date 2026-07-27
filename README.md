@@ -13,6 +13,9 @@ physical authority gate remains unchanged; physical hierarchical exploration
 is still unavailable. Phase 1 has passed the exact-SHA Pi no-motion gate:
 recorded-map WFD was deterministic across 50 passes and the loopback-only ROS
 graph preserved exclusive command ownership with zero nonzero motor samples.
+Phase 2 has passed surveyed stationary localization without motion. Phase 3 is
+preparing separately reviewed M7.3 collision and M7.4 moving-perception gates;
+neither physical gate is authorized by the software preparation.
 
 ## Documentation map for operators and maintainers
 
@@ -52,6 +55,7 @@ graph preserved exclusive command ownership with zero nonzero motor samples.
 - [docs/hierarchical_exploration_milestone7_phase1.md](docs/hierarchical_exploration_milestone7_phase1.md) records the exact-SHA Pi WFD benchmark, loopback-only ROS ownership graph, zero-command evidence, environment, and cleanup for the M7.1 no-motion gate.
 - [docs/hierarchical_exploration_milestone7_phase2.md](docs/hierarchical_exploration_milestone7_phase2.md) defines the fixed physical-survey bands, stationary camera/lidar-only capture workflow, fail-closed evidence schema, localization gates, and cleanup required for M7.2.
 - [artifacts/m7_phase2_surveyed_localization/README.md](artifacts/m7_phase2_surveyed_localization/README.md) records the passing exact-SHA M7.2 physical evidence, per-method error distributions, camera-pitch calibration finding, raw-bag checksums, ambiguity rejection, and cleanup.
+- [docs/hierarchical_exploration_milestone7_phase3.md](docs/hierarchical_exploration_milestone7_phase3.md) defines the separately approved M7.3 collision and M7.4 moving-perception gates, read-only observer/evaluator, pitch re-verification, and exact-SHA stop boundaries.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
 - [docs/system_validation.md](docs/system_validation.md) defines the local/Pi ROS system checks, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
