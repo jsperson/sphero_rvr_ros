@@ -16,9 +16,11 @@ graph preserved exclusive command ownership with zero nonzero motor samples.
 Phase 2 has passed surveyed stationary localization without motion. Phase 3's
 attended M7.3 collision gate now passes at a reviewed exact SHA: SLOW, collision
 STOP without contact, blocked/clear reset, stale-command veto, STOP, ESTOP,
-restart recovery, exclusive ownership, and cleanup were recorded. M7.4 moving
-perception still requires a separate approval bound to the accepted M7.3
-evidence digest; M7.5 and the canonical mission remain locked.
+restart recovery, exclusive ownership, and cleanup were recorded. A paired
+physical addendum also proves block-toward and permit-away behavior for an
+already-overlapping rear obstacle return. M7.4 moving perception still requires
+a separate approval bound to both accepted evidence digests; M7.5 and the
+canonical mission remain locked.
 
 ## Documentation map for operators and maintainers
 
@@ -60,6 +62,7 @@ evidence digest; M7.5 and the canonical mission remain locked.
 - [artifacts/m7_phase2_surveyed_localization/README.md](artifacts/m7_phase2_surveyed_localization/README.md) records the passing exact-SHA M7.2 physical evidence, per-method error distributions, camera-pitch calibration finding, raw-bag checksums, ambiguity rejection, and cleanup.
 - [docs/hierarchical_exploration_milestone7_phase3.md](docs/hierarchical_exploration_milestone7_phase3.md) defines the separately approved M7.3 collision and M7.4 moving-perception gates, read-only observer/evaluator, pitch re-verification, and exact-SHA stop boundaries.
 - [artifacts/m7_phase3_attended_collision/README.md](artifacts/m7_phase3_attended_collision/README.md) records the passing exact-SHA attended M7.3 collision evidence, independent provider-in-flight veto timing, no-contact observation, restart recovery, raw-artifact checksums, disclosed capture anomalies, and final cleanup.
+- [artifacts/m7_phase3_directional_addendum/README.md](artifacts/m7_phase3_directional_addendum/README.md) records the attended paired directional-veto check: reverse-toward remains motor-zero, forward-away is permitted with positive overlapped-point exclusion, no contact occurred, and M7.4 must bind both evidence digests.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
 - [docs/system_validation.md](docs/system_validation.md) defines the local/Pi ROS system checks, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
