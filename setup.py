@@ -95,6 +95,7 @@ setup(
                 "docs/adaptive_mission_controller.md",
                 "docs/hierarchical_exploration.md",
                 "docs/hierarchical_exploration_phase1.md",
+                "docs/hierarchical_exploration_phase2.md",
             ],
         ),
         (
@@ -103,6 +104,13 @@ setup(
                 "artifacts/phase1_recorded_slam_map/phase1_recorded_slam_map.yaml",
                 "artifacts/phase1_recorded_slam_map/phase1_recorded_slam_map.pgm",
                 "artifacts/phase1_recorded_slam_map/manifest.json",
+            ],
+        ),
+        (
+            "share/sphero_rvr_driver/artifacts/phase2_camera_lidar_localization",
+            [
+                "artifacts/phase2_camera_lidar_localization/README.md",
+                "artifacts/phase2_camera_lidar_localization/recorded_calibration_fixture.json",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -153,6 +161,7 @@ setup(
             "stationary_perception = sphero_rvr_driver.stationary_perception_node:main",
             "rvr_nav2_loopback_sim = sphero_rvr_driver.nav2_loopback_compat:main",
             "rvr_hierarchical_nav2_replay_validate = sphero_rvr_driver.hierarchical_nav2_replay_validation:main",
+            "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
         ],
     },
 )

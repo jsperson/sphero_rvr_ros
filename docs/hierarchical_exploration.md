@@ -10,6 +10,10 @@ Phase 1 now implements the default-off replay slice from baseline
 `7b948c766384df36dcb8a9ea950c9297e879486b`. Its implementation and acceptance
 evidence are recorded in
 [hierarchical_exploration_phase1.md](hierarchical_exploration_phase1.md).
+Phase 2 adds the recorded/offline camera-to-map localization layer from merged
+Phase 1 baseline `6cf718fd0204aa75778f4372073396e0d65c2186`; its bounded
+association, floor-projection, uncertainty, and ambiguity evidence is recorded
+in [hierarchical_exploration_phase2.md](hierarchical_exploration_phase2.md).
 Physical hierarchical exploration remains unavailable.
 
 ## Decision
@@ -313,6 +317,12 @@ source timestamps, calibration identity, map revision, uncertainty, and
 evidence IDs. Phase 2 defines range-dependent quantitative tolerances from
 recorded ground truth and includes an explicit ambiguous-association rejection
 gate.
+
+The Phase 2 replay gate uses a `100 ms` maximum camera/lidar source-time
+delta; a recorded-point error model of `0.03 m + 0.04 × range`, capped at
+`0.08 m`; a `0.05 m` calibrated analytic floor-geometry bound; and a
+point-forbidden ambiguous-association test. These are offline software gates,
+not physical accuracy certification.
 
 ## Continuous handoff
 

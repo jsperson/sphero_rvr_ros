@@ -1,0 +1,217 @@
+{
+  "schema": "phase2_camera_lidar_localization_fixture.v1",
+  "description": "Recorded camera/lidar pair plus calibrated analytic floor and ambiguity cases. This artifact is offline evidence, not a live-sensor or physical-navigation result.",
+  "authority": {
+    "ros_publishers": false,
+    "live_sensors": false,
+    "motor_authority": false
+  },
+  "provenance": {
+    "source_host": "sphero-pi-2",
+    "source_bag": "/home/jsperson/rvr_runs/camera_lidar_bag_20260717T112416/bag",
+    "operator_distance_source": "/home/jsperson/rvr_runs/yaw_target_probe_20260717T095558/target_yaw_wrap_combined.json",
+    "operator_target_description": "Broad vertical calibration target centered approximately 18 inches (0.4572 m) ahead of base_link",
+    "camera_info_source": "/home/jsperson/.ros/camera_info/rvr_pi_camera3_800x600.yaml",
+    "camera_info_sha256": "f5c0de153eeb773ce4940d78b4956cd6a12e22de722803af7499038824761310",
+    "evidence_image": "artifacts/vs04_shoe_detector_eval_bag/evidence_frames/bag_frame_0298_1784305472226237684_evidence.png",
+    "evidence_image_sha256": "11177e1e31c7359ff94ba2efd78e5bbbdd29e04f57473f48aff86abaf8b8fe83",
+    "extraction_note": "The preserved metadata named compressed MCAP while an uncompressed MCAP was also present. Read-only extraction used a temporary symlink and patched temporary metadata; the source bag was not modified."
+  },
+  "calibration": {
+    "camera": {
+      "width": 800,
+      "height": 600,
+      "k": [
+        680.559811904291,
+        0.0,
+        538.1721064472238,
+        0.0,
+        679.9742509979817,
+        299.2447559724674,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "d": [
+        -0.043622253201473886,
+        -0.10411610978737648,
+        -0.0006628168045598358,
+        0.0024553962608396323,
+        0.5928118264201497
+      ],
+      "distortion_model": "plumb_bob",
+      "calibration_id": "rvr_camera_lidar_20260717:f5c0de153eeb"
+    },
+    "base_to_camera": {
+      "x": 0.0587375,
+      "y": -0.0301625,
+      "z": 0.1143,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    "base_to_lidar": {
+      "x": -0.0074295,
+      "y": -0.009525,
+      "z": 0.1905,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 3.1239668018215028
+    }
+  },
+  "acceptance_gates": {
+    "max_pair_delta_ms": 100.0,
+    "recorded_point_error_model": {
+      "base_m": 0.03,
+      "per_range_m": 0.04,
+      "maximum_m": 0.08
+    },
+    "max_floor_geometry_error_m": 0.05,
+    "ambiguous_association_requires_bearing_only": true
+  },
+  "cases": {
+    "recorded_plane_target": {
+      "kind": "recorded_camera_lidar_pair_with_approximate_operator_ground_truth",
+      "anchor": {
+        "u": 500.0,
+        "v": 300.0,
+        "timestamp_ns": 1784305472212875069,
+        "evidence_ids": [
+          "bag_frame_0298_1784305472226237684"
+        ]
+      },
+      "scan": {
+        "timestamp_ns": 1784305472247913417,
+        "angle_min_rad": -3.1241390705108643,
+        "angle_increment_rad": 0.008714509196579456,
+        "sample_count": 720,
+        "range_min_m": 0.15000000596046448,
+        "range_max_m": 16.0,
+        "evidence_id": "laser_scan_1784305472247913417",
+        "returns": [
+          [700, 0.4519999921321869],
+          [701, 0.4514999985694885],
+          [702, 0.45100000500679016],
+          [703, 0.45100000500679016],
+          [704, 0.45124998688697815],
+          [705, 0.4494999945163727],
+          [706, 0.4494999945163727],
+          [707, 0.44699999690055847],
+          [708, 0.44624999165534973],
+          [709, 0.44624999165534973],
+          [710, 0.44449999928474426],
+          [711, 0.4449999928474426],
+          [712, 0.44600000977516174],
+          [713, 0.44600000977516174],
+          [714, 0.4449999928474426],
+          [715, 0.44600000977516174],
+          [716, 0.44600000977516174],
+          [717, 0.4440000057220459],
+          [1, 0.44200000166893005],
+          [2, 0.44200000166893005],
+          [3, 0.4424999952316284],
+          [4, 0.4437499940395355],
+          [5, 0.4437499940395355],
+          [6, 0.445499986410141],
+          [7, 0.4467499852180481],
+          [8, 0.445250004529953],
+          [9, 0.445250004529953],
+          [10, 0.4437499940395355],
+          [11, 0.44350001215934753],
+          [12, 0.44350001215934753],
+          [13, 0.44350001215934753],
+          [14, 0.44449999928474426],
+          [15, 0.44749999046325684],
+          [16, 0.44749999046325684],
+          [17, 0.4505000114440918],
+          [18, 0.4514999985694885],
+          [19, 0.4514999985694885],
+          [20, 0.45274999737739563],
+          [21, 0.4519999921321869],
+          [22, 0.44999998807907104],
+          [23, 0.44999998807907104],
+          [24, 0.4505000114440918],
+          [25, 0.45225000381469727],
+          [26, 0.45225000381469727],
+          [28, 1.7867499589920044],
+          [29, 1.7867499589920044],
+          [30, 1.7677500247955322]
+        ]
+      },
+      "pose": {
+        "timestamp_ns": 1784305472212875069,
+        "x": 0.0,
+        "y": 0.0,
+        "yaw": 0.0,
+        "map_revision": "recorded_pair_local_base_frame",
+        "position_sigma_m": 0.02,
+        "yaw_sigma_rad": 0.017453292519943295
+      },
+      "expected_base_point": {
+        "x": 0.4572,
+        "y": 0.0,
+        "ground_truth_quality": "operator placement, approximate",
+        "placement_uncertainty_m": 0.0254
+      }
+    },
+    "calibrated_floor_geometry": {
+      "kind": "analytic_geometry_using_measured_calibration_not_physical_ground_truth",
+      "anchor": {
+        "u": 339.44992287467886,
+        "v": 473.75562521617223,
+        "timestamp_ns": 1784305472212875069,
+        "evidence_ids": [
+          "calibrated_floor_point_x0.5_y0.1"
+        ]
+      },
+      "pose": {
+        "timestamp_ns": 1784305472212875069,
+        "x": 0.0,
+        "y": 0.0,
+        "yaw": 0.0,
+        "map_revision": "calibrated_geometry_fixture",
+        "position_sigma_m": 0.02,
+        "yaw_sigma_rad": 0.017453292519943295
+      },
+      "expected_map_point": {
+        "x": 0.5,
+        "y": 0.1
+      }
+    },
+    "ambiguous_association": {
+      "kind": "synthetic_two_cluster_rejection_using_recorded_scan_geometry",
+      "anchor": {
+        "u": 500.0,
+        "v": 300.0,
+        "timestamp_ns": 1784305472212875069,
+        "evidence_ids": [
+          "ambiguous_association_fixture"
+        ]
+      },
+      "scan": {
+        "timestamp_ns": 1784305472247913417,
+        "angle_min_rad": -3.1241390705108643,
+        "angle_increment_rad": 0.008714509196579456,
+        "sample_count": 720,
+        "range_min_m": 0.15,
+        "range_max_m": 16.0,
+        "evidence_id": "ambiguous_scan_fixture",
+        "returns": [
+          [1, 0.44],
+          [2, 0.44],
+          [5, 0.8],
+          [6, 0.8]
+        ]
+      },
+      "pose": {
+        "timestamp_ns": 1784305472212875069,
+        "x": 0.0,
+        "y": 0.0,
+        "yaw": 0.0,
+        "map_revision": "ambiguity_fixture",
+        "position_sigma_m": 0.02,
+        "yaw_sigma_rad": 0.017453292519943295
+      }
+    }
+  }
+}
