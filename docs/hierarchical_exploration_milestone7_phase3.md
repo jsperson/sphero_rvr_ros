@@ -70,7 +70,8 @@ ros2 run sphero_rvr_driver rvr_m7_attended_validation graph-audit \
   --output /tmp/m7-phase3-preflight.json
 ```
 
-`plan` and `template` are ROS-free. `graph-audit` is read-only. The preflight
+`plan` and `template` are ROS-free. `graph-audit` is read-only and gives each
+direct ROS graph query a fixed three-second discovery window. The preflight
 must show the driver, supervisor, route runner, motor publishers, and rover
 serial owner absent. Stop here for independent review and explicit exact-SHA
 M7.3 approval.

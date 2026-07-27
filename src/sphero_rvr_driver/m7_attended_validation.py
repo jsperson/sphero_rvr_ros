@@ -34,6 +34,7 @@ OBSERVATION_SCHEMA = "sphero_rvr.m7_phase3_read_only_observation.v1"
 GRAPH_AUDIT_SCHEMA = "sphero_rvr.m7_phase3_graph_audit.v1"
 PLAN_SCHEMA = "sphero_rvr.m7_phase3_validation_plan.v1"
 M7_3_EVIDENCE_SCHEMA = "sphero_rvr.m7_phase3_collision_evidence.v1"
+ROS_GRAPH_DISCOVERY_SPIN_S = 3.0
 
 SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -1554,11 +1555,31 @@ def generate_graph_audit(
 
     head = run("git_head", ["git", "-C", str(source_repo), "rev-parse", "HEAD"])
     status = run("git_status", ["git", "-C", str(source_repo), "status", "--porcelain"])
-    nodes = run("ros_nodes", ["ros2", "node", "list", "--no-daemon"])
+    discovery_spin = str(ROS_GRAPH_DISCOVERY_SPIN_S)
+    nodes = run(
+        "ros_nodes",
+        [
+            "ros2",
+            "node",
+            "list",
+            "--spin-time",
+            discovery_spin,
+            "--no-daemon",
+        ],
+    )
     topic_results = {
         topic: run(
             f"topic_info:{topic}",
-            ["ros2", "topic", "info", "-v", "--no-daemon", topic],
+            [
+                "ros2",
+                "topic",
+                "info",
+                "-v",
+                "--spin-time",
+                discovery_spin,
+                "--no-daemon",
+                topic,
+            ],
         )
         for topic in ("/cmd_vel", "/cmd_vel_motor", "/nav2_cmd_vel_request")
     }

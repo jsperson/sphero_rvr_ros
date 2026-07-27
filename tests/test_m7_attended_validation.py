@@ -18,6 +18,7 @@ from sphero_rvr_driver.m7_attended_validation import (
     OBSERVED_TOPICS,
     PLAN_SCHEMA,
     REPORT_SCHEMA,
+    ROS_GRAPH_DISCOVERY_SPIN_S,
     SESSION_SCHEMA,
     build_plan,
     build_session_template,
@@ -936,7 +937,12 @@ def _audit_runner(active: bool):
             text = SOURCE_SHA + "\n"
         elif argv[-2:] == ["status", "--porcelain"]:
             text = ""
-        elif argv[:4] == ["ros2", "node", "list", "--no-daemon"]:
+        elif argv[:3] == ["ros2", "node", "list"]:
+            assert argv[3:] == [
+                "--spin-time",
+                str(ROS_GRAPH_DISCOVERY_SPIN_S),
+                "--no-daemon",
+            ]
             if active:
                 text = (
                     "/sphero_rvr_driver\n"
@@ -946,6 +952,11 @@ def _audit_runner(active: bool):
             else:
                 text = "/live_mission_service\n"
         elif argv[:4] == ["ros2", "topic", "info", "-v"]:
+            assert argv[4:-1] == [
+                "--spin-time",
+                str(ROS_GRAPH_DISCOVERY_SPIN_S),
+                "--no-daemon",
+            ]
             topic = argv[-1]
             if not active:
                 returncode = 1
@@ -1006,6 +1017,14 @@ def test_graph_audit_distinguishes_no_motion_preflight_from_active_ownership(
     assert active["checks"]["exclusive_motor_publisher"] is True
     assert active["checks"]["nav2_private_publisher_absent_before_m7_5"] is True
     assert active["motion_authority"] is False
+    assert active["commands"]["ros_nodes"]["argv"] == [
+        "ros2",
+        "node",
+        "list",
+        "--spin-time",
+        "3.0",
+        "--no-daemon",
+    ]
 
 
 def test_graph_audit_claims_are_recomputed_from_raw_command_output() -> None:
