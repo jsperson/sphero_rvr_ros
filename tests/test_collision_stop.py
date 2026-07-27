@@ -393,6 +393,50 @@ def test_projected_forward_motion_ignores_obstacle_behind_current_trajectory():
     assert decision.trajectory.blocked is False
 
 
+def test_projected_straight_motion_ignores_only_an_overlapped_trailing_point():
+    cfg = CollisionStopConfig()
+    # This models the surveyed M7.3 box return: it intersects the lidar-height
+    # rear-left rectangle at the current pose but straight-forward travel only
+    # increases its separation from the rover.
+    scan = scan_with_point(135.0, 0.15, stamp=0.0)
+
+    forward = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.08, 0.0),
+    )
+    reverse = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(-0.08, 0.0),
+    )
+    turning = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.08, 0.1),
+    )
+
+    assert forward.blocked is False
+    assert reverse.blocked is True
+    assert reverse.collision_time_s == pytest.approx(0.0)
+    assert turning.blocked is True
+    assert turning.collision_time_s == pytest.approx(0.0)
+
+
+def test_projected_forward_motion_never_ignores_an_overlapped_front_point():
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(0.0, 0.15, stamp=0.0)
+
+    projected = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.08, 0.0),
+    )
+
+    assert projected.blocked is True
+    assert projected.collision_time_s == pytest.approx(0.0)
+
+
 def test_projected_forward_motion_blocks_obstacle_entering_corner_sweep():
     cfg = CollisionStopConfig()
     scan = scan_with_point(31.0, 0.30, stamp=0.0)

@@ -510,6 +510,21 @@ def evaluate_projected_trajectory(
     rear = config.footprint_rear_m + margin
     left = config.footprint_left_m + margin
     right = config.footprint_right_m + margin
+    points = tuple(
+        (point_x, point_y)
+        for point_x, point_y in points
+        if not _is_trailing_point_inside_initial_footprint(
+            point_x,
+            point_y,
+            command=command,
+            front=front,
+            rear=rear,
+            left=left,
+            right=right,
+        )
+    )
+    if not points:
+        return TrajectoryCheck(True, horizon_s, None, collision_time_s=0.0)
     minimum_clearance = math.inf
 
     for step in range(step_count + 1):
@@ -545,6 +560,35 @@ def evaluate_projected_trajectory(
         horizon_s,
         minimum_clearance if math.isfinite(minimum_clearance) else None,
     )
+
+
+def _is_trailing_point_inside_initial_footprint(
+    point_x: float,
+    point_y: float,
+    *,
+    command: TwistCommand,
+    front: float,
+    rear: float,
+    left: float,
+    right: float,
+) -> bool:
+    """Ignore only an already-overlapped point that straight motion leaves behind.
+
+    A high obstacle behind the chassis can intersect the lidar-height rectangle
+    even though straight-forward travel increases its separation from the
+    rover.  Such a point is irrelevant to that forward sweep.  The exception is
+    deliberately unavailable to reverse, rotation, or curved commands, so the
+    same return remains an authoritative veto whenever the commanded trajectory
+    can approach it.
+    """
+
+    linear_x = float(command.linear_x)
+    angular_z = float(command.angular_z)
+    if abs(linear_x) <= 1e-9 or abs(angular_z) > 1e-9:
+        return False
+    inside = -rear <= point_x <= front and -right <= point_y <= left
+    trailing = point_x < 0.0 if linear_x > 0.0 else point_x > 0.0
+    return inside and trailing
 
 
 def _valid_base_points(
