@@ -320,8 +320,20 @@ class CodexAppServerClient:
                         continue
                     status = str(completed.get("status", ""))
                     if status != "completed":
+                        failure = completed.get("error")
+                        detail = ""
+                        if isinstance(failure, Mapping):
+                            detail = str(
+                                failure.get("message")
+                                or failure.get("code")
+                                or ""
+                            ).strip()
+                        elif failure is not None:
+                            detail = str(failure).strip()
+                        suffix = f": {detail[:300]}" if detail else ""
                         raise MissionValidationError(
-                            f"Codex OAuth planning turn ended with status {status or 'unknown'}"
+                            "Codex OAuth planning turn ended with status "
+                            f"{status or 'unknown'}{suffix}"
                         )
                     if not final_text:
                         for item in completed.get("items", []):

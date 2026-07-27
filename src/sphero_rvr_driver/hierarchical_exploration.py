@@ -715,6 +715,71 @@ class ContinuousGoalFollowerReplay:
         event = self._event("navigate_through_poses_started", first, now_s)
         return self._step(self._moving_command(), (event,))
 
+    def submit_prefetch(self, goal: FrontierGoal) -> None:
+        """Add one model-selected goal without restarting the controller."""
+
+        if self.state in {"idle", "terminal_safety"}:
+            raise MissionValidationError(
+                "prefetch requires an active hierarchical replay"
+            )
+        existing = [
+            item
+            for item in (self.active, *self._pending, *self._queued)
+            if item is not None
+        ]
+        if len(existing) >= self.queue_depth:
+            raise MissionValidationError("hierarchical lookahead queue is full")
+        generations = [item.generation for item in existing]
+        if generations and goal.generation <= max(generations):
+            raise MissionValidationError(
+                "prefetched goal generation must increase monotonically"
+            )
+        self._pending.append(goal)
+
+    def discard_prefetch(
+        self, generation: int, *, now_s: float, reason: str
+    ) -> HandoffStep:
+        """Discard one queued/pending result after deterministic revalidation."""
+
+        removed: Optional[FrontierGoal] = None
+        for queue in (self._pending, self._queued):
+            retained: deque[FrontierGoal] = deque()
+            while queue:
+                candidate = queue.popleft()
+                if removed is None and candidate.generation == generation:
+                    removed = candidate
+                else:
+                    retained.append(candidate)
+            queue.extend(retained)
+        events: tuple[Mapping[str, Any], ...] = ()
+        if removed is not None:
+            event = self._event("prefetch_discarded", removed, now_s)
+            event["reason"] = str(reason)
+            events = (event,)
+        command = (
+            self._moving_command()
+            if self.state == "navigating"
+            else self._zero_command(self.state)
+        )
+        return self._step(command, events)
+
+    def preempt_for_replan(
+        self, *, now_s: float, reason: str
+    ) -> HandoffStep:
+        """Safely leave the current controller session for a semantic replan."""
+
+        if self.state not in {"navigating", "wait_planning"}:
+            raise MissionValidationError(
+                "semantic replanning requires an active or waiting replay"
+            )
+        self._pending.clear()
+        self._queued.clear()
+        self.state = "wait_planning"
+        self.controller_active = False
+        event = self._event("semantic_replan_preempted", self.active, now_s)
+        event["reason"] = str(reason)
+        return self._step(self._zero_command("semantic_replan"), (event,))
+
     def advance(
         self,
         *,
