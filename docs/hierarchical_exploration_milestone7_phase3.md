@@ -236,3 +236,42 @@ python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv \
 
 Passing software tests and a no-motion Pi preflight do not authorize M7.3 or
 M7.4 physical motion.
+
+## M7.3 physical result
+
+The 2026-07-27 attended collision session passes on reviewed and deployed
+source `8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f`. That candidate is merged through
+[PR 49](https://github.com/jsperson/sphero_rvr_ros/pull/49) at main
+`54aebab9c60b6c6a205719552c4419c3f67aafa2`.
+
+The evaluator accepted the exact trial set:
+
+- real SLOW scaling at `0.5875 m` and `0.4360 m` front clearance;
+- collision STOP at `0.3115 m`, downstream motor zero, and operator-confirmed
+  no contact;
+- rejected reset while blocked and accepted reset only after `0.78 s` clear,
+  without replaying the old command;
+- stale-command zero in `0.014600 s`, operator STOP zero in `0.015192 s`, and
+  ESTOP zero in `0.003539 s`, each while a real authenticated provider call was
+  in flight;
+- ESTOP latch until explicit clear;
+- crash/restart transition from `RUNNING` to `recovery_required`, motor zero,
+  and no old-route resume;
+- exact active publisher/subscriber ownership and final generated cleanup.
+
+The accepted M7.3 evidence digest is
+`7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55`.
+The evaluator leaves M7.4 not proven and keeps M7.5 plus the canonical mission
+unapproved. The complete committed evidence index is
+[artifacts/m7_phase3_attended_collision/README.md](../artifacts/m7_phase3_attended_collision/README.md).
+The roughly 203 MiB raw bag and 289 MiB read-only observation remain
+checksum-bound on `sphero-pi-2`.
+
+The camera, lidar, rosbag, observer, driver, supervisor, route runner, motion
+publishers, and rover serial owner are absent after cleanup. The lidar is
+powered down.
+
+M7.4 requires an independent review of this result and a separate approval
+binding the exact M7.3 evidence digest. Re-verify the measured -3 degree camera
+pitch and far-band floor projection before and after M7.4 without widening the
+`0.050 m` bound.

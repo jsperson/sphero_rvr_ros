@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "canonical_mission_and_m7_5_remain_locked": true,
+    "exact_source_and_required_approvals": true,
+    "m7_3_attended_collision_passed": true,
+    "m7_3_no_contact_and_cleanup_passed": true,
+    "unchanged_safety_limits": true
+  },
+  "m7_3_evidence_sha256": "7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55",
+  "m7_3_metrics": {
+    "collision_zero_latency_s": 0.0,
+    "operator_zero_latency_s": {
+      "operator_estop": 0.0035390853881835938,
+      "operator_stop": 0.015192031860351562
+    },
+    "physical_contact_observed": false,
+    "restart_state": "recovery_required",
+    "slow_min_motor_mps": 0.09499999046325686
+  },
+  "m7_4_metrics": null,
+  "passed": true,
+  "schema": "sphero_rvr.m7_phase3_attended_validation_report.v1",
+  "scope": {
+    "canonical_mission_approved": false,
+    "drop_off_detection_available": false,
+    "m7_3_collision_gate": "passed",
+    "m7_4_moving_perception_gate": "not_proven",
+    "m7_5_physical_binding_approved": false
+  },
+  "session_sha256": "e0a0fd38476ada5790ba129900793b8f9a8bd9e2b0040e8a4dbca687c6791f70",
+  "source_sha": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f",
+  "through_gate": "m7.3"
+}
