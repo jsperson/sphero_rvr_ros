@@ -92,6 +92,7 @@ def test_process_and_serial_owner_checks_fail_closed(tmp_path: Path) -> None:
       11 python3 /opt/ros/jazzy/bin/ros2 run sphero_rvr_driver rvr_node
       12 python3 /opt/ros/jazzy/bin/ros2 run sphero_rvr_driver live_route_runner
       13 python3 /opt/ros/jazzy/bin/ros2 run rplidar_ros rplidar_composition
+      14 live_mission_service -p stationary_perception_enabled:=false
     """
     prohibited = _prohibited_processes(process_text)
     assert len(prohibited) == 2

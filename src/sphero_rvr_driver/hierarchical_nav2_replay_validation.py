@@ -40,14 +40,19 @@ def _parser() -> argparse.ArgumentParser:
 
 
 SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-PROHIBITED_PROCESS_TOKENS = (
+PROHIBITED_EXECUTABLES = {
     "rvr_node",
     "stationary_perception",
-    "rplidar",
+    "rplidar_composition",
+    "rplidar_node",
     "sllidar",
+    "sllidar_node",
     "camera_node",
+    "rvr-camera-node",
     "slam_toolbox",
-)
+    "async_slam_toolbox_node",
+    "sync_slam_toolbox_node",
+}
 SERIAL_DEVICE_CANDIDATES = (
     "/dev/ttyAMA0",
     "/dev/ttyUSB0",
@@ -65,12 +70,20 @@ def _validated_source_sha(value: str | None) -> str:
 
 
 def _prohibited_processes(process_text: str) -> list[str]:
-    return sorted(
-        line.strip()
-        for line in str(process_text).splitlines()
-        if line.strip()
-        and any(token in line.lower() for token in PROHIBITED_PROCESS_TOKENS)
-    )
+    prohibited = []
+    for raw_line in str(process_text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        fields = line.split()
+        executable_tokens = {
+            Path(token).name.lower()
+            for token in fields[1:]
+            if not token.startswith("-")
+        }
+        if executable_tokens & PROHIBITED_EXECUTABLES:
+            prohibited.append(line)
+    return sorted(prohibited)
 
 
 def _serial_device_owners(
