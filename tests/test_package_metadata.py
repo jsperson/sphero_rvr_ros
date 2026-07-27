@@ -71,6 +71,7 @@ EXPECTED_DATA_FILES = {
         "docs/shoe_detector_replay.md",
         "docs/shoe_map_projection.md",
         "docs/slam_replay.md",
+        "docs/hierarchical_exploration_phase4.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -78,6 +79,11 @@ EXPECTED_DATA_FILES = {
     "share/sphero_rvr_driver/artifacts/phase2_camera_lidar_localization": {
         "artifacts/phase2_camera_lidar_localization/README.md",
         "artifacts/phase2_camera_lidar_localization/recorded_calibration_fixture.json",
+    },
+    "share/sphero_rvr_driver/artifacts/phase4_real_provider_replay": {
+        "artifacts/phase4_real_provider_replay/README.md",
+        "artifacts/phase4_real_provider_replay/report.json",
+        "artifacts/phase4_real_provider_replay/evidence.sqlite3",
     },
     "share/sphero_rvr_driver/systemd/user": {
         "systemd/user/rvr-mission-service.service",

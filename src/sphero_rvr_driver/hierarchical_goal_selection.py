@@ -612,6 +612,23 @@ def semantic_goal_provider_output_schema(
         "minimum": event_generation,
         "maximum": event_generation,
     }
+    supplied_actions = snapshot.get("provider_action_allowlist")
+    if supplied_actions is not None:
+        if (
+            not isinstance(supplied_actions, list)
+            or not supplied_actions
+            or any(
+                not isinstance(action, str) or action not in ALLOWED_ACTIONS
+                for action in supplied_actions
+            )
+        ):
+            raise MissionValidationError(
+                "semantic provider action allowlist is invalid"
+            )
+        properties["action"] = {
+            "type": "string",
+            "enum": sorted(set(supplied_actions)),
+        }
     return schema
 
 
@@ -835,6 +852,9 @@ def semantic_goal_prompt(
             "Cite the selected candidate or evidence IDs in the concise rationale.",
         ],
     }
+    evaluation = snapshot.get("evaluation")
+    if isinstance(evaluation, Mapping):
+        request["evaluation"] = json.loads(json.dumps(dict(evaluation)))
     return json.dumps(request, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 

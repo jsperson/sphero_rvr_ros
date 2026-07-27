@@ -77,6 +77,19 @@ def _motion_packets(transport: FakeTransport, driver: RVRDriver) -> list[Packet]
     return [packet for packet in _packets(transport) if packet.command_id in motion_cids]
 
 
+async def _wait_until(predicate, *, timeout_s: float = 0.5) -> None:
+    """Wait for an async driver outcome without assuming host scheduling speed."""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"driver outcome was not observed within {timeout_s:.3f}s"
+            )
+        await asyncio.sleep(0.001)
+
+
 async def _start_blocked_battery_request(driver: RVRDriver, transport: FakeTransport) -> asyncio.Task:
     battery_task = asyncio.create_task(driver.get_battery_percentage())
     await transport.wait_for_write()
@@ -91,7 +104,7 @@ async def _cleanup_driver(driver: RVRDriver, *tasks: asyncio.Task) -> None:
     for task in tasks:
         with suppress(asyncio.CancelledError, TimeoutError):
             await task
-    await driver.disconnect()
+    await asyncio.wait_for(driver.disconnect(), timeout=1.0)
 
 
 def _decode_rc_payload(packet: Packet) -> tuple[float, float, int]:
@@ -321,8 +334,13 @@ async def test_stale_velocity_command_causes_validated_raw_motor_off_packet():
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
-    await asyncio.sleep(0.08)
-    await driver.disconnect()
+    await _wait_until(
+        lambda: any(
+            packet.payload == RAW_OFF
+            for packet in _raw_motor_packets(transport, driver)
+        )
+    )
+    await asyncio.wait_for(driver.disconnect(), timeout=1.0)
 
     assert _rc_drive_packets(transport, driver)
     raw_motor_packets = _raw_motor_packets(transport, driver)
@@ -664,9 +682,13 @@ async def test_transient_control_send_fault_attempts_safe_stop_and_loop_survives
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
-    await asyncio.sleep(0.04)
+    await _wait_until(
+        lambda: "RVR control loop send failed; attempting safe stop"
+        in caplog.text
+        and bool(_raw_motor_packets(transport, driver))
+    )
     await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
-    await asyncio.sleep(0.04)
+    await _wait_until(lambda: bool(_rc_drive_packets(transport, driver)))
     await driver.disconnect()
 
     assert _raw_motor_packets(transport, driver)
@@ -682,9 +704,12 @@ async def test_stale_stop_transient_failure_retries_safe_stop_without_fail_safe(
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
-    await asyncio.sleep(0.08)
+    await _wait_until(
+        lambda: "RVR safe stop delivery failed; retrying" in caplog.text
+        and bool(_raw_motor_packets(transport, driver))
+    )
     await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
-    await asyncio.sleep(0.03)
+    await _wait_until(lambda: bool(_rc_drive_packets(transport, driver)))
     await driver.disconnect()
 
     state = driver.get_state()
@@ -701,7 +726,7 @@ async def test_stale_stop_persistent_failure_enters_fail_safe_and_blocks_drive_u
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
-    await asyncio.sleep(0.08)
+    await _wait_until(lambda: driver.get_state().fail_safe_active)
 
     state = driver.get_state()
     assert state.fail_safe_active
@@ -712,7 +737,7 @@ async def test_stale_stop_persistent_failure_enters_fail_safe_and_blocks_drive_u
     await driver.clear_fail_safe_fault()
     assert not driver.get_state().fail_safe_active
     await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
-    await asyncio.sleep(0.03)
+    await _wait_until(lambda: bool(_rc_drive_packets(transport, driver)))
     await driver.disconnect()
 
     assert _raw_motor_packets(transport, driver)

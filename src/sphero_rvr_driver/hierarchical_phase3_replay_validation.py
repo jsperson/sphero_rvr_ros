@@ -85,6 +85,10 @@ def _wait_for_provider(
     while time.monotonic() < deadline:
         observed = provider.completed_calls if completed else provider.calls
         if observed >= count:
+            if completed:
+                # The provider counter advances immediately before the worker
+                # returns; allow its Future to publish the result deterministically.
+                time.sleep(0.001)
             return
         time.sleep(0.001)
     raise RuntimeError("scripted semantic provider did not reach expected state")

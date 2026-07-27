@@ -20,6 +20,9 @@ event-triggered replanning from merged Phase 2 baseline
 `9ddc2b64dc9c626e07df5e4945297ffea28fdb2a`; its acceptance evidence is
 recorded in
 [hierarchical_exploration_phase3.md](hierarchical_exploration_phase3.md).
+Phase 4 adds durable multi-decision real-provider latency, handoff, pause, and
+browser evidence in
+[hierarchical_exploration_phase4.md](hierarchical_exploration_phase4.md).
 Physical hierarchical exploration remains unavailable.
 
 ## Decision
