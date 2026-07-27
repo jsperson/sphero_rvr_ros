@@ -82,7 +82,7 @@ RANGE_BANDS = (
 
 MAX_SENSOR_DELTA_NS = 100_000_000
 MAX_POSE_AGE_NS = 150_000_000
-MIN_TARGETS_PER_METHOD_BAND = 3
+MIN_CONFIGURATIONS_PER_METHOD_BAND = 3
 MAX_FLOOR_ERROR_M = 0.05
 LIDAR_ERROR_BASE_M = 0.03
 LIDAR_ERROR_PER_RANGE_M = 0.04
@@ -341,6 +341,9 @@ def build_sample_from_snapshot(
     survey_technique: str,
     surveyed_at_utc: str,
     survey_uncertainty_m: float,
+    pose_x: float = 0.0,
+    pose_y: float = 0.0,
+    pose_yaw: float = 0.0,
 ) -> dict[str, Any]:
     """Bind operator-reviewed survey geometry and image anchor to a snapshot."""
 
@@ -361,7 +364,7 @@ def build_sample_from_snapshot(
     image = snapshot["image"]
     _require(0.0 <= anchor_u < float(image["width"]), "anchor_u is outside the image")
     _require(0.0 <= anchor_v < float(image["height"]), "anchor_v is outside the image")
-    surveyed_range_m = math.hypot(target_x, target_y)
+    surveyed_range_m = math.hypot(target_x - pose_x, target_y - pose_y)
     band = _range_band(surveyed_range_m)
     value = {
         "sample_id": sample_id,
@@ -384,9 +387,9 @@ def build_sample_from_snapshot(
         },
         "pose": {
             "timestamp_ns": int(image["timestamp_ns"]),
-            "x": 0.0,
-            "y": 0.0,
-            "yaw": 0.0,
+            "x": float(pose_x),
+            "y": float(pose_y),
+            "yaw": float(pose_yaw),
             "map_revision": map_revision,
             "position_sigma_m": float(survey_uncertainty_m),
             "yaw_sigma_rad": math.radians(0.5),
@@ -672,7 +675,9 @@ def _verify_contract(session: Mapping[str, Any]) -> None:
     expected_gates = {
         "max_sensor_delta_ns": MAX_SENSOR_DELTA_NS,
         "max_pose_age_ns": MAX_POSE_AGE_NS,
-        "minimum_distinct_targets_per_method_band": MIN_TARGETS_PER_METHOD_BAND,
+        "minimum_distinct_surveyed_configurations_per_method_band": (
+            MIN_CONFIGURATIONS_PER_METHOD_BAND
+        ),
         "lidar_error_model": {
             "base_m": LIDAR_ERROR_BASE_M,
             "per_range_m": LIDAR_ERROR_PER_RANGE_M,
@@ -804,6 +809,14 @@ def _evaluate_sample(
     )
 
     result = _localize_sample(sample, calibration=calibration, camera=camera, lidar=lidar)
+    map_dx = target_x - pose.x
+    map_dy = target_y - pose.y
+    c = math.cos(pose.yaw)
+    s = math.sin(pose.yaw)
+    relative_target_point = {
+        "x": c * map_dx + s * map_dy,
+        "y": -s * map_dx + c * map_dy,
+    }
     image_ns = int(result.source_timestamps_ns["image"])
     pose_age_ns = abs(image_ns - int(result.source_timestamps_ns["pose"]))
     sensor_delta_ns: Optional[int] = None
@@ -827,6 +840,7 @@ def _evaluate_sample(
             "expected_method": expected_method,
             "range_band": band.name,
             "surveyed_range_m": surveyed_range,
+            "relative_target_point": relative_target_point,
             "sensor_delta_ms": sensor_delta_ns / 1_000_000.0,
             "pose_age_ms": pose_age_ns / 1_000_000.0,
             "error_m": None,
@@ -853,6 +867,7 @@ def _evaluate_sample(
         "expected_method": expected_method,
         "range_band": band.name,
         "surveyed_range_m": surveyed_range,
+        "relative_target_point": relative_target_point,
         "sensor_delta_ms": None if sensor_delta_ns is None else sensor_delta_ns / 1_000_000.0,
         "pose_age_ms": pose_age_ns / 1_000_000.0,
         "error_m": error_m,
@@ -878,6 +893,15 @@ def _distribution(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {
         "sample_count": len(rows),
         "distinct_target_count": len({str(row["target_id"]) for row in rows}),
+        "distinct_surveyed_configuration_count": len(
+            {
+                (
+                    round(float(row["relative_target_point"]["x"]), 6),
+                    round(float(row["relative_target_point"]["y"]), 6),
+                )
+                for row in rows
+            }
+        ),
         "error_m": {
             "minimum": min(errors),
             "median": statistics.median(errors),
@@ -936,8 +960,16 @@ def evaluate_session(session: Mapping[str, Any]) -> dict[str, Any]:
                 ]
                 key = f"{method}:{band.name}"
                 coverage_checks[key] = (
-                    len({str(row["target_id"]) for row in selected})
-                    >= MIN_TARGETS_PER_METHOD_BAND
+                    len(
+                        {
+                            (
+                                round(float(row["relative_target_point"]["x"]), 6),
+                                round(float(row["relative_target_point"]["y"]), 6),
+                            )
+                            for row in selected
+                        }
+                    )
+                    >= MIN_CONFIGURATIONS_PER_METHOD_BAND
                 )
                 if selected:
                     distributions[method][band.name] = _distribution(selected)
@@ -945,7 +977,9 @@ def evaluate_session(session: Mapping[str, Any]) -> dict[str, Any]:
         ambiguity_rows = [row for row in rows if row["expected_method"] == "bearing_only"]
         checks = {
             "all_sample_gates_passed": all(bool(row["passed"]) for row in rows),
-            "every_method_band_has_three_distinct_targets": all(coverage_checks.values()),
+            "every_method_band_has_three_distinct_surveyed_configurations": all(
+                coverage_checks.values()
+            ),
             "ambiguous_association_rejected": bool(ambiguity_rows)
             and all(
                 row["result"]["method"] == "bearing_only"
@@ -1009,6 +1043,9 @@ def build_capture_plan(*, run_id: str, output_root: str = "/home/jsperson/rvr_ru
         "sphero_rvr_driver",
         "m7_stationary_localization.launch.py",
         "survey_session_enabled:=true",
+        "survey_base_x:=0.0",
+        "survey_base_y:=0.0",
+        "survey_base_yaw:=0.0",
     ]
     capture_command = [
         "ros2",
@@ -1035,8 +1072,8 @@ def build_capture_plan(*, run_id: str, output_root: str = "/home/jsperson/rvr_ru
         "run_id": run_id,
         "source_checkout_required": "clean exact candidate SHA",
         "operator_actions_required": [
-            "keep the rover stationary with RVR power and motors unavailable",
-            "survey and label every target map coordinate/range before capture",
+            "keep the rover motionless during capture with RVR power and motors unavailable",
+            "survey the fixed-map rover pose and target coordinate before capture",
             "inspect the ROS graph and serial owners before recording",
             "stop rosbag, camera, and lidar; then record cleanup",
         ],
@@ -1068,7 +1105,9 @@ def build_session_template(*, source_sha: str) -> dict[str, Any]:
         "gates": {
             "max_sensor_delta_ns": MAX_SENSOR_DELTA_NS,
             "max_pose_age_ns": MAX_POSE_AGE_NS,
-            "minimum_distinct_targets_per_method_band": MIN_TARGETS_PER_METHOD_BAND,
+            "minimum_distinct_surveyed_configurations_per_method_band": (
+                MIN_CONFIGURATIONS_PER_METHOD_BAND
+            ),
             "lidar_error_model": {
                 "base_m": LIDAR_ERROR_BASE_M,
                 "per_range_m": LIDAR_ERROR_PER_RANGE_M,
@@ -1144,6 +1183,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     sample.add_argument("--target-x", type=float, required=True)
     sample.add_argument("--target-y", type=float, required=True)
+    sample.add_argument("--pose-x", type=float, default=0.0)
+    sample.add_argument("--pose-y", type=float, default=0.0)
+    sample.add_argument("--pose-yaw", type=float, default=0.0)
     sample.add_argument("--anchor-u", type=float, required=True)
     sample.add_argument("--anchor-v", type=float, required=True)
     sample.add_argument("--map-revision", required=True)
@@ -1210,6 +1252,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 survey_technique=args.survey_technique,
                 surveyed_at_utc=args.surveyed_at_utc,
                 survey_uncertainty_m=args.survey_uncertainty_m,
+                pose_x=args.pose_x,
+                pose_y=args.pose_y,
+                pose_yaw=args.pose_yaw,
             )
         except SurveyValidationError as exc:
             print(f"ERROR: {exc}")

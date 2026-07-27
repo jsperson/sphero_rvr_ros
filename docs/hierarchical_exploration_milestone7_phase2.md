@@ -4,7 +4,10 @@
 
 M7.2 replaces the Milestone 6 analytic and approximate localization evidence
 with surveyed physical ground truth. It uses the Pi, camera, and lidar while the
-rover remains stationary and RVR power and motors are unavailable. It does not
+rover is motionless during every capture and RVR power and motors are
+unavailable. Between captures, an operator may manually reposition the
+powered-down rover if its fixed-map pose is independently surveyed and supplied
+identically to the launch and sample record. It does not
 start `rvr_node`, the RVR serial transport, Nav2, `live_route_runner`,
 `collision_stop_node`, `/cmd_vel`, `/cmd_vel_motor`, physical execution, or
 motion authority.
@@ -30,8 +33,11 @@ The range bands are fixed before evidence collection:
 | `mid` | `0.55 m <= range < 0.85 m` |
 | `far` | `0.85 m <= range <= 1.20 m` |
 
-Collect at least three distinct physical target positions for each
-point-producing method in every band. That is at least 18 point samples:
+Collect at least three distinct surveyed target-to-rover configurations for
+each point-producing method in every band. The target may move while the rover
+pose stays fixed, or one fixed target may be reused while the powered-down rover
+is manually repositioned and its map pose is surveyed. That is at least 18 point
+samples:
 
 - nine `lidar_range` samples using a broad vertical target that intersects the
   lidar plane and has a reviewed camera anchor;
@@ -39,18 +45,21 @@ point-producing method in every band. That is at least 18 point samples:
   its bottom-contact image anchor.
 
 Use lateral variation within each band rather than three captures of one
-unchanged placement. Record an additional real ambiguous lidar-association
-control which must return `bearing_only`, `point: null`, and
+unchanged relative configuration. Coverage is keyed by the target coordinate
+expressed in the surveyed base pose, not by target label, so renaming one fixed
+object cannot game the gate. Record an additional real ambiguous
+lidar-association control which must return `bearing_only`, `point: null`, and
 `ambiguous_lidar_clusters`.
 
 ## Survey requirements
 
-Define `map` with `base_link` at `(0, 0)`, positive x forward, and positive y
-left while the rover is fixed. Mark every target coordinate on a level floor
-using a steel tape or laser measure and a perpendicular square. Record the
-technique, surveyor, time, map coordinate, derived radial range, and stated
-position uncertainty. The evaluator rejects uncertainty greater than `0.02 m`
-and rejects range values inconsistent with the surveyed map geometry.
+Define one fixed `map` with the initial `base_link` at `(0, 0)`, positive x
+forward, and positive y left. Mark every target coordinate and every manually
+changed rover pose on a level floor using a steel tape or laser measure and a
+perpendicular square. Record the technique, surveyor, time, target map
+coordinate, rover map pose, derived target-to-rover range, and stated position
+uncertainty. The evaluator rejects uncertainty greater than `0.02 m` and
+rejects range values inconsistent with the surveyed map geometry.
 
 The revised 2026-07-27 tread-contact survey places the lidar scan origin at
 `(x=+0.0045 m, y=-0.0110 m)` in `base_link`. Operators may use its visible
@@ -98,7 +107,10 @@ two explicit commands:
 
 ```bash
 ros2 launch sphero_rvr_driver m7_stationary_localization.launch.py \
-  survey_session_enabled:=true
+  survey_session_enabled:=true \
+  survey_base_x:=SURVEYED_MAP_X \
+  survey_base_y:=SURVEYED_MAP_Y \
+  survey_base_yaw:=SURVEYED_MAP_YAW
 
 ros2 run sphero_rvr_driver rvr_rosbag_capture \
   --execute --until-interrupted --hardware-active \
@@ -135,6 +147,9 @@ ros2 run sphero_rvr_driver rvr_m7_surveyed_localization sample \
   --target-id vertical-target-near-left \
   --expected-method lidar_range \
   --target-x 0.40 --target-y 0.05 \
+  --pose-x SURVEYED_MAP_X \
+  --pose-y SURVEYED_MAP_Y \
+  --pose-yaw SURVEYED_MAP_YAW \
   --anchor-u REVIEWED_U --anchor-v REVIEWED_V \
   --map-revision m7-survey-grid-YYYYmmdd \
   --surveyor OPERATOR \

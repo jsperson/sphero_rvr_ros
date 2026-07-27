@@ -19,6 +19,9 @@ def generate_launch_description():
     package_share = Path(get_package_share_directory("sphero_rvr_driver"))
     enabled = LaunchConfiguration("survey_session_enabled")
     camera_info_url = LaunchConfiguration("camera_info_url")
+    survey_base_x = LaunchConfiguration("survey_base_x")
+    survey_base_y = LaunchConfiguration("survey_base_y")
+    survey_base_yaw = LaunchConfiguration("survey_base_yaw")
 
     stationary_inputs = GroupAction(
         condition=IfCondition(enabled),
@@ -36,12 +39,12 @@ def generate_launch_description():
                 name="m7_survey_map_to_base_tf",
                 output="screen",
                 arguments=[
-                    "--x", "0.0",
-                    "--y", "0.0",
+                    "--x", survey_base_x,
+                    "--y", survey_base_y,
                     "--z", "0.0",
                     "--roll", "0.0",
                     "--pitch", "0.0",
-                    "--yaw", "0.0",
+                    "--yaw", survey_base_yaw,
                     "--frame-id", "map",
                     "--child-frame-id", "base_link",
                 ],
@@ -62,6 +65,9 @@ def generate_launch_description():
                     "rvr_pi_camera3_800x600.yaml"
                 ),
             ),
+            DeclareLaunchArgument("survey_base_x", default_value="0.0"),
+            DeclareLaunchArgument("survey_base_y", default_value="0.0"),
+            DeclareLaunchArgument("survey_base_yaw", default_value="0.0"),
             stationary_inputs,
         ]
     )

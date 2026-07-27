@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from sphero_rvr_driver.m7_surveyed_localization import (
     CLEANUP_AUDIT_SCHEMA,
     MAX_POSE_AGE_NS,
@@ -232,6 +234,7 @@ def test_complete_survey_recomputes_all_methods_and_passes() -> None:
             distribution = report["distributions"][method][band]
             assert distribution["sample_count"] == 3
             assert distribution["distinct_target_count"] == 3
+            assert distribution["distinct_surveyed_configuration_count"] == 3
             assert distribution["recommendation_widens_provisional_bound"] is False
 
 
@@ -244,7 +247,7 @@ def test_ambiguity_control_is_bearing_only_without_point() -> None:
     assert ambiguity["result"]["reason"] == "ambiguous_lidar_clusters"
 
 
-def test_three_distinct_targets_are_required_for_every_method_band() -> None:
+def test_three_distinct_surveyed_configurations_are_required_for_every_method_band() -> None:
     session = _complete_session()
     session["samples"] = [
         sample
@@ -256,7 +259,58 @@ def test_three_distinct_targets_are_required_for_every_method_band() -> None:
 
     assert report["passed"] is False
     assert report["coverage"]["floor_projection:far"] is False
-    assert report["checks"]["every_method_band_has_three_distinct_targets"] is False
+    assert (
+        report["checks"]["every_method_band_has_three_distinct_surveyed_configurations"]
+        is False
+    )
+
+
+def test_one_fixed_target_may_be_reused_across_distinct_surveyed_configurations() -> None:
+    session = _complete_session()
+    for sample in session["samples"]:
+        if sample["expected_method"] in ("lidar_range", "floor_projection"):
+            sample["target_id"] = "fixed-checkerboard"
+
+    report = evaluate_session(session)
+
+    assert report["passed"] is True
+    for method in ("lidar_range", "floor_projection"):
+        for band in ("near", "mid", "far"):
+            distribution = report["distributions"][method][band]
+            assert distribution["distinct_target_count"] == 1
+            assert distribution["distinct_surveyed_configuration_count"] == 3
+
+
+def test_nonzero_surveyed_base_pose_localizes_into_the_fixed_map() -> None:
+    session = _complete_session()
+    sample = session["samples"][0]
+    relative_x, relative_y = 0.4, -0.05
+    sample["target_id"] = "fixed-checkerboard"
+    sample["survey"] = _survey(0.4, 0.0)
+    sample["survey"]["surveyed_range_m"] = math.hypot(relative_x, relative_y)
+    sample["anchor"] = _anchor_for_point(
+        relative_x,
+        relative_y,
+        floor=False,
+        evidence_id="image-nonzero-pose",
+    )
+    sample["scan"] = _scan_for_point(
+        relative_x,
+        relative_y,
+        evidence_id="scan-nonzero-pose",
+    )
+    sample["pose"] = _pose()
+    sample["pose"]["y"] = 0.05
+
+    report = evaluate_session(session)
+
+    assert report["passed"] is True
+    row = next(item for item in report["samples"] if item["sample_id"] == sample["sample_id"])
+    assert row["result"]["point"]["x"] == pytest.approx(0.4, abs=0.001)
+    assert row["result"]["point"]["y"] == pytest.approx(0.0, abs=0.001)
+    assert row["relative_target_point"] == pytest.approx(
+        {"x": relative_x, "y": relative_y}
+    )
 
 
 def test_out_of_band_position_is_rejected() -> None:
@@ -373,6 +427,46 @@ def test_snapshot_sample_builder_binds_survey_without_authority() -> None:
     assert "authority" not in sample
 
 
+def test_snapshot_sample_builder_binds_nonzero_surveyed_base_pose() -> None:
+    snapshot = {
+        "schema": "sphero_rvr.m7_phase2_stationary_snapshot.v1",
+        "read_only": True,
+        "publishers_created": False,
+        "motor_authority": False,
+        "image": {
+            "timestamp_ns": TIMESTAMP_NS,
+            "width": 800,
+            "height": 600,
+            "evidence_id": "image-live",
+        },
+        "scan": _scan_for_point(0.4, -0.05, evidence_id="scan-live"),
+    }
+
+    sample = build_sample_from_snapshot(
+        snapshot,
+        sample_id="live-near-offset",
+        target_id="fixed-checkerboard",
+        expected_method="lidar_range",
+        target_x=0.4,
+        target_y=0.0,
+        anchor_u=462.5,
+        anchor_v=300.0,
+        map_revision=MAP_REVISION,
+        surveyor="operator",
+        survey_technique="fixed target plus surveyed powered-down rover pose",
+        surveyed_at_utc="2026-07-27T00:00:00Z",
+        survey_uncertainty_m=0.005,
+        pose_x=0.0,
+        pose_y=0.05,
+        pose_yaw=0.0,
+    )
+
+    assert sample["pose"]["x"] == 0.0
+    assert sample["pose"]["y"] == 0.05
+    assert sample["pose"]["yaw"] == 0.0
+    assert sample["survey"]["surveyed_range_m"] == pytest.approx(math.hypot(0.4, 0.05))
+
+
 def test_snapshot_sample_builder_rejects_out_of_image_anchor() -> None:
     snapshot = {
         "schema": "sphero_rvr.m7_phase2_stationary_snapshot.v1",
@@ -424,6 +518,9 @@ def test_stationary_launch_is_default_off_and_has_no_motion_surface() -> None:
     assert "IfCondition(enabled)" in launch_text
     assert "lidar.launch.py" in launch_text
     assert "camera.launch.py" in launch_text
+    assert '"survey_base_x"' in launch_text
+    assert '"survey_base_y"' in launch_text
+    assert '"survey_base_yaw"' in launch_text
     for prohibited in (
         'executable="rvr_node"',
         'executable="live_route_runner"',
