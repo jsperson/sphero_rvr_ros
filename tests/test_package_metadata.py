@@ -73,6 +73,7 @@ EXPECTED_DATA_FILES = {
         "docs/slam_replay.md",
         "docs/hierarchical_exploration_phase4.md",
         "docs/hierarchical_exploration_milestone7.md",
+        "docs/hierarchical_exploration_milestone7_phase1.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -85,6 +86,12 @@ EXPECTED_DATA_FILES = {
         "artifacts/phase4_real_provider_replay/README.md",
         "artifacts/phase4_real_provider_replay/report.json",
         "artifacts/phase4_real_provider_replay/evidence.sqlite3",
+    },
+    "share/sphero_rvr_driver/artifacts/m7_phase1_pi_no_motion": {
+        "artifacts/m7_phase1_pi_no_motion/README.md",
+        "artifacts/m7_phase1_pi_no_motion/environment.json",
+        "artifacts/m7_phase1_pi_no_motion/graph.json",
+        "artifacts/m7_phase1_pi_no_motion/wfd.json",
     },
     "share/sphero_rvr_driver/systemd/user": {
         "systemd/user/rvr-mission-service.service",

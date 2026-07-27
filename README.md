@@ -6,11 +6,13 @@ The product goal is a map-driven web interface with text-based LLM interaction f
 
 Milestone 6 continuous hierarchical exploration is replay-complete. The active
 product direction is Milestone 7, its separately gated physical realization.
-Phase 0 resolves short-hop behavior as an explicit product decision: compatible
+Phase 0 resolved short-hop behavior as an explicit product decision: compatible
 ready goals hand off continuously, while a late successor produces a bounded,
 visible `wait_planning` hold rather than speculative stale lookahead. Every
 physical authority gate remains unchanged; physical hierarchical exploration
-is still unavailable.
+is still unavailable. Phase 1 has passed the exact-SHA Pi no-motion gate:
+recorded-map WFD was deterministic across 50 passes and the loopback-only ROS
+graph preserved exclusive command ownership with zero nonzero motor samples.
 
 ## Documentation map for operators and maintainers
 
@@ -47,6 +49,7 @@ is still unavailable.
 - [docs/hierarchical_exploration_phase3.md](docs/hierarchical_exploration_phase3.md) records the Phase 3 semantic-goal schema, deterministic Next-Best-View resolution, async prefetch, event replanning, long-leg/short-hop evidence, and latency carryover.
 - [docs/hierarchical_exploration_phase4.md](docs/hierarchical_exploration_phase4.md) records the Phase 4 real-provider wall-latency replay, durable mission-ID evidence, read-only browser integration, long-leg handoffs, and short-hop pause characterization.
 - [docs/hierarchical_exploration_milestone7.md](docs/hierarchical_exploration_milestone7.md) defines the Milestone 7 short-hop product decision, physical ownership contract, sequential entry gates, approval boundaries, and reviewable delivery slices.
+- [docs/hierarchical_exploration_milestone7_phase1.md](docs/hierarchical_exploration_milestone7_phase1.md) records the exact-SHA Pi WFD benchmark, loopback-only ROS ownership graph, zero-command evidence, environment, and cleanup for the M7.1 no-motion gate.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
 - [docs/system_validation.md](docs/system_validation.md) defines the local/Pi ROS system checks, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.

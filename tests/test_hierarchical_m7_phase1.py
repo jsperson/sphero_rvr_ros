@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -110,6 +111,15 @@ def test_process_and_serial_owner_checks_fail_closed(tmp_path: Path) -> None:
         runner=fake_runner,
     ) == {str(device): [123, 456]}
 
+    def failed_runner(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 1, stdout="", stderr="denied")
+
+    with pytest.raises(RuntimeError, match="serial-owner inspection failed"):
+        _serial_device_owners(
+            paths=(str(device),),
+            runner=failed_runner,
+        )
+
 
 def test_milestone7_phase1_graph_audit_contract_is_no_motion() -> None:
     source = (
@@ -128,9 +138,56 @@ def test_milestone7_phase1_graph_audit_contract_is_no_motion() -> None:
         "goal = NavigateThroughPoses.Goal()", 1
     )[0]
     assert "send_goal" not in audit_block
+    assert "lifecycle_deadline = time.monotonic() + 15.0" in audit_block
+    assert 'command_prefix = ["sudo", "-n", "fuser"]' in source
 
     nav2_config = (REPO_ROOT / "config" / "hierarchical_nav2.yaml").read_text()
     assert nav2_config.count("initial_transform_timeout: 15.0") == 2
+    launch = (
+        REPO_ROOT / "launch" / "hierarchical_exploration_replay.launch.py"
+    ).read_text()
+    assert "period=8.0" in launch
     assert "nav2_cmd_lease_s: 0.25" in (
         REPO_ROOT / "config" / "live_route_runner.yaml"
     ).read_text()
+
+
+def test_committed_pi_evidence_passes_and_preserves_no_motion_boundary() -> None:
+    evidence = REPO_ROOT / "artifacts" / "m7_phase1_pi_no_motion"
+    wfd_path = evidence / "wfd.json"
+    graph_path = evidence / "graph.json"
+    wfd = json.loads(wfd_path.read_text())
+    graph = json.loads(graph_path.read_text())
+    environment = json.loads((evidence / "environment.json").read_text())
+
+    source_sha = "9822ec6fe8c903191329ebdbb2646cac745e25ad"
+    assert wfd["source_sha"] == graph["source_sha"] == source_sha
+    assert environment["source"]["executable_sha"] == source_sha
+    assert hashlib.sha256(wfd_path.read_bytes()).hexdigest() == (
+        environment["reports"]["wfd_sha256"]
+    )
+    assert hashlib.sha256(graph_path.read_bytes()).hexdigest() == (
+        environment["reports"]["graph_sha256"]
+    )
+    assert wfd["result"]["passed"] is True
+    assert wfd["result"]["deterministic"] is True
+    assert len(wfd["result"]["duration_ms"]["samples"]) == 50
+    assert graph["passed"] is True
+    assert graph["nonzero_motor_samples"] == 0
+    assert graph["hardware_sink_present"] is False
+    assert graph["host_safety"]["prohibited_processes"] == []
+    assert all(
+        not owners
+        for owners in graph["host_safety"]["serial_device_owners"].values()
+    )
+    assert environment["authority"] == {
+        "rover_powered": False,
+        "driver_started": False,
+        "serial_transport_started": False,
+        "live_sensors_started": False,
+        "physical_execution_enabled": False,
+        "motion_authority": False,
+    }
+    assert environment["graph_window"]["all_descendants_reaped"] is True
+    assert environment["cleanup"]["audit_processes_remaining"] is False
+    assert environment["cleanup"]["serial_device_owners_remaining"] is False
