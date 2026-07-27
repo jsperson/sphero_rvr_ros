@@ -136,6 +136,7 @@ def test_package_xml_declares_runtime_dependencies_for_launches() -> None:
         "camera_ros",
         "launch",
         "launch_ros",
+        "lifecycle_msgs",
         "rplidar_ros",
         "nav2_map_server",
         "slam_toolbox",
@@ -285,6 +286,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
         "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
         "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
+        "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
     } <= console_scripts
 
     lidar_validation = (

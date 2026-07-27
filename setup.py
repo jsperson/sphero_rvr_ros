@@ -183,6 +183,7 @@ setup(
             "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
             "rvr_hierarchical_phase3_replay_validate = sphero_rvr_driver.hierarchical_phase3_replay_validation:main",
             "rvr_hierarchical_phase4_replay = sphero_rvr_driver.hierarchical_phase4_replay:main",
+            "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
         ],
     },
 )
