@@ -196,18 +196,24 @@ meters/radians.
 ### Lidar: `base_link -> laser`
 
 The 2026-07-27 tread-contact survey measured from the lidar scan origin to the
-most forward, rearward, right, and left tread-contact extents:
+most forward, rearward, right, and left tread-contact extents. The first
+readings included a `0.109 m` laser-measure reference offset. A direct
+remeasurement of the forward extent and a target-distance closure exposed the
+configuration error; removing the same additive offset from all four readings
+produced:
 
 | Direction from lidar | Distance |
 | --- | ---: |
-| forward | `0.200 m` |
-| rearward | `0.209 m` |
-| right | `0.213 m` |
-| left | `0.235 m` |
+| forward | `0.091 m` |
+| rearward | `0.100 m` |
+| right | `0.104 m` |
+| left | `0.126 m` |
 
-The tread footprint is therefore `0.409 m` long and `0.448 m` wide. Its
-midpoint places the lidar `0.0045 m` forward and `0.0110 m` right of
-`base_link`, so the reviewed translation is
+The corrected tread footprint is therefore `0.191 m` long and `0.230 m` wide.
+Because the configuration error was the same additive offset on both sides of
+each axis, it cancels in the midpoint calculation. The midpoint still places
+the lidar `0.0045 m` forward and `0.0110 m` right of `base_link`, so the
+reviewed translation remains
 `base_link -> laser = [0.0045, -0.0110, 0.1905] m`. The yaw measurement is
 unchanged.
 

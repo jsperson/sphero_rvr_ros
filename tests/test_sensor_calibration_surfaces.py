@@ -79,11 +79,11 @@ def test_lidar_launch_names_all_measured_mount_transform_inputs() -> None:
         assert token in launch_text
 
 
-def test_revised_lidar_translation_is_tread_contact_midpoint() -> None:
-    forward_m = 0.200
-    rearward_m = 0.209
-    right_m = 0.213
-    left_m = 0.235
+def test_corrected_lidar_translation_is_tread_contact_midpoint() -> None:
+    forward_m = 0.091
+    rearward_m = 0.100
+    right_m = 0.104
+    left_m = 0.126
 
     lidar_x_from_base_m = (rearward_m - forward_m) / 2.0
     lidar_y_from_base_m = (right_m - left_m) / 2.0
