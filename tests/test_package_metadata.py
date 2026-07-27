@@ -72,6 +72,7 @@ EXPECTED_DATA_FILES = {
         "docs/shoe_map_projection.md",
         "docs/slam_replay.md",
         "docs/hierarchical_exploration_phase4.md",
+        "docs/hierarchical_exploration_milestone7.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",

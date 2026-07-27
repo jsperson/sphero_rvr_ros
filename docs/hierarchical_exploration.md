@@ -23,6 +23,10 @@ recorded in
 Phase 4 adds durable multi-decision real-provider latency, handoff, pause, and
 browser evidence in
 [hierarchical_exploration_phase4.md](hierarchical_exploration_phase4.md).
+Milestone 6 is replay-complete at merged main
+`97b53c612e95a6f06fb481cad747d11d30a906fa`. The separately gated physical
+realization and its explicit bounded short-hop pause decision are defined in
+[hierarchical_exploration_milestone7.md](hierarchical_exploration_milestone7.md).
 Physical hierarchical exploration remains unavailable.
 
 ## Decision

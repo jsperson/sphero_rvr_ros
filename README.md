@@ -4,13 +4,13 @@ Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission fram
 
 The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
 
-The active product direction is Milestone 6 continuous hierarchical
-exploration. Phase 4 adds durable, mission-ID-addressed evidence from multiple
-consecutive real OAuth semantic-goal decisions, including wall latency,
-handoff, replay-derived motor-zero, coverage, and honest short-hop pause
-metrics. It builds on the Phase 1 WFD/Nav2 model, Phase 2 perception math, and
-Phase 3 semantic prefetch/revalidation loop. Every physical authority gate
-remains unchanged; physical hierarchical exploration remains unavailable.
+Milestone 6 continuous hierarchical exploration is replay-complete. The active
+product direction is Milestone 7, its separately gated physical realization.
+Phase 0 resolves short-hop behavior as an explicit product decision: compatible
+ready goals hand off continuously, while a late successor produces a bounded,
+visible `wait_planning` hold rather than speculative stale lookahead. Every
+physical authority gate remains unchanged; physical hierarchical exploration
+is still unavailable.
 
 ## Documentation map for operators and maintainers
 
@@ -46,6 +46,7 @@ remains unchanged; physical hierarchical exploration remains unavailable.
 - [docs/hierarchical_exploration_phase2.md](docs/hierarchical_exploration_phase2.md) records the Phase 2 camera/lidar association, floor projection, bearing-only fallback, uncertainty, and ambiguity-rejection evidence.
 - [docs/hierarchical_exploration_phase3.md](docs/hierarchical_exploration_phase3.md) records the Phase 3 semantic-goal schema, deterministic Next-Best-View resolution, async prefetch, event replanning, long-leg/short-hop evidence, and latency carryover.
 - [docs/hierarchical_exploration_phase4.md](docs/hierarchical_exploration_phase4.md) records the Phase 4 real-provider wall-latency replay, durable mission-ID evidence, read-only browser integration, long-leg handoffs, and short-hop pause characterization.
+- [docs/hierarchical_exploration_milestone7.md](docs/hierarchical_exploration_milestone7.md) defines the Milestone 7 short-hop product decision, physical ownership contract, sequential entry gates, approval boundaries, and reviewable delivery slices.
 - [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
 - [docs/system_validation.md](docs/system_validation.md) defines the local/Pi ROS system checks, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
 - [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
