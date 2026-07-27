@@ -22,6 +22,15 @@ It passed recorded-map determinism/performance and the loopback-only ownership
 graph without starting a driver, serial transport, live sensor, physical
 executor, or motion authority. Later gates remain closed.
 
+Phase 2 is accepted and merged through
+`1fc349305d3f809ea00896de81436c564a8c626d`. Its surveyed stationary
+localization evidence is recorded in
+[hierarchical_exploration_milestone7_phase2.md](hierarchical_exploration_milestone7_phase2.md).
+Phase 3 is the active software slice: it prepares the read-only observer,
+fail-closed evidence evaluator, and exact-SHA approval boundaries for M7.3 and
+M7.4. No M7.3 motion is authorized until that candidate is independently
+reviewed and explicitly approved; M7.4 then requires a second approval.
+
 ## Short-hop product decision
 
 Milestone 7 accepts bounded, visible `wait_planning` pauses when a fresh

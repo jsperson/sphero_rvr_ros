@@ -76,6 +76,7 @@ EXPECTED_DATA_FILES = {
         "docs/hierarchical_exploration_milestone7.md",
         "docs/hierarchical_exploration_milestone7_phase1.md",
         "docs/hierarchical_exploration_milestone7_phase2.md",
+        "docs/hierarchical_exploration_milestone7_phase3.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -149,6 +150,7 @@ def test_package_xml_declares_runtime_dependencies_for_launches() -> None:
         "rplidar_ros",
         "nav2_map_server",
         "slam_toolbox",
+        "tf2_msgs",
         "tf2_ros",
     } <= exec_depends
 
