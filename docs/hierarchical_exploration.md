@@ -14,6 +14,12 @@ Phase 2 adds the recorded/offline camera-to-map localization layer from merged
 Phase 1 baseline `6cf718fd0204aa75778f4372073396e0d65c2186`; its bounded
 association, floor-projection, uncertainty, and ambiguity evidence is recorded
 in [hierarchical_exploration_phase2.md](hierarchical_exploration_phase2.md).
+Phase 3 adds replay-only semantic-goal selection, deterministic
+Next-Best-View resolution, async prefetch, snapshot revalidation, and
+event-triggered replanning from merged Phase 2 baseline
+`9ddc2b64dc9c626e07df5e4945297ffea28fdb2a`; its acceptance evidence is
+recorded in
+[hierarchical_exploration_phase3.md](hierarchical_exploration_phase3.md).
 Physical hierarchical exploration remains unavailable.
 
 ## Decision

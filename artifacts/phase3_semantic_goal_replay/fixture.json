@@ -1,0 +1,69 @@
+{
+  "schema": "sphero_rvr.phase3_replay_fixture.v1",
+  "description": "Replay-only semantic-goal, async-prefetch, event-replan, and safety-veto evidence. No live sensor or physical authority.",
+  "baseline_sha": "9ddc2b64dc9c626e07df5e4945297ffea28fdb2a",
+  "recorded_map": "artifacts/phase1_recorded_slam_map/phase1_recorded_slam_map.yaml",
+  "recorded_map_id": "rvr-room-20260626",
+  "robot_pose": {
+    "x_m": -0.028,
+    "y_m": 0.941,
+    "yaw_rad": 0.0
+  },
+  "mission_origin": {
+    "x_m": 2.472,
+    "y_m": 0.941
+  },
+  "provider_latency_profile": {
+    "model_context": "Luna low-reasoning recorded baseline",
+    "p50_s": 6.567,
+    "p95_s": 12.691,
+    "prefetch_margin_s": 1.0
+  },
+  "canonical_replay": {
+    "objective": "Explore this room, identify and map the shoes and any recognized people, inspect uncertain findings from another viewpoint, then return or stop safely.",
+    "requested_object_classes": ["shoe", "person"],
+    "frontier_indexes": [2, 3, 4, 5],
+    "motion_goal_actions": [
+      "go_to_frontier",
+      "go_to_frontier",
+      "inspect",
+      "return_to_start"
+    ],
+    "route_length_m_per_goal": 2.5,
+    "leg_duration_s_at_0_10_mps": 25.0,
+    "expected_distance_m": 10.0,
+    "minimum_atomic_handoffs": 3,
+    "minimum_decision_reduction_ratio": 10.0
+  },
+  "short_hop_replay": {
+    "route_length_m": 0.5,
+    "arrival_s": 5.0,
+    "modeled_provider_ready_s": 12.691,
+    "expected_arrival_state": "wait_planning"
+  },
+  "semantic_track": {
+    "track_id": "shoe-track-01",
+    "signature": "shoe-track-signature-01",
+    "class_name": "shoe",
+    "x_m": 0.3,
+    "y_m": 0.94,
+    "position_method": "floor_projection",
+    "position_sigma_m": 0.15,
+    "evidence_ids": [
+      "camera-frame-01",
+      "localization-result-01"
+    ]
+  },
+  "authority": {
+    "motion_authority": false,
+    "physical_execution_enabled": false,
+    "live_sensors": false,
+    "serial_access": false
+  },
+  "carryovers": {
+    "phase2_accuracy_is_physical_certification": false,
+    "pi_no_motion_wfd_before_physical": true,
+    "pi_command_ownership_before_physical": true,
+    "dropoff_sensing_available": false
+  }
+}

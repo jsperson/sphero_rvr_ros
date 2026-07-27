@@ -96,6 +96,7 @@ setup(
                 "docs/hierarchical_exploration.md",
                 "docs/hierarchical_exploration_phase1.md",
                 "docs/hierarchical_exploration_phase2.md",
+                "docs/hierarchical_exploration_phase3.md",
             ],
         ),
         (
@@ -111,6 +112,14 @@ setup(
             [
                 "artifacts/phase2_camera_lidar_localization/README.md",
                 "artifacts/phase2_camera_lidar_localization/recorded_calibration_fixture.json",
+            ],
+        ),
+        (
+            "share/sphero_rvr_driver/artifacts/phase3_semantic_goal_replay",
+            [
+                "artifacts/phase3_semantic_goal_replay/README.md",
+                "artifacts/phase3_semantic_goal_replay/fixture.json",
+                "artifacts/phase3_semantic_goal_replay/oauth_smoke.json",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -162,6 +171,7 @@ setup(
             "rvr_nav2_loopback_sim = sphero_rvr_driver.nav2_loopback_compat:main",
             "rvr_hierarchical_nav2_replay_validate = sphero_rvr_driver.hierarchical_nav2_replay_validation:main",
             "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
+            "rvr_hierarchical_phase3_replay_validate = sphero_rvr_driver.hierarchical_phase3_replay_validation:main",
         ],
     },
 )
