@@ -1,0 +1,3 @@
+264ad56916d86591bedb03f4a2254b92cf61941099e4b30c717fc14f427664cb  /home/jsperson/rvr_runs/m7-phase3-directional-addendum-20260727/supervisor-paired-observation.json
+d12a7bb4f16b4f3b9c3d543ff533ae4d46d7a5a250d5af6335be5a942bd88add  /home/jsperson/rvr_runs/m7-phase3-directional-addendum-20260727/supervisor-relevant-events.jsonl
+95b247ccff114544d453e2947eabc84ab978c0467ccef4d9b0f90b0c6252ad6d  /home/jsperson/rvr_runs/m7-phase3-directional-addendum-20260727/supervisor-report.json

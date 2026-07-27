@@ -152,7 +152,20 @@ ros2 run sphero_rvr_driver rvr_m7_attended_validation evaluate \
   --output /tmp/m7-phase3-m7.3-report.json
 ```
 
-The M7.4 approval must bind the report's `m7_3_evidence_sha256`.
+The M7.4 approval must bind the report's `m7_3_evidence_sha256`. It must also
+bind the accepted M7.3 directional-veto addendum digest. The addendum must show
+an attended, no-contact paired trial against one unchanged obstacle geometry:
+
+- command toward the already-overlapping lidar return reaches zero downstream
+  motor output;
+- command away from that return reaches nonzero downstream motor output while
+  the supervisor reports a positive moving-away point count;
+- the command returns to motor zero after its bounded lease;
+- the original M7.3 evidence digest remains unchanged.
+
+The accepted digests are recorded in
+`artifacts/m7_phase3_directional_addendum/README.md`. Neither the original M7.3
+review nor a directional addendum alone grants M7.4 motion authority.
 
 ## Camera-pitch gate before M7.4
 

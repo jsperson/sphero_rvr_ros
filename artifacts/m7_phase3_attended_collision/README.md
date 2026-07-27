@@ -136,9 +136,11 @@ down.
 ## Scope
 
 This evidence closes only M7.3. M7.4 remains locked until an independent review
-accepts this evidence and the user gives a separate approval binding exact
-M7.3 evidence digest
-`7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55`.
+accepts this evidence and the directional-veto addendum, and the user gives a
+separate approval binding both the exact M7.3 evidence digest
+`7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55`
+and addendum digest
+`638abb8f293781adcf3827a486cf700b96693f1172d6fb058c40b79a8b8f4130`.
 
 Before M7.4, re-verify the measured `-3 degree` camera pitch and far-band floor
 projection. Repeat the check after motion. Do not widen the `0.050 m` bound.
