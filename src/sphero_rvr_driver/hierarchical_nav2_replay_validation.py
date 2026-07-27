@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import platform
 import re
@@ -93,18 +94,27 @@ def _serial_device_owners(
 ) -> dict[str, list[int]]:
     if shutil.which("fuser") is None:
         raise RuntimeError("fuser is required for serial-owner verification")
+    command_prefix = ["fuser"]
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        if shutil.which("sudo") is None:
+            raise RuntimeError(
+                "passwordless sudo is required for complete serial-owner inspection"
+            )
+        command_prefix = ["sudo", "-n", "fuser"]
     owners: dict[str, list[int]] = {}
     for raw_path in paths:
         path = Path(raw_path)
         if not path.exists():
             continue
         result = runner(
-            ["fuser", str(path)],
+            [*command_prefix, str(path)],
             capture_output=True,
             text=True,
             check=False,
         )
-        if result.returncode not in (0, 1):
+        if result.returncode not in (0, 1) or (
+            result.returncode == 1 and result.stderr.strip()
+        ):
             detail = result.stderr.strip() or "unknown fuser error"
             raise RuntimeError(
                 f"serial-owner inspection failed for {path}: {detail}"
