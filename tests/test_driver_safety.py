@@ -104,7 +104,7 @@ async def _cleanup_driver(driver: RVRDriver, *tasks: asyncio.Task) -> None:
     for task in tasks:
         with suppress(asyncio.CancelledError, TimeoutError):
             await task
-    await driver.disconnect()
+    await asyncio.wait_for(driver.disconnect(), timeout=1.0)
 
 
 def _decode_rc_payload(packet: Packet) -> tuple[float, float, int]:
@@ -340,7 +340,7 @@ async def test_stale_velocity_command_causes_validated_raw_motor_off_packet():
             for packet in _raw_motor_packets(transport, driver)
         )
     )
-    await driver.disconnect()
+    await asyncio.wait_for(driver.disconnect(), timeout=1.0)
 
     assert _rc_drive_packets(transport, driver)
     raw_motor_packets = _raw_motor_packets(transport, driver)

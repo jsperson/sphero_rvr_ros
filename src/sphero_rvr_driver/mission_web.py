@@ -1377,6 +1377,13 @@ class Phase4ReplayEvidenceAdapter:
                     "Phase 4 map projection is not present in this checkpoint"
                 ),
             }
+        else:
+            map_payload = dict(map_payload)
+            source = str(map_payload.get("source", ""))
+            if source:
+                map_payload["source"] = (
+                    "recorded map: " + Path(source).name
+                )
         state = _web_state(str(mission.get("status", "failed")))
         terminal = state in {item.value for item in TERMINAL_STATES}
         proposal = mission.get("proposal", {})

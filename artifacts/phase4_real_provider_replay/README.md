@@ -28,5 +28,13 @@ Reopen the committed mission by the exact ID recorded in `report.json`:
 python3 -m sphero_rvr_driver.mission_web \
   --mode hierarchical-phase4-replay \
   --replay-database artifacts/phase4_real_provider_replay/evidence.sqlite3 \
-  --phase4-mission-id HIERARCHICAL_PHASE4_MISSION_ID
+  --phase4-mission-id hierarchical-phase4-real-20260726
 ```
+
+The committed run executed source SHA
+`72a63c249a61327f0e35123220ece95aaf64b6ad` with `gpt-5.6-sol` at low
+reasoning effort. Four calls completed. Latency was 7.929764–14.545232 seconds,
+with p50 10.768940 seconds and four-sample interpolated p95 14.348098 seconds.
+All three 25-second long-leg handoffs were atomic in one controller session.
+All four samples would require `wait_planning` on the 0.5 m / 5 second short
+hop, with replay-derived motor-zero intervals of 2.929764–9.545232 seconds.

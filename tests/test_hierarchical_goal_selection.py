@@ -218,6 +218,10 @@ def _wait_for_provider(
         time.sleep(0.001)
     observed = provider.completed_calls if completed else provider.calls
     assert observed >= calls
+    if completed:
+        # ``completed_calls`` increments immediately before ``choose`` returns.
+        # Yield once so ConcurrentFuture can publish its done/result state.
+        time.sleep(0.001)
 
 
 def test_structured_schema_exposes_only_semantic_ids_and_actions() -> None:

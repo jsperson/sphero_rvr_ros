@@ -79,3 +79,29 @@ python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv
 
 The exact candidate SHA, real-provider measurements, browser checks, test
 durations, and cleanup result are recorded in the pull-request handoff.
+
+## Committed real-provider result
+
+Mission `hierarchical-phase4-real-20260726` ran from exact implementation SHA
+`72a63c249a61327f0e35123220ece95aaf64b6ad` using the authenticated
+`openai-codex-oauth-semantic-goal` provider, `gpt-5.6-sol`, and low reasoning
+effort.
+
+| Measure | Result |
+| --- | ---: |
+| Consecutive completed calls | 4/4 |
+| Per-call latency | 14.545232, 8.306876, 13.231004, 7.929764 s |
+| p50 / interpolated p95 / max | 10.768940 / 14.348098 / 14.545232 s |
+| 25 s long-leg handoffs | 3 atomic, 0 `wait_planning` |
+| Nav2 controller sessions | 1 |
+| Long-leg motor-zero intervals | 0 |
+| Decisions / distance | 4 / 10.0 m = 0.4 per m |
+| Reduction from 0.25 m cadence | 10× |
+| Recorded-replay coverage | 42% → 66% |
+
+The result demonstrates the long-leg payoff with real provider latency. It
+does not solve short hops. Every measured call exceeds the five-second travel
+time of the 0.5 m fixture; the corresponding `wait_planning` intervals are
+9.545232, 3.306876, 8.231004, and 2.929764 seconds. Deeper lookahead, fewer
+longer legs, or materially lower provider latency remains necessary for
+small-room continuity.
