@@ -195,6 +195,34 @@ coverage gate, every localization error gate, the real ambiguity control,
 stationary authority, artifact inventory, and cleanup true. This does not
 approve moving perception, collision testing, physical execution, or M7.3.
 
+## Physical result
+
+The 2026-07-27 stationary session passes on exact source
+`a9ebc70314f9f2caf5b971b4c07e623a0a8e1047`. The evaluator recomputed all 18
+point observations and the physical ambiguity control from compact recorded
+evidence:
+
+- all six method/band coverage checks contain three distinct surveyed
+  target-to-rover configurations;
+- maximum `lidar_range` error was `0.0236 m` near, `0.0171 m` mid, and
+  `0.0304 m` far;
+- maximum `floor_projection` error was `0.0252 m` near, `0.0165 m` mid, and
+  `0.0424 m` far;
+- all camera/lidar pairs were within `100 ms`;
+- the opaque-object/checkerboard boundary returned `bearing_only`,
+  `ambiguous_lidar_clusters`, and no point;
+- no provisional tolerance widened;
+- the generated final cleanup audit passed with every device, process, ROS
+  graph, motion publisher, and serial-owner check true.
+
+The first mid-distance diagnostic exposed a real `0.130 m` floor-projection
+error under the old zero-pitch camera assumption. The measured launch default
+was corrected to `camera_pitch=-0.0523598775598299 rad` (-3 degrees), and all
+acceptance samples were recaptured under the exact SHA containing that
+transform. The raw bags remain on the Pi and are checksum-bound by
+`artifacts/m7_phase2_surveyed_localization/raw_artifact_sha256.txt`; the compact
+session and evaluator report are committed beside it.
+
 ## Local software verification
 
 ```bash
