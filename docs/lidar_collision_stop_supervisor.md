@@ -221,14 +221,15 @@ if a point enters that projected envelope; the check is repeated on every
 command, scan, and tick while motion is requested. The existing conservative
 front/rear stop and forward-slow rules remain additional gates.
 
-For straight translation only, a point already inside the lidar-height
-rectangle on the trailing half of the rover is excluded from that one
-directional sweep because the command can only increase its separation. This
-handles a tall obstacle behind the chassis without weakening the forward
-envelope. The exception is unavailable to reverse, rotation, or curved motion;
-the same return remains an immediate veto for any command that can approach it.
-Points on the leading half are never excluded, and the independent front/rear
-sector rules are unchanged.
+For a point already intersecting the lidar-height rectangle, the supervisor
+evaluates the entire sampled command trajectory relative to that known point.
+It may exclude the point from that one sweep only when signed clearance never
+decreases and either signed clearance or radial separation strictly increases.
+Any initial approach, later re-entry, or motion that does not measurably
+increase separation remains a veto. The rule is obstacle-relative rather than
+front/rear-specific: a command may move away from a known point in any
+direction, while the opposite command toward the same point remains blocked.
+The independent front/rear sector rules are unchanged.
 
 This means an obstacle behind or beside the rover does not block a forward or
 turn command merely because it lies in a broad sector. A point that the current
@@ -473,7 +474,7 @@ Fake-scan matrix:
 | obstacle clears beyond release distance for release time + reset | `CLEAR`, old command discarded |
 | stale scan while moving | `SENSOR_STALE`, zero, driver stop called |
 | reverse command with rear obstacle | reverse zero/hold |
-| straight-forward command with a point already overlapping only the trailing lidar-height rectangle | forward may pass; the same point still blocks reverse, rotation, and curved motion |
+| command whose full sampled trajectory monotonically increases separation from a known overlapping point | point may be excluded from that sweep; the opposite/approaching command remains blocked |
 | angular command with side obstacle outside projected sweep | turn passes |
 | angular command whose projected sweep reaches an obstacle | turn held at zero with trajectory evidence |
 | `/stop` while clear | `STOPPED`, zero before driver service wait |

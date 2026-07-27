@@ -464,6 +464,7 @@ def main(args=None):
                 f"trajectory_horizon_s={None if decision.trajectory is None else decision.trajectory.horizon_s} "
                 f"trajectory_min_clearance_m={None if decision.trajectory is None else decision.trajectory.minimum_clearance_m} "
                 f"trajectory_collision_time_s={None if decision.trajectory is None else decision.trajectory.collision_time_s} "
+                f"trajectory_moving_away_point_count={0 if decision.trajectory is None else decision.trajectory.moving_away_point_count} "
                 f"requested=({decision.requested.linear_x:.3f},{decision.requested.angular_z:.3f}) "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f})"
             )

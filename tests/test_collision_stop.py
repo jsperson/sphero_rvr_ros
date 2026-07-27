@@ -274,7 +274,10 @@ def test_front_stop_latches_until_clear_release_time_and_manual_reset():
 def test_front_stop_allows_only_rear_clear_supervised_reverse_escape():
     supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=0.0)
     supervisor.update_scan(
-        scan_with(front=0.30, rear=1.20, stamp=0.0),
+        # Put the front return inside the expanded projected footprint. This
+        # proves the same known point that latches STOP is excluded only from
+        # the bounded reverse trajectory that increases its separation.
+        scan_with(front=0.15, rear=1.20, stamp=0.0),
         now=0.0,
     )
     stopped = supervisor.apply_command(
@@ -285,7 +288,7 @@ def test_front_stop_allows_only_rear_clear_supervised_reverse_escape():
     assert stopped.reason == "front_stop"
 
     supervisor.update_scan(
-        scan_with(front=0.30, rear=1.20, stamp=0.1),
+        scan_with(front=0.15, rear=1.20, stamp=0.1),
         now=0.1,
     )
     escaped = supervisor.apply_command(
@@ -298,6 +301,7 @@ def test_front_stop_allows_only_rear_clear_supervised_reverse_escape():
     assert escaped.output == TwistCommand(-0.10, 0.0)
     assert escaped.trajectory is not None
     assert escaped.trajectory.blocked is False
+    assert escaped.trajectory.moving_away_point_count > 0
 
 
 def test_front_stop_reverse_escape_remains_zero_when_rear_is_blocked():
@@ -393,11 +397,10 @@ def test_projected_forward_motion_ignores_obstacle_behind_current_trajectory():
     assert decision.trajectory.blocked is False
 
 
-def test_projected_straight_motion_ignores_only_an_overlapped_trailing_point():
+def test_projected_motion_is_directional_for_a_known_overlapped_rear_point():
     cfg = CollisionStopConfig()
     # This models the surveyed M7.3 box return: it intersects the lidar-height
-    # rear-left rectangle at the current pose but straight-forward travel only
-    # increases its separation from the rover.
+    # rear-left rectangle at the current pose.
     scan = scan_with_point(135.0, 0.15, stamp=0.0)
 
     forward = evaluate_projected_trajectory(
@@ -413,19 +416,48 @@ def test_projected_straight_motion_ignores_only_an_overlapped_trailing_point():
     turning = evaluate_projected_trajectory(
         scan,
         cfg,
-        TwistCommand(0.08, 0.1),
+        TwistCommand(0.0, -0.1),
+    )
+    turning_away = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.0, 0.1),
     )
 
     assert forward.blocked is False
+    assert forward.moving_away_point_count == 1
     assert reverse.blocked is True
     assert reverse.collision_time_s == pytest.approx(0.0)
     assert turning.blocked is True
     assert turning.collision_time_s == pytest.approx(0.0)
+    assert turning_away.blocked is False
+    assert turning_away.moving_away_point_count == 1
 
 
-def test_projected_forward_motion_never_ignores_an_overlapped_front_point():
+def test_projected_motion_is_directional_for_a_known_overlapped_front_point():
     cfg = CollisionStopConfig()
     scan = scan_with_point(0.0, 0.15, stamp=0.0)
+
+    forward = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(0.08, 0.0),
+    )
+    reverse = evaluate_projected_trajectory(
+        scan,
+        cfg,
+        TwistCommand(-0.08, 0.0),
+    )
+
+    assert forward.blocked is True
+    assert forward.collision_time_s == pytest.approx(0.0)
+    assert reverse.blocked is False
+    assert reverse.moving_away_point_count == 1
+
+
+def test_tangential_motion_does_not_claim_to_move_away_from_known_obstacle():
+    cfg = CollisionStopConfig()
+    scan = scan_with_point(90.0, 0.15, stamp=0.0)
 
     projected = evaluate_projected_trajectory(
         scan,
@@ -435,6 +467,7 @@ def test_projected_forward_motion_never_ignores_an_overlapped_front_point():
 
     assert projected.blocked is True
     assert projected.collision_time_s == pytest.approx(0.0)
+    assert projected.moving_away_point_count == 0
 
 
 def test_projected_forward_motion_blocks_obstacle_entering_corner_sweep():
