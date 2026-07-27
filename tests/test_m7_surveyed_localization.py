@@ -470,9 +470,9 @@ def _audit_runner(
         return _Completed(0)
     if command[:3] == ("ps", "-eo", "pid=,args="):
         return _Completed(0, "1 /sbin/init\n")
-    if command[-2:] == ("node", "list"):
+    if command[1:3] == ("node", "list"):
         return _Completed(0)
-    if command[-2:] == ("topic", "list"):
+    if command[1:3] == ("topic", "list"):
         return _Completed(0, "/rosout\n")
     if "topic" in command and "info" in command:
         return _Completed(1, stderr="Unknown topic")
@@ -521,7 +521,7 @@ def test_cleanup_audit_fails_closed_when_a_motion_publisher_cannot_be_counted() 
             check=check,
             timeout=timeout,
         )
-        if tuple(argv[-4:]) == ("topic", "info", "-v", "/cmd_vel"):
+        if argv[-1] == "/cmd_vel" and "info" in argv:
             return _Completed(0, "Type: geometry_msgs/msg/Twist\n")
         return result
 

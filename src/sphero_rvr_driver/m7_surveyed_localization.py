@@ -453,17 +453,17 @@ def audit_stationary_cleanup(
             runner=runner,
         ),
         "ros_nodes": _run_audit_command(
-            ("ros2", "--no-daemon", "node", "list"),
+            ("ros2", "node", "list", "--no-daemon"),
             runner=runner,
         ),
         "ros_topics": _run_audit_command(
-            ("ros2", "--no-daemon", "topic", "list"),
+            ("ros2", "topic", "list", "--no-daemon"),
             runner=runner,
         ),
     }
     for topic in MOTION_TOPICS:
         commands[f"topic_info:{topic}"] = _run_audit_command(
-            ("ros2", "--no-daemon", "topic", "info", "-v", topic),
+            ("ros2", "topic", "info", "-v", "--no-daemon", topic),
             runner=runner,
         )
     for device in AUDITED_DEVICES:
