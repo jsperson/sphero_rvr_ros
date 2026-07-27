@@ -104,6 +104,11 @@ def _serial_device_owners(
             text=True,
             check=False,
         )
+        if result.returncode not in (0, 1):
+            detail = result.stderr.strip() or "unknown fuser error"
+            raise RuntimeError(
+                f"serial-owner inspection failed for {path}: {detail}"
+            )
         owners[str(path)] = sorted(
             {
                 int(token)
@@ -351,6 +356,9 @@ def main(argv=None) -> int:
             )
             summary = {
                 "schema": "sphero_rvr.m7_phase1_graph_audit.v1",
+                "recorded_at_utc": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
                 "mode": args.mode,
                 "source_sha": source_sha,
                 "passed": audit_ok,
