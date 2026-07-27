@@ -1,18 +1,26 @@
 # Milestone 7 physical hierarchical exploration
 
-## Phase 0 status and scope
+## Phase status and scope
 
 This document is the no-motion Milestone 7 Phase 0 contract. It begins from
 merged Milestone 6 main
 `97b53c612e95a6f06fb481cad747d11d30a906fa`, which contains the replay-proven
 hierarchical engine and the durable Phase 4 real-provider evidence.
 
-Phase 0 makes the short-hop product decision, fixes the entry-gate order, and
+Phase 0 made the short-hop product decision, fixed the entry-gate order, and
 maps the physical integration seams. It does not add a physical launch,
 executor, ROS node, dependency, service, publisher, serial owner, or motion
 authority. It does not deploy to the Pi or start sensors. Every installed
-physical and live-execution flag remains false and the reviewed SHA remains
-blank.
+physical and live-execution flag remained false and the reviewed SHA remained
+blank in that slice.
+
+Phase 1 is complete at executable source
+`9822ec6fe8c903191329ebdbb2646cac745e25ad`. Its exact-SHA Pi evidence is
+recorded in
+[hierarchical_exploration_milestone7_phase1.md](hierarchical_exploration_milestone7_phase1.md).
+It passed recorded-map determinism/performance and the loopback-only ownership
+graph without starting a driver, serial transport, live sensor, physical
+executor, or motion authority. Later gates remain closed.
 
 ## Short-hop product decision
 
@@ -131,7 +139,8 @@ M7.1 must record:
 - candidate SHA, Pi image/ROS/Python identity, map/input checksums, WFD settings,
   50-pass timing distribution, maximum RSS, frontier signatures, and cleanup;
 - `ros2 node list`, topic publishers/subscribers, action servers, and lifecycle
-  states proving one private Nav2 source, one `/cmd_vel` bridge publisher, one
+  states proving only the allowlisted Nav2 controller/behavior nodes publish
+  the private request topic, one `/cmd_vel` bridge publisher, one
   `/cmd_vel_motor` supervisor publisher, and no direct Nav2 public/motor
   publisher;
 - no `rvr_node`, rover serial/UART owner, nonzero command, physical execution,

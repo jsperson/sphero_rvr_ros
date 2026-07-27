@@ -5,6 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import subprocess
 import time
 
 
@@ -25,11 +31,121 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("handoff", "veto"),
+        choices=("audit", "handoff", "veto"),
         default="handoff",
     )
     parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--source-sha")
+    parser.add_argument("--observe-seconds", type=float, default=2.0)
     return parser
+
+
+SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+PROHIBITED_EXECUTABLES = {
+    "rvr_node",
+    "stationary_perception",
+    "rplidar_composition",
+    "rplidar_node",
+    "sllidar",
+    "sllidar_node",
+    "camera_node",
+    "rvr-camera-node",
+    "slam_toolbox",
+    "async_slam_toolbox_node",
+    "sync_slam_toolbox_node",
+}
+SERIAL_DEVICE_CANDIDATES = (
+    "/dev/ttyAMA0",
+    "/dev/ttyUSB0",
+    "/dev/rvr",
+)
+
+
+def _validated_source_sha(value: str | None) -> str:
+    supplied = str(value or "").strip()
+    if not SOURCE_SHA_PATTERN.fullmatch(supplied):
+        raise ValueError(
+            "audit mode requires --source-sha with exactly 40 lowercase hex characters"
+        )
+    return supplied
+
+
+def _prohibited_processes(process_text: str) -> list[str]:
+    prohibited = []
+    for raw_line in str(process_text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        fields = line.split()
+        executable_tokens = {
+            Path(token).name.lower()
+            for token in fields[1:]
+            if not token.startswith("-")
+        }
+        if executable_tokens & PROHIBITED_EXECUTABLES:
+            prohibited.append(line)
+    return sorted(prohibited)
+
+
+def _serial_device_owners(
+    *,
+    paths=SERIAL_DEVICE_CANDIDATES,
+    runner=subprocess.run,
+) -> dict[str, list[int]]:
+    if shutil.which("fuser") is None:
+        raise RuntimeError("fuser is required for serial-owner verification")
+    command_prefix = ["fuser"]
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        if shutil.which("sudo") is None:
+            raise RuntimeError(
+                "passwordless sudo is required for complete serial-owner inspection"
+            )
+        command_prefix = ["sudo", "-n", "fuser"]
+    owners: dict[str, list[int]] = {}
+    for raw_path in paths:
+        path = Path(raw_path)
+        if not path.exists():
+            continue
+        result = runner(
+            [*command_prefix, str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode not in (0, 1) or (
+            result.returncode == 1 and result.stderr.strip()
+        ):
+            detail = result.stderr.strip() or "unknown fuser error"
+            raise RuntimeError(
+                f"serial-owner inspection failed for {path}: {detail}"
+            )
+        owners[str(path)] = sorted(
+            {
+                int(token)
+                for token in result.stdout.split()
+                if token.isdigit()
+            }
+        )
+    return owners
+
+
+def _host_safety_snapshot() -> dict:
+    process_result = subprocess.run(
+        ["ps", "-eo", "pid=,comm=,args="],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    serial_owners = _serial_device_owners()
+    prohibited = _prohibited_processes(process_result.stdout)
+    return {
+        "hostname": platform.node(),
+        "architecture": platform.machine(),
+        "prohibited_processes": prohibited,
+        "serial_device_owners": serial_owners,
+        "passed": not prohibited
+        and all(not values for values in serial_owners.values()),
+    }
 
 
 def main(argv=None) -> int:
@@ -38,6 +154,7 @@ def main(argv=None) -> int:
     import rclpy
     from action_msgs.msg import GoalStatus
     from geometry_msgs.msg import PoseStamped, Twist
+    from lifecycle_msgs.srv import GetState
     from nav2_msgs.action import NavigateThroughPoses
     from nav_msgs.msg import Odometry
     from rclpy.action import ActionClient
@@ -68,6 +185,16 @@ def main(argv=None) -> int:
             self.motion_started_at = None
             self.veto_requested_at = None
             self.first_zero_after_veto_at = None
+            self.lifecycle_clients = {
+                name: self.create_client(GetState, f"/{name}/get_state")
+                for name in (
+                    "map_server",
+                    "planner_server",
+                    "controller_server",
+                    "behavior_server",
+                    "bt_navigator",
+                )
+            }
 
         def _on_odom(self, msg) -> None:
             yaw = 2.0 * math.atan2(INITIAL_QZ, INITIAL_QW)
@@ -175,6 +302,14 @@ def main(argv=None) -> int:
     goal_handle = None
     summary = {}
     try:
+        source_sha = (
+            _validated_source_sha(args.source_sha)
+            if args.mode == "audit"
+            else args.source_sha
+        )
+        if args.observe_seconds <= 0.0:
+            raise ValueError("--observe-seconds must be positive")
+
         def graph_is_complete() -> bool:
             discovered = node.graph()
             return (
@@ -202,6 +337,73 @@ def main(argv=None) -> int:
         )
         if not node.action.wait_for_server(timeout_sec=10.0):
             raise RuntimeError("NavigateThroughPoses action server unavailable")
+
+        def query_lifecycle_states() -> dict:
+            states = {}
+            for name, client in node.lifecycle_clients.items():
+                if not client.wait_for_service(timeout_sec=5.0):
+                    raise RuntimeError(f"{name} lifecycle service unavailable")
+                future = client.call_async(GetState.Request())
+                if not spin_until(node, future.done, 5.0):
+                    raise RuntimeError(f"{name} lifecycle query timed out")
+                response = future.result()
+                states[name] = {
+                    "id": int(response.current_state.id),
+                    "label": str(response.current_state.label),
+                }
+            return states
+
+        lifecycle_states = query_lifecycle_states()
+
+        if args.mode == "audit":
+            lifecycle_deadline = time.monotonic() + 15.0
+            while (
+                not all(
+                    state["label"] == "active"
+                    for state in lifecycle_states.values()
+                )
+                and time.monotonic() < lifecycle_deadline
+            ):
+                spin_until(node, lambda: False, 0.25)
+                lifecycle_states = query_lifecycle_states()
+            spin_until(node, lambda: False, args.observe_seconds)
+            host_safety = _host_safety_snapshot()
+            lifecycle_ok = all(
+                state["label"] == "active"
+                for state in lifecycle_states.values()
+            )
+            audit_ok = (
+                graph_ok
+                and lifecycle_ok
+                and host_safety["passed"]
+                and node.nonzero_motor_samples == 0
+            )
+            summary = {
+                "schema": "sphero_rvr.m7_phase1_graph_audit.v1",
+                "recorded_at_utc": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+                "mode": args.mode,
+                "source_sha": source_sha,
+                "passed": audit_ok,
+                "motion_authority": False,
+                "physical_execution_enabled": False,
+                "live_sensors_started": False,
+                "serial_transport_started": False,
+                "driver_started": False,
+                "graph_ok": graph_ok,
+                "graph": graph,
+                "navigate_through_poses_available": True,
+                "lifecycle_states": lifecycle_states,
+                "observation_seconds": args.observe_seconds,
+                "motor_samples": node.motor_samples,
+                "nonzero_motor_samples": node.nonzero_motor_samples,
+                "host_safety": host_safety,
+                "hardware_sink_present": False,
+                "simulation_sink": "/loopback_simulator",
+            }
+            print(json.dumps(summary, indent=2, sort_keys=True))
+            return 0 if summary["passed"] else 1
 
         goal = NavigateThroughPoses.Goal()
         for x_m, y_m, qz, qw in GOALS:
@@ -289,6 +491,7 @@ def main(argv=None) -> int:
             "live_sensors_started": False,
             "graph_ok": graph_ok,
             "graph": graph,
+            "lifecycle_states": lifecycle_states,
             "result_status": result_status,
             "result_error_code": result_error_code,
             "final_map_xy": [round(value, 6) for value in node.map_xy],

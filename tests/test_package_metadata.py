@@ -73,6 +73,7 @@ EXPECTED_DATA_FILES = {
         "docs/slam_replay.md",
         "docs/hierarchical_exploration_phase4.md",
         "docs/hierarchical_exploration_milestone7.md",
+        "docs/hierarchical_exploration_milestone7_phase1.md",
     },
     "share/sphero_rvr_driver/docs/udev": {
         "docs/udev/99-rplidar.rules",
@@ -85,6 +86,12 @@ EXPECTED_DATA_FILES = {
         "artifacts/phase4_real_provider_replay/README.md",
         "artifacts/phase4_real_provider_replay/report.json",
         "artifacts/phase4_real_provider_replay/evidence.sqlite3",
+    },
+    "share/sphero_rvr_driver/artifacts/m7_phase1_pi_no_motion": {
+        "artifacts/m7_phase1_pi_no_motion/README.md",
+        "artifacts/m7_phase1_pi_no_motion/environment.json",
+        "artifacts/m7_phase1_pi_no_motion/graph.json",
+        "artifacts/m7_phase1_pi_no_motion/wfd.json",
     },
     "share/sphero_rvr_driver/systemd/user": {
         "systemd/user/rvr-mission-service.service",
@@ -136,6 +143,7 @@ def test_package_xml_declares_runtime_dependencies_for_launches() -> None:
         "camera_ros",
         "launch",
         "launch_ros",
+        "lifecycle_msgs",
         "rplidar_ros",
         "nav2_map_server",
         "slam_toolbox",
@@ -285,6 +293,7 @@ def test_rosbag_console_scripts_are_installed() -> None:
         "rvr_lidar_motion_validation = sphero_rvr_driver.lidar_motion_validation:main",
         "rvr_perception_navigation_replay = sphero_rvr_driver.perception_navigation:main",
         "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
+        "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
     } <= console_scripts
 
     lidar_validation = (

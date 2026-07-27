@@ -1,0 +1,65 @@
+{
+  "schema": "sphero_rvr.m7_phase1_environment.v1",
+  "recorded_at_utc": "2026-07-27T03:17:14Z",
+  "source": {
+    "baseline_sha": "07bbbd199d36738b805f27529d37a65629b62a8c",
+    "executable_sha": "9822ec6fe8c903191329ebdbb2646cac745e25ad",
+    "archive_sha256": "73de13807ac6c6ac1ac71305e70ec7cbee854cfd96cbcebabe9f50fed71ad49d",
+    "deployment": "immutable git archive into a temporary Pi workspace"
+  },
+  "host": {
+    "hostname": "sphero-pi-2",
+    "architecture": "aarch64",
+    "os": "Ubuntu 24.04.4 LTS",
+    "kernel": "6.8.0-1060-raspi",
+    "python": "3.12.3",
+    "ros_distribution": "jazzy",
+    "ros_domain_id": 77
+  },
+  "build": {
+    "command": "colcon build --symlink-install --packages-select sphero_rvr_driver",
+    "package_duration_seconds": 1.93,
+    "total_duration_seconds": 2.47,
+    "result": "passed"
+  },
+  "reports": {
+    "wfd_sha256": "2faa96a4ba324b115894d7f6f4d486f41a9d9b4e1fb60840946dd638adefc24f",
+    "graph_sha256": "4d52ac2f6603fd14d1cdd04c98db20da433c324b40b9109f797fe33eec510879",
+    "local_remote_checksum_match": true
+  },
+  "installed_packages": {
+    "ros-jazzy-navigation2": "1.3.12-1noble.20260615.092426",
+    "ros-jazzy-nav2-behaviors": "1.3.12-1noble.20260614.095313",
+    "ros-jazzy-nav2-bringup": "1.3.12-1noble.20260615.095620",
+    "ros-jazzy-nav2-bt-navigator": "1.3.12-1noble.20260614.082455",
+    "ros-jazzy-nav2-controller": "1.3.12-1noble.20260614.102844",
+    "ros-jazzy-nav2-dwb-controller": "1.3.12-1noble.20260615.082603",
+    "ros-jazzy-nav2-lifecycle-manager": "1.3.12-1noble.20260614.095313",
+    "ros-jazzy-nav2-loopback-sim": "1.3.12-1noble.20260614.054648",
+    "ros-jazzy-nav2-planner": "1.3.12-1noble.20260614.083147",
+    "ros-jazzy-nav2-smac-planner": "1.3.12-1noble.20260614.083338"
+  },
+  "graph_window": {
+    "outer_bound_seconds": 45,
+    "outer_bound_exit_code": 124,
+    "interpretation": "intentional GNU timeout expiry after the audit report completed",
+    "all_descendants_reaped": true
+  },
+  "authority": {
+    "rover_powered": false,
+    "driver_started": false,
+    "serial_transport_started": false,
+    "live_sensors_started": false,
+    "physical_execution_enabled": false,
+    "motion_authority": false
+  },
+  "cleanup": {
+    "temporary_pi_workspaces_removed": true,
+    "temporary_local_archives_moved_to_trash": true,
+    "audit_processes_remaining": false,
+    "serial_device_owners_remaining": false,
+    "stationary_perception_service_active": false,
+    "adaptive_mission_service_active": false,
+    "telemetry_service_active": false
+  }
+}

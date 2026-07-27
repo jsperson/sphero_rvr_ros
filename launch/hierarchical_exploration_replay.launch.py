@@ -98,12 +98,21 @@ def generate_launch_description():
                 remappings=[("cmd_vel", "/nav2_cmd_vel_request")],
                 condition=IfCondition(start_nav2),
             ),
-            Node(
-                package="nav2_lifecycle_manager",
-                executable="lifecycle_manager",
-                name="lifecycle_manager_hierarchical_navigation",
-                parameters=[nav2_params],
-                condition=IfCondition(start_nav2),
+            TimerAction(
+                # Let the loopback simulator receive /initialpose and publish
+                # map -> odom before lifecycle activation. Cold Pi DDS
+                # discovery can otherwise consume the costmap TF startup
+                # window and abort bringup.
+                period=8.0,
+                actions=[
+                    Node(
+                        package="nav2_lifecycle_manager",
+                        executable="lifecycle_manager",
+                        name="lifecycle_manager_hierarchical_navigation",
+                        parameters=[nav2_params],
+                        condition=IfCondition(start_nav2),
+                    )
+                ],
             ),
             Node(
                 package="sphero_rvr_driver",
