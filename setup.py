@@ -22,6 +22,7 @@ setup(
                 "launch/stationary_perception.launch.py",
                 "launch/adaptive_mission_perception.launch.py",
                 "launch/hierarchical_exploration_replay.launch.py",
+                "launch/hierarchical_exploration_physical.launch.py",
                 "launch/m7_stationary_localization.launch.py",
             ],
         ),
@@ -40,6 +41,7 @@ setup(
                 "config/mission_service.yaml",
                 "config/mission-stack.env.example",
                 "config/hierarchical_nav2.yaml",
+                "config/hierarchical_nav2_physical.yaml",
                 "config/hierarchical_navigate_through_poses.xml",
             ],
         ),
@@ -103,6 +105,7 @@ setup(
                 "docs/hierarchical_exploration_milestone7_phase1.md",
                 "docs/hierarchical_exploration_milestone7_phase2.md",
                 "docs/hierarchical_exploration_milestone7_phase3.md",
+                "docs/hierarchical_exploration_milestone7_phase4.md",
             ],
         ),
         (
@@ -118,6 +121,15 @@ setup(
             [
                 "artifacts/phase2_camera_lidar_localization/README.md",
                 "artifacts/phase2_camera_lidar_localization/recorded_calibration_fixture.json",
+            ],
+        ),
+        (
+            "share/sphero_rvr_driver/artifacts/m7_phase4_physical_binding",
+            [
+                "artifacts/m7_phase4_physical_binding/README.md",
+                "artifacts/m7_phase4_physical_binding/environment.json",
+                "artifacts/m7_phase4_physical_binding/graph.json",
+                "artifacts/m7_phase4_physical_binding/validation.json",
             ],
         ),
         (
@@ -153,6 +165,7 @@ setup(
                 "systemd/user/rvr-mission-web.service",
                 "systemd/user/rvr-telemetry.service",
                 "systemd/user/rvr-adaptive-mission.service",
+                "systemd/user/rvr-hierarchical-mission.service",
             ],
         ),
     ],
@@ -196,6 +209,9 @@ setup(
             "rvr_camera_lidar_localization_replay = sphero_rvr_driver.camera_lidar_localization:main",
             "rvr_hierarchical_phase3_replay_validate = sphero_rvr_driver.hierarchical_phase3_replay_validation:main",
             "rvr_hierarchical_phase4_replay = sphero_rvr_driver.hierarchical_phase4_replay:main",
+            "hierarchical_physical_authority = sphero_rvr_driver.hierarchical_authority_node:main",
+            "hierarchical_mission_controller = sphero_rvr_driver.hierarchical_mission_node:main",
+            "hierarchical_nav2_adapter = sphero_rvr_driver.hierarchical_nav2_adapter_node:main",
             "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
             "rvr_m7_surveyed_localization = sphero_rvr_driver.m7_surveyed_localization:main",
             "rvr_m7_attended_validation = sphero_rvr_driver.m7_attended_validation:main",

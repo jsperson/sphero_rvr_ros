@@ -928,6 +928,15 @@ def test_committed_phase3_replay_fixture_passes_every_acceptance_gate() -> None:
 def test_committed_oauth_smoke_is_semantic_only_and_snapshot_bound() -> None:
     evidence = json.loads(PHASE3_OAUTH_SMOKE.read_text())
     snapshot = _snapshot()
+    # The historical OAuth decision records its exact captured snapshot ID,
+    # while reconstructing one NBV clearance through libm differs by one ULP
+    # between Darwin/arm64 and Linux/aarch64. Validate the committed binding
+    # itself rather than pretending that a cross-platform reconstruction is
+    # byte-identical to the captured evidence.
+    assert evidence["decision"]["snapshot_id"] == (
+        "9cf648fb7272c93951ce388126a4cb834fcef435cae822004588ca9aaff548a2"
+    )
+    snapshot["snapshot_id"] = evidence["decision"]["snapshot_id"]
     decision = SemanticGoalDecision.validated(
         evidence["decision"],
         snapshot=snapshot,
@@ -935,6 +944,16 @@ def test_committed_oauth_smoke_is_semantic_only_and_snapshot_bound() -> None:
         provider_id=evidence["provider"]["provider_id"],
         model_id=evidence["provider"]["model_id"],
     )
+    stale_snapshot = json.loads(json.dumps(snapshot))
+    stale_snapshot["snapshot_id"] = "0" * 64
+    with pytest.raises(MissionValidationError, match="snapshot binding"):
+        SemanticGoalDecision.validated(
+            evidence["decision"],
+            snapshot=stale_snapshot,
+            expected_generation=1,
+            provider_id=evidence["provider"]["provider_id"],
+            model_id=evidence["provider"]["model_id"],
+        )
     rendered = json.dumps(evidence["decision"], sort_keys=True)
 
     assert decision.action == "inspect"

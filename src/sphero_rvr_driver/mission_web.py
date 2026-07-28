@@ -2202,6 +2202,11 @@ class LiveMissionWebAdapter:
         self.approval_activation_enabled = bool(
             service.get("approval_activation_enabled", False)
         )
+        self.hierarchical_physical_binding = dict(
+            service.get("hierarchical_physical_binding", {})
+        ) if isinstance(
+            service.get("hierarchical_physical_binding", {}), Mapping
+        ) else {}
         self.mode = (
             "live/stationary-perception"
             if self.stationary_perception_enabled
@@ -2258,6 +2263,16 @@ class LiveMissionWebAdapter:
                     "approval_activation_enabled", False
                 )
             )
+            self.hierarchical_physical_binding = dict(
+                self._service_snapshot.get(
+                    "hierarchical_physical_binding", {}
+                )
+            ) if isinstance(
+                self._service_snapshot.get(
+                    "hierarchical_physical_binding", {}
+                ),
+                Mapping,
+            ) else {}
             self.mode = (
                 "live/stationary-perception"
                 if self.stationary_perception_enabled
@@ -2568,6 +2583,20 @@ class LiveMissionWebAdapter:
                 "service_source_sha": self._service_snapshot.get("source_sha", ""),
                 "service_deployed_sha": self._service_snapshot.get("deployed_sha", ""),
                 "boundary": "Pi-local MissionService Unix socket",
+                **(
+                    {
+                        "hierarchical_physical_binding": dict(
+                            self.hierarchical_physical_binding
+                        ),
+                        "hierarchical_physical_binding_installed": bool(
+                            self.hierarchical_physical_binding.get(
+                                "installed", False
+                            )
+                        ),
+                    }
+                    if self.hierarchical_physical_binding
+                    else {}
+                ),
                 **(
                     {
                         "adaptive_mission": True,

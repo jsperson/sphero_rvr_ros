@@ -1,0 +1,45 @@
+{
+  "schema": "sphero_rvr.m7_phase4_validation.v1",
+  "captured_on": "2026-07-28",
+  "executable_candidate_sha": "5b7c96f52b5b21a59655d2d9c102d0d3fee2f4cc",
+  "pi_build": {
+    "command": "source /opt/ros/jazzy/setup.bash && cd /home/jsperson/ros2_ws && colcon build --symlink-install --packages-select sphero_rvr_driver --event-handlers console_direct+",
+    "result": "passed",
+    "packages": 1,
+    "duration_s": 2.17
+  },
+  "pi_focused": {
+    "command": "python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_hierarchical_physical_binding.py tests/test_hierarchical_exploration.py tests/test_hierarchical_goal_selection.py",
+    "result": "passed",
+    "passed": 45,
+    "failed": 0,
+    "duration_s": 2.38,
+    "cleanup": "bounded runner exited 0; no leaked process group reported"
+  },
+  "mac_focused": {
+    "command": "python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_hierarchical_goal_selection.py tests/test_hierarchical_physical_binding.py",
+    "result": "passed",
+    "passed": 36,
+    "failed": 0,
+    "duration_s": 1.74,
+    "cleanup": "bounded runner exited 0; no leaked process group reported"
+  },
+  "mac_full_final": {
+    "command": "python3 scripts/run_pytest_bounded.py --timeout 90 -- -vv",
+    "result": "passed",
+    "passed": 1082,
+    "failed": 0,
+    "duration_s": 39.42,
+    "cleanup": "bounded runner exited 0; no leaked process group reported"
+  },
+  "disclosed_intermediate_finding": {
+    "command": "python3 scripts/run_pytest_bounded.py --timeout 60 -- -vv tests/test_hierarchical_physical_binding.py tests/test_hierarchical_exploration.py tests/test_hierarchical_goal_selection.py",
+    "result": "one pre-existing architecture-sensitive historical fixture assertion failed before the test-only correction",
+    "passed": 44,
+    "failed": 1,
+    "duration_s": 2.34,
+    "cause": "one-ULP Darwin/Linux libm difference in reconstructed NBV clearance changed the reconstructed snapshot digest",
+    "resolution": "validate the historical OAuth decision's committed captured snapshot ID and retain an explicit wrong-ID rejection; live validation remains exact"
+  },
+  "physical_execution": false
+}
