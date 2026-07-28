@@ -41,11 +41,7 @@ def controller_status_cancel_mode(
     ):
         return "veto"
     state = str(payload.get("state", "")).strip()
-    reason = str(payload.get("reason", "")).strip()
-    if state == "wait_planning" and reason in {
-        "event_triggered_replan",
-        "event_replan_provider_in_flight",
-    }:
+    if state == "wait_planning":
         return "replan"
     if state == "complete":
         return "complete"

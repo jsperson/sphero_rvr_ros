@@ -551,11 +551,24 @@ def main(args=None):
                         class_name=str(raw.get("label", raw.get("kind", "object"))),
                         x_m=float(raw["x_m"]),
                         y_m=float(raw["y_m"]),
-                        position_method="floor_projection",
-                        position_sigma_m=float(raw.get("uncertainty_m", 0.05)),
+                        position_method=str(
+                            raw["position_method"]
+                        ),
+                        position_sigma_m=float(
+                            raw["uncertainty_m"]
+                        ),
                         last_seen_s=float(raw["last_seen_s"]),
                         evidence_ids=tuple(
-                            str(item) for item in raw.get("evidence_ids", ())
+                            dict.fromkeys(
+                                str(item)
+                                for item in (
+                                    *raw.get("evidence_ids", ()),
+                                    *raw.get(
+                                        "localization_evidence_ids",
+                                        (),
+                                    ),
+                                )
+                            )
                         ),
                         stable_observations=int(
                             raw.get("observation_count", 1)
@@ -626,6 +639,13 @@ def main(args=None):
                 next_best_views=tuple(next_best_views),
                 origin_x_m=self._origin[0],
                 origin_y_m=self._origin[1],
+                coverage_fraction=(
+                    sum(
+                        int(value) >= 0
+                        for value in self._grid.cells
+                    )
+                    / max(1, len(self._grid.cells))
+                ),
                 collision_state=self._collision_state,
                 mission_lease_valid=True,
                 motion_evidence_fresh=True,

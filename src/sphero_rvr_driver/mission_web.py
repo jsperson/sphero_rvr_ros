@@ -2502,6 +2502,29 @@ class LiveMissionWebAdapter:
                 raise MissionWebError(str(exc)) from exc
             return self._translate(dict(snapshot))
 
+    def confirm_no_contact(self) -> Mapping[str, Any]:
+        with self._lock:
+            if self._mission_id is None:
+                raise MissionWebError(
+                    "a completed canonical mission is required"
+                )
+            if (
+                not self.hierarchical_canonical_enabled
+                or not self._operator_authenticated()
+            ):
+                raise MissionWebError(
+                    "no-contact observation requires an authenticated canonical request"
+                )
+            try:
+                snapshot = self.client.confirm_prompt_no_contact(
+                    self._mission_id,
+                    operator=self._operator_identity(),
+                    authentication_source="tailscale-serve",
+                )
+            except MissionValidationError as exc:
+                raise MissionWebError(str(exc)) from exc
+            return self._translate(dict(snapshot))
+
     def _translate(self, mission: Optional[Mapping[str, Any]]) -> dict[str, Any]:
         capabilities = self._service_snapshot.get("capabilities", {})
         capability = (
@@ -2630,12 +2653,19 @@ class LiveMissionWebAdapter:
             progress_value = 1.0
 
         translated_events = []
+        no_contact_observations = []
         for index, event in enumerate(events, start=1):
             if not isinstance(event, Mapping):
                 continue
             payload = event.get("payload", {})
             if not isinstance(payload, Mapping):
                 payload = {}
+            if (
+                str(event.get("kind", ""))
+                == "hierarchical_no_contact_observation"
+                and payload.get("no_contact") is True
+            ):
+                no_contact_observations.append(dict(payload))
             translated_events.append(
                 {
                     "sequence": int(event.get("event_id", index)),
@@ -2823,6 +2853,14 @@ class LiveMissionWebAdapter:
                 "terminal": state in {item.value for item in TERMINAL_STATES},
                 "terminal_reason": terminal_reason,
                 "result": dict(result),
+                "no_contact_confirmed": (
+                    len(no_contact_observations) == 1
+                ),
+                "no_contact_operator": (
+                    str(no_contact_observations[0].get("operator", ""))
+                    if len(no_contact_observations) == 1
+                    else ""
+                ),
             },
             "artifacts": _terminal_artifacts(
                 result if state in {item.value for item in TERMINAL_STATES} else {},
@@ -3397,6 +3435,13 @@ def handle_mission_web_request(
         result = adapter.advance()
     elif normalized_path == "/api/web/mission/cancel":
         result = adapter.cancel()
+    elif normalized_path == "/api/web/mission/no-contact":
+        confirm = getattr(adapter, "confirm_no_contact", None)
+        if not callable(confirm):
+            raise MissionWebError(
+                "this mission adapter cannot record physical observations"
+            )
+        result = confirm()
     elif normalized_path == TELEMETRY_CONTROL_PATH:
         if telemetry_control is None:
             raise MissionWebError("telemetry control is not available")
@@ -4105,6 +4150,12 @@ _INDEX_HTML = r'''<!doctype html>
           <summary id="result-heading">Terminal evidence &amp; artifacts</summary>
           <div class="detail-body">
             <div id="result-view" class="empty" data-testid="result-view">No terminal evidence yet.</div>
+            <fieldset id="canonical-no-contact" hidden>
+              <legend>Attended physical observation</legend>
+              <label><input id="no-contact-observed" type="checkbox"> I observed no rover contact during this completed mission.</label>
+              <button class="primary" id="confirm-no-contact" data-testid="confirm-no-contact" type="button" disabled>Record no-contact observation</button>
+              <p class="hint" id="no-contact-state"></p>
+            </fieldset>
             <ul id="artifact-list" class="artifact-list"></ul>
           </div>
         </details>
@@ -4127,6 +4178,7 @@ _INDEX_HTML = r'''<!doctype html>
     let leaseDurationDirty = false;
     let leaseDurationHydrated = false;
     let hydratedLeaseMissionId = null;
+    let hydratedNoContactMissionId = null;
 
     async function api(path, options = {}) {
       const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
@@ -4345,6 +4397,42 @@ _INDEX_HTML = r'''<!doctype html>
         || telemetryRequestInFlight
         || !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       $('cancel').textContent = 'Cancel';
+      const noContactVisible = canonical
+        && snapshot.mission.state === 'COMPLETE';
+      const noContactConfirmed = Boolean(
+        snapshot.mission.no_contact_confirmed
+      );
+      $('canonical-no-contact').hidden = !noContactVisible;
+      if (
+        hydratedNoContactMissionId
+        !== snapshot.mission.mission_id
+      ) {
+        $('no-contact-observed').checked = noContactConfirmed;
+        hydratedNoContactMissionId = snapshot.mission.mission_id;
+      } else if (noContactConfirmed) {
+        $('no-contact-observed').checked = true;
+      }
+      $('no-contact-observed').disabled = noContactConfirmed
+        || Boolean(missionRequestInFlight)
+        || telemetryRequestInFlight;
+      $('confirm-no-contact').disabled = !noContactVisible
+        || noContactConfirmed
+        || !$('no-contact-observed').checked
+        || Boolean(missionRequestInFlight)
+        || telemetryRequestInFlight;
+      $('confirm-no-contact').textContent =
+        missionRequestInFlight === 'no-contact'
+          ? 'Recording…'
+          : noContactConfirmed
+            ? 'No contact recorded'
+            : 'Record no-contact observation';
+      $('no-contact-state').textContent = noContactConfirmed
+        ? `Authenticated observation recorded for ${
+            snapshot.mission.no_contact_operator || 'the approved operator'
+          }.`
+        : noContactVisible
+          ? 'M7.7 remains incomplete until this attended observation is recorded.'
+          : '';
       if (canonical) {
         $('approval-state').textContent = approvalBusy
           ? 'Writing the exact proposal and M7.6 approval, then starting the fixed supervised graph.'
@@ -5006,6 +5094,36 @@ _INDEX_HTML = r'''<!doctype html>
       }
     }
 
+    async function confirmNoContact() {
+      if (
+        !current
+        || missionRequestInFlight
+        || telemetryRequestInFlight
+        || !$('no-contact-observed').checked
+      ) return;
+      missionRequestInFlight = 'no-contact';
+      $('request-error').textContent = '';
+      $('request-status').textContent =
+        'Recording the authenticated attended no-contact observation…';
+      renderActionState(current);
+      try {
+        const snapshot = await api('/api/web/mission/no-contact', {
+          method:'POST',
+          body:'{}',
+        });
+        missionRequestInFlight = '';
+        render(snapshot);
+        $('request-status').textContent =
+          'No-contact observation persisted for M7.7 evaluation.';
+      } catch (error) {
+        missionRequestInFlight = '';
+        if (current) renderActionState(current);
+        $('request-status').textContent = '';
+        $('request-error').textContent =
+          `No-contact observation failed: ${error.message}`;
+      }
+    }
+
     async function toggleTelemetry() {
       if (!current || telemetryRequestInFlight || missionRequestInFlight) return;
       if (current.telemetry_control
@@ -5074,6 +5192,9 @@ _INDEX_HTML = r'''<!doctype html>
     $('propose').addEventListener('click', propose);
     $('approve').addEventListener('click', approve);
     $('cancel').addEventListener('click', cancelMission);
+    $('confirm-no-contact').addEventListener(
+      'click', confirmNoContact
+    );
     $('telemetry-toggle').addEventListener('click', toggleTelemetry);
     $('mission-prompt').addEventListener('input', () => { promptDirty = true; });
     $('lease-duration-minutes').addEventListener('input', () => {
@@ -5088,6 +5209,9 @@ _INDEX_HTML = r'''<!doctype html>
     ].forEach((id) => $(id).addEventListener('change', () => {
       if (current) renderActionState(current);
     }));
+    $('no-contact-observed').addEventListener('change', () => {
+      if (current) renderActionState(current);
+    });
     const requestedMissionId = new URLSearchParams(window.location.search).get('mission_id');
     const initialStateRequest = requestedMissionId
       ? api(`/api/web/missions/${encodeURIComponent(requestedMissionId)}`)

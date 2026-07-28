@@ -32,6 +32,9 @@ DEFAULT_BINDING_JOURNAL = (
 DEFAULT_SESSION_DIRECTORY = (
     "~/.local/state/sphero_rvr/hierarchical-session"
 )
+DEFAULT_EVIDENCE_DIRECTORY = (
+    "~/.local/state/sphero_rvr/hierarchical-perception"
+)
 
 
 def _json(value: str) -> dict[str, Any]:
@@ -46,6 +49,7 @@ def capture_cleanup_evidence(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     recorded_at_s: Optional[float] = None,
     session_directory: str | Path = DEFAULT_SESSION_DIRECTORY,
+    evidence_directory: str | Path = DEFAULT_EVIDENCE_DIRECTORY,
 ) -> dict[str, Any]:
     """Capture raw cleanup observations; no pass/fail booleans are accepted."""
 
@@ -98,6 +102,7 @@ def capture_cleanup_evidence(
             "3.0",
         ],
         "processes": ["ps", "-eo", "pid=,args="],
+        "serial_owner": ["fuser", "/dev/ttyAMA0"],
     }
     observations: dict[str, Any] = {}
     for name, argv in commands.items():
@@ -128,6 +133,23 @@ def capture_cleanup_evidence(
         name: (directory / name).exists()
         for name in ("session.env", "proposal.json", "approval.json")
     }
+    evidence_root = Path(evidence_directory).expanduser()
+    evidence_files = []
+    evidence_inspection_error = ""
+    try:
+        if evidence_root.exists():
+            evidence_files = [
+                {
+                    "name": item.name,
+                    "byte_count": int(item.stat().st_size),
+                }
+                for item in sorted(evidence_root.iterdir())
+                if item.is_file()
+            ]
+    except OSError as exc:
+        evidence_inspection_error = (
+            f"{exc.__class__.__name__}: {exc}"
+        )
     payload = {
         "schema": CLEANUP_SCHEMA,
         "recorded_at_s": float(
@@ -135,6 +157,11 @@ def capture_cleanup_evidence(
         ),
         "observations": observations,
         "activation_files_present": files,
+        "evidence_storage": {
+            "directory": str(evidence_root),
+            "files": evidence_files,
+            "inspection_error": evidence_inspection_error,
+        },
     }
     return {**payload, "capture_digest": canonical_digest(payload)}
 
@@ -154,25 +181,38 @@ def _cleanup_checks(capture: Mapping[str, Any]) -> dict[str, bool]:
             "cmd_vel_publishers_absent": False,
             "cmd_vel_motor_publishers_absent": False,
             "motion_processes_absent": False,
+            "serial_owner_absent": False,
+            "evidence_writers_absent": False,
+            "camera_storage_bounded": False,
             "activation_files_consumed": False,
         }
 
-    def stdout(name: str) -> str:
+    def observation(name: str) -> Mapping[str, Any]:
         value = observations.get(name, {})
-        return str(value.get("stdout", "")) if isinstance(value, Mapping) else ""
+        return value if isinstance(value, Mapping) else {}
+
+    def stdout(name: str) -> str:
+        return str(observation(name).get("stdout", ""))
+
+    def stderr(name: str) -> str:
+        return str(observation(name).get("stderr", ""))
+
+    def returncode(name: str) -> int:
+        try:
+            return int(observation(name).get("returncode", 1))
+        except (TypeError, ValueError):
+            return 1
 
     def no_publishers(name: str) -> bool:
-        value = observations.get(name, {})
-        if not isinstance(value, Mapping):
-            return False
-        output = str(value.get("stdout", ""))
-        code = int(value.get("returncode", 1))
+        output = stdout(name)
+        error = stderr(name)
+        code = returncode(name)
         return (
-            "Publisher count: 0" in output
+            code == 0 and "Publisher count: 0" in output
             or (
-                code != 0
+                code == 1
                 and "Publisher count:" not in output
-                and code != 124
+                and "Unknown topic" in f"{output}\n{error}"
             )
         )
 
@@ -188,6 +228,11 @@ def _cleanup_checks(capture: Mapping[str, Any]) -> dict[str, bool]:
         "hierarchical_mission_controller",
         "hierarchical_nav2_adapter",
         "rplidar",
+        "camera",
+        "stationary_perception",
+        "semantic_perception",
+        "slam_toolbox",
+        "rosbag",
     )
     forbidden_processes = (
         "sphero_rvr_driver.rvr_node",
@@ -199,26 +244,91 @@ def _cleanup_checks(capture: Mapping[str, Any]) -> dict[str, bool]:
         "hierarchical_physical_authority",
         "hierarchical_mission_controller",
         "hierarchical_nav2_adapter",
+        "camera_node",
+        "stationary_perception",
+        "semantic_perception",
+        "slam_toolbox",
+        "ros2 bag record",
+        "rosbag2",
     )
+    storage = payload.get("evidence_storage", {})
+    storage_files = (
+        storage.get("files", ())
+        if isinstance(storage, Mapping)
+        else ()
+    )
+    storage_valid = isinstance(storage_files, Sequence) and not isinstance(
+        storage_files, (str, bytes)
+    ) and not str(
+        storage.get("inspection_error", "")
+        if isinstance(storage, Mapping)
+        else "missing"
+    )
+    if storage_valid:
+        for item in storage_files:
+            if not isinstance(item, Mapping):
+                storage_valid = False
+                break
+            try:
+                name = str(item["name"])
+                byte_count = int(item["byte_count"])
+            except (KeyError, TypeError, ValueError):
+                storage_valid = False
+                break
+            if (
+                not name.startswith("live-camera-")
+                or not name.endswith(".jpg")
+                or byte_count <= 0
+                or byte_count > 512_000
+            ):
+                storage_valid = False
+                break
     return {
         "cleanup_capture_digest_valid": (
             digest_valid and payload.get("schema") == CLEANUP_SCHEMA
         ),
         "hierarchical_unit_inactive": (
-            "ActiveState=inactive" in stdout("hierarchical_unit")
+            returncode("hierarchical_unit") == 0
+            and "ActiveState=inactive" in stdout("hierarchical_unit")
         ),
         "telemetry_unit_inactive": (
-            "ActiveState=inactive" in stdout("telemetry_unit")
+            returncode("telemetry_unit") == 0
+            and "ActiveState=inactive" in stdout("telemetry_unit")
         ),
-        "motion_nodes_absent": not any(
-            token in nodes for token in forbidden_nodes
+        "motion_nodes_absent": (
+            returncode("nodes") == 0
+            and not any(token in nodes for token in forbidden_nodes)
         ),
         "cmd_vel_publishers_absent": no_publishers("cmd_vel"),
         "cmd_vel_motor_publishers_absent": no_publishers(
             "cmd_vel_motor"
         ),
-        "motion_processes_absent": not any(
-            token in processes for token in forbidden_processes
+        "motion_processes_absent": (
+            returncode("processes") == 0
+            and not any(
+                token in processes for token in forbidden_processes
+            )
+        ),
+        "serial_owner_absent": (
+            returncode("serial_owner") == 1
+            and not stdout("serial_owner").strip()
+            and not stderr("serial_owner").strip()
+        ),
+        "evidence_writers_absent": (
+            returncode("processes") == 0
+            and not any(
+                token in processes
+                for token in (
+                    "camera_node",
+                    "stationary_perception",
+                    "semantic_perception",
+                    "ros2 bag record",
+                    "rosbag2",
+                )
+            )
+        ),
+        "camera_storage_bounded": (
+            storage_valid and len(storage_files) <= 96
         ),
         "activation_files_consumed": (
             set(files)
@@ -366,6 +476,7 @@ def evaluate_canonical_mission(
     ]
     decisions: list[dict[str, Any]] = []
     tracks: dict[str, dict[str, Any]] = {}
+    coverage_samples: list[float] = []
     for dispatch in dispatches:
         for goal in dispatch.get("goals", ()):
             if not isinstance(goal, Mapping):
@@ -375,6 +486,16 @@ def evaluate_canonical_mission(
                 decisions.append(dict(decision))
             current = goal.get("current_snapshot", {})
             if isinstance(current, Mapping):
+                map_snapshot = current.get("map", {})
+                if isinstance(map_snapshot, Mapping):
+                    try:
+                        coverage = float(
+                            map_snapshot["coverage_fraction"]
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        coverage = float("nan")
+                    if math.isfinite(coverage):
+                        coverage_samples.append(coverage)
                 for track in current.get("tracks", ()):
                     if isinstance(track, Mapping):
                         track_id = str(track.get("track_id", ""))
@@ -393,7 +514,7 @@ def evaluate_canonical_mission(
     mapped_tracks_truthful = all(
         bool(track.get("evidence_ids"))
         and str(track.get("position_method", ""))
-        in {"lidar_range", "floor_projection", "bearing_only"}
+        in {"lidar_range", "floor_projection"}
         for track in tracks.values()
     )
     terminal_checkpoints = [
@@ -429,6 +550,45 @@ def evaluate_canonical_mission(
         for event in service_events
         if event["kind"] == "hierarchical_m7_6_approval"
     ]
+    no_contact_events = [
+        event["payload"]
+        for event in service_events
+        if event["kind"]
+        == "hierarchical_no_contact_observation"
+    ]
+    no_contact_observation: dict[str, Any] = {}
+    no_contact_valid = False
+    if len(no_contact_events) == 1:
+        no_contact_observation = dict(no_contact_events[0])
+        no_contact_unsigned = dict(no_contact_observation)
+        no_contact_digest = str(
+            no_contact_unsigned.pop("observation_digest", "")
+        )
+        try:
+            observed_at_s = float(
+                no_contact_unsigned["observed_at_s"]
+            )
+        except (KeyError, TypeError, ValueError):
+            observed_at_s = float("nan")
+        no_contact_valid = (
+            no_contact_unsigned.get("schema")
+            == "sphero_rvr.hierarchical_no_contact_observation.v1"
+            and no_contact_unsigned.get("mission_id") == str(mission_id)
+            and no_contact_unsigned.get("no_contact") is True
+            and no_contact_unsigned.get("authentication_source")
+            == "tailscale-serve"
+            and str(no_contact_unsigned.get("operator", ""))
+            == str(approval.get("operator", ""))
+            and no_contact_unsigned.get("source_sha")
+            == str(mission["source_sha"])
+            and no_contact_unsigned.get("deployed_sha")
+            == str(mission["deployed_sha"])
+            and math.isfinite(observed_at_s)
+            and observed_at_s
+            >= float(approval.get("approved_at_s", float("inf")))
+            and no_contact_digest
+            == canonical_digest(no_contact_unsigned)
+        )
     preflight: dict[str, Any] = {}
     preflight_valid = False
     if len(approval_events) == 1:
@@ -541,6 +701,10 @@ def evaluate_canonical_mission(
         else False,
         "binding_event_digests_valid": binding_digests_valid,
         "real_provider_completion_recorded": bool(provider_events)
+        and any(
+            event.get("real_provider") is True
+            for event in provider_events
+        )
         and all(
             isinstance(event.get("provider_elapsed_s"), (int, float))
             and float(event["provider_elapsed_s"]) >= 0.0
@@ -549,6 +713,13 @@ def evaluate_canonical_mission(
         "semantic_goal_dispatch_recorded": bool(decisions),
         "material_semantic_replanning_recorded": (
             len(distinct_semantic_goals) >= 2
+        ),
+        "coverage_reconstructable": (
+            len(coverage_samples) >= 2
+            and all(
+                0.0 < value <= 1.0
+                for value in coverage_samples
+            )
         ),
         "model_geometry_absent_and_rationales_present": (
             bool(decisions) and semantic_only
@@ -567,7 +738,13 @@ def evaluate_canonical_mission(
             >= 0.02
         ),
         "localization_freshness_remained_within_gate": (
-            float(
+            int(
+                run_evidence.get(
+                    "localization_freshness_violations", 0
+                )
+            )
+            == 0
+            and float(
                 run_evidence.get(
                     "max_localization_age_s", float("inf")
                 )
@@ -578,6 +755,9 @@ def evaluate_canonical_mission(
             terminal_checkpoints
         ),
         "mission_terminal_complete": mission["status"] == "complete",
+        "authenticated_operator_no_contact_observation": (
+            no_contact_valid
+        ),
         "terminal_cleanup_claim_matches_capture": (
             result.get("cleanup_verified") is True
         ),
@@ -593,9 +773,11 @@ def evaluate_canonical_mission(
         "binding_event_count": len(binding_events),
         "service_event_count": len(service_events),
         "semantic_decisions": decisions,
+        "coverage_samples": coverage_samples,
         "mapped_tracks": list(tracks.values()),
         "provider_calls": provider_events,
         "sensor_preflight": preflight,
+        "operator_no_contact_observation": no_contact_observation,
         "controller_events": controller_events,
         "checkpoint_states": checkpoint_states,
         "run_evidence": dict(run_evidence),

@@ -92,6 +92,24 @@ LLM semantic decision
 The browser owns proposal, confirmation, cancellation, and read-only
 observation. It has no ROS, Twist, serial, or direct motor surface.
 
+After a completed run, the same authenticated browser displays a separate
+attended-observation control. The approved operator must explicitly confirm
+that no rover contact occurred. The Pi persists one digest-bound
+`sphero_rvr.hierarchical_no_contact_observation.v1`; the evaluator will not
+accept a hand-entered manifest substitute.
+
+## Live mapped-object provenance
+
+The moving perception adapter now invokes the surveyed Phase 2
+camera/lidar localizer with the measured camera and lidar extrinsics. A
+single eligible lidar cluster produces `lidar_range`; a missing cluster may
+use calibrated `floor_projection`; timestamp mismatch, stale pose, invalid
+floor geometry, and ambiguous lidar clusters remain `bearing_only`.
+Bearing-only detections may appear as camera evidence but cannot enter the
+point-track store or generate an inspection viewpoint. The mission
+controller preserves the live method, uncertainty, camera/scan evidence IDs,
+and server-owned geometry rather than assigning a method itself.
+
 ## Honest latency behavior
 
 The physical controller uses the Phase 4 real-provider distribution:
@@ -131,13 +149,16 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
 - at least two materially distinct semantic goals with rationales and no model
   geometry;
 - evidence-bound mapped tracks when tracks exist;
+- reconstructable nonzero occupancy coverage samples;
 - reconstructable controller/adapter pause and handoff states;
 - nonzero odometry and at least `0.02 m` displacement;
 - localization receipt age no greater than `0.300 s`;
 - a complete terminal controller checkpoint and terminal MissionService state;
+- one authenticated, approval-operator-bound no-contact observation;
 - inactive hierarchical and telemetry units, absent motion nodes/processes,
-  zero `/cmd_vel` and `/cmd_vel_motor` publishers, and consumed activation
-  files.
+  zero `/cmd_vel` and `/cmd_vel_motor` publishers, no rover serial owner, no
+  camera/rosbag evidence writer, at most 96 bounded JPEGs, and consumed
+  activation files.
 
 Example post-run evaluation:
 

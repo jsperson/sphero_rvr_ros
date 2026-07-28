@@ -725,6 +725,15 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
         source_sha=SHA,
         mission_id="m7-canonical-001",
     ) == "replan"
+    stale_localization = {
+        **base,
+        "reason": "live localization exceeds the fixed 0.300 s gate",
+    }
+    assert controller_status_cancel_mode(
+        stale_localization,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "replan"
 
     navigating = {**base, "state": "dispatching", "reason": "navigating"}
     assert controller_status_cancel_mode(

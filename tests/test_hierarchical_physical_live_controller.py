@@ -13,8 +13,10 @@ from sphero_rvr_driver.hierarchical_physical_binding import (
     APPROVAL_SCHEMA,
     PHYSICAL_PROPOSAL_SCHEMA,
     HierarchicalBindingJournal,
+    canonical_digest,
 )
 from sphero_rvr_driver.hierarchical_m7_canonical_validation import (
+    _cleanup_checks,
     capture_cleanup_evidence,
     evaluate_canonical_mission,
 )
@@ -389,9 +391,109 @@ def test_cancel_during_activation_cannot_start_or_resume_graph(
         assert controller.status(proposed["mission_id"])["status"] == (
             "cancelled"
         )
+        deadline = time.monotonic() + 1.0
+        while controller._threads and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller._threads == {}
+        replacement = controller.submit(
+            CANONICAL_M7_OBJECTIVE,
+            session_id="m7-browser",
+            mission_id="m7-canonical-after-cancel",
+        )
+        assert replacement["status"] == "proposed"
     finally:
         controller.close()
         service.close()
+
+
+def test_active_motion_fails_closed_on_stale_localization(
+    tmp_path,
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    try:
+        proposed = controller.submit(
+            CANONICAL_M7_OBJECTIVE,
+            session_id="m7-browser",
+            mission_id="m7-canonical-stale-localization",
+        )
+        controller.approve(
+            proposed["mission_id"],
+            supplied_approval=(
+                "APPROVE M7.6 CANONICAL MISSION "
+                + proposed["proposal_digest"]
+            ),
+            operator="scott",
+            authentication_source="tailscale-serve",
+            physical_room_confirmation=ROOM,
+        )
+        deadline = time.monotonic() + 1.0
+        while not session.active and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert session.active is True
+        now = time.time()
+        cache.update(
+            "localization",
+            {"pose": {"x_m": 0.0, "y_m": 0.0}},
+            received_at_s=now - 0.301,
+        )
+        cache.update(
+            "hierarchical_adapter",
+            {"goal_active": True},
+            received_at_s=now,
+        )
+        terminal = controller.status(proposed["mission_id"])
+        while (
+            terminal["status"] != "recovery_required"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+            terminal = controller.status(proposed["mission_id"])
+        assert terminal["status"] == "recovery_required"
+        assert terminal["result"]["cleanup_verified"] is True
+        assert terminal["result"]["run_evidence"][
+            "localization_freshness_violations"
+        ] == 1
+        assert terminal["result"]["run_evidence"][
+            "max_localization_age_s"
+        ] > 0.300
+        assert session.active is False
+    finally:
+        controller.close()
+        service.close()
+
+
+def test_controller_close_relocks_active_session_and_never_resumes(
+    tmp_path,
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    del cache
+    proposed = controller.submit(
+        CANONICAL_M7_OBJECTIVE,
+        session_id="m7-browser",
+        mission_id="m7-canonical-service-shutdown",
+    )
+    controller.approve(
+        proposed["mission_id"],
+        supplied_approval=(
+            "APPROVE M7.6 CANONICAL MISSION "
+            + proposed["proposal_digest"]
+        ),
+        operator="scott",
+        authentication_source="tailscale-serve",
+        physical_room_confirmation=ROOM,
+    )
+    deadline = time.monotonic() + 1.0
+    while not session.active and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert session.active is True
+    controller.close(timeout_s=1.0)
+    assert session.active is False
+    terminal = service.prompt_status(proposed["mission_id"])
+    assert terminal["status"] == "recovery_required"
+    assert terminal["result"]["cleanup_verified"] is True
+    assert terminal["result"]["restart_resume_allowed"] is False
+    controller.close(timeout_s=1.0)
+    service.close()
 
 
 def test_approval_binds_all_evidence_limits_and_terminal_cleanup(
@@ -523,6 +625,15 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
                 ],
             )
 
+        def confirm_prompt_no_contact(self, mission_id, **kwargs):
+            return controller.confirm_no_contact(
+                mission_id,
+                operator=kwargs["operator"],
+                authentication_source=kwargs[
+                    "authentication_source"
+                ],
+            )
+
     try:
         browser = LiveMissionWebAdapter(
             Client(),
@@ -553,6 +664,34 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         reopened = browser.reopen(proposed["mission"]["mission_id"])
         assert reopened["mission"]["mission_id"] == (
             proposed["mission"]["mission_id"]
+        )
+        cache.update(
+            "hierarchical_controller",
+            {
+                "schema": (
+                    "sphero_rvr.hierarchical_controller_status.v1"
+                ),
+                "mission_id": proposed["mission"]["mission_id"],
+                "state": "complete",
+                "reason": "return_to_origin",
+                "source_sha": SHA,
+            },
+            received_at_s=time.time(),
+        )
+        deadline = time.monotonic() + 1.0
+        terminal = browser.snapshot()
+        while (
+            terminal["mission"]["state"] != "COMPLETE"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+            terminal = browser.snapshot()
+        assert terminal["mission"]["state"] == "COMPLETE"
+        assert terminal["mission"]["no_contact_confirmed"] is False
+        observed = browser.confirm_no_contact()
+        assert observed["mission"]["no_contact_confirmed"] is True
+        assert observed["mission"]["no_contact_operator"] == (
+            "scott@example.com"
         )
     finally:
         latest = service.latest_prompt_status("m7-browser")
@@ -721,6 +860,29 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
             time.sleep(0.02)
             terminal = controller.status(mission_id)
         assert terminal["status"] == "complete"
+        with pytest.raises(
+            MissionValidationError, match="authenticated Tailscale"
+        ):
+            controller.confirm_no_contact(
+                mission_id,
+                operator="scott@example.com",
+            )
+        observed = controller.confirm_no_contact(
+            mission_id,
+            operator="scott@example.com",
+            authentication_source="tailscale-serve",
+        )
+        assert [
+            event["kind"] for event in observed["events"]
+        ].count("hierarchical_no_contact_observation") == 1
+        repeated = controller.confirm_no_contact(
+            mission_id,
+            operator="scott@example.com",
+            authentication_source="tailscale-serve",
+        )
+        assert [
+            event["kind"] for event in repeated["events"]
+        ].count("hierarchical_no_contact_observation") == 1
 
         journal_path = tmp_path / "binding.sqlite3"
         journal = HierarchicalBindingJournal(journal_path)
@@ -761,7 +923,17 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
                                 "arguments": arguments,
                                 "rationale": f"reviewed semantic goal {index}",
                             },
-                            "current_snapshot": {"tracks": []},
+                            "current_snapshot": {
+                                "tracks": [],
+                                "map": {
+                                    "coverage_fraction": (
+                                        round(
+                                            0.35 + index * 0.05,
+                                            2,
+                                        )
+                                    )
+                                },
+                            },
                         }
                     ]
                 },
@@ -792,7 +964,14 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
                 )
             if "topic" in command:
                 return subprocess.CompletedProcess(
-                    command, 1, stdout="", stderr="not found"
+                    command,
+                    1,
+                    stdout="",
+                    stderr=f"Unknown topic '{command[6]}'",
+                )
+            if command[0] == "fuser":
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr=""
                 )
             return subprocess.CompletedProcess(
                 command, 0, stdout="", stderr=""
@@ -801,6 +980,7 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         cleanup = capture_cleanup_evidence(
             runner=cleanup_runner,
             session_directory=tmp_path / "empty-session",
+            evidence_directory=tmp_path / "empty-evidence",
         )
         report = evaluate_canonical_mission(
             mission_database=service.database,
@@ -811,6 +991,73 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         assert report["passed"] is True
         assert all(report["checks"].values())
         assert len(report["evidence"]["semantic_decisions"]) == 2
+        assert report["evidence"]["coverage_samples"] == [
+            0.4,
+            0.45,
+        ]
+        assert report["evidence"][
+            "operator_no_contact_observation"
+        ]["no_contact"] is True
+
+        failed_graph = {
+            **cleanup,
+            "observations": {
+                **cleanup["observations"],
+                "nodes": {
+                    **cleanup["observations"]["nodes"],
+                    "returncode": 1,
+                    "stderr": "daemon unavailable",
+                },
+            },
+        }
+        failed_graph_unsigned = dict(failed_graph)
+        failed_graph_unsigned.pop("capture_digest")
+        failed_graph["capture_digest"] = canonical_digest(
+            failed_graph_unsigned
+        )
+        assert _cleanup_checks(failed_graph)[
+            "motion_nodes_absent"
+        ] is False
+
+        failed_topic = {
+            **cleanup,
+            "observations": {
+                **cleanup["observations"],
+                "cmd_vel": {
+                    **cleanup["observations"]["cmd_vel"],
+                    "returncode": 1,
+                    "stderr": "permission denied",
+                },
+            },
+        }
+        failed_topic_unsigned = dict(failed_topic)
+        failed_topic_unsigned.pop("capture_digest")
+        failed_topic["capture_digest"] = canonical_digest(
+            failed_topic_unsigned
+        )
+        assert _cleanup_checks(failed_topic)[
+            "cmd_vel_publishers_absent"
+        ] is False
+
+        failed_serial = {
+            **cleanup,
+            "observations": {
+                **cleanup["observations"],
+                "serial_owner": {
+                    **cleanup["observations"]["serial_owner"],
+                    "returncode": 2,
+                    "stderr": "inspection failed",
+                },
+            },
+        }
+        failed_serial_unsigned = dict(failed_serial)
+        failed_serial_unsigned.pop("capture_digest")
+        failed_serial["capture_digest"] = canonical_digest(
+            failed_serial_unsigned
+        )
+        assert _cleanup_checks(failed_serial)[
+            "serial_owner_absent"
+        ] is False
     finally:
         controller.close()
         service.close()

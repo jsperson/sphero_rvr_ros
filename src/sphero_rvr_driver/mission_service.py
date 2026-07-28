@@ -906,6 +906,79 @@ class MissionService:
                 )
             return self.prompt_status(mission_id)
 
+    def record_hierarchical_no_contact_observation(
+        self,
+        mission_id: str,
+        observation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one authenticated post-run physical observation."""
+
+        from .hierarchical_physical_binding import canonical_digest
+
+        payload = json.loads(_json_dump(dict(observation)))
+        supplied_digest = str(
+            payload.get("observation_digest", "")
+        ).strip().lower()
+        unsigned = dict(payload)
+        unsigned.pop("observation_digest", None)
+        try:
+            observed_at_s = float(unsigned.get("observed_at_s"))
+        except (TypeError, ValueError):
+            observed_at_s = float("nan")
+        expected_keys = {
+            "schema",
+            "mission_id",
+            "operator",
+            "authentication_source",
+            "no_contact",
+            "observed_at_s",
+            "source_sha",
+            "deployed_sha",
+        }
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            approval = _json_load(row["approval_json"], {})
+            if row["status"] != "complete":
+                raise MissionValidationError(
+                    "no-contact observation requires a completed canonical mission"
+                )
+            if (
+                set(unsigned) != expected_keys
+                or unsigned.get("schema")
+                != "sphero_rvr.hierarchical_no_contact_observation.v1"
+                or str(unsigned.get("mission_id", "")) != row["mission_id"]
+                or str(unsigned.get("operator", "")).strip()
+                != str(approval.get("operator", "")).strip()
+                or unsigned.get("authentication_source")
+                != "tailscale-serve"
+                or unsigned.get("no_contact") is not True
+                or not math.isfinite(observed_at_s)
+                or observed_at_s
+                < float(approval.get("approved_at_s", float("inf")))
+                or str(unsigned.get("source_sha", "")) != self.source_sha
+                or str(unsigned.get("deployed_sha", ""))
+                != self.deployed_sha
+                or canonical_digest(unsigned) != supplied_digest
+            ):
+                raise MissionValidationError(
+                    "canonical no-contact observation is invalid"
+                )
+            existing = self._connection.execute(
+                "SELECT COUNT(*) FROM events "
+                "WHERE mission_id=? AND kind='hierarchical_no_contact_observation'",
+                (mission_id,),
+            ).fetchone()
+            if existing is not None and int(existing[0]) > 0:
+                return self.prompt_status(mission_id)
+            with self._connection:
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "hierarchical_no_contact_observation",
+                    payload,
+                )
+            return self.prompt_status(mission_id)
+
     def reject_prompt_planning(self, mission_id: str, reason: str) -> dict[str, Any]:
         with self._lock:
             row = self._prompt_row(mission_id)
@@ -2704,5 +2777,20 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
             return self.prompt_controller.cancel(
                 str(request.get("mission_id", "")),
                 reason=str(request.get("reason", "operator cancelled mission")),
+            )
+        if operation == "prompt_confirm_no_contact":
+            confirm = getattr(
+                self.prompt_controller, "confirm_no_contact", None
+            )
+            if not callable(confirm):
+                raise MissionValidationError(
+                    "this prompt controller does not accept physical observations"
+                )
+            return confirm(
+                str(request.get("mission_id", "")),
+                operator=str(request.get("operator", "")),
+                authentication_source=str(
+                    request.get("authentication_source", "")
+                ),
             )
         raise MissionValidationError(f"unsupported mission service operation: {operation}")

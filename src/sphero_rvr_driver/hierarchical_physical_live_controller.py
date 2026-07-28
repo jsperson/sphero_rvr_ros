@@ -430,6 +430,42 @@ class HierarchicalPhysicalMissionController:
                 mission_id, reason=reason
             )
 
+    def confirm_no_contact(
+        self,
+        mission_id: str,
+        *,
+        operator: str,
+        authentication_source: str = "",
+    ) -> dict[str, Any]:
+        if str(authentication_source).strip() != "tailscale-serve":
+            raise MissionValidationError(
+                "no-contact observation requires an authenticated Tailscale request"
+            )
+        principal = str(operator).strip()
+        if not principal:
+            raise MissionValidationError(
+                "no-contact observation requires the authenticated operator"
+            )
+        payload = {
+            "schema": (
+                "sphero_rvr.hierarchical_no_contact_observation.v1"
+            ),
+            "mission_id": str(mission_id),
+            "operator": principal,
+            "authentication_source": "tailscale-serve",
+            "no_contact": True,
+            "observed_at_s": float(self._clock_s()),
+            "source_sha": self.service.source_sha,
+            "deployed_sha": self.service.deployed_sha,
+        }
+        return self.service.record_hierarchical_no_contact_observation(
+            mission_id,
+            {
+                **payload,
+                "observation_digest": canonical_digest(payload),
+            },
+        )
+
     def service_snapshot(self) -> dict[str, Any]:
         session = dict(self.session_lifecycle.status())
         active = bool(session.get("active", False))
@@ -485,12 +521,42 @@ class HierarchicalPhysicalMissionController:
             for cancellation in self._activation_cancel.values():
                 cancellation.set()
             threads = tuple(self._threads.values())
+            active_mission_id = self._active_mission_id
+        if active_mission_id:
+            try:
+                status = str(
+                    self.service.prompt_status(active_mission_id).get(
+                        "status", ""
+                    )
+                )
+            except MissionValidationError:
+                status = ""
+            if status not in {
+                "complete",
+                "failed",
+                "cancelled",
+                "recovery_required",
+                "timeout",
+            }:
+                self._finish(
+                    active_mission_id,
+                    status="recovery_required",
+                    reason=(
+                        "canonical session relocked after mission service shutdown"
+                    ),
+                )
+            else:
+                self._deactivate(
+                    "canonical session relocked after mission service shutdown"
+                )
         for thread in threads:
             thread.join(timeout=timeout_s)
         if any(thread.is_alive() for thread in threads):
             raise RuntimeError(
                 "canonical physical mission monitor did not stop"
             )
+        with self._lock:
+            self._active_mission_id = ""
 
     def _start_thread(
         self,
@@ -546,9 +612,12 @@ class HierarchicalPhysicalMissionController:
                 "nonzero_odom_samples": 0,
                 "max_displacement_m": 0.0,
                 "max_localization_age_s": 0.0,
+                "localization_freshness_violations": 0,
             }
             origin: Optional[tuple[float, float]] = None
             while not self._closed:
+                if cancellation.is_set():
+                    return
                 now_s = float(self._clock_s())
                 if now_s >= expires_at_s:
                     self._finish(
@@ -560,6 +629,7 @@ class HierarchicalPhysicalMissionController:
                     return
                 live_snapshot = self.cache.snapshot(now_s=now_s)
                 odom = live_snapshot.source("odom")
+                motion_observed = False
                 if odom.valid and odom.received_at_s is not None:
                     try:
                         x_m = float(odom.value["x_m"])
@@ -584,6 +654,7 @@ class HierarchicalPhysicalMissionController:
                                 abs(linear_mps) > 0.005
                                 or abs(angular_rad_s) > 0.01
                             ):
+                                motion_observed = True
                                 run_evidence[
                                     "nonzero_odom_samples"
                                 ] += 1
@@ -600,23 +671,56 @@ class HierarchicalPhysicalMissionController:
                             )
                     except (KeyError, TypeError, ValueError):
                         pass
+                controller = live_snapshot.source(CONTROLLER_SOURCE)
+                adapter = live_snapshot.source(ADAPTER_SOURCE)
+                adapter_goal_active = (
+                    adapter.valid
+                    and bool(adapter.value.get("goal_active", False))
+                )
                 localization = live_snapshot.source("localization")
-                if (
-                    localization.valid
-                    and localization.received_at_s is not None
-                ):
+                if adapter_goal_active or motion_observed:
+                    if (
+                        not localization.valid
+                        or localization.received_at_s is None
+                    ):
+                        run_evidence[
+                            "localization_freshness_violations"
+                        ] += 1
+                        self._finish(
+                            mission_id,
+                            status="recovery_required",
+                            reason=(
+                                "live localization unavailable while motion authority was active"
+                            ),
+                            run_evidence=run_evidence,
+                        )
+                        return
+                    localization_age_s = (
+                        now_s - float(localization.received_at_s)
+                    )
                     run_evidence["max_localization_age_s"] = max(
                         float(
                             run_evidence["max_localization_age_s"]
                         ),
-                        max(
-                            0.0,
-                            now_s
-                            - float(localization.received_at_s),
-                        ),
+                        max(0.0, localization_age_s),
                     )
-                controller = live_snapshot.source(CONTROLLER_SOURCE)
-                adapter = live_snapshot.source(ADAPTER_SOURCE)
+                    if (
+                        not math.isfinite(localization_age_s)
+                        or localization_age_s < 0.0
+                        or localization_age_s > 0.300
+                    ):
+                        run_evidence[
+                            "localization_freshness_violations"
+                        ] += 1
+                        self._finish(
+                            mission_id,
+                            status="recovery_required",
+                            reason=(
+                                "live localization exceeded the fixed 0.300 s gate"
+                            ),
+                            run_evidence=run_evidence,
+                        )
+                        return
                 for source_name, record in (
                     (CONTROLLER_SOURCE, controller),
                     (ADAPTER_SOURCE, adapter),

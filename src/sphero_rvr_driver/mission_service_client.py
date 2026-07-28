@@ -117,6 +117,20 @@ class MissionServiceClient:
     def cancel_prompt(self, mission_id: str, *, reason: str) -> Mapping[str, Any]:
         return self.call("prompt_cancel", mission_id=mission_id, reason=reason)
 
+    def confirm_prompt_no_contact(
+        self,
+        mission_id: str,
+        *,
+        operator: str,
+        authentication_source: str,
+    ) -> Mapping[str, Any]:
+        return self.call(
+            "prompt_confirm_no_contact",
+            mission_id=mission_id,
+            operator=operator,
+            authentication_source=authentication_source,
+        )
+
     def _validate_socket(self) -> None:
         try:
             metadata = self.socket_path.stat()

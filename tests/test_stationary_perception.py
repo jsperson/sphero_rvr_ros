@@ -311,6 +311,70 @@ def test_moved_object_keeps_one_track_and_unknown_face_stays_unknown() -> None:
     assert face["recognized_from_enrollment"] is False
 
 
+def test_live_track_preserves_surveyed_localization_provenance() -> None:
+    tracks = SemanticTrackStore().update(
+        [
+            {
+                "kind": "object",
+                "label": "shoe",
+                "center_x": 100.0,
+                "center_y": 300.0,
+                "confidence": 0.8,
+                "x_m": 1.0,
+                "y_m": 0.1,
+                "uncertainty_m": 0.032,
+                "evidence_id": "frame-1-shoe",
+                "position_method": "lidar_range",
+                "calibration_id": "calibration-sha",
+                "map_revision": "map-revision-1",
+                "localization_evidence_ids": [
+                    "frame-1-shoe",
+                    "live-scan-00000001",
+                ],
+                "localization_reason": (
+                    "single_contiguous_lidar_cluster"
+                ),
+                "source_timestamps_ns": {
+                    "image": 1_000_000_000,
+                    "lidar": 1_020_000_000,
+                    "pose": 1_010_000_000,
+                },
+            }
+        ],
+        frame_width=800,
+        observed_at_s=1.0,
+    )
+
+    assert tracks[0]["position_method"] == "lidar_range"
+    assert tracks[0]["uncertainty_m"] == 0.032
+    assert tracks[0]["calibration_id"] == "calibration-sha"
+    assert tracks[0]["localization_evidence_ids"] == [
+        "frame-1-shoe",
+        "live-scan-00000001",
+    ]
+    assert tracks[0]["source_timestamps_ns"]["lidar"] == (
+        1_020_000_000
+    )
+
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "stationary_perception_node.py"
+    ).read_text()
+    assert "localize_plane_object(" in source
+    assert 'localized.reason == "no_lidar_cluster"' in source
+    assert "ambiguous_lidar_clusters" not in source
+    mission = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    assert 'raw["position_method"]' in mission
+    assert 'position_method="floor_projection"' not in mission
+
+
 def test_motion_cue_excludes_rejected_background_object_duplicates() -> None:
     detections = [
         {
