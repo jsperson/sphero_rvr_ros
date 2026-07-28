@@ -1028,6 +1028,12 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "No code or hash entry is required" in page
     assert "let hydratedMissionId = null;" in page
     assert "if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';" in page
+    assert "&& !canonical;" in page
+    assert (
+        "canonical\n"
+        "        && !promptDirty\n"
+        "        && snapshot.adapter.canonical_objective"
+    ) in page
     assert "$('mission-prompt').addEventListener('input'" in page
     assert 'id="safety-corridor"' in page
     assert 'id="safety-trajectory"' in page

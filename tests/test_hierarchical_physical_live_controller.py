@@ -29,7 +29,10 @@ from sphero_rvr_driver.hierarchical_physical_session import (
 from sphero_rvr_driver.live_mission_service import LiveStateCache
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_service import MissionService
-from sphero_rvr_driver.mission_web import LiveMissionWebAdapter
+from sphero_rvr_driver.mission_web import (
+    LiveMissionWebAdapter,
+    _is_adaptive_preapproval,
+)
 
 
 SHA = "a" * 40
@@ -469,18 +472,44 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
     tmp_path,
 ) -> None:
     service, cache, session, controller = _controller(tmp_path)
+    old_adaptive_status = {
+        "mission_id": "adaptive-mission-old",
+        "session_id": "m7-browser",
+        "status": "recovery_required",
+        "proposal": {
+            "schema": "sphero_rvr.adaptive_mission_proposal.v1",
+            "prompt": "Old adaptive objective",
+        },
+        "approval": {},
+        "result": {
+            "schema": "sphero_rvr.adaptive_mission_result.v1",
+        },
+        "terminal_reason": "service_restart",
+        "events": [],
+    }
 
     class Client:
+        stale_status = old_adaptive_status
+
         def service_snapshot(self):
             return controller.service_snapshot()
 
         def latest_prompt_status(self, session_id):
+            if self.stale_status is not None:
+                return self.stale_status
             return service.latest_prompt_status(session_id)
 
         def prompt_status(self, mission_id):
+            if (
+                self.stale_status is not None
+                and mission_id
+                == self.stale_status["mission_id"]
+            ):
+                return self.stale_status
             return controller.status(mission_id)
 
         def submit_prompt(self, prompt, **kwargs):
+            self.stale_status = None
             return controller.submit(prompt, **kwargs)
 
         def approve_prompt(self, mission_id, **kwargs):
@@ -503,6 +532,11 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         browser.set_request_identity(
             "scott@example.com", authenticated=True
         )
+        initial = browser.snapshot()
+        assert initial["adapter"]["hierarchical_canonical"] is True
+        assert initial["adapter"].get("adaptive_mission", False) is False
+        assert initial["approval"]["enabled"] is False
+        assert _is_adaptive_preapproval(initial) is False
         proposed = browser.propose(
             CANONICAL_M7_OBJECTIVE, "live", mission_lease_s=900.0
         )
@@ -521,9 +555,9 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
             proposed["mission"]["mission_id"]
         )
     finally:
-        controller.cancel(
-            service.latest_prompt_status("m7-browser")["mission_id"]
-        )
+        latest = service.latest_prompt_status("m7-browser")
+        if latest is not None:
+            controller.cancel(latest["mission_id"])
         controller.close()
         service.close()
 

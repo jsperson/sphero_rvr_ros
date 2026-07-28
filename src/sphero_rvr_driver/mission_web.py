@@ -2593,17 +2593,30 @@ class LiveMissionWebAdapter:
             result = mission.get("result", {}) if isinstance(mission.get("result", {}), Mapping) else {}
             mission_id = str(mission.get("mission_id", ""))
             approval = mission.get("approval", {}) if isinstance(mission.get("approval", {}), Mapping) else {}
-        adaptive_mission_projection_enabled = self.adaptive_mission_enabled or any(
-            str(payload.get("schema", "")).startswith("sphero_rvr.adaptive_mission_")
-            for payload in (proposal, result)
+        adaptive_mission_projection_enabled = (
+            not self.hierarchical_canonical_enabled
+            and (
+                self.adaptive_mission_enabled
+                or any(
+                    str(payload.get("schema", "")).startswith(
+                        "sphero_rvr.adaptive_mission_"
+                    )
+                    for payload in (proposal, result)
+                )
+            )
         )
-        proposal_matches_active_controller = bool(
-            not proposal
-            or self.hierarchical_canonical_enabled
-            and proposal.get("schema") == PHYSICAL_PROPOSAL_SCHEMA
-            or not self.adaptive_mission_enabled
-            or proposal.get("schema") == ADAPTIVE_MISSION_PROPOSAL_SCHEMA
-        )
+        if self.hierarchical_canonical_enabled:
+            proposal_matches_active_controller = bool(
+                not proposal
+                or proposal.get("schema") == PHYSICAL_PROPOSAL_SCHEMA
+            )
+        else:
+            proposal_matches_active_controller = bool(
+                not proposal
+                or not self.adaptive_mission_enabled
+                or proposal.get("schema")
+                == ADAPTIVE_MISSION_PROPOSAL_SCHEMA
+            )
 
         progress_value = 0.0
         if isinstance(route_progress, Mapping):
@@ -3432,7 +3445,8 @@ def _is_adaptive_preapproval(snapshot: Mapping[str, Any]) -> bool:
     ):
         return False
     return bool(
-        adapter.get("adaptive_mission", False)
+        not adapter.get("hierarchical_canonical", False)
+        and adapter.get("adaptive_mission", False)
         and adapter.get("approval_activation_enabled", False)
         and str(mission.get("state", "")).upper()
         not in {"APPROVED", "QUEUED", "RUNNING"}
@@ -4223,15 +4237,18 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     function shouldContinuouslyPoll(snapshot) {
+      const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
       return !snapshot.adapter.fixture_only
         && (!snapshot.mission.terminal
           || Boolean(snapshot.adapter.stationary_perception)
-          || Boolean(snapshot.adapter.adaptive_mission));
+          || (Boolean(snapshot.adapter.adaptive_mission) && !canonical));
     }
 
     function renderTelemetryControl(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
+      const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission)
+        && !canonical;
       const controllable = !snapshot.adapter.fixture_only && (stationary || adaptiveMission);
       const panel = $('telemetry-control');
       const button = $('telemetry-toggle');
@@ -4278,8 +4295,9 @@ _INDEX_HTML = r'''<!doctype html>
 
     function renderActionState(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
       const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission)
+        && !canonical;
       const readOnly = Boolean(snapshot.adapter.read_only);
       const leaseActive = adaptiveMission
         && ['APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
@@ -4392,23 +4410,24 @@ _INDEX_HTML = r'''<!doctype html>
       const proposal = snapshot.proposal;
       const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
       const missionId = snapshot.mission.mission_id || null;
-      if (proposal && missionId !== hydratedMissionId) {
-        if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';
-        if (!promptDirty && !proposal.prompt && proposal.objective) {
-          $('mission-prompt').value = proposal.objective;
-        }
-        hydratedMissionId = missionId;
-      } else if (
+      if (
         canonical
         && !promptDirty
         && snapshot.adapter.canonical_objective
       ) {
         $('mission-prompt').value = snapshot.adapter.canonical_objective;
+      } else if (proposal && missionId !== hydratedMissionId) {
+        if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';
+        if (!promptDirty && !proposal.prompt && proposal.objective) {
+          $('mission-prompt').value = proposal.objective;
+        }
+        hydratedMissionId = missionId;
       }
       const live = !snapshot.adapter.fixture_only;
       const rollingReplay = Boolean(snapshot.adapter.rolling_replay);
       const phase4 = Boolean(snapshot.adapter.hierarchical_phase4);
-      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission)
+        && !canonical;
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const execution = live && snapshot.adapter.live_execution_enabled;
       const approvalActivation = live
@@ -4839,14 +4858,18 @@ _INDEX_HTML = r'''<!doctype html>
 
     async function propose() {
       if (missionRequestInFlight || telemetryRequestInFlight) return;
+      const canonical = Boolean(
+        current && current.adapter.hierarchical_canonical
+      );
       const activeAdaptiveLease = Boolean(
         current
         && current.adapter.adaptive_mission
+        && !canonical
         && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
       );
       const adaptiveMission = Boolean(
         current && current.adapter.adaptive_mission
-      );
+      ) && !canonical;
       const leaseActive = Boolean(
         adaptiveMission
         && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
