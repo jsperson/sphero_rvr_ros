@@ -397,8 +397,16 @@ def build_semantic_world_snapshot(
 
     if not mission_id or not objective:
         raise MissionValidationError("semantic snapshot mission and objective are required")
-    if len(frontiers) > 16 or len(tracks) > 16:
-        raise MissionValidationError("semantic snapshot candidate lists exceed bounds")
+    if len(tracks) > 16:
+        raise MissionValidationError(
+            "semantic snapshot track candidate list exceeds bounds"
+        )
+    # WFD operates on the complete server-owned map and may legitimately find
+    # more regions than the compact model contract admits. It already returns
+    # candidates in deterministic path-distance/information-gain/signature
+    # order, so retain the first bounded window before constructing the
+    # provider-visible snapshot.
+    bounded_frontiers = tuple(frontiers)[:16]
     if decision_generation < 1 or event_generation < 0:
         raise MissionValidationError("semantic snapshot generations are invalid")
     if any(not isinstance(item, str) for item in requested_object_classes):
@@ -468,7 +476,7 @@ def build_semantic_world_snapshot(
                 "reachable": True,
                 "last_validated_s": now_s,
             }
-            for candidate in tuple(frontiers)[:16]
+            for candidate in bounded_frontiers
         ],
         "tracks": [track.to_json_dict() for track in tuple(tracks)[:16]],
         "next_best_views": nbv_by_track,

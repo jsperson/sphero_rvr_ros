@@ -32,6 +32,7 @@ def generate_launch_description():
     start_nav2 = LaunchConfiguration("start_nav2")
     start_authority = LaunchConfiguration("start_authority")
     start_semantic_adapter = LaunchConfiguration("start_semantic_adapter")
+    camera_info_url = LaunchConfiguration("camera_info_url")
     reviewed_sha = LaunchConfiguration("reviewed_sha")
     source_sha = LaunchConfiguration("source_sha")
     deployed_sha = LaunchConfiguration("deployed_sha")
@@ -64,6 +65,7 @@ def generate_launch_description():
             "allow_unsupervised_rvr": "false",
             "start_lidar": start_sensors,
             "start_camera": start_sensors,
+            "camera_info_url": camera_info_url,
             "start_slam": start_sensors,
             "slam_autostart": start_sensors,
             "start_live_route_runner": "false",
@@ -224,6 +226,17 @@ def generate_launch_description():
             "start_semantic_adapter",
             default_value="false",
             description="Start deterministic semantic-goal Nav2 adapter; default is off.",
+        ),
+        DeclareLaunchArgument(
+            "camera_info_url",
+            default_value=(
+                "file:///home/jsperson/.ros/camera_info/"
+                "rvr_pi_imx708_calibrated_800x600.yaml"
+            ),
+            description=(
+                "Measured CameraInfo whose camera_name matches the live imx708 "
+                "device used for the canonical physical mission."
+            ),
         ),
         DeclareLaunchArgument("source_sha", default_value=""),
         DeclareLaunchArgument("deployed_sha", default_value=""),

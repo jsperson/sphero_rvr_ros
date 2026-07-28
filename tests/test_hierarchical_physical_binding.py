@@ -464,6 +464,8 @@ def test_physical_launch_and_unit_are_default_off_and_non_bootable() -> None:
 
     assert launch.count('default_value="false"') >= 5
     assert '"use_sim_time": False' in launch
+    assert '"camera_info_url": camera_info_url' in launch
+    assert "rvr_pi_imx708_calibrated_800x600.yaml" in launch
     assert '("cmd_vel", "/nav2_cmd_vel_request")' in launch
     assert '"nav2_cmd_lease_s": 0.50' in launch
     assert "WantedBy=" not in unit

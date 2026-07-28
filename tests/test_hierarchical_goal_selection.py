@@ -326,6 +326,24 @@ def test_world_snapshot_is_bounded_digest_bound_and_has_no_authority() -> None:
     )
 
 
+def test_live_wfd_frontier_oversubscription_is_deterministically_bounded() -> None:
+    base = _frontiers()
+    oversubscribed = tuple(
+        replace(
+            base[index % len(base)],
+            signature=f"live-frontier-{index:02d}",
+        )
+        for index in range(19)
+    )
+
+    snapshot = _snapshot(frontiers=oversubscribed)
+
+    assert len(snapshot["frontiers"]) == 16
+    assert [
+        frontier["signature"] for frontier in snapshot["frontiers"]
+    ] == [frontier.signature for frontier in oversubscribed[:16]]
+
+
 def test_next_best_view_is_stable_reachable_and_records_rejections() -> None:
     first = _nbv()
     second = _nbv()
