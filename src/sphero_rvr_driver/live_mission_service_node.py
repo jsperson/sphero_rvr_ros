@@ -40,6 +40,11 @@ from .adaptive_mission_controller import CodexOAuthAdaptiveMissionIntentProvider
 from .adaptive_mission_live_controller import LiveAdaptiveMissionController
 from .adaptive_mission_physical import PhysicalAdaptiveMissionExecutor
 from .adaptive_mission_session import SystemdAdaptiveMissionSession
+from .hierarchical_physical_binding import (
+    ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256,
+    ACCEPTED_M7_3_EVIDENCE_SHA256,
+    ACCEPTED_M7_4_EVIDENCE_SHA256,
+)
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:
@@ -289,6 +294,16 @@ def main(args=None):
             adaptive_mission_enabled = bool(
                 self.get_parameter("adaptive_mission_enabled").value
             )
+            hierarchical_binding_installed = bool(
+                self.get_parameter(
+                    "hierarchical_physical_binding_installed"
+                ).value
+            )
+            hierarchical_reviewed_sha = str(
+                self.get_parameter(
+                    "hierarchical_physical_reviewed_sha"
+                ).value
+            ).strip()
             approval_activation_enabled = bool(
                 self.get_parameter("approval_activation_enabled").value
             )
@@ -332,6 +347,17 @@ def main(args=None):
                 raise ValueError(
                     "stationary perception and Adaptive mission cannot own the prompt "
                     "controller simultaneously"
+                )
+            if hierarchical_binding_installed and (
+                hierarchical_reviewed_sha != source_sha
+                or source_sha != deployed_sha
+            ):
+                raise ValueError(
+                    "installed hierarchical binding must match exact source, deployed, and reviewed SHAs"
+                )
+            if hierarchical_binding_installed and live_execution_enabled:
+                raise ValueError(
+                    "M7.5 installs the hierarchical binding locked; it cannot share legacy or Adaptive execution authority"
                 )
             model_id = str(self.get_parameter("planning_model").value).strip() or None
             reasoning_effort = str(self.get_parameter("planning_reasoning_effort").value)
@@ -399,7 +425,7 @@ def main(args=None):
                 adaptive_session.ensure_locked()
 
             def service_factory() -> MissionService:
-                return MissionService(
+                service = MissionService(
                     database,
                     source_sha=source_sha,
                     deployed_sha=deployed_sha,
@@ -410,6 +436,27 @@ def main(args=None):
                     live_execution_enabled=live_execution_enabled,
                     adaptive_mission_limits=adaptive_limits.to_json_dict(),
                 )
+                service.hierarchical_physical_binding = {
+                    "installed": hierarchical_binding_installed,
+                    "state": "locked",
+                    "reviewed_sha": hierarchical_reviewed_sha,
+                    "m7_3_evidence_sha256": (
+                        ACCEPTED_M7_3_EVIDENCE_SHA256
+                    ),
+                    "directional_addendum_sha256": (
+                        ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256
+                    ),
+                    "m7_4_evidence_sha256": (
+                        ACCEPTED_M7_4_EVIDENCE_SHA256
+                    ),
+                    "m7_6_execution_approved": False,
+                    "canonical_mission_approved": False,
+                    "motion_authority": False,
+                    "physical_execution_enabled": False,
+                    "restart_resume_allowed": False,
+                    "browser_direct_ros_commands_allowed": False,
+                }
+                return service
 
             controller_factory = None
             if stationary_perception_enabled:
@@ -562,6 +609,12 @@ def main(args=None):
             self.declare_parameter("planning_enabled", True)
             self.declare_parameter("stationary_perception_enabled", False)
             self.declare_parameter("adaptive_mission_enabled", False)
+            self.declare_parameter(
+                "hierarchical_physical_binding_installed", False
+            )
+            self.declare_parameter(
+                "hierarchical_physical_reviewed_sha", ""
+            )
             self.declare_parameter("stationary_perception_tick_s", 0.2)
             self.declare_parameter("stationary_perception_max_source_age_s", 1.5)
             self.declare_parameter("planning_model", "gpt-5.6-luna")

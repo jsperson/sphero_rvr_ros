@@ -33,6 +33,11 @@ from .hierarchical_exploration import (
     HierarchicalCommandBridge,
     PRIVATE_NAV2_CMD_TOPIC,
 )
+from .hierarchical_physical_binding import (
+    AUTHORITY_HEARTBEAT_MAX_AGE_S,
+    AUTHORITY_TOPIC,
+    validate_authority_heartbeat,
+)
 from .odometry import MotionPrimitiveConfig, OdomMotionState
 from .range_motion_node import _stamp_seconds, _tf_error_reason, _transform2d_from_transform_stamped
 
@@ -144,11 +149,39 @@ def main(args=None):
             self._hierarchical_mode = bool(
                 self.get_parameter("hierarchical_mode_enabled").value
             )
-            if self._hierarchical_mode and not bool(
-                self.get_parameter("use_sim_time").value
-            ):
+            self._hierarchical_physical = bool(
+                self.get_parameter(
+                    "hierarchical_physical_binding_enabled"
+                ).value
+            )
+            use_sim_time = bool(self.get_parameter("use_sim_time").value)
+            if self._hierarchical_physical and not self._hierarchical_mode:
+                raise ValueError(
+                    "physical hierarchical binding requires hierarchical mode"
+                )
+            if self._hierarchical_mode and not self._hierarchical_physical and not use_sim_time:
                 raise ValueError(
                     "Phase 1 hierarchical mode is replay-only and requires use_sim_time"
+                )
+            if self._hierarchical_physical and use_sim_time:
+                raise ValueError(
+                    "physical hierarchical binding requires live time"
+                )
+            self._deployed_sha = str(
+                self.get_parameter("deployed_sha").value
+            ).strip()
+            self._reviewed_sha = str(
+                self.get_parameter(
+                    "hierarchical_physical_reviewed_sha"
+                ).value
+            ).strip()
+            if self._hierarchical_physical and not (
+                self._source_sha_value()
+                == self._deployed_sha
+                == self._reviewed_sha
+            ):
+                raise ValueError(
+                    "physical hierarchical binding requires matching exact source, deployed, and reviewed SHAs"
                 )
             self._hierarchical_bridge = HierarchicalCommandBridge(
                 HierarchicalBridgeConfig(
@@ -165,6 +198,8 @@ def main(args=None):
                 )
             )
             self._latest_nav2_command_received_at: Optional[float] = None
+            self._hierarchical_authority: Optional[dict[str, Any]] = None
+            self._hierarchical_authority_received_at: Optional[float] = None
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
             self._latest_request: Optional[LiveRouteRequest] = None
@@ -190,6 +225,13 @@ def main(args=None):
                     self._on_nav2_command,
                     10,
                 )
+                if self._hierarchical_physical:
+                    self.create_subscription(
+                        String,
+                        self._hierarchical_authority_topic(),
+                        self._on_hierarchical_authority,
+                        10,
+                    )
             else:
                 self.create_subscription(String, str(self.get_parameter("route_request_topic").value), self._on_route_request, 10)
             self.create_subscription(
@@ -214,6 +256,13 @@ def main(args=None):
                 "diagnostics_topic": "/diagnostics",
                 "cmd_vel_topic": "/cmd_vel",
                 "hierarchical_mode_enabled": False,
+                "hierarchical_physical_binding_enabled": False,
+                "hierarchical_authority_topic": AUTHORITY_TOPIC,
+                "hierarchical_authority_max_age_s": (
+                    AUTHORITY_HEARTBEAT_MAX_AGE_S
+                ),
+                "hierarchical_physical_reviewed_sha": "",
+                "deployed_sha": "",
                 "nav2_cmd_topic": PRIVATE_NAV2_CMD_TOPIC,
                 "nav2_cmd_lease_s": 0.25,
                 "hierarchical_max_linear_mps": 0.10,
@@ -328,6 +377,19 @@ def main(args=None):
                 )
             return PRIVATE_NAV2_CMD_TOPIC
 
+        def _source_sha_value(self) -> str:
+            return str(self.get_parameter("source_sha").value).strip() or _source_sha()
+
+        def _hierarchical_authority_topic(self) -> str:
+            topic = str(
+                self.get_parameter("hierarchical_authority_topic").value
+            )
+            if topic != AUTHORITY_TOPIC:
+                raise ValueError(
+                    f"hierarchical authority topic must remain {AUTHORITY_TOPIC}"
+                )
+            return AUTHORITY_TOPIC
+
         def _on_nav2_command(self, msg) -> None:
             now_s = self._now_seconds()
             self._latest_nav2_command_received_at = now_s
@@ -336,6 +398,19 @@ def main(args=None):
                 float(msg.angular.z),
                 received_at_s=now_s,
             )
+
+        def _on_hierarchical_authority(self, msg) -> None:
+            now_s = self._now_seconds()
+            try:
+                payload = json.loads(str(msg.data))
+                if not isinstance(payload, dict):
+                    raise ValueError("authority payload must be an object")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._hierarchical_authority = None
+                self._hierarchical_authority_received_at = None
+                return
+            self._hierarchical_authority = payload
+            self._hierarchical_authority_received_at = now_s
 
         def _on_route_request(self, msg) -> None:
             try:
@@ -442,6 +517,27 @@ def main(args=None):
         def _tick(self) -> None:
             if self._hierarchical_mode:
                 now_s = self._now_seconds()
+                authority_valid = not self._hierarchical_physical
+                if self._hierarchical_physical:
+                    if (
+                        self._hierarchical_authority is not None
+                        and self._hierarchical_authority_received_at is not None
+                    ):
+                        authority_valid, _ = validate_authority_heartbeat(
+                            self._hierarchical_authority,
+                            now_s=now_s,
+                            received_at_s=(
+                                self._hierarchical_authority_received_at
+                            ),
+                            source_sha=self._source_sha_value(),
+                            deployed_sha=self._deployed_sha,
+                            reviewed_sha=self._reviewed_sha,
+                            max_age_s=float(
+                                self.get_parameter(
+                                    "hierarchical_authority_max_age_s"
+                                ).value
+                            ),
+                        )
                 evidence_fresh = bool(
                     self._latest_odom is not None
                     and self._latest_odom_received_at is not None
@@ -459,8 +555,9 @@ def main(args=None):
                     now_s=now_s,
                     goal_active=(
                         self._latest_nav2_command_received_at is not None
+                        and authority_valid
                     ),
-                    mission_lease_valid=True,
+                    mission_lease_valid=authority_valid,
                     motion_evidence_fresh=evidence_fresh,
                     collision_state=self._collision_state or "UNKNOWN",
                     stop=self._stop,

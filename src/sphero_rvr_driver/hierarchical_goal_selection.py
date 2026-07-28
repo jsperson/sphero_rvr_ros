@@ -1389,6 +1389,7 @@ class AsyncSemanticGoalController:
         self._prefetched_snapshot: Optional[dict[str, Any]] = None
         self._ready_non_motion: Optional[ResolvedSemanticGoal] = None
         self._active: Optional[ResolvedSemanticGoal] = None
+        self._active_snapshot: Optional[dict[str, Any]] = None
         self._generation = 0
         self._event_generation = 0
         self._events: list[dict[str, Any]] = []
@@ -1433,6 +1434,7 @@ class AsyncSemanticGoalController:
                 f"initial semantic goal failed revalidation: {validation.reasons}"
             )
         self._active = resolved
+        self._active_snapshot = json.loads(json.dumps(dict(snapshot)))
         self._motion_goal_decisions = 1
         self._last_remaining_m = resolved.route_length_m
         handoff = self.follower.start([resolved.as_frontier_goal()], now_s=now_s)
@@ -1506,6 +1508,7 @@ class AsyncSemanticGoalController:
         ):
             if self._prefetched is not None:
                 self._active = self._prefetched
+                self._active_snapshot = self._prefetched_snapshot
                 self._prefetched = None
                 self._prefetched_snapshot = None
                 self._last_remaining_m = self._active.route_length_m
@@ -1782,6 +1785,34 @@ class AsyncSemanticGoalController:
             if self._prefetched is None
             else self._prefetched.decision.decision_generation
         )
+
+    def resolved_motion_goals(
+        self,
+    ) -> tuple[
+        tuple[ResolvedSemanticGoal, Mapping[str, Any]],
+        ...,
+    ]:
+        """Return the active/validated successor geometry owned by the server.
+
+        This is the only live-binding export from the replay-proven controller;
+        model responses remain semantic IDs and consumers must still revalidate
+        against their current snapshot before sending a Nav2 goal.
+        """
+
+        result: list[
+            tuple[ResolvedSemanticGoal, Mapping[str, Any]]
+        ] = []
+        if self._active is not None and self._active_snapshot is not None:
+            result.append((self._active, self._active_snapshot))
+        if (
+            self._prefetched is not None
+            and self._prefetched_snapshot is not None
+        ):
+            result.append((self._prefetched, self._prefetched_snapshot))
+        return tuple(result)
+
+    def ready_non_motion_goal(self) -> Optional[ResolvedSemanticGoal]:
+        return self._ready_non_motion
 
     def _record(
         self, kind: str, at_s: float, **details: Any

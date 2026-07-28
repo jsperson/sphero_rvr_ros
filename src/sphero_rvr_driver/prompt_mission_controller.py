@@ -133,6 +133,11 @@ class PromptMissionController:
             return self.service.prompt_status(mission_id)
 
     def service_snapshot(self) -> dict[str, Any]:
+        hierarchical_binding = getattr(
+            self.service, "hierarchical_physical_binding", {}
+        )
+        if not isinstance(hierarchical_binding, Mapping):
+            hierarchical_binding = {}
         return {
             "api_version": "mission_api.v2",
             "mode": self.service.mode,
@@ -142,6 +147,9 @@ class PromptMissionController:
             "live_execution_enabled": self.execution_enabled,
             "direct_ros_commands_allowed": False,
             "credentials_accepted_over_service": False,
+            "hierarchical_physical_binding": json.loads(
+                json.dumps(dict(hierarchical_binding))
+            ),
             "capabilities": self.service.capabilities(),
         }
 

@@ -24,6 +24,10 @@ live_mission_service:
     # Adaptive mission installs the closed-loop planner and physical executor seam, but
     # remains proposal-only unless the separate exact-SHA live gate is enabled.
     adaptive_mission_enabled: false
+    # M7.5 browser/readiness projection only. Installation remains physically
+    # locked until a later exact-SHA M7.6 approval starts the separate unit.
+    hierarchical_physical_binding_installed: false
+    hierarchical_physical_reviewed_sha: ""
     stationary_perception_tick_s: 0.2
     stationary_perception_max_source_age_s: 1.5
     planning_model: gpt-5.6-luna
