@@ -83,6 +83,7 @@ def main(args=None):
             self._authority_received_at_s: Optional[float] = None
             self._goal_handle = None
             self._last_batch_digest = ""
+            self._active_batch_digest = ""
             self._cancel_requested = False
             self._distance_remaining_m: Optional[float] = None
             self._poses_remaining: Optional[int] = None
@@ -177,13 +178,20 @@ def main(args=None):
             if digest == self._last_batch_digest:
                 return
             if not self._client.wait_for_server(timeout_sec=0.0):
-                self._publish_status("wait_planning", "nav2_action_unavailable")
+                self._publish_status(
+                    "recovery_required", "nav2_action_unavailable"
+                )
                 return
             goal = NavigateThroughPoses.Goal()
             goal.poses = [self._pose(item) for item in batch.poses]
             self._cancel_requested = False
             future = self._client.send_goal_async(
-                goal, feedback_callback=self._on_feedback
+                goal,
+                feedback_callback=(
+                    lambda message, batch_digest=digest: self._on_feedback(
+                        message, batch_digest
+                    )
+                ),
             )
             future.add_done_callback(
                 lambda result, batch_digest=digest: self._on_goal_response(
@@ -211,21 +219,30 @@ def main(args=None):
                 handle = future.result()
             except Exception as exc:
                 self._publish_status(
-                    "wait_planning",
+                    "recovery_required",
                     f"nav2_goal_error:{exc.__class__.__name__}",
                 )
                 return
             if handle is None or not handle.accepted:
-                self._publish_status("wait_planning", "nav2_goal_rejected")
+                self._publish_status(
+                    "recovery_required", "nav2_goal_rejected"
+                )
                 return
             self._goal_handle = handle
             self._last_batch_digest = digest
+            self._active_batch_digest = digest
             self._cancel_requested = False
             result = handle.get_result_async()
-            result.add_done_callback(self._on_result)
+            result.add_done_callback(
+                lambda wrapped, batch_digest=digest: self._on_result(
+                    wrapped, batch_digest
+                )
+            )
             self._publish_status("navigating", "nav2_goal_accepted")
 
-        def _on_feedback(self, message) -> None:
+        def _on_feedback(self, message, digest: str) -> None:
+            if digest != self._active_batch_digest:
+                return
             try:
                 feedback = message.feedback
                 distance = float(feedback.distance_remaining)
@@ -239,17 +256,22 @@ def main(args=None):
                 self._poses_remaining = None
             self._publish_status("navigating", "nav2_feedback")
 
-        def _on_result(self, future) -> None:
+        def _on_result(self, future, digest: str) -> None:
+            if digest != self._active_batch_digest:
+                return
             try:
                 wrapped = future.result()
                 status = int(wrapped.status)
             except Exception as exc:
+                self._goal_handle = None
+                self._active_batch_digest = ""
                 self._publish_status(
                     "recovery_required",
                     f"nav2_result_error:{exc.__class__.__name__}",
                 )
                 return
             self._goal_handle = None
+            self._active_batch_digest = ""
             self._cancel_requested = False
             self._distance_remaining_m = 0.0
             self._poses_remaining = 0

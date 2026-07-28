@@ -11,6 +11,11 @@ from sphero_rvr_driver.hierarchical_goal_selection import (
     ScriptedSemanticGoalProvider,
     build_semantic_world_snapshot,
 )
+from sphero_rvr_driver.hierarchical_mission_node import (
+    adapter_recovery_reason,
+    adapter_remaining_distance,
+    goal_dispatch_queue_key,
+)
 from sphero_rvr_driver.hierarchical_physical_binding import (
     ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256,
     ACCEPTED_M7_3_EVIDENCE_SHA256,
@@ -532,6 +537,98 @@ def test_controller_keeps_authority_heartbeat_live_during_map_processing() -> No
         / "hierarchical_physical_binding.py"
     ).read_text()
     assert "if rclpy.ok(context=self.context):" in authority
+
+
+def test_controller_ignores_placeholder_zero_until_nav2_reports_success() -> None:
+    fallback = 1.25
+    assert adapter_remaining_distance(
+        {
+            "state": "dispatching",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        },
+        fallback,
+    ) == pytest.approx(fallback)
+    assert adapter_remaining_distance(
+        {
+            "state": "navigating",
+            "goal_active": True,
+            "distance_remaining_m": 0.72,
+        },
+        fallback,
+    ) == pytest.approx(0.72)
+    assert adapter_remaining_distance(
+        {
+            "state": "wait_planning",
+            "reason": "nav2_result_status_4",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        },
+        fallback,
+    ) == pytest.approx(0.0)
+
+
+def test_controller_fails_closed_on_nav2_recovery_status() -> None:
+    assert (
+        adapter_recovery_reason(
+            {
+                "state": "recovery_required",
+                "reason": "nav2_result_status_6",
+            }
+        )
+        == "nav2_result_status_6"
+    )
+    assert (
+        adapter_recovery_reason(
+            {"state": "wait_planning", "reason": "nav2_result_status_4"}
+        )
+        == ""
+    )
+
+
+def test_dispatch_queue_key_ignores_refresh_but_tracks_semantic_change() -> None:
+    authority = _approval()
+    snapshot = _snapshot()
+    first = _dispatch(snapshot, authority)
+    refreshed = json.loads(json.dumps(first))
+    refreshed["reason"] = "navigating"
+    refreshed["goals"][0]["current_snapshot"]["map_revision"] = (
+        "map-revision-002"
+    )
+    assert goal_dispatch_queue_key(refreshed) == goal_dispatch_queue_key(first)
+
+    changed = json.loads(json.dumps(first))
+    changed["goals"][0]["decision"]["decision_generation"] = 2
+    assert goal_dispatch_queue_key(changed) != goal_dispatch_queue_key(first)
+
+
+def test_physical_nav2_clears_only_its_declared_footprint() -> None:
+    nav2 = (
+        REPO_ROOT / "config" / "hierarchical_nav2_physical.yaml"
+    ).read_text()
+    collision = (REPO_ROOT / "config" / "collision_stop.yaml").read_text()
+
+    assert nav2.count("footprint_clearing_enabled: true") == 3
+    assert "restore_cleared_footprint: true" in nav2
+    assert nav2.count("robot_radius: 0.22") == 2
+    assert nav2.count("topic: /scan") == 2
+    assert "min_range_m: 0.08" in collision
+    assert "footprint_front_m: 0.22" in collision
+    assert "footprint_rear_m: 0.16" in collision
+
+
+def test_nav2_adapter_binds_feedback_and_results_to_active_batch() -> None:
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_nav2_adapter_node.py"
+    ).read_text()
+
+    assert "digest != self._active_batch_digest" in source
+    assert source.count("recovery_required") >= 5
+    assert '"nav2_action_unavailable"' in source
+    assert '"nav2_goal_rejected"' in source
 
 
 def test_browser_projection_exposes_installed_but_locked_binding(

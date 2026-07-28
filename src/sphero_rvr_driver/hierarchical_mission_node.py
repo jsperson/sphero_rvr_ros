@@ -78,6 +78,84 @@ def _yaw(orientation: Any) -> float:
     )
 
 
+def adapter_remaining_distance(
+    status: Mapping[str, Any], fallback_remaining_m: float
+) -> float:
+    """Use Nav2 distance only when it represents feedback or success."""
+
+    fallback = max(0.0, float(fallback_remaining_m))
+    state = str(status.get("state", "")).strip()
+    reason = str(status.get("reason", "")).strip()
+    trustworthy = (
+        state == "navigating" and status.get("goal_active") is True
+    ) or (
+        state == "wait_planning"
+        and reason == "nav2_result_status_4"
+        and status.get("goal_active") is False
+    )
+    if not trustworthy:
+        return fallback
+    try:
+        remaining = float(status.get("distance_remaining_m"))
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(remaining) or remaining < 0.0:
+        return fallback
+    return remaining
+
+
+def adapter_recovery_reason(status: Mapping[str, Any]) -> str:
+    """Return a fail-closed Nav2 execution failure, if present."""
+
+    if str(status.get("state", "")).strip() != "recovery_required":
+        return ""
+    reason = str(status.get("reason", "")).strip()
+    return reason or "nav2_recovery_required"
+
+
+def goal_dispatch_queue_key(dispatch: Mapping[str, Any]) -> str:
+    """Identify semantic queue changes without map-refresh churn."""
+
+    raw_goals = dispatch.get("goals")
+    if not isinstance(raw_goals, list) or not raw_goals:
+        raise MissionValidationError("goal dispatch queue is unavailable")
+    goals = []
+    for raw in raw_goals:
+        if not isinstance(raw, Mapping):
+            raise MissionValidationError("goal dispatch queue is invalid")
+        decision = raw.get("decision")
+        captured = raw.get("captured_snapshot")
+        if not isinstance(decision, Mapping) or not isinstance(
+            captured, Mapping
+        ):
+            raise MissionValidationError("goal dispatch queue is invalid")
+        goals.append(
+            {
+                "decision": dict(decision),
+                "captured_snapshot_id": str(
+                    captured.get("snapshot_id", "")
+                ).strip(),
+            }
+        )
+    stable = {
+        "mission_id": str(dispatch.get("mission_id", "")).strip(),
+        "source_sha": str(dispatch.get("source_sha", "")).strip(),
+        "approval_digest": str(
+            dispatch.get("approval_digest", "")
+        ).strip(),
+        "controller_session": int(dispatch.get("controller_session", 0)),
+        "goals": goals,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            stable,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def main(args=None):
     import rclpy
     from nav_msgs.msg import OccupancyGrid as RosOccupancyGrid
@@ -191,6 +269,7 @@ def main(args=None):
             self._replan_pending = False
             self._controller_session = 1
             self._last_dispatch_digest = ""
+            self._last_dispatch_queue_key = ""
             self._terminal = False
             # Map hashing and frontier extraction are intentionally
             # server-owned and can occupy the main callback group long enough
@@ -514,6 +593,16 @@ def main(args=None):
                 )
                 self._tick_initial(snapshot, now_s)
                 return
+            recovery_reason = adapter_recovery_reason(
+                self._adapter_status
+            )
+            if recovery_reason:
+                self._terminal = True
+                self._provider.cancel()
+                self._publish_status(
+                    "recovery_required", recovery_reason
+                )
+                return
             event_step = self._event_replan(snapshot, now_s)
             if event_step is not None:
                 step, event_snapshot = event_step
@@ -533,16 +622,9 @@ def main(args=None):
             fallback_remaining = (
                 0.0 if not active_goals else active_goals[0][0].route_length_m
             )
-            raw_remaining = self._adapter_status.get(
-                "distance_remaining_m", fallback_remaining
+            remaining = adapter_remaining_distance(
+                self._adapter_status, fallback_remaining
             )
-            try:
-                remaining = float(raw_remaining)
-            except (TypeError, ValueError):
-                remaining = float(fallback_remaining)
-            if not math.isfinite(remaining):
-                remaining = float(fallback_remaining)
-            remaining = max(0.0, remaining)
             step = self._controller.tick(
                 snapshot,
                 now_s=now_s,
@@ -726,7 +808,8 @@ def main(args=None):
                 self._publish_status("wait_planning", str(exc))
                 return
             digest = str(dispatch["dispatch_digest"])
-            if digest == self._last_dispatch_digest:
+            queue_key = goal_dispatch_queue_key(dispatch)
+            if queue_key == self._last_dispatch_queue_key:
                 return
             message = String()
             message.data = json.dumps(
@@ -737,6 +820,7 @@ def main(args=None):
             )
             self._dispatch_pub.publish(message)
             self._last_dispatch_digest = digest
+            self._last_dispatch_queue_key = queue_key
             self._journal.append(
                 str(self._authority["mission_id"]),
                 "goal_dispatch",
