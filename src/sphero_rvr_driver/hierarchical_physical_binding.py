@@ -35,6 +35,7 @@ APPROVAL_SCHEMA = "sphero_rvr.hierarchical_m7_6_approval.v1"
 JOURNAL_SCHEMA = "sphero_rvr.hierarchical_physical_journal.v1"
 NAV2_BATCH_SCHEMA = "sphero_rvr.hierarchical_nav2_goal_batch.v1"
 GOAL_DISPATCH_SCHEMA = "sphero_rvr.hierarchical_goal_dispatch.v1"
+PHYSICAL_PROPOSAL_SCHEMA = "sphero_rvr.hierarchical_physical_proposal.v1"
 
 AUTHORITY_TOPIC = "/mission_api/v2/hierarchical/authority"
 GOAL_DISPATCH_TOPIC = "/mission_api/v2/hierarchical/goal_dispatch"
@@ -72,6 +73,87 @@ def canonical_digest(value: Mapping[str, Any]) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(rendered).hexdigest()
+
+
+def validate_physical_proposal(
+    raw: Mapping[str, Any],
+    *,
+    authority: Mapping[str, Any],
+    source_sha: str,
+) -> dict[str, Any]:
+    """Validate the browser-authored semantic mission bound by M7.6.
+
+    The proposal contains language and requested semantic classes only. It
+    cannot carry poses, routes, velocities, safety settings, or ROS names.
+    """
+
+    payload = dict(raw)
+    supplied_digest = _sha256(
+        payload.pop("proposal_digest", ""), "proposal digest"
+    )
+    expected_keys = {
+        "schema",
+        "mission_id",
+        "objective",
+        "objective_revision",
+        "requested_object_classes",
+        "source_sha",
+        "created_at_s",
+    }
+    if (
+        set(payload) != expected_keys
+        or payload.get("schema") != PHYSICAL_PROPOSAL_SCHEMA
+    ):
+        raise MissionValidationError(
+            "hierarchical physical proposal has missing or unreviewed fields"
+        )
+    if canonical_digest(payload) != supplied_digest:
+        raise MissionValidationError(
+            "hierarchical physical proposal digest is invalid"
+        )
+    mission_id = str(payload["mission_id"]).strip()
+    objective = str(payload["objective"]).strip()
+    classes = payload["requested_object_classes"]
+    try:
+        objective_revision = int(payload["objective_revision"])
+    except (TypeError, ValueError) as exc:
+        raise MissionValidationError(
+            "hierarchical physical proposal revision is invalid"
+        ) from exc
+    if (
+        not mission_id
+        or not objective
+        or len(objective) > 600
+        or objective_revision < 1
+        or not isinstance(classes, list)
+        or len(classes) > 8
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or len(item.strip()) > 64
+            for item in classes
+        )
+        or len({item.strip() for item in classes}) != len(classes)
+    ):
+        raise MissionValidationError(
+            "hierarchical physical proposal semantics are invalid"
+        )
+    exact_source = _sha1(source_sha, "proposal runtime source SHA")
+    if (
+        _sha1(payload["source_sha"], "proposal source SHA") != exact_source
+        or mission_id != str(authority.get("mission_id", "")).strip()
+        or supplied_digest
+        != str(authority.get("proposal_digest", "")).strip()
+    ):
+        raise MissionValidationError(
+            "hierarchical physical proposal does not bind active authority"
+        )
+    _finite(payload["created_at_s"], "proposal creation time")
+    return {
+        **payload,
+        "requested_object_classes": [item.strip() for item in classes],
+        "proposal_digest": supplied_digest,
+    }
 
 
 def _sha1(value: Any, name: str) -> str:

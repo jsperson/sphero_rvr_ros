@@ -13,6 +13,7 @@ The installed chain is:
 ```text
 server-owned semantic snapshot
   -> toolless semantic-ID model response
+  -> async M6 controller (prefetch + event replan)
   -> deterministic resolver and current-snapshot revalidation
   -> /navigate_through_poses
   -> Nav2 controller/behavior servers
@@ -24,6 +25,11 @@ server-owned semantic snapshot
 
 The semantic/Nav2 adapter and authority owner publish no `Twist`, do not open
 serial transport, and never publish to `/cmd_vel` or `/cmd_vel_motor`.
+The live hierarchical mission controller has the same restriction. It consumes
+the live trinary `/map`, localization and semantic-map evidence, runs
+deterministic WFD and Next-Best-View generation, and is the sole publisher of
+the semantic dispatch topic. The moving semantic-perception node is part of
+the same all-or-nothing default-off group.
 
 ## Default-off physical surface
 
@@ -47,6 +53,8 @@ and `Restart=no`. Its startup precondition requires:
 - a separate `RVR_HIERARCHICAL_M7_6_APPROVED=true`;
 - exact equality of source, deployed, and reviewed SHAs;
 - a non-empty M7.6 approval file.
+- a non-empty browser-authored semantic proposal file whose digest is bound by
+  that approval.
 
 Installing this unit does not start or enable it.
 
@@ -77,8 +85,8 @@ lease expiry, and shutdown append a relock event.
 
 ## Semantic-goal and Nav2 boundary
 
-The live adapter accepts only a digest-bound dispatch from the Pi mission
-service. Each item contains the original strict semantic-ID response, its
+The live adapter accepts only a digest-bound dispatch from the Pi-owned
+hierarchical mission controller. Each item contains the original strict semantic-ID response, its
 captured snapshot, and a current snapshot. The adapter:
 
 1. validates the model response against the existing M6 strict schema;
@@ -93,10 +101,20 @@ The model cannot provide a pose or velocity. Updated compatible batches use
 Nav2 goal preemption/GoalUpdater behavior; late successors remain an explicit
 `wait_planning` state rather than stale or speculative motion.
 
+The physical proposal schema contains only mission ID, objective text,
+objective revision, requested semantic classes, exact source SHA, and creation
+time. Any geometry, route, speed, safety, lease, ROS, or code field is rejected.
+The live controller runs the replay-proven asynchronous successor logic and
+converts stable new detections or invalidated active frontiers into the existing
+event-triggered replan contract. Nav2 feedback supplies remaining distance for
+the p95-plus-margin prefetch threshold.
+
 ## Durable and browser evidence
 
 The authority journal records activation and relock events with canonical
-payload digests. Goal batches have canonical digests and retain semantic
+payload digests. The live controller records controller events and every
+semantic dispatch in the same append-only journal. Goal batches have canonical
+digests and retain semantic
 generation, target ID/signature, map ID/revision, source SHA, approval digest,
 controller session, and reason.
 
@@ -125,6 +143,8 @@ The browser still has no ROS or direct command route.
 - Drop-off sensing is unavailable. Physical use remains attended and restricted
   to a level bounded room without stairs, ledges, or open drop-offs.
 - Restart never resumes a route.
+- Camera evidence retention remains bounded to 96 JPEG thumbnails of at most
+  512,000 bytes each; the live session does not run rosbag.
 
 ## Carried physical risks
 

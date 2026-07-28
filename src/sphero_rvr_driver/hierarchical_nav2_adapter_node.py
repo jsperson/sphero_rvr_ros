@@ -84,6 +84,8 @@ def main(args=None):
             self._goal_handle = None
             self._last_batch_digest = ""
             self._cancel_requested = False
+            self._distance_remaining_m: Optional[float] = None
+            self._poses_remaining: Optional[int] = None
             self._client = ActionClient(
                 self, NavigateThroughPoses, NAV2_ACTION
             )
@@ -224,7 +226,17 @@ def main(args=None):
             self._publish_status("navigating", "nav2_goal_accepted")
 
         def _on_feedback(self, message) -> None:
-            del message
+            try:
+                feedback = message.feedback
+                distance = float(feedback.distance_remaining)
+                poses_remaining = int(feedback.number_of_poses_remaining)
+                if not math.isfinite(distance) or distance < 0.0:
+                    raise ValueError("invalid Nav2 distance")
+                self._distance_remaining_m = distance
+                self._poses_remaining = poses_remaining
+            except (AttributeError, TypeError, ValueError):
+                self._distance_remaining_m = None
+                self._poses_remaining = None
             self._publish_status("navigating", "nav2_feedback")
 
         def _on_result(self, future) -> None:
@@ -239,6 +251,8 @@ def main(args=None):
                 return
             self._goal_handle = None
             self._cancel_requested = False
+            self._distance_remaining_m = 0.0
+            self._poses_remaining = 0
             self._publish_status(
                 "wait_planning" if status == 4 else "recovery_required",
                 f"nav2_result_status_{status}",
@@ -264,6 +278,8 @@ def main(args=None):
                 "source_sha": self._source_sha,
                 "goal_active": self._goal_handle is not None,
                 "last_batch_digest": self._last_batch_digest,
+                "distance_remaining_m": self._distance_remaining_m,
+                "poses_remaining": self._poses_remaining,
                 "batch": batch,
                 "direct_twist_publisher": False,
                 "physical_execution_enabled": (

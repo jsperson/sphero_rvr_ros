@@ -18,12 +18,14 @@ from sphero_rvr_driver.hierarchical_physical_binding import (
     APPROVAL_SCHEMA,
     AUTHORITY_SCHEMA,
     GOAL_DISPATCH_SCHEMA,
+    PHYSICAL_PROPOSAL_SCHEMA,
     HierarchicalBindingJournal,
     HierarchicalPhysicalAuthorityOwner,
     build_goal_dispatch,
     canonical_digest,
     resolve_goal_dispatch,
     validate_authority_heartbeat,
+    validate_physical_proposal,
 )
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.mission_service import MissionService
@@ -170,6 +172,21 @@ def _dispatch(snapshot: dict, authority: dict) -> dict:
         ],
     }
     return {**payload, "dispatch_digest": canonical_digest(payload)}
+
+
+def _proposal(authority: dict) -> dict:
+    payload = {
+        "schema": PHYSICAL_PROPOSAL_SCHEMA,
+        "mission_id": authority["mission_id"],
+        "objective": "Explore and map the attended bounded room.",
+        "objective_revision": 1,
+        "requested_object_classes": ["shoe", "person"],
+        "source_sha": authority["source_sha"],
+        "created_at_s": 99.0,
+    }
+    proposal = {**payload, "proposal_digest": canonical_digest(payload)}
+    authority["proposal_digest"] = proposal["proposal_digest"]
+    return proposal
 
 
 def test_authority_is_default_off_and_all_accepted_evidence_is_required(
@@ -328,6 +345,25 @@ def test_dispatch_uses_server_geometry_and_rejects_model_geometry(
     journal.close()
 
 
+def test_physical_proposal_is_semantic_only_and_authority_bound(
+    tmp_path: Path,
+) -> None:
+    owner, journal = _owner(tmp_path)
+    authority = owner.activate(_approval(), now_s=100.0)
+    proposal = _proposal(authority)
+    assert validate_physical_proposal(
+        proposal, authority=authority, source_sha=SHA
+    )["requested_object_classes"] == ["shoe", "person"]
+
+    injected = dict(proposal)
+    injected["x_m"] = 2.0
+    with pytest.raises(MissionValidationError, match="unreviewed fields"):
+        validate_physical_proposal(
+            injected, authority=authority, source_sha=SHA
+        )
+    journal.close()
+
+
 def test_replay_proven_async_engine_exports_only_bound_semantic_dispatch(
     tmp_path: Path,
 ) -> None:
@@ -433,6 +469,9 @@ def test_physical_launch_and_unit_are_default_off_and_non_bootable() -> None:
     assert "WantedBy=" not in unit
     assert "Restart=no" in unit
     assert "RVR_HIERARCHICAL_M7_6_APPROVED" in unit
+    assert "RVR_HIERARCHICAL_PROPOSAL_FILE" in unit
+    assert 'executable="hierarchical_mission_controller"' in launch
+    assert 'executable="stationary_perception"' in launch
     assert "mission_lease_valid=authority_valid" in route
     assert "hierarchical_physical_binding_enabled" in route
 
@@ -450,12 +489,21 @@ def test_nav2_adapter_has_no_twist_or_direct_motor_surface() -> None:
         / "sphero_rvr_driver"
         / "hierarchical_authority_node.py"
     ).read_text()
+    controller = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
 
-    assert "Twist" not in source
-    assert "/cmd_vel" not in source
-    assert "serial" not in source.lower()
-    assert "Twist" not in authority
-    assert "/cmd_vel" not in authority
+    for candidate in (source, authority, controller):
+        assert "Twist" not in candidate
+        assert "/cmd_vel" not in candidate
+        assert "serial" not in candidate.lower()
+    assert "GOAL_DISPATCH_TOPIC" in controller
+    assert "AsyncSemanticGoalController" in controller
+    assert "detect_frontiers" in controller
+    assert "HierarchicalBindingJournal" in controller
 
 
 def test_browser_projection_exposes_installed_but_locked_binding(

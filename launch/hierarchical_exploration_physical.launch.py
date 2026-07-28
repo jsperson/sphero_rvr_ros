@@ -36,6 +36,7 @@ def generate_launch_description():
     source_sha = LaunchConfiguration("source_sha")
     deployed_sha = LaunchConfiguration("deployed_sha")
     approval_file = LaunchConfiguration("approval_file")
+    proposal_file = LaunchConfiguration("proposal_file")
 
     exact_binding = PythonExpression(
         [
@@ -101,6 +102,39 @@ def generate_launch_description():
             }
         ],
         condition=IfCondition(start_semantic_adapter),
+    )
+    semantic_perception = Node(
+        package="sphero_rvr_driver",
+        executable="stationary_perception",
+        name="hierarchical_semantic_perception",
+        output="screen",
+        parameters=[
+            {
+                "stationary_session": False,
+                "evidence_dir": (
+                    "/home/jsperson/.local/state/sphero_rvr/"
+                    "hierarchical-perception"
+                ),
+            }
+        ],
+        condition=IfCondition(exact_binding),
+    )
+    mission_controller = Node(
+        package="sphero_rvr_driver",
+        executable="hierarchical_mission_controller",
+        name="hierarchical_mission_controller",
+        output="screen",
+        parameters=[
+            {
+                "enabled": True,
+                "use_sim_time": False,
+                "source_sha": source_sha,
+                "deployed_sha": deployed_sha,
+                "reviewed_sha": reviewed_sha,
+                "proposal_file": proposal_file,
+            }
+        ],
+        condition=IfCondition(exact_binding),
     )
     route_bridge = Node(
         package="sphero_rvr_driver",
@@ -195,9 +229,12 @@ def generate_launch_description():
         DeclareLaunchArgument("deployed_sha", default_value=""),
         DeclareLaunchArgument("reviewed_sha", default_value=""),
         DeclareLaunchArgument("approval_file", default_value=""),
+        DeclareLaunchArgument("proposal_file", default_value=""),
         mapping,
         *nodes,
         authority,
+        semantic_perception,
+        mission_controller,
         semantic_adapter,
         route_bridge,
         EmitEvent(
@@ -226,7 +263,13 @@ def generate_launch_description():
             ),
         ),
     ]
-    for critical in (authority, semantic_adapter, route_bridge):
+    for critical in (
+        authority,
+        semantic_perception,
+        mission_controller,
+        semantic_adapter,
+        route_bridge,
+    ):
         actions.append(
             RegisterEventHandler(
                 OnProcessExit(

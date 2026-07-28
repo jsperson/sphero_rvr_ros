@@ -201,6 +201,7 @@ setup(
             "rvr_hierarchical_phase3_replay_validate = sphero_rvr_driver.hierarchical_phase3_replay_validation:main",
             "rvr_hierarchical_phase4_replay = sphero_rvr_driver.hierarchical_phase4_replay:main",
             "hierarchical_physical_authority = sphero_rvr_driver.hierarchical_authority_node:main",
+            "hierarchical_mission_controller = sphero_rvr_driver.hierarchical_mission_node:main",
             "hierarchical_nav2_adapter = sphero_rvr_driver.hierarchical_nav2_adapter_node:main",
             "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
             "rvr_m7_surveyed_localization = sphero_rvr_driver.m7_surveyed_localization:main",
