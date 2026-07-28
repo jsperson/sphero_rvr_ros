@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -13,6 +14,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from .hierarchical_physical_binding import (
     APPROVAL_SCHEMA,
     PHYSICAL_PROPOSAL_SCHEMA,
+    PREFLIGHT_SCHEMA,
     HierarchicalPhysicalApproval,
     canonical_digest,
 )
@@ -422,6 +424,91 @@ def evaluate_canonical_mission(
     run_evidence = result.get("run_evidence", {})
     if not isinstance(run_evidence, Mapping):
         run_evidence = {}
+    approval_events = [
+        event["payload"]
+        for event in service_events
+        if event["kind"] == "hierarchical_m7_6_approval"
+    ]
+    preflight: dict[str, Any] = {}
+    preflight_valid = False
+    if len(approval_events) == 1:
+        approval_event = approval_events[0]
+        raw_preflight = approval_event.get("preflight", {})
+        if isinstance(raw_preflight, Mapping):
+            preflight = dict(raw_preflight)
+            preflight_unsigned = dict(preflight)
+            preflight_digest = str(
+                preflight_unsigned.pop("preflight_digest", "")
+            )
+            sources = preflight_unsigned.get("sources", {})
+            expected_ages = {
+                "lidar": 0.50,
+                "camera": 1.00,
+                "localization": 0.300,
+                "semantic_map": 1.00,
+            }
+            source_checks = []
+            if isinstance(sources, Mapping) and set(sources) == set(
+                expected_ages
+            ):
+                for source_name, max_age_s in expected_ages.items():
+                    source = sources.get(source_name, {})
+                    if not isinstance(source, Mapping):
+                        source_checks.append(False)
+                        continue
+                    try:
+                        age_s = float(source["age_s"])
+                        recorded_max_age_s = float(
+                            source["max_age_s"]
+                        )
+                        received_at_s = float(
+                            source["received_at_s"]
+                        )
+                        observed_at_s = float(
+                            preflight_unsigned["observed_at_s"]
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        source_checks.append(False)
+                        continue
+                    value_digest = str(
+                        source.get("value_digest", "")
+                    )
+                    summary = source.get("summary", {})
+                    source_checks.append(
+                        math.isfinite(age_s)
+                        and 0.0 <= age_s <= max_age_s
+                        and recorded_max_age_s == max_age_s
+                        and math.isfinite(received_at_s)
+                        and received_at_s <= observed_at_s
+                        and len(value_digest) == 64
+                        and all(
+                            character in "0123456789abcdef"
+                            for character in value_digest
+                        )
+                        and isinstance(summary, Mapping)
+                        and bool(summary)
+                    )
+            preflight_valid = (
+                preflight_unsigned.get("schema") == PREFLIGHT_SCHEMA
+                and preflight_unsigned.get("motion_authority") is False
+                and preflight_unsigned.get(
+                    "physical_execution_enabled"
+                )
+                is False
+                and preflight_digest
+                == canonical_digest(preflight_unsigned)
+                and str(
+                    approval_event.get("preflight_digest", "")
+                )
+                == preflight_digest
+                and math.isclose(
+                    float(preflight_unsigned.get("observed_at_s", -1.0)),
+                    float(approval.get("approved_at_s", -2.0)),
+                    abs_tol=0.001,
+                )
+                and len(source_checks) == len(expected_ages)
+                and all(source_checks)
+            )
     cleanup_checks = _cleanup_checks(cleanup_capture)
     checks = {
         "proposal_schema_and_digest_valid": (
@@ -435,6 +522,7 @@ def evaluate_canonical_mission(
             approval.get("schema") == APPROVAL_SCHEMA
             and approval_valid
         ),
+        "fresh_no_motion_sensor_preflight_bound": preflight_valid,
         "exact_source_deployed_sha": (
             str(mission["source_sha"])
             == str(mission["deployed_sha"])
@@ -507,6 +595,7 @@ def evaluate_canonical_mission(
         "semantic_decisions": decisions,
         "mapped_tracks": list(tracks.values()),
         "provider_calls": provider_events,
+        "sensor_preflight": preflight,
         "controller_events": controller_events,
         "checkpoint_states": checkpoint_states,
         "run_evidence": dict(run_evidence),

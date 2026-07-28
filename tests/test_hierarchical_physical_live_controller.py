@@ -41,6 +41,72 @@ ROOM = {
 }
 
 
+def _seed_sensor_preflight(
+    cache: LiveStateCache, *, received_at_s: float | None = None
+) -> None:
+    now_s = time.time() if received_at_s is None else received_at_s
+    cache.update(
+        "lidar",
+        {
+            "schema": "sphero_rvr.live_lidar.v1",
+            "scan_id": "live-scan-preflight",
+            "sample_count": 720,
+            "motion_authority": False,
+            "physical_execution_enabled": False,
+        },
+        received_at_s=now_s,
+        source_timestamp_s=now_s,
+    )
+    cache.update(
+        "camera",
+        {
+            "schema": "sphero_rvr.live_camera_perception.v1",
+            "frame_id": "live-camera-preflight",
+            "width": 800,
+            "height": 600,
+            "calibrated": True,
+            "motion_authority": False,
+            "physical_execution_enabled": False,
+        },
+        received_at_s=now_s,
+        source_timestamp_s=now_s,
+    )
+    cache.update(
+        "localization",
+        {
+            "state": "valid",
+            "source": "slam_toolbox:map->base_link",
+            "map_id": "live-map-preflight",
+            "stationary_session": True,
+            "pose": {
+                "x_m": 0.0,
+                "y_m": 0.0,
+                "yaw_rad": 0.0,
+            },
+            "motion_authority": False,
+            "physical_execution_enabled": False,
+        },
+        received_at_s=now_s,
+        source_timestamp_s=now_s,
+    )
+    cache.update(
+        "semantic_map",
+        {
+            "schema": "sphero_rvr.live_semantic_map.v1",
+            "revision": 1,
+            "occupancy": {"map_id": "live-map-preflight"},
+            "map": {
+                "stationary": True,
+                "occupancy_available": True,
+            },
+            "motion_authority": False,
+            "physical_execution_enabled": False,
+        },
+        received_at_s=now_s,
+        source_timestamp_s=now_s,
+    )
+
+
 class FakeSession:
     activation_capable = True
 
@@ -100,6 +166,7 @@ def _controller(tmp_path):
         "motion_authority": False,
     }
     cache = LiveStateCache()
+    _seed_sensor_preflight(cache)
     session = FakeSession()
     controller = HierarchicalPhysicalMissionController(
         service,
@@ -204,6 +271,54 @@ def test_canonical_approval_requires_auth_room_and_exact_proposal(
         service.close()
 
 
+def test_canonical_approval_requires_fresh_no_motion_sensor_preflight(
+    tmp_path,
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    del session
+    try:
+        proposed = controller.submit(
+            CANONICAL_M7_OBJECTIVE,
+            session_id="m7-browser",
+            mission_id="m7-canonical-preflight",
+        )
+        phrase = (
+            "APPROVE M7.6 CANONICAL MISSION "
+            + proposed["proposal_digest"]
+        )
+        cache.mark_invalid(
+            "camera",
+            "camera unavailable",
+            received_at_s=time.time(),
+        )
+        with pytest.raises(
+            MissionValidationError, match="valid camera evidence"
+        ):
+            controller.approve(
+                proposed["mission_id"],
+                supplied_approval=phrase,
+                operator="scott",
+                authentication_source="tailscale-serve",
+                physical_room_confirmation=ROOM,
+            )
+        _seed_sensor_preflight(
+            cache, received_at_s=time.time() - 1.01
+        )
+        with pytest.raises(
+            MissionValidationError, match="lidar evidence is stale"
+        ):
+            controller.approve(
+                proposed["mission_id"],
+                supplied_approval=phrase,
+                operator="scott",
+                authentication_source="tailscale-serve",
+                physical_room_confirmation=ROOM,
+            )
+    finally:
+        controller.close()
+        service.close()
+
+
 def test_cancel_during_activation_cannot_start_or_resume_graph(
     tmp_path,
 ) -> None:
@@ -215,6 +330,7 @@ def test_cancel_during_activation_cannot_start_or_resume_graph(
         live_execution_enabled=False,
     )
     cache = LiveStateCache()
+    _seed_sensor_preflight(cache)
 
     class BlockingSession(FakeSession):
         def __init__(self):

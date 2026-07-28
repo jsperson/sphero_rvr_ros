@@ -32,6 +32,7 @@ from .mission_api import MissionValidationError
 
 AUTHORITY_SCHEMA = "sphero_rvr.hierarchical_physical_authority.v1"
 APPROVAL_SCHEMA = "sphero_rvr.hierarchical_m7_6_approval.v1"
+PREFLIGHT_SCHEMA = "sphero_rvr.hierarchical_m7_sensor_preflight.v1"
 JOURNAL_SCHEMA = "sphero_rvr.hierarchical_physical_journal.v1"
 NAV2_BATCH_SCHEMA = "sphero_rvr.hierarchical_nav2_goal_batch.v1"
 GOAL_DISPATCH_SCHEMA = "sphero_rvr.hierarchical_goal_dispatch.v1"

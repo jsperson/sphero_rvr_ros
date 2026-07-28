@@ -808,15 +808,33 @@ class MissionService:
         mission_id: str,
         *,
         approval: Mapping[str, Any],
+        preflight_evidence: Mapping[str, Any],
         now_s: float,
     ) -> dict[str, Any]:
         """Validate and consume one exact M7.6 approval into durable state."""
 
         from .hierarchical_physical_binding import (
             HierarchicalPhysicalApproval,
+            PREFLIGHT_SCHEMA,
+            canonical_digest,
         )
 
         payload = json.loads(_json_dump(dict(approval)))
+        preflight = json.loads(_json_dump(dict(preflight_evidence)))
+        preflight_unsigned = dict(preflight)
+        preflight_digest = str(
+            preflight_unsigned.pop("preflight_digest", "")
+        ).strip().lower()
+        if (
+            preflight_unsigned.get("schema") != PREFLIGHT_SCHEMA
+            or canonical_digest(preflight_unsigned) != preflight_digest
+            or preflight_unsigned.get("motion_authority") is not False
+            or preflight_unsigned.get("physical_execution_enabled")
+            is not False
+        ):
+            raise MissionValidationError(
+                "M7.6 approval requires a valid server-generated no-motion sensor preflight"
+            )
         with self._lock:
             row = self._prompt_row(mission_id)
             if row["status"] != "proposed":
@@ -858,6 +876,8 @@ class MissionService:
                     {
                         "approval": payload,
                         "authenticated": True,
+                        "preflight": preflight,
+                        "preflight_digest": preflight_digest,
                         "restart_resume_allowed": False,
                     },
                 )

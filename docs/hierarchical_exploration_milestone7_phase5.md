@@ -49,6 +49,21 @@ The approval binds:
 
 Any missing, stale, altered, replayed, or mismatched field fails closed.
 
+Approval also requires a server-generated no-motion sensor preflight from
+`rvr-telemetry.service`. The live Pi cache must simultaneously contain:
+
+- a valid lidar scan received no more than `0.50 s` ago;
+- a calibrated camera frame received no more than `1.00 s` ago;
+- valid stationary SLAM localization received no more than `0.300 s` ago;
+- a populated live SLAM occupancy map received no more than `1.00 s` ago.
+
+Every source must explicitly report `motion_authority=false` and
+`physical_execution_enabled=false`. The approval transaction persists a compact
+digest-bound capture with receipt/source times, fixed age ceilings, source
+identity, and value digests. Missing, invalid, stale, nonstationary, or
+motion-capable evidence prevents approval creation, so the motor-capable
+systemd unit cannot start.
+
 ## Activation and non-resumption
 
 `SystemdHierarchicalMissionSession` writes proposal, approval, and session
@@ -109,6 +124,8 @@ MissionService SQLite database, binding journal, and generated raw cleanup
 capture. It does not accept hand-entered pass booleans. The evaluator requires:
 
 - valid proposal, approval, exact SHAs, and all prior evidence bindings;
+- a valid fresh no-motion lidar/camera/SLAM/localization preflight persisted
+  atomically with the approval;
 - one authority activation followed by relock;
 - real provider completion timing;
 - at least two materially distinct semantic goals with rationales and no model

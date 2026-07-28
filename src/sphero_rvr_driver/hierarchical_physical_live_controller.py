@@ -15,6 +15,7 @@ from .hierarchical_physical_binding import (
     ACCEPTED_M7_4_EVIDENCE_SHA256,
     APPROVAL_SCHEMA,
     PHYSICAL_PROPOSAL_SCHEMA,
+    PREFLIGHT_SCHEMA,
     HierarchicalPhysicalLimits,
     canonical_digest,
 )
@@ -31,6 +32,12 @@ CANONICAL_OBJECT_CLASSES = ("shoe", "person")
 CANONICAL_APPROVAL_PREFIX = "APPROVE M7.6 CANONICAL MISSION "
 CONTROLLER_SOURCE = "hierarchical_controller"
 ADAPTER_SOURCE = "hierarchical_adapter"
+PREFLIGHT_MAX_AGE_S = {
+    "lidar": 0.50,
+    "camera": 1.00,
+    "localization": 0.300,
+    "semantic_map": 1.00,
+}
 
 
 class HierarchicalSessionLifecycle(Protocol):
@@ -192,6 +199,7 @@ class HierarchicalPhysicalMissionController:
                 "M7.6 requires explicit attended, level, bounded, no-dropoff room confirmation"
             )
         now_s = float(self._clock_s())
+        preflight = self._sensor_preflight(now_s)
         limits = HierarchicalPhysicalLimits().to_json_dict()
         payload = {
             "schema": APPROVAL_SCHEMA,
@@ -226,6 +234,7 @@ class HierarchicalPhysicalMissionController:
             approved = self.service.approve_hierarchical_physical_mission(
                 mission_id,
                 approval=approval,
+                preflight_evidence=preflight,
                 now_s=now_s,
             )
             self._active_mission_id = str(mission_id)
@@ -238,6 +247,152 @@ class HierarchicalPhysicalMissionController:
                 cancellation=cancellation,
             )
             return approved
+
+    def _sensor_preflight(self, now_s: float) -> dict[str, Any]:
+        snapshot = self.cache.snapshot(now_s=now_s)
+        evidence: dict[str, Any] = {}
+        values: dict[str, Mapping[str, Any]] = {}
+        for source_name, max_age_s in PREFLIGHT_MAX_AGE_S.items():
+            record = snapshot.source(source_name)
+            if (
+                not record.valid
+                or record.received_at_s is None
+                or (
+                    record.source_timestamp_s is not None
+                    and not math.isfinite(
+                        float(record.source_timestamp_s)
+                    )
+                )
+            ):
+                raise MissionValidationError(
+                    f"M7.6 sensor preflight requires valid {source_name} evidence"
+                )
+            age_s = now_s - float(record.received_at_s)
+            if (
+                not math.isfinite(age_s)
+                or age_s < 0.0
+                or age_s > max_age_s
+            ):
+                raise MissionValidationError(
+                    f"M7.6 sensor preflight {source_name} evidence is stale"
+                )
+            value = dict(record.value)
+            if (
+                value.get("motion_authority") is not False
+                or value.get("physical_execution_enabled") is not False
+            ):
+                raise MissionValidationError(
+                    f"M7.6 sensor preflight {source_name} is not no-motion evidence"
+                )
+            values[source_name] = value
+            evidence[source_name] = {
+                "received_at_s": float(record.received_at_s),
+                "source_timestamp_s": record.source_timestamp_s,
+                "age_s": age_s,
+                "max_age_s": max_age_s,
+                "value_digest": canonical_digest(value),
+            }
+
+        lidar = values["lidar"]
+        if (
+            lidar.get("schema") != "sphero_rvr.live_lidar.v1"
+            or not str(lidar.get("scan_id", "")).strip()
+            or int(lidar.get("sample_count", 0)) <= 0
+        ):
+            raise MissionValidationError(
+                "M7.6 sensor preflight lidar scan is invalid"
+            )
+        camera = values["camera"]
+        if (
+            camera.get("schema")
+            != "sphero_rvr.live_camera_perception.v1"
+            or camera.get("calibrated") is not True
+            or not str(camera.get("frame_id", "")).strip()
+            or int(camera.get("width", 0)) <= 0
+            or int(camera.get("height", 0)) <= 0
+        ):
+            raise MissionValidationError(
+                "M7.6 sensor preflight calibrated camera frame is invalid"
+            )
+        localization = values["localization"]
+        pose = localization.get("pose")
+        if (
+            str(localization.get("state", "")).lower() != "valid"
+            or not isinstance(pose, Mapping)
+            or not str(localization.get("map_id", "")).strip()
+            or localization.get("stationary_session") is not True
+        ):
+            raise MissionValidationError(
+                "M7.6 sensor preflight stationary SLAM localization is invalid"
+            )
+        for coordinate in ("x_m", "y_m", "yaw_rad"):
+            try:
+                coordinate_value = float(pose[coordinate])
+            except (KeyError, TypeError, ValueError):
+                raise MissionValidationError(
+                    "M7.6 sensor preflight localization pose is invalid"
+                ) from None
+            if not math.isfinite(coordinate_value):
+                raise MissionValidationError(
+                    "M7.6 sensor preflight localization pose is invalid"
+                )
+        semantic_map = values["semantic_map"]
+        map_value = semantic_map.get("map")
+        occupancy = semantic_map.get("occupancy")
+        if (
+            semantic_map.get("schema")
+            != "sphero_rvr.live_semantic_map.v1"
+            or not isinstance(map_value, Mapping)
+            or map_value.get("stationary") is not True
+            or map_value.get("occupancy_available") is not True
+            or not isinstance(occupancy, Mapping)
+            or not str(occupancy.get("map_id", "")).strip()
+        ):
+            raise MissionValidationError(
+                "M7.6 sensor preflight live SLAM map is invalid"
+            )
+        evidence["lidar"]["summary"] = {
+            "schema": lidar["schema"],
+            "scan_id": str(lidar["scan_id"]),
+            "sample_count": int(lidar["sample_count"]),
+        }
+        evidence["camera"]["summary"] = {
+            "schema": camera["schema"],
+            "frame_id": str(camera["frame_id"]),
+            "width": int(camera["width"]),
+            "height": int(camera["height"]),
+            "calibrated": True,
+        }
+        evidence["localization"]["summary"] = {
+            "state": str(localization["state"]).lower(),
+            "source": str(localization.get("source", "")),
+            "map_id": str(localization["map_id"]),
+            "stationary_session": True,
+            "pose": {
+                coordinate: float(pose[coordinate])
+                for coordinate in ("x_m", "y_m", "yaw_rad")
+            },
+        }
+        evidence["semantic_map"]["summary"] = {
+            "schema": semantic_map["schema"],
+            "revision": int(semantic_map.get("revision", 0)),
+            "map_id": str(occupancy["map_id"]),
+            "stationary": True,
+            "occupancy_available": bool(
+                map_value.get("occupancy_available", False)
+            ),
+        }
+        payload = {
+            "schema": PREFLIGHT_SCHEMA,
+            "observed_at_s": now_s,
+            "motion_authority": False,
+            "physical_execution_enabled": False,
+            "sources": evidence,
+        }
+        return {
+            **payload,
+            "preflight_digest": canonical_digest(payload),
+        }
 
     def status(self, mission_id: str) -> dict[str, Any]:
         return self.service.prompt_status(mission_id)
@@ -311,6 +466,7 @@ class HierarchicalPhysicalMissionController:
             "canonical_limits": HierarchicalPhysicalLimits().to_json_dict(),
             "canonical_risk_ledger": [
                 "No negative-obstacle sensing: stairs, ledges, and drop-offs must be absent.",
+                "Approval requires fresh no-motion lidar, calibrated camera, SLAM map, and localization evidence.",
                 "Localization freshness fails closed above 0.300 seconds.",
                 "Known low-speed chassis stalls may pause progress.",
                 "Real model latency can cause honest wait_planning pauses on short hops.",

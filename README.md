@@ -30,10 +30,11 @@ Its exact-SHA Pi build and no-motion graph audit pass. It remains physically
 inactive pending independent review; M7.6 and the canonical mission remain
 locked on the merged M7.5 deployment. The Phase 5 candidate adds the
 browser-owned semantic-only proposal, authenticated M7.6 room/risk/limit
-confirmation, one-shot supervised-unit activation, durable live checkpoints,
-mission-ID reopening, and an evidence-derived M7.7 evaluator. It remains
-default-off and does not claim a physical canonical run until exact-SHA Pi
-preflight, attended execution, and cleanup evaluation pass.
+confirmation, a mandatory fresh no-motion lidar/camera/SLAM/localization
+preflight before approval can exist, one-shot supervised-unit activation,
+durable live checkpoints, mission-ID reopening, and an evidence-derived M7.7
+evaluator. It remains default-off and does not claim a physical canonical run
+until exact-SHA Pi preflight, attended execution, and cleanup evaluation pass.
 
 ## Documentation map for operators and maintainers
 
