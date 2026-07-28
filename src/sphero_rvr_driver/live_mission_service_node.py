@@ -83,7 +83,22 @@ def _localization_mapping(value: Any) -> dict[str, Any]:
         if bool(parsed.get("physical_execution_enabled", True)):
             raise ValueError("Perception navigation navigation status must keep physical execution disabled")
         return parsed
-    return LocalizationEstimate.from_mapping(parsed).to_json_dict()
+    normalized = LocalizationEstimate.from_mapping(parsed).to_json_dict()
+    # The localization model deliberately normalizes only pose quality. Keep
+    # explicit publisher-owned session/authority provenance alongside it so a
+    # later physical approval can distinguish stationary preflight evidence
+    # from moving localization without inventing defaults.
+    for name in (
+        "schema",
+        "stamp_s",
+        "map_id",
+        "stationary_session",
+        "motion_authority",
+        "physical_execution_enabled",
+    ):
+        if name in parsed:
+            normalized[name] = parsed[name]
+    return normalized
 
 
 def _collision_mapping(value: Any) -> dict[str, Any]:
