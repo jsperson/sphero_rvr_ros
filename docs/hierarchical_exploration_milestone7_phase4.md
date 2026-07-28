@@ -186,6 +186,29 @@ server, lidar, camera, rosbag, or motion publisher is active, and retain
 cleanup evidence. Chassis activation, sensors, the physical launch, M7.6
 approval, and the canonical mission are prohibited in this slice.
 
+### Recorded candidate
+
+Executable candidate `5b7c96f52b5b21a59655d2d9c102d0d3fee2f4cc`
+was built on the aarch64 Pi in 2.17 seconds. The exact bounded focused command
+passed 45/45 in 2.38 seconds. The final local full suite passed 1082/1082 in
+39.42 seconds.
+
+The Pi graph audit observed only `/live_mission_service` and the static
+`/base_to_laser_static_tf` node. `/cmd_vel`, `/cmd_vel_motor`, the private Nav2
+request, hierarchical authority/dispatch, `/scan`, and camera topics were
+absent. No action server, hardware Python process, serial-device owner, or
+recent camera/rosbag file was present. The hierarchical motor-capable unit was
+inactive and not installed as an enableable user unit.
+
+The first combined Pi suite exposed a one-ULP Darwin/Linux libm difference in a
+reconstructed NBV clearance used by one historical OAuth-smoke test. That made
+the reconstructed snapshot digest differ even though the committed decision
+still carried its original exact captured ID. The corrected regression
+validates that committed captured ID directly and separately proves a different
+ID is rejected. No historical evidence, live validation rule, tolerance, or
+runtime code was changed. Full commands and cleanup are retained in
+`artifacts/m7_phase4_physical_binding/`.
+
 ## Next gate
 
 Independent review may accept M7.5 as installed and locked. Phase 5 must then

@@ -124,6 +124,15 @@ setup(
             ],
         ),
         (
+            "share/sphero_rvr_driver/artifacts/m7_phase4_physical_binding",
+            [
+                "artifacts/m7_phase4_physical_binding/README.md",
+                "artifacts/m7_phase4_physical_binding/environment.json",
+                "artifacts/m7_phase4_physical_binding/graph.json",
+                "artifacts/m7_phase4_physical_binding/validation.json",
+            ],
+        ),
+        (
             "share/sphero_rvr_driver/artifacts/phase3_semantic_goal_replay",
             [
                 "artifacts/phase3_semantic_goal_replay/README.md",
