@@ -44,7 +44,12 @@ mission, and drop-off detection explicitly unavailable.
 - No physical contact was reported.
 - Final generated cleanup found no driver, supervisor, route runner, camera,
   lidar, rosbag, serial owner, or motion-topic publisher. The chassis was
-  subsequently confirmed off and the lidar was powered down.
+  subsequently confirmed off. This process/device audit did not prove physical
+  lidar-motor de-energization; the operator later reported that the scanner was
+  still spinning. The post-handoff correction invoked the upstream
+  `/stop_motor` service, gracefully reaped the temporary driver, asserted the
+  serial DTR stop state, and reverified zero lidar/camera/rosbag processes and
+  zero lidar device owners.
 
 ## Evidence layout
 
@@ -58,6 +63,9 @@ mission, and drop-off detection explicitly unavailable.
 - `evaluate.log` — evaluator output plus `/usr/bin/time -v` resource data.
 - `final_cleanup_audit.json` — generated post-run process, ROS graph, publisher,
   and device-owner audit.
+- `post_handoff_sensor_shutdown.json` — correction after the operator observed
+  that ownerless cleanup had not physically stopped the lidar motor, plus the
+  camera/storage growth audit.
 - `raw_artifact_sha256.txt` — 445-entry inventory for the full raw Pi session,
   including excluded attempts and images.
 - `committed_artifact_sha256.txt` — hashes of the compact files committed here.
@@ -95,6 +103,15 @@ index binds these files without committing large binary data.
 6. A shell brace-expansion mistake invoked the final read-only cleanup audit
    three times. Every invocation reported the same quiescent safety state; the
    final generated audit is retained.
+7. The initial handoff incorrectly equated an ownerless `/dev/rplidar` with a
+   physically stopped scanner. The operator reported continued spin. A
+   temporary upstream driver was started, `/stop_motor` succeeded, the driver
+   was gracefully reaped, and DTR stop was asserted. Machine checks then found
+   zero lidar processes and owners. Physical spin remains an operator-visible
+   property rather than something the cleanup audit can infer.
+8. The camera/rosbag audit found zero capture writers. Both `rvr_runs` and ROS
+   log storage grew by zero bytes over an 8-second check; the filesystem was
+   53% used with about 27 GB free.
 
 ## Scope boundary
 

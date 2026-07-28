@@ -323,8 +323,12 @@ which is the evaluator's response metric. No contact occurred.
 
 Final generated cleanup found no camera, lidar, rosbag, driver, collision
 supervisor, route runner, serial owner, or motion-topic publisher. The chassis
-was confirmed off and the lidar was powered down. The complete committed index
-and capture disclosures are in
+was confirmed off. The operator subsequently reported that the ownerless lidar
+was still physically spinning, proving that device ownership alone was an
+insufficient motor-stop assertion. The correction invoked `/stop_motor`,
+gracefully reaped the temporary driver, asserted DTR stop, and reverified zero
+sensor writers and device owners. The complete committed index and capture
+disclosures are in
 [artifacts/m7_phase3_moving_perception/README.md](../artifacts/m7_phase3_moving_perception/README.md).
 The complete raw session remains checksum-bound on `sphero-pi-2`.
 

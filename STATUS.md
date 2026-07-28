@@ -13,8 +13,11 @@ Updated: 2026-07-28
   five live samples, three moving samples, `0.051178355 m` displacement,
   mapped floor projection, stable-track replanning, `0.129°` pitch drift,
   stale-sensor zeroing, no contact, and generated cleanup.
-- The final cleanup audit found no motion publisher or hardware owner. The
-  chassis is off and the lidar is powered down.
+- The final cleanup audit found no motion publisher or hardware owner, but the
+  operator then observed that the ownerless lidar was still spinning. A
+  post-handoff `/stop_motor` + DTR correction left zero lidar processes/owners.
+  The chassis is off. Physical lidar stop requires operator-visible
+  confirmation rather than inference from ownership alone.
 - M7.5 physical hierarchical binding, the final exact-SHA approval, and the
   canonical mission remain locked.
 - Review index:
