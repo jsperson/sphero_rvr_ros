@@ -100,14 +100,19 @@ class MissionServiceClient:
         approval_phrase: str,
         operator: str,
         authentication_source: str = "",
+        physical_room_confirmation: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
-        return self.call(
-            "prompt_approve",
-            mission_id=mission_id,
-            approval_phrase=approval_phrase,
-            operator=operator,
-            authentication_source=authentication_source,
-        )
+        payload: dict[str, Any] = {
+            "mission_id": mission_id,
+            "approval_phrase": approval_phrase,
+            "operator": operator,
+            "authentication_source": authentication_source,
+        }
+        if physical_room_confirmation is not None:
+            payload["physical_room_confirmation"] = dict(
+                physical_room_confirmation
+            )
+        return self.call("prompt_approve", **payload)
 
     def cancel_prompt(self, mission_id: str, *, reason: str) -> Mapping[str, Any]:
         return self.call("prompt_cancel", mission_id=mission_id, reason=reason)

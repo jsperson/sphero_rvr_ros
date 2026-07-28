@@ -28,6 +28,11 @@ live_mission_service:
     # locked until a later exact-SHA M7.6 approval starts the separate unit.
     hierarchical_physical_binding_installed: false
     hierarchical_physical_reviewed_sha: ""
+    # M7.6 browser approval may start the separate non-bootable hierarchical
+    # unit only when explicitly enabled on an exact-SHA deployment.
+    hierarchical_approval_activation_enabled: false
+    hierarchical_controller_status_topic: /mission_api/v2/hierarchical/controller_status
+    hierarchical_adapter_status_topic: /mission_api/v2/hierarchical/status
     stationary_perception_tick_s: 0.2
     stationary_perception_max_source_age_s: 1.5
     planning_model: gpt-5.6-luna

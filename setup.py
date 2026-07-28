@@ -106,6 +106,7 @@ setup(
                 "docs/hierarchical_exploration_milestone7_phase2.md",
                 "docs/hierarchical_exploration_milestone7_phase3.md",
                 "docs/hierarchical_exploration_milestone7_phase4.md",
+                "docs/hierarchical_exploration_milestone7_phase5.md",
             ],
         ),
         (
@@ -215,6 +216,7 @@ setup(
             "rvr_hierarchical_m7_phase1_audit = sphero_rvr_driver.hierarchical_m7_phase1_audit:main",
             "rvr_m7_surveyed_localization = sphero_rvr_driver.m7_surveyed_localization:main",
             "rvr_m7_attended_validation = sphero_rvr_driver.m7_attended_validation:main",
+            "rvr_hierarchical_m7_canonical_validate = sphero_rvr_driver.hierarchical_m7_canonical_validation:main",
         ],
     },
 )

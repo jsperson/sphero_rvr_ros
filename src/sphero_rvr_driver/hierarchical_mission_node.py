@@ -111,7 +111,8 @@ def main(args=None):
                 "goal_dispatch_topic": GOAL_DISPATCH_TOPIC,
                 "planning_model": "gpt-5.6-luna",
                 "planning_reasoning_effort": "low",
-                "provider_p95_s": 12.691,
+                "provider_timeout_s": 20.0,
+                "provider_p95_s": 14.34809786885,
                 "prefetch_margin_s": 1.0,
             }.items():
                 self.declare_parameter(name, default)
@@ -164,6 +165,9 @@ def main(args=None):
                 reasoning_effort=str(
                     self.get_parameter("planning_reasoning_effort").value
                 ),
+                timeout_s=float(
+                    self.get_parameter("provider_timeout_s").value
+                ),
             )
             self._controller: Optional[AsyncSemanticGoalController] = None
             self._initial_pool = ThreadPoolExecutor(
@@ -171,6 +175,7 @@ def main(args=None):
             )
             self._initial_future: Optional[Future[Mapping[str, Any]]] = None
             self._initial_snapshot: Optional[dict[str, Any]] = None
+            self._initial_provider_started_at_s: Optional[float] = None
             self._authority: Optional[dict[str, Any]] = None
             self._authority_received_at_s: Optional[float] = None
             self._proposal: Optional[dict[str, Any]] = None
@@ -631,6 +636,7 @@ def main(args=None):
                 self._initial_future = self._initial_pool.submit(
                     self._provider.choose, prompt, captured
                 )
+                self._initial_provider_started_at_s = now_s
                 self._publish_status(
                     "wait_planning", "initial_provider_in_flight"
                 )
@@ -642,6 +648,29 @@ def main(args=None):
                 return
             try:
                 raw = self._initial_future.result()
+                provider_elapsed_s = (
+                    None
+                    if self._initial_provider_started_at_s is None
+                    else max(
+                        0.0,
+                        now_s - self._initial_provider_started_at_s,
+                    )
+                )
+                self._journal.append(
+                    str(self._authority["mission_id"]),
+                    "provider_call_completed",
+                    {
+                        "decision_generation": 1,
+                        "provider_elapsed_s": provider_elapsed_s,
+                        "provider_timeout_s": float(
+                            self.get_parameter(
+                                "provider_timeout_s"
+                            ).value
+                        ),
+                        "real_provider": True,
+                    },
+                    recorded_at_s=now_s,
+                )
                 captured = self._initial_snapshot
                 assert captured is not None
                 controller = AsyncSemanticGoalController(
@@ -657,6 +686,7 @@ def main(args=None):
                 self._controller = controller
                 self._initial_future = None
                 self._initial_snapshot = None
+                self._initial_provider_started_at_s = None
                 self._publish_dispatch(snapshot, now_s, "initial_goal")
             except Exception as exc:
                 self._terminal = True
@@ -719,6 +749,18 @@ def main(args=None):
                 "provider_in_flight": (
                     self._initial_future is not None
                     and not self._initial_future.done()
+                ),
+                "provider_timeout_s": float(
+                    self.get_parameter("provider_timeout_s").value
+                ),
+                "provider_latency_p95_s": float(
+                    self.get_parameter("provider_p95_s").value
+                ),
+                "prefetch_margin_s": float(
+                    self.get_parameter("prefetch_margin_s").value
+                ),
+                "provider_latency_history": list(
+                    self._provider.latency_history()[-8:]
                 ),
                 "direct_twist_publisher": False,
                 "restart_resume_allowed": False,

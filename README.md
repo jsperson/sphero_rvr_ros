@@ -28,7 +28,12 @@ Nav2 semantic-goal adapter, and supervised command chain with exact-SHA/digest
 authority, restart recovery, durable evidence, and a locked browser projection.
 Its exact-SHA Pi build and no-motion graph audit pass. It remains physically
 inactive pending independent review; M7.6 and the canonical mission remain
-locked.
+locked on the merged M7.5 deployment. The Phase 5 candidate adds the
+browser-owned semantic-only proposal, authenticated M7.6 room/risk/limit
+confirmation, one-shot supervised-unit activation, durable live checkpoints,
+mission-ID reopening, and an evidence-derived M7.7 evaluator. It remains
+default-off and does not claim a physical canonical run until exact-SHA Pi
+preflight, attended execution, and cleanup evaluation pass.
 
 ## Documentation map for operators and maintainers
 
@@ -70,6 +75,7 @@ locked.
 - [artifacts/m7_phase2_surveyed_localization/README.md](artifacts/m7_phase2_surveyed_localization/README.md) records the passing exact-SHA M7.2 physical evidence, per-method error distributions, camera-pitch calibration finding, raw-bag checksums, ambiguity rejection, and cleanup.
 - [docs/hierarchical_exploration_milestone7_phase3.md](docs/hierarchical_exploration_milestone7_phase3.md) defines the separately approved M7.3 collision and M7.4 moving-perception gates, read-only observer/evaluator, pitch re-verification, and exact-SHA stop boundaries.
 - [docs/hierarchical_exploration_milestone7_phase4.md](docs/hierarchical_exploration_milestone7_phase4.md) records the default-off physical hierarchical binding, live-time Nav2 authority chain, exact-SHA/digest lease, restart recovery, durable/browser evidence, validation, and remaining Phase 5 risks.
+- [docs/hierarchical_exploration_milestone7_phase5.md](docs/hierarchical_exploration_milestone7_phase5.md) defines the final browser-owned canonical proposal/approval workflow, one-shot systemd activation, durable M7.7 evaluator, exact-SHA preflight, attended room gate, cleanup contract, and physical evidence status.
 - [artifacts/m7_phase4_physical_binding/README.md](artifacts/m7_phase4_physical_binding/README.md) records the exact-SHA Pi build, bounded M6/binding tests, no-motion graph and storage audit, cleanup, and disclosed cross-architecture fixture correction.
 - [artifacts/m7_phase3_attended_collision/README.md](artifacts/m7_phase3_attended_collision/README.md) records the passing exact-SHA attended M7.3 collision evidence, independent provider-in-flight veto timing, no-contact observation, restart recovery, raw-artifact checksums, disclosed capture anomalies, and final cleanup.
 - [artifacts/m7_phase3_directional_addendum/README.md](artifacts/m7_phase3_directional_addendum/README.md) records the attended paired directional-veto check: reverse-toward remains motor-zero, forward-away is permitted with positive overlapped-point exclusion, no contact occurred, and M7.4 must bind both evidence digests.

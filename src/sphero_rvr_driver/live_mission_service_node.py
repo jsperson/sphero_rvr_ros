@@ -45,6 +45,14 @@ from .hierarchical_physical_binding import (
     ACCEPTED_M7_3_EVIDENCE_SHA256,
     ACCEPTED_M7_4_EVIDENCE_SHA256,
 )
+from .hierarchical_physical_live_controller import (
+    ADAPTER_SOURCE,
+    CONTROLLER_SOURCE,
+    HierarchicalPhysicalMissionController,
+)
+from .hierarchical_physical_session import (
+    SystemdHierarchicalMissionSession,
+)
 
 
 def _json_mapping(value: Any) -> dict[str, Any]:
@@ -304,6 +312,11 @@ def main(args=None):
                     "hierarchical_physical_reviewed_sha"
                 ).value
             ).strip()
+            hierarchical_approval_activation_enabled = bool(
+                self.get_parameter(
+                    "hierarchical_approval_activation_enabled"
+                ).value
+            )
             approval_activation_enabled = bool(
                 self.get_parameter("approval_activation_enabled").value
             )
@@ -358,6 +371,19 @@ def main(args=None):
             if hierarchical_binding_installed and live_execution_enabled:
                 raise ValueError(
                     "M7.5 installs the hierarchical binding locked; it cannot share legacy or Adaptive execution authority"
+                )
+            if hierarchical_approval_activation_enabled and not (
+                hierarchical_binding_installed
+                and hierarchical_reviewed_sha == source_sha == deployed_sha
+            ):
+                raise ValueError(
+                    "hierarchical approval activation requires the installed exact-SHA binding"
+                )
+            if hierarchical_approval_activation_enabled and (
+                stationary_perception_enabled or adaptive_mission_enabled
+            ):
+                raise ValueError(
+                    "hierarchical canonical activation cannot share another prompt controller"
                 )
             model_id = str(self.get_parameter("planning_model").value).strip() or None
             reasoning_effort = str(self.get_parameter("planning_reasoning_effort").value)
@@ -423,6 +449,21 @@ def main(args=None):
                     activation_capable=live_execution_enabled
                 )
                 adaptive_session.ensure_locked()
+            hierarchical_session = None
+            if hierarchical_binding_installed:
+                hierarchical_session = SystemdHierarchicalMissionSession(
+                    activation_capable=(
+                        hierarchical_approval_activation_enabled
+                    ),
+                    source_sha=source_sha,
+                    deployed_sha=deployed_sha,
+                    reviewed_sha=hierarchical_reviewed_sha,
+                    ros_workspace=os.environ.get(
+                        "RVR_ROS_WORKSPACE",
+                        "/home/jsperson/ros2_ws",
+                    ),
+                )
+                hierarchical_session.ensure_locked()
 
             def service_factory() -> MissionService:
                 service = MissionService(
@@ -459,7 +500,17 @@ def main(args=None):
                 return service
 
             controller_factory = None
-            if stationary_perception_enabled:
+            if hierarchical_approval_activation_enabled:
+                def controller_factory(
+                    service: MissionService,
+                ) -> HierarchicalPhysicalMissionController:
+                    return HierarchicalPhysicalMissionController(
+                        service,
+                        self._cache,
+                        hierarchical_session,  # type: ignore[arg-type]
+                        execution_enabled=True,
+                    )
+            elif stationary_perception_enabled:
                 def controller_factory(
                     service: MissionService,
                 ) -> StationaryPerceptionController:
@@ -568,6 +619,14 @@ def main(args=None):
                 ("lidar", "lidar_status_topic"),
                 ("localization", "localization_status_topic"),
                 ("semantic_map", "semantic_map_status_topic"),
+                (
+                    CONTROLLER_SOURCE,
+                    "hierarchical_controller_status_topic",
+                ),
+                (
+                    ADAPTER_SOURCE,
+                    "hierarchical_adapter_status_topic",
+                ),
             ):
                 self.create_subscription(
                     String,
@@ -614,6 +673,17 @@ def main(args=None):
             )
             self.declare_parameter(
                 "hierarchical_physical_reviewed_sha", ""
+            )
+            self.declare_parameter(
+                "hierarchical_approval_activation_enabled", False
+            )
+            self.declare_parameter(
+                "hierarchical_controller_status_topic",
+                "/mission_api/v2/hierarchical/controller_status",
+            )
+            self.declare_parameter(
+                "hierarchical_adapter_status_topic",
+                "/mission_api/v2/hierarchical/status",
             )
             self.declare_parameter("stationary_perception_tick_s", 0.2)
             self.declare_parameter("stationary_perception_max_source_age_s", 1.5)

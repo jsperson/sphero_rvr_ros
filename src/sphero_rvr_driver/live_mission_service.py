@@ -33,6 +33,8 @@ LIVE_SOURCE_NAMES = (
     "lidar",
     "localization",
     "semantic_map",
+    "hierarchical_controller",
+    "hierarchical_adapter",
 )
 
 

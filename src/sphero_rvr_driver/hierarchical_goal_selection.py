@@ -1678,10 +1678,17 @@ class AsyncSemanticGoalController:
         captured = self._future_snapshot
         generation = self._future_generation
         invalidated_reason = self._future_invalidated_reason
+        started_at_s = self._future_started_at_s
         self._future = None
         self._future_snapshot = None
+        self._future_started_at_s = None
         self._future_invalidated_reason = ""
         self._provider_calls_completed += 1
+        provider_elapsed_s = (
+            None
+            if started_at_s is None
+            else max(0.0, now_s - float(started_at_s))
+        )
         assert captured is not None
         if invalidated_reason:
             self._provider_rejections += 1
@@ -1691,6 +1698,7 @@ class AsyncSemanticGoalController:
                     now_s,
                     generation=generation,
                     reason=f"event_invalidated:{invalidated_reason}",
+                    provider_elapsed_s=provider_elapsed_s,
                 )
             ]
         try:
@@ -1722,6 +1730,7 @@ class AsyncSemanticGoalController:
                     now_s,
                     generation=generation,
                     reason=str(exc),
+                    provider_elapsed_s=provider_elapsed_s,
                 )
             ]
         if resolved.kind == "motion":
@@ -1736,6 +1745,7 @@ class AsyncSemanticGoalController:
                     generation=generation,
                     action=decision.action,
                     target_id=resolved.target_id,
+                    provider_elapsed_s=provider_elapsed_s,
                 )
             ]
         self._ready_non_motion = resolved
@@ -1746,6 +1756,7 @@ class AsyncSemanticGoalController:
                 generation=generation,
                 action=decision.action,
                 target_id=resolved.target_id,
+                provider_elapsed_s=provider_elapsed_s,
             )
         ]
 

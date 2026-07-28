@@ -1,0 +1,149 @@
+# Milestone 7 Phase 5 — canonical physical mission
+
+## Status
+
+Implementation candidate complete; physical M7.6/M7.7 evidence is not yet
+claimed. The executable candidate must pass bounded local tests, exact-SHA Pi
+build/tests, a no-motion Pi graph and storage preflight, and an attended room
+check before the browser may create the physical approval. The current rover
+location on a desk is not an acceptable room.
+
+## Canonical mission
+
+The browser accepts exactly:
+
+> Explore this room, identify and map the shoes and any recognized people,
+> inspect uncertain findings from another viewpoint, then return or stop
+> safely.
+
+The persisted `sphero_rvr.hierarchical_physical_proposal.v1` contains only that
+objective, revision `1`, requested classes `shoe` and `person`, the mission ID,
+the exact source SHA, creation time, and its canonical digest. It cannot contain
+poses, routes, velocities, ROS names, or safety settings. Server-owned
+deterministic code continues to resolve all model-selected semantic IDs to
+geometry.
+
+## One authenticated M7.6 approval
+
+The browser displays the exact proposal, deployment provenance, full risk
+ledger, room restriction, and fixed limits. Four explicit confirmations are
+required:
+
+- the operator is present with chassis power cut reachable;
+- the floor area is level and bounded;
+- stairs, ledges, and drop-offs are absent;
+- the operator understands that negative-obstacle sensing is unavailable.
+
+The Pi creates the approval; the browser never submits a digest or ROS command.
+The approval binds:
+
+- source, deployed, and reviewed SHA equality;
+- the proposal digest, mission ID, authenticated Tailscale identity, and
+  approval ID;
+- the accepted M7.3 collision evidence digest;
+- the accepted paired directional-veto evidence digest;
+- the accepted M7.4 moving-perception evidence digest;
+- the room restriction above;
+- `0.10 m/s`, `0.4 rad/s`, `0.50 s` command lease, `0.300 s`
+  localization freshness, and a maximum `900 s` mission lease.
+
+Any missing, stale, altered, replayed, or mismatched field fails closed.
+
+## Activation and non-resumption
+
+`SystemdHierarchicalMissionSession` writes proposal, approval, and session
+environment files atomically with user-only permissions. It stops the
+no-motion telemetry unit, starts only
+`rvr-hierarchical-mission.service`, and verifies the unit is active. The
+motor-capable unit has no install target and `Restart=no`.
+
+Cancellation, terminal completion, timeout, authority loss, controller
+recovery, or service restart stops the unit. Cleanup consumes the three
+activation files. A prior approval cannot be replayed and a restart never
+resumes a route.
+
+The command chain is unchanged:
+
+```text
+LLM semantic decision
+  -> deterministic semantic ID / server geometry resolution
+  -> NavigateThroughPoses
+  -> Nav2 private /nav2_cmd_vel_request
+  -> live_route_runner (sole /cmd_vel publisher)
+  -> collision_stop (sole /cmd_vel_motor publisher)
+  -> driver
+```
+
+The browser owns proposal, confirmation, cancellation, and read-only
+observation. It has no ROS, Twist, serial, or direct motor surface.
+
+## Honest latency behavior
+
+The physical controller uses the Phase 4 real-provider distribution:
+
+- p95 `14.34809786885 s`;
+- prefetch margin `1.0 s`;
+- threshold `15.34809786885 s`;
+- provider deadline `20.0 s`.
+
+A compatible ready successor may hand off continuously. A short hop whose
+successor is not ready enters visible `wait_planning` with zero motion. The
+runtime does not pad fast provider calls and never moves speculatively.
+
+## Durable M7.7 evidence
+
+MissionService persists the proposal, approval, state transitions, controller
+and adapter checkpoints, terminal result, source/deployed SHA, and cleanup
+state. The binding journal persists authority activation/relock, real provider
+durations, model decisions and rationales, captured/current snapshots,
+server-resolved dispatches, event replans, handoffs, and pauses.
+
+The browser can reconstruct a mission by ID with:
+
+```text
+https://<Pi Tailscale host>/?mission_id=<mission-id>
+```
+
+`rvr_hierarchical_m7_canonical_validate` recomputes its report from the
+MissionService SQLite database, binding journal, and generated raw cleanup
+capture. It does not accept hand-entered pass booleans. The evaluator requires:
+
+- valid proposal, approval, exact SHAs, and all prior evidence bindings;
+- one authority activation followed by relock;
+- real provider completion timing;
+- at least two materially distinct semantic goals with rationales and no model
+  geometry;
+- evidence-bound mapped tracks when tracks exist;
+- reconstructable controller/adapter pause and handoff states;
+- nonzero odometry and at least `0.02 m` displacement;
+- localization receipt age no greater than `0.300 s`;
+- a complete terminal controller checkpoint and terminal MissionService state;
+- inactive hierarchical and telemetry units, absent motion nodes/processes,
+  zero `/cmd_vel` and `/cmd_vel_motor` publishers, and consumed activation
+  files.
+
+Example post-run evaluation:
+
+```bash
+rvr_hierarchical_m7_canonical_validate \
+  --mission-id <mission-id> \
+  --output ~/.local/state/sphero_rvr/m7-canonical/<mission-id>/report.json
+```
+
+The command exits nonzero if any gate is false.
+
+## Storage contract
+
+The canonical graph reuses the bounded perception writer: at most 96 JPEG
+evidence frames, each no larger than 512,000 bytes. The evaluator records
+cleanup only after the hierarchical and telemetry units are inactive. No
+unbounded rosbag capture is part of this run.
+
+## Evidence log
+
+Physical evidence will be added here only after the exact-SHA Pi deployment,
+attended mission, terminal cleanup, and evaluator all pass. Until then:
+
+- `m7_6_canonical_physical_mission`: `not_proven`
+- `m7_7_durable_physical_evidence`: `not_proven`
+- `canonical_mission_complete`: `false`

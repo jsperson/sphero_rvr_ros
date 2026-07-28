@@ -6,6 +6,7 @@ After=rvr-mission-service.service
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/sphero_rvr/mission-stack.env
+EnvironmentFile=%h/.local/state/sphero_rvr/hierarchical-session/session.env
 ExecStartPre=/bin/bash -lc '[[ "${RVR_HIERARCHICAL_BINDING_INSTALLED:-false}" == "true" && "${RVR_HIERARCHICAL_M7_6_APPROVED:-false}" == "true" && -n "${RVR_SOURCE_SHA:-}" && "$RVR_SOURCE_SHA" == "$RVR_DEPLOYED_SHA" && "$RVR_SOURCE_SHA" == "$RVR_HIERARCHICAL_REVIEWED_SHA" && -s "${RVR_HIERARCHICAL_APPROVAL_FILE:-}" && -s "${RVR_HIERARCHICAL_PROPOSAL_FILE:-}" ]]'
 ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/jsperson/ros2_ws/install/rplidar_ros/share/rplidar_ros/local_setup.bash && source "$RVR_ROS_WORKSPACE/install/setup.bash" && exec ros2 launch sphero_rvr_driver hierarchical_exploration_physical.launch.py start_sensors:=true start_motion_stack:=true start_nav2:=true start_authority:=true start_semantic_adapter:=true source_sha:="$RVR_SOURCE_SHA" deployed_sha:="$RVR_DEPLOYED_SHA" reviewed_sha:="$RVR_HIERARCHICAL_REVIEWED_SHA" approval_file:="$RVR_HIERARCHICAL_APPROVAL_FILE" proposal_file:="$RVR_HIERARCHICAL_PROPOSAL_FILE"'
 ExecStop=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source "$RVR_ROS_WORKSPACE/install/setup.bash" && timeout --signal=TERM 8 ros2 service call /stop_motor std_srvs/srv/Empty "{}"'
