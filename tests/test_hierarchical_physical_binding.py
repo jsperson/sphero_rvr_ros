@@ -508,6 +508,32 @@ def test_nav2_adapter_has_no_twist_or_direct_motor_surface() -> None:
     assert "HierarchicalBindingJournal" in controller
 
 
+def test_controller_keeps_authority_heartbeat_live_during_map_processing() -> None:
+    controller = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    authority = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_authority_node.py"
+    ).read_text()
+
+    assert "MutuallyExclusiveCallbackGroup" in controller
+    assert "callback_group=self._authority_callbacks" in controller
+    assert "MultiThreadedExecutor(num_threads=2)" in controller
+    assert "AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.30" in (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_physical_binding.py"
+    ).read_text()
+    assert "if rclpy.ok(context=self.context):" in authority
+
+
 def test_browser_projection_exposes_installed_but_locked_binding(
     tmp_path: Path,
 ) -> None:

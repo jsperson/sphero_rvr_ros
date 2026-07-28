@@ -81,7 +81,8 @@ def _yaw(orientation: Any) -> float:
 def main(args=None):
     import rclpy
     from nav_msgs.msg import OccupancyGrid as RosOccupancyGrid
-    from rclpy.executors import ExternalShutdownException
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from std_msgs.msg import String
@@ -191,6 +192,12 @@ def main(args=None):
             self._controller_session = 1
             self._last_dispatch_digest = ""
             self._terminal = False
+            # Map hashing and frontier extraction are intentionally
+            # server-owned and can occupy the main callback group long enough
+            # to exceed the 0.300 s authority lease on a loaded Pi. Keep only
+            # heartbeat receipt in an independent callback group; the command
+            # bridge still enforces the same unrelaxed 0.300 s lease.
+            self._authority_callbacks = MutuallyExclusiveCallbackGroup()
             self._status_pub = self.create_publisher(
                 String,
                 str(self.get_parameter("controller_status_topic").value),
@@ -200,7 +207,11 @@ def main(args=None):
                 String, GOAL_DISPATCH_TOPIC, 10
             )
             self.create_subscription(
-                String, AUTHORITY_TOPIC, self._on_authority, 10
+                String,
+                AUTHORITY_TOPIC,
+                self._on_authority,
+                10,
+                callback_group=self._authority_callbacks,
             )
             self.create_subscription(
                 RosOccupancyGrid,
@@ -782,11 +793,14 @@ def main(args=None):
 
     rclpy.init(args=args)
     node = HierarchicalMissionNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.close()
         node.destroy_node()
         rclpy.try_shutdown()
