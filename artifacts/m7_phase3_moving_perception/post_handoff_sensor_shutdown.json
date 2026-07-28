@@ -22,7 +22,12 @@
     "orphaned_driver_reaped": true
   },
   "observed_at_local": "2026-07-28T11:16:00-05:00",
-  "physical_spin_confirmation": "operator_visual_confirmation_required",
+  "physical_spin_confirmation": {
+    "confirmed": true,
+    "confirmed_at_local": "2026-07-28T11:29:00-05:00",
+    "confirmed_by": "jsperson",
+    "observation": "lidar stopped"
+  },
   "schema": "sphero_rvr.m7_post_handoff_sensor_shutdown.v1",
   "trigger": "operator_reported_lidar_still_spinning_after_ownerless_cleanup_audit"
 }

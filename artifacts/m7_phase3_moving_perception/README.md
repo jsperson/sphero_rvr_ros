@@ -49,7 +49,8 @@ mission, and drop-off detection explicitly unavailable.
   still spinning. The post-handoff correction invoked the upstream
   `/stop_motor` service, gracefully reaped the temporary driver, asserted the
   serial DTR stop state, and reverified zero lidar/camera/rosbag processes and
-  zero lidar device owners.
+  zero lidar device owners. The operator then visually confirmed that the lidar
+  stopped spinning.
 
 ## Evidence layout
 
@@ -107,8 +108,9 @@ index binds these files without committing large binary data.
    physically stopped scanner. The operator reported continued spin. A
    temporary upstream driver was started, `/stop_motor` succeeded, the driver
    was gracefully reaped, and DTR stop was asserted. Machine checks then found
-   zero lidar processes and owners. Physical spin remains an operator-visible
-   property rather than something the cleanup audit can infer.
+   zero lidar processes and owners, and the operator visually confirmed the
+   lidar stopped. Physical spin remains an operator-visible property rather
+   than something the cleanup audit can infer.
 8. The camera/rosbag audit found zero capture writers. Both `rvr_runs` and ROS
    log storage grew by zero bytes over an 8-second check; the filesystem was
    53% used with about 27 GB free.

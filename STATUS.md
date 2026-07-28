@@ -16,8 +16,9 @@ Updated: 2026-07-28
 - The final cleanup audit found no motion publisher or hardware owner, but the
   operator then observed that the ownerless lidar was still spinning. A
   post-handoff `/stop_motor` + DTR correction left zero lidar processes/owners.
-  The chassis is off. Physical lidar stop requires operator-visible
-  confirmation rather than inference from ownership alone.
+  The operator visually confirmed that the lidar stopped. The chassis is off.
+  Physical lidar stop is confirmed by observation rather than inferred from
+  ownership alone.
 - M7.5 physical hierarchical binding, the final exact-SHA approval, and the
   canonical mission remain locked.
 - Review index:
