@@ -26,10 +26,14 @@ Phase 2 is accepted and merged through
 `1fc349305d3f809ea00896de81436c564a8c626d`. Its surveyed stationary
 localization evidence is recorded in
 [hierarchical_exploration_milestone7_phase2.md](hierarchical_exploration_milestone7_phase2.md).
-Phase 3 is the active software slice: it prepares the read-only observer,
-fail-closed evidence evaluator, and exact-SHA approval boundaries for M7.3 and
-M7.4. No M7.3 motion is authorized until that candidate is independently
-reviewed and explicitly approved; M7.4 then requires a second approval.
+Phase 3's sequential physical gates now both pass at executable source
+`8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f`. M7.3 established attended
+collision, independent-veto, restart, ownership, and cleanup evidence. Its
+paired directional addendum proved block-toward and permit-away on the same
+obstacle. M7.4 then ran under a separate approval bound to both accepted
+digests and established live moving-perception, pitch, stale-sensor, no-contact,
+and cleanup evidence. Phase 4/M7.5 physical binding and every canonical mission
+authority remain closed.
 
 ## Short-hop product decision
 

@@ -1,0 +1,29 @@
+{
+  "approval_event_sha256": "f9af74eb81f29715f3d7a6b1245dc78114857569e8fa9e54fd383eb2d7aabd74",
+  "approval_id": "m7.4-user-resumed-goal-20260727",
+  "approved_at_utc": "2026-07-27T23:28:41.510611+00:00",
+  "approved_by": "jsperson",
+  "authority_owner": "live_mission_service",
+  "authorization_context": "Immediate response to the stated M7.4 requirement binding main 3aa8f113, M7.3 digest 7e2636f1...81f55, and directional digest 638abb8f...f4130.",
+  "deployed_sha": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f",
+  "directional_addendum_sha256": "638abb8f293781adcf3827a486cf700b96693f1172d6fb058c40b79a8b8f4130",
+  "explicit_motor_warning_acknowledged": true,
+  "gate": "m7.4",
+  "limits": {
+    "command_lease_max_s": 0.5,
+    "max_angular_rad_s": 0.4,
+    "max_forward_mps": 0.1
+  },
+  "m7_3_evidence_sha256": "7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55",
+  "main_merge_sha": "3aa8f113fe3e561d61f2495b1cd55af28f67fe05",
+  "proposal_digest": "e46153482023ab86da18e9c97ae250a35660ed4b6ab424f935bb3e2a4636bbf2",
+  "reviewed_sha": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f",
+  "room": {
+    "attended": true,
+    "level_bounded": true,
+    "negative_obstacle_sensing_available": false,
+    "stairs_ledges_dropoffs_absent": true
+  },
+  "source_sha": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f",
+  "user_authorization_text": "Please setup the next goal and execute"
+}

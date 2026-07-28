@@ -1,0 +1,47 @@
+{
+  "checks": {
+    "canonical_mission_and_m7_5_remain_locked": true,
+    "exact_source_and_required_approvals": true,
+    "m7_3_attended_collision_passed": true,
+    "m7_3_no_contact_and_cleanup_passed": true,
+    "m7_4_approval_binds_m7_3_evidence": true,
+    "m7_4_moving_perception_passed": true,
+    "m7_4_pitch_reverified_before_and_after": true,
+    "m7_4_stale_veto_and_cleanup_passed": true,
+    "unchanged_safety_limits": true
+  },
+  "m7_3_evidence_sha256": "7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55",
+  "m7_3_metrics": {
+    "collision_zero_latency_s": 0.0,
+    "operator_zero_latency_s": {
+      "operator_estop": 0.0035390853881835938,
+      "operator_stop": 0.015192031860351562
+    },
+    "physical_contact_observed": false,
+    "restart_state": "recovery_required",
+    "slow_min_motor_mps": 0.09499999046325686
+  },
+  "m7_4_metrics": {
+    "mapped_point_detection_count": 1,
+    "maximum_observed_displacement_m": 0.05117835509053988,
+    "moving_sample_count": 3,
+    "new_stable_track_ids": [
+      "object-0007"
+    ],
+    "pitch_drift_deg": 0.1289999999999997,
+    "sample_count": 5,
+    "stale_zero_latency_s": 0.0025529861450195312
+  },
+  "passed": true,
+  "schema": "sphero_rvr.m7_phase3_attended_validation_report.v1",
+  "scope": {
+    "canonical_mission_approved": false,
+    "drop_off_detection_available": false,
+    "m7_3_collision_gate": "passed",
+    "m7_4_moving_perception_gate": "passed",
+    "m7_5_physical_binding_approved": false
+  },
+  "session_sha256": "35e9c25d06b113d335775a54f16211a5887b8c15f4527d9cca975fdcc79012da",
+  "source_sha": "8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f",
+  "through_gate": "m7.4"
+}

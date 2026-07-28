@@ -1,6 +1,28 @@
 # Sphero RVR ROS Project Status
 
-Updated: 2026-07-21
+Updated: 2026-07-28
+
+## Active Milestone 7 state
+
+- M7.1 exact-SHA Pi no-motion WFD/ownership evidence is accepted.
+- M7.2 surveyed stationary localization evidence is accepted.
+- M7.3 attended collision and its paired directional-veto addendum are
+  accepted at executable source
+  `8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f`.
+- M7.4 attended moving perception now passes under its separate approval:
+  five live samples, three moving samples, `0.051178355 m` displacement,
+  mapped floor projection, stable-track replanning, `0.129°` pitch drift,
+  stale-sensor zeroing, no contact, and generated cleanup.
+- The final cleanup audit found no motion publisher or hardware owner, but the
+  operator then observed that the ownerless lidar was still spinning. A
+  post-handoff `/stop_motor` + DTR correction left zero lidar processes/owners.
+  The operator visually confirmed that the lidar stopped. The chassis is off.
+  Physical lidar stop is confirmed by observation rather than inferred from
+  ownership alone.
+- M7.5 physical hierarchical binding, the final exact-SHA approval, and the
+  canonical mission remain locked.
+- Review index:
+  [artifacts/m7_phase3_moving_perception/README.md](artifacts/m7_phase3_moving_perception/README.md).
 
 ## Current repo state
 
