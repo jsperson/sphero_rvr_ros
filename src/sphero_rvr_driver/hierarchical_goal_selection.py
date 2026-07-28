@@ -71,6 +71,8 @@ FORBIDDEN_MODEL_KEYS = {
     "ros",
     "code",
 }
+MAX_TRACK_REVALIDATION_DRIFT_M = 0.10
+MAX_VIEWPOINT_REVALIDATION_DRIFT_M = 0.10
 
 
 def _finite(value: Any, name: str) -> float:
@@ -1120,23 +1122,65 @@ def revalidate_resolved_goal(
             reasons.append("frontier_signature_invalidated")
     elif decision.action == "inspect":
         tracks = {
-            str(item["track_id"]): str(item["signature"])
+            str(item["track_id"]): item
             for item in current_snapshot.get("tracks", ())
         }
         captured_tracks = {
-            str(item["track_id"]): str(item["signature"])
+            str(item["track_id"]): item
             for item in captured_snapshot.get("tracks", ())
         }
         track_id = decision.arguments["track_id"]
-        if track_id not in tracks or tracks[track_id] != captured_tracks.get(track_id):
+        current_track = tracks.get(track_id)
+        captured_track = captured_tracks.get(track_id)
+        if (
+            not isinstance(current_track, Mapping)
+            or not isinstance(captured_track, Mapping)
+            or str(current_track.get("signature", ""))
+            != str(captured_track.get("signature", ""))
+        ):
             reasons.append("track_signature_changed")
-        viewpoint_ids = {
-            str(item["viewpoint_id"])
-            for item in current_snapshot.get("next_best_views", {}).get(
-                track_id, ()
-            )
-        }
-        if goal.target_signature not in viewpoint_ids:
+        else:
+            try:
+                current_position = current_track["position"]
+                captured_position = captured_track["position"]
+                track_drift = math.hypot(
+                    float(current_position["x_m"])
+                    - float(captured_position["x_m"]),
+                    float(current_position["y_m"])
+                    - float(captured_position["y_m"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                track_drift = math.inf
+            if (
+                not math.isfinite(track_drift)
+                or track_drift > MAX_TRACK_REVALIDATION_DRIFT_M
+            ):
+                reasons.append("track_position_changed")
+        current_viewpoints = (
+            current_snapshot.get("next_best_views", {}).get(track_id, ())
+        )
+        viewpoint_valid = False
+        for item in current_viewpoints:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                viewpoint_drift = math.hypot(
+                    float(item["x_m"]) - float(goal.x_m),
+                    float(item["y_m"]) - float(goal.y_m),
+                )
+                clearance = float(item["clearance_m"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                math.isfinite(viewpoint_drift)
+                and viewpoint_drift
+                <= MAX_VIEWPOINT_REVALIDATION_DRIFT_M
+                and math.isfinite(clearance)
+                and clearance >= minimum_clearance_m
+            ):
+                viewpoint_valid = True
+                break
+        if not viewpoint_valid:
             reasons.append("viewpoint_invalidated")
     elif decision.action == "finish":
         available = set(

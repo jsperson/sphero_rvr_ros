@@ -40,6 +40,9 @@ PHYSICAL_PROPOSAL_SCHEMA = "sphero_rvr.hierarchical_physical_proposal.v1"
 
 AUTHORITY_TOPIC = "/mission_api/v2/hierarchical/authority"
 GOAL_DISPATCH_TOPIC = "/mission_api/v2/hierarchical/goal_dispatch"
+CONTROLLER_STATUS_TOPIC = (
+    "/mission_api/v2/hierarchical/controller_status"
+)
 NAV2_ACTION = "/navigate_through_poses"
 PRIVATE_NAV2_CMD_TOPIC = "/nav2_cmd_vel_request"
 SUPERVISOR_REQUEST_TOPIC = "/cmd_vel"

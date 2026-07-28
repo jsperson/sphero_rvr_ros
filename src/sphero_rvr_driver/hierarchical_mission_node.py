@@ -26,11 +26,13 @@ from .hierarchical_goal_selection import (
     SemanticTrack,
     build_semantic_world_snapshot,
     generate_next_best_views,
+    revalidate_resolved_goal,
     semantic_goal_prompt,
 )
 from .hierarchical_physical_binding import (
     AUTHORITY_HEARTBEAT_MAX_AGE_S,
     AUTHORITY_TOPIC,
+    CONTROLLER_STATUS_TOPIC,
     GOAL_DISPATCH_TOPIC,
     HierarchicalBindingJournal,
     build_goal_dispatch,
@@ -38,6 +40,17 @@ from .hierarchical_physical_binding import (
     validate_physical_proposal,
 )
 from .mission_api import MissionValidationError
+
+
+MAX_CONSECUTIVE_SEMANTIC_REJECTIONS = 3
+TARGET_INVALIDATION_REASONS = {
+    "event_generation_changed",
+    "map_identity_changed",
+    "frontier_signature_invalidated",
+    "track_signature_changed",
+    "track_position_changed",
+    "viewpoint_invalidated",
+}
 
 
 def _json_object(value: Any, name: str) -> dict[str, Any]:
@@ -76,6 +89,74 @@ def _yaw(orientation: Any) -> float:
             + float(orientation.z) ** 2
         ),
     )
+
+
+def live_semantic_track_signature(raw: Mapping[str, Any]) -> str:
+    """Bind stable semantic identity, not rolling frame evidence."""
+
+    identity = {
+        "track_id": str(raw.get("track_id", "")).strip(),
+        "kind": str(raw.get("kind", "object")).strip(),
+        "label": str(raw.get("label", raw.get("kind", "object"))).strip(),
+        "recognized_from_enrollment": bool(
+            raw.get("recognized_from_enrollment", False)
+        ),
+        "enrollment_evidence_ids": sorted(
+            str(item)
+            for item in raw.get("enrollment_evidence_ids", ())
+        ),
+    }
+    if not identity["track_id"] or not identity["label"]:
+        raise MissionValidationError("live semantic track identity is invalid")
+    return hashlib.sha256(
+        json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def semantic_target_invalidation_reason(
+    goal: Any,
+    captured_snapshot: Mapping[str, Any],
+    current_snapshot: Mapping[str, Any],
+) -> str:
+    result = revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured_snapshot,
+        current_snapshot=current_snapshot,
+    )
+    invalidations = [
+        reason
+        for reason in result.reasons
+        if reason in TARGET_INVALIDATION_REASONS
+    ]
+    return ",".join(invalidations)
+
+
+def updated_semantic_rejection_count(
+    previous: int, events: Any
+) -> int:
+    count = max(0, int(previous))
+    normalized = [
+        event for event in events if isinstance(event, Mapping)
+    ]
+    count += sum(
+        str(event.get("kind", "")) == "prefetch_discarded"
+        for event in normalized
+    )
+    if any(
+        str(event.get("kind", ""))
+        in {
+            "prefetch_revalidated",
+            "semantic_non_motion_goal_ready",
+        }
+        for event in normalized
+    ):
+        return 0
+    return count
 
 
 def adapter_remaining_distance(
@@ -184,9 +265,7 @@ def main(args=None):
                 "collision_topic": "/collision_stop/state",
                 "authority_topic": AUTHORITY_TOPIC,
                 "adapter_status_topic": "/mission_api/v2/hierarchical/status",
-                "controller_status_topic": (
-                    "/mission_api/v2/hierarchical/controller_status"
-                ),
+                "controller_status_topic": CONTROLLER_STATUS_TOPIC,
                 "goal_dispatch_topic": GOAL_DISPATCH_TOPIC,
                 "planning_model": "gpt-5.6-luna",
                 "planning_reasoning_effort": "low",
@@ -221,9 +300,13 @@ def main(args=None):
                 != AUTHORITY_TOPIC
                 or str(self.get_parameter("goal_dispatch_topic").value)
                 != GOAL_DISPATCH_TOPIC
+                or str(
+                    self.get_parameter("controller_status_topic").value
+                )
+                != CONTROLLER_STATUS_TOPIC
             ):
                 raise ValueError(
-                    "hierarchical authority and dispatch topics are fixed"
+                    "hierarchical authority, dispatch, and status topics are fixed"
                 )
             proposal_file = Path(
                 str(self.get_parameter("proposal_file").value)
@@ -267,6 +350,7 @@ def main(args=None):
             self._event_generation = 0
             self._known_stable_tracks: set[str] = set()
             self._replan_pending = False
+            self._consecutive_semantic_rejections = 0
             self._controller_session = 1
             self._last_dispatch_digest = ""
             self._last_dispatch_queue_key = ""
@@ -279,7 +363,7 @@ def main(args=None):
             self._authority_callbacks = MutuallyExclusiveCallbackGroup()
             self._status_pub = self.create_publisher(
                 String,
-                str(self.get_parameter("controller_status_topic").value),
+                CONTROLLER_STATUS_TOPIC,
                 10,
             )
             self._dispatch_pub = self.create_publisher(
@@ -463,15 +547,7 @@ def main(args=None):
                 try:
                     track = SemanticTrack(
                         track_id=str(raw["track_id"]),
-                        signature=hashlib.sha256(
-                            json.dumps(
-                                {
-                                    "track_id": raw["track_id"],
-                                    "evidence_ids": raw.get("evidence_ids", []),
-                                },
-                                sort_keys=True,
-                            ).encode("utf-8")
-                        ).hexdigest(),
+                        signature=live_semantic_track_signature(raw),
                         class_name=str(raw.get("label", raw.get("kind", "object"))),
                         x_m=float(raw["x_m"]),
                         y_m=float(raw["y_m"]),
@@ -640,11 +716,33 @@ def main(args=None):
                     dict(event),
                     recorded_at_s=now_s,
                 )
+            self._consecutive_semantic_rejections = (
+                updated_semantic_rejection_count(
+                    self._consecutive_semantic_rejections,
+                    step.events,
+                )
+            )
+            if (
+                self._consecutive_semantic_rejections
+                >= MAX_CONSECUTIVE_SEMANTIC_REJECTIONS
+            ):
+                self._terminal = True
+                self._provider.cancel()
+                self._publish_status(
+                    "recovery_required",
+                    "semantic_revalidation_exhausted",
+                )
+                return
             if any(
                 str(event.get("kind", "")) == "prefetch_revalidated"
                 for event in step.events
             ):
                 self._replan_pending = False
+            if self._replan_pending and step.provider_in_flight:
+                self._publish_status(
+                    "wait_planning", "event_replan_provider_in_flight"
+                )
+                return
             if self._controller.ready_non_motion_goal() is not None:
                 self._terminal = True
                 self._publish_status(
@@ -680,19 +778,13 @@ def main(args=None):
             else:
                 active = self._controller.resolved_motion_goals()
                 if active:
-                    active_goal = active[0][0]
-                    if active_goal.decision.action in {
-                        "go_to_frontier",
-                        "search_region",
-                    }:
-                        signatures = {
-                            str(item.get("signature", ""))
-                            for item in snapshot.get("frontiers", ())
-                            if isinstance(item, Mapping)
-                        }
-                        if active_goal.target_signature not in signatures:
-                            kind = SemanticEventKind.INVALID_TARGET
-                            target_id = active_goal.target_id
+                    active_goal, captured = active[0]
+                    invalidation = semantic_target_invalidation_reason(
+                        active_goal, captured, snapshot
+                    )
+                    if invalidation:
+                        kind = SemanticEventKind.INVALID_TARGET
+                        target_id = active_goal.target_id
             if kind is None:
                 return None
             self._event_generation += 1
@@ -872,7 +964,7 @@ def main(args=None):
                 else:
                     self._provider.close()
             finally:
-                self._initial_pool.shutdown(wait=False, cancel_futures=True)
+                self._initial_pool.shutdown(wait=True, cancel_futures=True)
                 self._journal.close()
 
     rclpy.init(args=args)

@@ -15,6 +15,14 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     adapter_recovery_reason,
     adapter_remaining_distance,
     goal_dispatch_queue_key,
+    live_semantic_track_signature,
+    semantic_target_invalidation_reason,
+    updated_semantic_rejection_count,
+)
+from sphero_rvr_driver.hierarchical_nav2_adapter_node import (
+    controller_status_cancel_mode,
+    nav2_result_state,
+    stronger_cancel_reason,
 )
 from sphero_rvr_driver.hierarchical_physical_binding import (
     ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256,
@@ -602,6 +610,70 @@ def test_dispatch_queue_key_ignores_refresh_but_tracks_semantic_change() -> None
     assert goal_dispatch_queue_key(changed) != goal_dispatch_queue_key(first)
 
 
+def test_live_track_signature_ignores_rolling_frame_evidence() -> None:
+    raw = {
+        "track_id": "object-0003",
+        "kind": "object",
+        "label": "possible_shoe",
+        "x_m": 0.8,
+        "y_m": -0.2,
+        "last_seen_s": 100.0,
+        "observation_count": 4,
+        "evidence_ids": ["frame-1", "frame-2"],
+        "recognized_from_enrollment": False,
+        "enrollment_evidence_ids": [],
+    }
+    rolling = json.loads(json.dumps(raw))
+    rolling["x_m"] = 0.83
+    rolling["last_seen_s"] = 101.0
+    rolling["observation_count"] = 5
+    rolling["evidence_ids"].append("frame-3")
+    assert live_semantic_track_signature(rolling) == (
+        live_semantic_track_signature(raw)
+    )
+
+    relabeled = json.loads(json.dumps(raw))
+    relabeled["label"] = "backpack"
+    assert live_semantic_track_signature(relabeled) != (
+        live_semantic_track_signature(raw)
+    )
+
+
+def test_active_semantic_target_invalidation_is_not_frontier_only() -> None:
+    snapshot = _snapshot()
+    controller = AsyncSemanticGoalController(
+        ScriptedSemanticGoalProvider([])
+    )
+    try:
+        controller.start(_decision(snapshot), snapshot, now_s=100.1)
+        goal, captured = controller.resolved_motion_goals()[0]
+        invalidated = json.loads(json.dumps(snapshot))
+        invalidated["frontiers"] = []
+        assert semantic_target_invalidation_reason(
+            goal, captured, invalidated
+        ) == "frontier_signature_invalidated"
+    finally:
+        controller.close()
+
+
+def test_semantic_revalidation_churn_is_bounded_and_success_resets() -> None:
+    count = 0
+    for _ in range(3):
+        count = updated_semantic_rejection_count(
+            count,
+            ({"kind": "prefetch_discarded"},),
+        )
+    assert count == 3
+    assert count >= 3
+    assert (
+        updated_semantic_rejection_count(
+            count,
+            ({"kind": "prefetch_revalidated"},),
+        )
+        == 0
+    )
+
+
 def test_physical_nav2_clears_only_its_declared_footprint() -> None:
     nav2 = (
         REPO_ROOT / "config" / "hierarchical_nav2_physical.yaml"
@@ -629,6 +701,102 @@ def test_nav2_adapter_binds_feedback_and_results_to_active_batch() -> None:
     assert source.count("recovery_required") >= 5
     assert '"nav2_action_unavailable"' in source
     assert '"nav2_goal_rejected"' in source
+    controller = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    assert "MAX_CONSECUTIVE_SEMANTIC_REJECTIONS = 3" in controller
+    assert "semantic_revalidation_exhausted" in controller
+    assert "_initial_pool.shutdown(wait=True" in controller
+
+
+def test_controller_replan_status_can_only_cancel_nav2() -> None:
+    base = {
+        "schema": "sphero_rvr.hierarchical_controller_status.v1",
+        "source_sha": SHA,
+        "mission_id": "m7-canonical-001",
+        "state": "wait_planning",
+        "reason": "event_triggered_replan",
+    }
+    assert controller_status_cancel_mode(
+        base,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "replan"
+
+    navigating = {**base, "state": "dispatching", "reason": "navigating"}
+    assert controller_status_cancel_mode(
+        navigating,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == ""
+
+    mismatched = {**base, "source_sha": "b" * 40}
+    assert controller_status_cancel_mode(
+        mismatched,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "veto"
+
+    recovery = {
+        **base,
+        "state": "recovery_required",
+        "reason": "semantic_revalidation_exhausted",
+    }
+    assert controller_status_cancel_mode(
+        recovery,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "veto"
+    complete = {
+        **base,
+        "state": "complete",
+        "reason": "finish",
+    }
+    assert controller_status_cancel_mode(
+        complete,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "complete"
+
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_nav2_adapter_node.py"
+    ).read_text()
+    assert "_cancel_for_replan" in source
+    assert "_cancel_for_completion" in source
+    assert '"controller_replan_cancelled"' in source
+    assert "CONTROLLER_STATUS_TOPIC" in source
+    assert nav2_result_state(4, "") == (
+        "wait_planning",
+        "nav2_result_status_4",
+    )
+    assert nav2_result_state(5, "controller_replan") == (
+        "wait_planning",
+        "controller_replan_cancelled",
+    )
+    assert nav2_result_state(5, "controller_complete") == (
+        "complete",
+        "controller_complete_cancelled",
+    )
+    assert nav2_result_state(6, "") == (
+        "recovery_required",
+        "nav2_result_status_6",
+    )
+    assert stronger_cancel_reason("", "controller_replan") == (
+        "controller_replan"
+    )
+    assert stronger_cancel_reason(
+        "controller_replan", "controller_complete"
+    ) == "controller_complete"
+    assert stronger_cancel_reason("controller_complete", "veto") == "veto"
+    assert stronger_cancel_reason("veto", "controller_replan") == "veto"
+    assert "_pending_batch_digest" in source
+    assert "veto_pending_acceptance" in source
 
 
 def test_browser_projection_exposes_installed_but_locked_binding(

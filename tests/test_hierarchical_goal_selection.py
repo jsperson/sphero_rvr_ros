@@ -533,6 +533,59 @@ def test_resolver_uses_server_geometry_and_revalidation_rejects_invalidation() -
     assert "motion_evidence_stale" in result.reasons
 
 
+def test_inspect_revalidation_tolerates_sensor_drift_but_rejects_move() -> None:
+    captured = _snapshot()
+    decision = SemanticGoalDecision.validated(
+        _inspect_decision(captured),
+        snapshot=captured,
+        expected_generation=1,
+        provider_id="test-provider",
+        model_id="test-model",
+    )
+    goal = DeterministicGoalResolver().resolve(
+        decision, captured, ready_at_s=1.0
+    )
+
+    rolling = json.loads(json.dumps(captured))
+    rolling["tracks"][0]["position"]["x_m"] += 0.05
+    rolling["tracks"][0]["evidence_ids"].append("camera-frame-later")
+    for viewpoint in rolling["next_best_views"][
+        rolling["tracks"][0]["track_id"]
+    ]:
+        viewpoint["x_m"] += 0.05
+    assert revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured,
+        current_snapshot=rolling,
+    ).accepted is True
+
+    moved = json.loads(json.dumps(captured))
+    moved["tracks"][0]["position"]["x_m"] += 0.101
+    for viewpoint in moved["next_best_views"][
+        moved["tracks"][0]["track_id"]
+    ]:
+        viewpoint["x_m"] += 0.101
+    result = revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured,
+        current_snapshot=moved,
+    )
+    assert result.accepted is False
+    assert "track_position_changed" in result.reasons
+
+    invalid_viewpoint = json.loads(json.dumps(captured))
+    invalid_viewpoint["next_best_views"][
+        invalid_viewpoint["tracks"][0]["track_id"]
+    ] = []
+    result = revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured,
+        current_snapshot=invalid_viewpoint,
+    )
+    assert result.accepted is False
+    assert "viewpoint_invalidated" in result.reasons
+
+
 def test_long_leg_async_prefetch_hands_off_without_zero_under_recorded_p95() -> None:
     snapshot = _snapshot()
     first_target = snapshot["frontiers"][0]["signature"]

@@ -12,16 +12,70 @@ import json
 import math
 import os
 import time
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from .hierarchical_physical_binding import (
     AUTHORITY_HEARTBEAT_MAX_AGE_S,
     AUTHORITY_TOPIC,
+    CONTROLLER_STATUS_TOPIC,
     GOAL_DISPATCH_TOPIC,
     NAV2_ACTION,
     resolve_goal_dispatch,
     validate_authority_heartbeat,
 )
+
+
+def controller_status_cancel_mode(
+    payload: Mapping[str, Any],
+    *,
+    source_sha: str,
+    mission_id: str,
+) -> str:
+    """Map controller state to a stop-only adapter action."""
+
+    if (
+        payload.get("schema")
+        != "sphero_rvr.hierarchical_controller_status.v1"
+        or str(payload.get("source_sha", "")).strip() != source_sha
+        or str(payload.get("mission_id", "")).strip() != mission_id
+    ):
+        return "veto"
+    state = str(payload.get("state", "")).strip()
+    reason = str(payload.get("reason", "")).strip()
+    if state == "wait_planning" and reason in {
+        "event_triggered_replan",
+        "event_replan_provider_in_flight",
+    }:
+        return "replan"
+    if state == "complete":
+        return "complete"
+    if state == "recovery_required":
+        return "veto"
+    return ""
+
+
+def nav2_result_state(status: int, cancel_reason: str) -> tuple[str, str]:
+    if status == 4:
+        return "wait_planning", "nav2_result_status_4"
+    if status == 5 and cancel_reason == "controller_replan":
+        return "wait_planning", "controller_replan_cancelled"
+    if status == 5 and cancel_reason == "controller_complete":
+        return "complete", "controller_complete_cancelled"
+    return "recovery_required", f"nav2_result_status_{status}"
+
+
+def stronger_cancel_reason(current: str, requested: str) -> str:
+    priority = {
+        "": 0,
+        "controller_replan": 1,
+        "controller_complete": 2,
+        "veto": 3,
+    }
+    return (
+        requested
+        if priority.get(requested, 3) > priority.get(current, 3)
+        else current
+    )
 
 
 def main(args=None):
@@ -43,6 +97,7 @@ def main(args=None):
                 "reviewed_sha": "",
                 "authority_topic": AUTHORITY_TOPIC,
                 "goal_dispatch_topic": GOAL_DISPATCH_TOPIC,
+                "controller_status_topic": CONTROLLER_STATUS_TOPIC,
                 "nav2_action": NAV2_ACTION,
                 "authority_max_age_s": AUTHORITY_HEARTBEAT_MAX_AGE_S,
                 "status_topic": "/mission_api/v2/hierarchical/status",
@@ -74,17 +129,22 @@ def main(args=None):
                 != AUTHORITY_TOPIC
                 or str(self.get_parameter("goal_dispatch_topic").value)
                 != GOAL_DISPATCH_TOPIC
+                or str(
+                    self.get_parameter("controller_status_topic").value
+                )
+                != CONTROLLER_STATUS_TOPIC
                 or str(self.get_parameter("nav2_action").value) != NAV2_ACTION
             ):
                 raise ValueError(
-                    "hierarchical ROS authority, dispatch, and Nav2 action names are fixed"
+                    "hierarchical ROS authority, dispatch, status, and Nav2 action names are fixed"
                 )
             self._authority: Optional[dict[str, Any]] = None
             self._authority_received_at_s: Optional[float] = None
             self._goal_handle = None
             self._last_batch_digest = ""
+            self._pending_batch_digest = ""
             self._active_batch_digest = ""
-            self._cancel_requested = False
+            self._cancel_reasons: dict[str, str] = {}
             self._distance_remaining_m: Optional[float] = None
             self._poses_remaining: Optional[int] = None
             self._client = ActionClient(
@@ -98,6 +158,12 @@ def main(args=None):
             )
             self.create_subscription(
                 String, GOAL_DISPATCH_TOPIC, self._on_dispatch, 10
+            )
+            self.create_subscription(
+                String,
+                CONTROLLER_STATUS_TOPIC,
+                self._on_controller_status,
+                10,
             )
             self.create_timer(0.05, self._check_authority)
             self._publish_status("locked", "awaiting_fresh_authority")
@@ -146,6 +212,33 @@ def main(args=None):
                 ),
             )
 
+        def _on_controller_status(self, msg) -> None:
+            try:
+                payload = json.loads(str(msg.data))
+                if not isinstance(payload, dict):
+                    raise ValueError("controller status must be an object")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                self._cancel_for_veto("malformed_controller_status")
+                return
+            mission_id = (
+                ""
+                if self._authority is None
+                else str(self._authority.get("mission_id", "")).strip()
+            )
+            mode = controller_status_cancel_mode(
+                payload,
+                source_sha=self._source_sha,
+                mission_id=mission_id,
+            )
+            if mode == "replan":
+                self._cancel_for_replan(str(payload.get("reason", "")))
+            elif mode == "complete":
+                self._cancel_for_completion(
+                    str(payload.get("reason", ""))
+                )
+            elif mode == "veto":
+                self._cancel_for_veto("controller_status_veto")
+
         def _check_authority(self) -> None:
             valid, reason = self._authority_valid()
             if not valid:
@@ -175,7 +268,11 @@ def main(args=None):
                 )
                 return
             digest = str(payload["batch_digest"])
-            if digest == self._last_batch_digest:
+            if digest in {
+                self._last_batch_digest,
+                self._pending_batch_digest,
+                self._active_batch_digest,
+            }:
                 return
             if not self._client.wait_for_server(timeout_sec=0.0):
                 self._publish_status(
@@ -184,7 +281,7 @@ def main(args=None):
                 return
             goal = NavigateThroughPoses.Goal()
             goal.poses = [self._pose(item) for item in batch.poses]
-            self._cancel_requested = False
+            self._pending_batch_digest = digest
             future = self._client.send_goal_async(
                 goal,
                 feedback_callback=(
@@ -218,12 +315,24 @@ def main(args=None):
             try:
                 handle = future.result()
             except Exception as exc:
+                if digest != self._pending_batch_digest:
+                    self._cancel_reasons.pop(digest, None)
+                    return
+                self._pending_batch_digest = ""
+                self._cancel_reasons.pop(digest, None)
                 self._publish_status(
                     "recovery_required",
                     f"nav2_goal_error:{exc.__class__.__name__}",
                 )
                 return
+            if digest != self._pending_batch_digest:
+                if handle is not None and handle.accepted:
+                    handle.cancel_goal_async()
+                self._cancel_reasons.pop(digest, None)
+                return
+            self._pending_batch_digest = ""
             if handle is None or not handle.accepted:
+                self._cancel_reasons.pop(digest, None)
                 self._publish_status(
                     "recovery_required", "nav2_goal_rejected"
                 )
@@ -231,14 +340,20 @@ def main(args=None):
             self._goal_handle = handle
             self._last_batch_digest = digest
             self._active_batch_digest = digest
-            self._cancel_requested = False
             result = handle.get_result_async()
             result.add_done_callback(
                 lambda wrapped, batch_digest=digest: self._on_result(
                     wrapped, batch_digest
                 )
             )
-            self._publish_status("navigating", "nav2_goal_accepted")
+            cancel_reason = self._cancel_reasons.get(digest, "")
+            if cancel_reason:
+                handle.cancel_goal_async()
+                self._publish_cancel_status(cancel_reason)
+            else:
+                self._publish_status(
+                    "navigating", "nav2_goal_accepted"
+                )
 
         def _on_feedback(self, message, digest: str) -> None:
             if digest != self._active_batch_digest:
@@ -257,6 +372,7 @@ def main(args=None):
             self._publish_status("navigating", "nav2_feedback")
 
         def _on_result(self, future, digest: str) -> None:
+            cancel_reason = self._cancel_reasons.pop(digest, "")
             if digest != self._active_batch_digest:
                 return
             try:
@@ -272,19 +388,54 @@ def main(args=None):
                 return
             self._goal_handle = None
             self._active_batch_digest = ""
-            self._cancel_requested = False
             self._distance_remaining_m = 0.0
             self._poses_remaining = 0
-            self._publish_status(
-                "wait_planning" if status == 4 else "recovery_required",
-                f"nav2_result_status_{status}",
-            )
+            state, reason = nav2_result_state(status, cancel_reason)
+            self._publish_status(state, reason)
+
+        def _cancel_for_replan(self, reason: str) -> None:
+            self._cancel_current("controller_replan")
+            self._publish_status("wait_planning", str(reason))
+
+        def _cancel_for_completion(self, reason: str) -> None:
+            self._cancel_current("controller_complete")
+            self._publish_status("complete", str(reason))
 
         def _cancel_for_veto(self, reason: str) -> None:
-            if self._goal_handle is not None and not self._cancel_requested:
-                self._cancel_requested = True
-                self._goal_handle.cancel_goal_async()
+            self._cancel_current("veto")
             self._publish_status("locked", str(reason))
+
+        def _cancel_current(self, requested_reason: str) -> None:
+            digests = {
+                self._pending_batch_digest,
+                self._active_batch_digest,
+            } - {""}
+            active_was_cancelled = bool(
+                self._cancel_reasons.get(self._active_batch_digest, "")
+            )
+            for digest in digests:
+                self._cancel_reasons[digest] = stronger_cancel_reason(
+                    self._cancel_reasons.get(digest, ""),
+                    requested_reason,
+                )
+            if self._goal_handle is not None and not active_was_cancelled:
+                self._goal_handle.cancel_goal_async()
+
+        def _publish_cancel_status(self, cancel_reason: str) -> None:
+            if cancel_reason == "controller_replan":
+                self._publish_status(
+                    "wait_planning",
+                    "controller_replan_pending_acceptance",
+                )
+            elif cancel_reason == "controller_complete":
+                self._publish_status(
+                    "complete",
+                    "controller_complete_pending_acceptance",
+                )
+            else:
+                self._publish_status(
+                    "locked", "veto_pending_acceptance"
+                )
 
         def _publish_status(
             self,
