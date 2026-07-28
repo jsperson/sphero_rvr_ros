@@ -284,7 +284,50 @@ The camera, lidar, rosbag, observer, driver, supervisor, route runner, motion
 publishers, and rover serial owner are absent after cleanup. The lidar is
 powered down.
 
-M7.4 requires an independent review of this result and a separate approval
-binding the exact M7.3 evidence digest. Re-verify the measured -3 degree camera
-pitch and far-band floor projection before and after M7.4 without widening the
-`0.050 m` bound.
+M7.4 required an independent review of this result and a separate approval
+binding both the exact M7.3 evidence digest and the directional-addendum
+digest. That condition was satisfied before any M7.4 motion.
+
+## M7.4 physical result
+
+The 2026-07-27/28 attended moving-perception session passes on the same
+reviewed and deployed executable source
+`8f020c84ffbbcd0f3eb7ad642e938794cfe0c39f`. Its separate approval binds:
+
+- accepted M7.3 evidence
+  `7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55`;
+- accepted directional evidence
+  `638abb8f293781adcf3827a486cf700b96693f1172d6fb058c40b79a8b8f4130`;
+- unchanged `0.10 m/s`, `0.4 rad/s`, and `0.50 s` physical limits;
+- an attended, bounded, level room without stairs, ledges, or drop-offs.
+
+The evaluator accepted five ordered live samples, including three samples with
+`0.05 m/s` downstream motor output and `0.051178355 m` maximum observed
+displacement. Every sample retained fresh lidar, camera, localization, map, and
+transform evidence. A floor-projected mapped detection retained its
+calibration, source timestamps, mapped point, uncertainty, and evidence IDs.
+Track `object-0007` was reconfirmed stable while motor output was nonzero and
+caused a deterministic `new_stable_detection` replan event without model
+geometry.
+
+The fixed camera-pitch gate was not widened. Pre-run pitch was `-2.550°` at a
+surveyed lidar-pivot range of `0.890 m`; post-run pitch was `-2.679°` at
+`0.895 m`. Drift was `0.129°`, and the far floor-projection residuals were
+`0.0047 m` and `0.0001 m` against the unchanged `0.050 m` bound.
+
+The independent stale-sensor trial stopped lidar while the rover and a real
+provider call were active. Source shutdown to first downstream zero took
+`0.329830 s`, including the fixed `0.300 s` scan-age interval. The observed
+stale-state evidence and first downstream zero were separated by `0.002553 s`,
+which is the evaluator's response metric. No contact occurred.
+
+Final generated cleanup found no camera, lidar, rosbag, driver, collision
+supervisor, route runner, serial owner, or motion-topic publisher. The chassis
+was confirmed off and the lidar was powered down. The complete committed index
+and capture disclosures are in
+[artifacts/m7_phase3_moving_perception/README.md](../artifacts/m7_phase3_moving_perception/README.md).
+The complete raw session remains checksum-bound on `sphero-pi-2`.
+
+The evaluator leaves M7.5, the canonical mission, and drop-off detection
+unapproved. M7.4 does not grant physical hierarchical binding or unattended
+motion authority.
