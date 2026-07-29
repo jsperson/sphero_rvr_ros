@@ -4227,6 +4227,12 @@ _INDEX_HTML = r'''<!doctype html>
       const seconds = finiteNumber(
         (
           snapshot
+          && snapshot.adapter
+          && snapshot.adapter.hierarchical_canonical
+          && snapshot.proposal
+          && snapshot.proposal.mission_lease_s
+        ) || (
+          snapshot
           && snapshot.proposal
           && snapshot.proposal.limits
           && snapshot.proposal.limits.mission_lease_s
@@ -4254,11 +4260,19 @@ _INDEX_HTML = r'''<!doctype html>
 
     function configuredLeaseMaximumSeconds(snapshot) {
       const seconds = finiteNumber(
-        snapshot
-        && snapshot.adapter
-        && (
-          snapshot.adapter.adaptive_mission_lease_max_s
-          || snapshot.adapter.adaptive_mission_lease_s
+        (
+          snapshot
+          && snapshot.adapter
+          && snapshot.adapter.hierarchical_canonical
+          && snapshot.adapter.canonical_limits
+          && snapshot.adapter.canonical_limits.mission_lease_max_s
+        ) || (
+          snapshot
+          && snapshot.adapter
+          && (
+            snapshot.adapter.adaptive_mission_lease_max_s
+            || snapshot.adapter.adaptive_mission_lease_s
+          )
         )
       );
       return seconds !== null && seconds > 0 ? seconds : 900;
@@ -4281,11 +4295,20 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     function leaseDurationMatchesProposal(snapshot) {
-      if (!snapshot || !snapshot.adapter.adaptive_mission) return true;
+      if (
+        !snapshot
+        || !(
+          snapshot.adapter.adaptive_mission
+          || snapshot.adapter.hierarchical_canonical
+        )
+      ) return true;
       const proposed = finiteNumber(
-        snapshot.proposal
-        && snapshot.proposal.limits
-        && snapshot.proposal.limits.mission_lease_s
+        snapshot.adapter.hierarchical_canonical
+          ? snapshot.proposal
+            && snapshot.proposal.mission_lease_s
+          : snapshot.proposal
+            && snapshot.proposal.limits
+            && snapshot.proposal.limits.mission_lease_s
       );
       if (proposed === null) return false;
       try {
@@ -4366,6 +4389,8 @@ _INDEX_HTML = r'''<!doctype html>
       const readOnly = Boolean(snapshot.adapter.read_only);
       const leaseActive = adaptiveMission
         && ['APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
+      const canonicalLeaseLocked = canonical
+        && !['READY','PROPOSED'].includes(snapshot.mission.state);
       const leaseMatchesProposal = leaseDurationMatchesProposal(snapshot);
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
@@ -4398,7 +4423,8 @@ _INDEX_HTML = r'''<!doctype html>
         );
       $('lease-duration-minutes').disabled = Boolean(missionRequestInFlight)
         || telemetryRequestInFlight
-        || leaseActive;
+        || leaseActive
+        || canonicalLeaseLocked;
       $('lease-duration-minutes').setAttribute(
         'aria-invalid',
         leaseMatchesProposal || snapshot.mission.state !== 'PROPOSED'
@@ -4450,7 +4476,7 @@ _INDEX_HTML = r'''<!doctype html>
         $('approval-state').textContent = approvalBusy
           ? 'Writing the exact proposal and M7.6 approval, then starting the fixed supervised graph.'
           : snapshot.mission.state === 'PROPOSED' && snapshot.approval.enabled
-            ? 'Review every risk and room confirmation. One authenticated click starts the 900-second canonical mission lease.'
+            ? `Review every risk and room confirmation. One authenticated click starts the digest-bound ${leaseDurationLabel(snapshot)} canonical mission lease.`
             : snapshot.mission.state === 'PROPOSED'
               ? 'Canonical activation is locked by the Pi configuration.'
               : '';
@@ -4545,12 +4571,17 @@ _INDEX_HTML = r'''<!doctype html>
         || snapshot.approval.request_operator
         || 'Authentication required';
       $('canonical-risk-ledger').innerHTML = canonical
-        ? `<strong>Fixed limits:</strong> ${escapeHtml(canonicalLimits.max_linear_mps)} m/s · ${escapeHtml(canonicalLimits.max_angular_rad_s)} rad/s · ${escapeHtml(canonicalLimits.command_lease_s)} s command lease · ${escapeHtml(canonicalLimits.localization_max_age_s)} s localization gate · ${escapeHtml(canonicalLimits.mission_lease_max_s)} s mission lease.<br>${(snapshot.adapter.canonical_risk_ledger || []).map((item) => `• ${escapeHtml(item)}`).join('<br>')}`
+        ? `<strong>Fixed limits:</strong> ${escapeHtml(canonicalLimits.max_linear_mps)} m/s · ${escapeHtml(canonicalLimits.max_angular_rad_s)} rad/s · ${escapeHtml(canonicalLimits.command_lease_s)} s command lease · ${escapeHtml(canonicalLimits.localization_max_age_s)} s localization gate · ${escapeHtml(canonicalLimits.mission_lease_max_s)} s maximum mission lease.<br>${(snapshot.adapter.canonical_risk_ledger || []).map((item) => `• ${escapeHtml(item)}`).join('<br>')}`
         : '';
       $('canonical-binding-envelope').innerHTML = canonical
         ? [
             `<strong>Exact approval envelope</strong>`,
             `<span>Proposal digest</span><code>${escapeHtml(proposalDigest || 'Generate and persist the proposal first')}</code>`,
+            `<span>Selected mission lease</span><code>${escapeHtml(
+              proposal && proposal.mission_lease_s
+                ? `${proposal.mission_lease_s} seconds`
+                : 'Select a lease and generate the proposal'
+            )}</code>`,
             `<span>Authenticated operator</span><code>${escapeHtml(approvalOperator)}</code>`,
             `<span>Source SHA</span><code>${escapeHtml(snapshot.adapter.service_source_sha || '')}</code>`,
             `<span>Deployed SHA</span><code>${escapeHtml(snapshot.adapter.service_deployed_sha || '')}</code>`,
@@ -4561,8 +4592,9 @@ _INDEX_HTML = r'''<!doctype html>
             `<span>Room binding</span><code>attended · level bounded floor · no stairs/ledges/drop-offs · no negative-obstacle sensing</code>`,
           ].join('')
         : '';
-      $('lease-duration-control').hidden = !adaptiveMission;
-      if (adaptiveMission) {
+      const leaseSelectable = adaptiveMission || canonical;
+      $('lease-duration-control').hidden = !leaseSelectable;
+      if (leaseSelectable) {
         const maximum = configuredLeaseMaximumSeconds(snapshot);
         $('lease-duration-label').textContent =
           `Lease minutes (max ${leaseMinutesText(maximum)})`;
@@ -4574,9 +4606,11 @@ _INDEX_HTML = r'''<!doctype html>
           )
         ) {
           const selected = finiteNumber(
-            proposal
-            && proposal.limits
-            && proposal.limits.mission_lease_s
+            canonical
+              ? proposal && proposal.mission_lease_s
+              : proposal
+                && proposal.limits
+                && proposal.limits.mission_lease_s
           ) || finiteNumber(
             snapshot.adapter.adaptive_mission_lease_s
           ) || maximum;
@@ -4591,7 +4625,7 @@ _INDEX_HTML = r'''<!doctype html>
       badge.textContent = canonical ? (execution ? 'M7.6 CANONICAL PHYSICAL MISSION — ACTIVE' : 'M7.6 CANONICAL PHYSICAL MISSION — APPROVAL LOCKED') : stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : phase4 ? 'PHASE 4 REAL-PROVIDER EVIDENCE — READ ONLY / NO MOTION AUTHORITY' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
       $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : phase4 ? 'Persisted replay' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
       $('approval-heading').textContent = canonical ? 'M7.6 canonical physical approval' : stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : phase4 ? 'Persisted approval receipt' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = canonical ? 'The browser binds the exact deployment, accepted M7.3/M7.4 evidence, semantic-only proposal, authenticated operator, fixed room restriction, and fixed motion/freshness/lease limits.' : stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution. Authenticated objective updates reuse the same expiry.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning, cumulative travel, and authenticated objective updates only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : phase4 ? 'This mission-ID view is immutable. Create new evidence only with the no-authority Phase 4 replay CLI.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('approval-hint').textContent = canonical ? 'The browser binds the exact deployment, accepted M7.3/M7.4 evidence, semantic-only proposal, authenticated operator, selected mission lease, fixed room restriction, and fixed motion/freshness limits.' : stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution. Authenticated objective updates reuse the same expiry.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning, cumulative travel, and authenticated objective updates only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : phase4 ? 'This mission-ID view is immutable. Create new evidence only with the no-authority Phase 4 replay CLI.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
       $('authority-copy').textContent = canonical ? 'The browser owns proposal and approval only; it has no ROS command route. The Pi resolves model-selected semantic IDs through server geometry, Nav2 writes only the private request topic, live_route_runner is the sole /cmd_vel publisher, and collision_stop is the sole /cmd_vel_motor publisher.' : stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? `The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, ${leaseLabel} lease, speed ceilings, and safety policy. Telemetry remains lease-managed until the lease ends. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.` : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : phase4 ? 'The console reopens durable recorded-map evidence by exact mission ID. Latency is measured from real provider wall time; routes, motor-zero intervals, and coverage are replay-derived. ROS, sensors, serial, and physical authority are absent.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
@@ -4998,7 +5032,7 @@ _INDEX_HTML = r'''<!doctype html>
         && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
       );
       let leaseSeconds = null;
-      if (adaptiveMission && !leaseActive) {
+      if ((adaptiveMission && !leaseActive) || canonical) {
         try {
           leaseSeconds = requestedLeaseSeconds(current);
         } catch (error) {

@@ -20,6 +20,7 @@ from .hierarchical_physical_binding import (
     HierarchicalPhysicalApproval,
     canonical_digest,
     resolve_goal_dispatch,
+    validate_physical_proposal,
 )
 from .hierarchical_goal_selection import SemanticGoalDecision
 from .mission_api import MissionValidationError
@@ -898,6 +899,24 @@ def evaluate_canonical_mission(
     proposal_digest = str(
         proposal_unsigned.pop("proposal_digest", "")
     )
+    proposal_valid = False
+    proposal_lease_s = float("nan")
+    try:
+        validated_proposal = validate_physical_proposal(
+            proposal,
+            authority={
+                "mission_id": str(mission_id),
+                "proposal_digest": proposal_digest,
+                "mission_lease_s": approval.get("mission_lease_s"),
+            },
+            source_sha=str(mission["source_sha"]),
+        )
+        proposal_lease_s = float(
+            validated_proposal["mission_lease_s"]
+        )
+        proposal_valid = True
+    except (KeyError, TypeError, ValueError, MissionValidationError):
+        proposal_valid = False
     approval_valid = False
     try:
         validated = HierarchicalPhysicalApproval.validated(
@@ -910,6 +929,7 @@ def evaluate_canonical_mission(
         approval_valid = (
             validated.mission_id == str(mission_id)
             and validated.proposal_digest == proposal_digest
+            and validated.mission_lease_s == proposal_lease_s
         )
     except (KeyError, TypeError, ValueError, MissionValidationError):
         approval_valid = False
@@ -1639,6 +1659,7 @@ def evaluate_canonical_mission(
             and str(proposal.get("mission_id", "")) == str(mission_id)
             and str(proposal.get("source_sha", ""))
             == str(mission["source_sha"])
+            and proposal_valid
         ),
         "approval_schema_and_all_evidence_valid": (
             approval.get("schema") == APPROVAL_SCHEMA

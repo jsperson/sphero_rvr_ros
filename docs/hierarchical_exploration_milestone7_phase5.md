@@ -18,17 +18,22 @@ The browser accepts exactly:
 
 The persisted `sphero_rvr.hierarchical_physical_proposal.v1` contains only that
 objective, revision `1`, requested classes `shoe` and `person`, the mission ID,
-the exact source SHA, creation time, and its canonical digest. It cannot contain
-poses, routes, velocities, ROS names, or safety settings. Server-owned
+the exact source SHA, creation time, the browser-selected server-owned mission
+lease, and its canonical digest. The selected lease must be finite, positive,
+and no greater than the unchanged `900 s` ceiling. It cannot contain poses,
+routes, velocities, ROS names, or model-owned safety settings. Server-owned
 deterministic code continues to resolve all model-selected semantic IDs to
 geometry.
 
 ## One authenticated M7.6 approval
 
 The browser displays an explicit approval envelope containing the exact
-proposal digest, authenticated operator, source/deployed/reviewed SHAs, all
-three accepted prior-evidence bindings, room restriction, fixed limits, and
-the full risk ledger. Four explicit confirmations are required:
+proposal digest, selected mission lease, authenticated operator,
+source/deployed/reviewed SHAs, all three accepted prior-evidence bindings,
+room restriction, fixed limits, and the full risk ledger. The lease selector
+is visible before proposal creation; changing it after creation disables
+approval until a new digest-bound proposal is generated. Four explicit
+confirmations are required:
 
 - the operator is present with chassis power cut reachable;
 - the floor area is level and bounded;
@@ -46,9 +51,11 @@ The approval binds:
 - the accepted M7.4 moving-perception evidence digest;
 - the room restriction above;
 - `0.10 m/s`, `0.4 rad/s`, `0.50 s` command lease, `0.300 s`
-  localization freshness, and a maximum `900 s` mission lease.
+  localization freshness, the selected mission lease, and its unchanged
+  maximum of `900 s`.
 
-Any missing, stale, altered, replayed, or mismatched field fails closed.
+Approval expiry must equal approval time plus the selected lease. Any missing,
+stale, altered, replayed, or mismatched field fails closed.
 
 Approval also requires a server-generated no-motion sensor preflight from
 `rvr-telemetry.service`. The live Pi cache must simultaneously contain:

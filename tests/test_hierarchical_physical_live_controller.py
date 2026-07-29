@@ -464,7 +464,7 @@ def test_canonical_proposal_is_semantic_only_and_durable(tmp_path) -> None:
             session_id="m7-browser",
             source="web",
             mission_id="m7-canonical-test",
-            mission_lease_s=900.0,
+            mission_lease_s=120.0,
         )
         proposal = proposed["proposal"]
         assert proposed["status"] == "proposed"
@@ -478,8 +478,10 @@ def test_canonical_proposal_is_semantic_only_and_durable(tmp_path) -> None:
             "requested_object_classes",
             "source_sha",
             "created_at_s",
+            "mission_lease_s",
             "proposal_digest",
         }
+        assert proposal["mission_lease_s"] == 120.0
         assert not any(
             name in proposal
             for name in ("x_m", "y_m", "pose", "route", "cmd_vel")
@@ -506,6 +508,7 @@ def test_canonical_approval_requires_auth_room_and_exact_proposal(
             CANONICAL_M7_OBJECTIVE,
             session_id="m7-browser",
             mission_id="m7-canonical-test",
+            mission_lease_s=120.0,
         )
         phrase = (
             "APPROVE M7.6 CANONICAL MISSION "
@@ -542,6 +545,28 @@ def test_canonical_approval_requires_auth_room_and_exact_proposal(
                 operator="scott",
                 authentication_source="tailscale-serve",
                 physical_room_confirmation=ROOM,
+            )
+    finally:
+        controller.close()
+        service.close()
+
+
+@pytest.mark.parametrize(
+    "mission_lease_s",
+    [0.0, -1.0, 900.001, float("inf"), float("nan"), True],
+)
+def test_canonical_proposal_rejects_invalid_browser_selected_lease(
+    tmp_path, mission_lease_s
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    del cache, session
+    try:
+        with pytest.raises(MissionValidationError, match="mission lease"):
+            controller.submit(
+                CANONICAL_M7_OBJECTIVE,
+                session_id="m7-browser",
+                mission_id="m7-canonical-invalid-lease",
+                mission_lease_s=mission_lease_s,
             )
     finally:
         controller.close()
@@ -865,6 +890,7 @@ def test_approval_binds_all_evidence_limits_and_terminal_cleanup(
             CANONICAL_M7_OBJECTIVE,
             session_id="m7-browser",
             mission_id="m7-canonical-test",
+            mission_lease_s=120.0,
         )
         approved = controller.approve(
             proposed["mission_id"],
@@ -888,6 +914,10 @@ def test_approval_binds_all_evidence_limits_and_terminal_cleanup(
             ACCEPTED_M7_4_EVIDENCE_SHA256
         )
         assert approval["room"] == ROOM
+        assert approval["mission_lease_s"] == 120.0
+        assert (
+            approval["expires_at_s"] - approval["approved_at_s"]
+        ) == pytest.approx(120.0)
         assert approval["limits"] == {
             "max_linear_mps": 0.10,
             "max_angular_rad_s": 0.4,
@@ -1013,13 +1043,14 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         )
         assert _is_adaptive_preapproval(initial) is False
         proposed = browser.propose(
-            CANONICAL_M7_OBJECTIVE, "live", mission_lease_s=900.0
+            CANONICAL_M7_OBJECTIVE, "live", mission_lease_s=120.0
         )
         assert proposed["adapter"]["hierarchical_canonical"] is True
         assert proposed["approval"]["enabled"] is True
         assert proposed["approval"]["proposal_digest"] == (
             proposed["proposal"]["proposal_digest"]
         )
+        assert proposed["proposal"]["mission_lease_s"] == 120.0
         binding = proposed["adapter"][
             "hierarchical_physical_binding"
         ]
@@ -1038,6 +1069,7 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         assert "Proposal digest" in html
         assert "Directional-veto evidence" in html
         assert "Authenticated operator" in html
+        assert "Selected mission lease" in html
         approved = browser.approve(
             "",
             confirm_current_proposal=True,

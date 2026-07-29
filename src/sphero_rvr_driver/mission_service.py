@@ -734,6 +734,7 @@ class MissionService:
         """Persist the semantic-only canonical proposal before M7.6 approval."""
 
         from .hierarchical_physical_binding import (
+            MISSION_LEASE_MAX_S,
             PHYSICAL_PROPOSAL_SCHEMA,
             canonical_digest,
         )
@@ -752,6 +753,7 @@ class MissionService:
             "requested_object_classes",
             "source_sha",
             "created_at_s",
+            "mission_lease_s",
         }
         with self._lock:
             row = self._prompt_row(mission_id)
@@ -771,6 +773,16 @@ class MissionService:
                 or unsigned.get("requested_object_classes")
                 != ["shoe", "person"]
                 or unsigned.get("objective_revision") != 1
+                or isinstance(unsigned.get("mission_lease_s"), bool)
+                or not isinstance(
+                    unsigned.get("mission_lease_s"), (int, float)
+                )
+                or not math.isfinite(
+                    float(unsigned.get("mission_lease_s", 0.0))
+                )
+                or float(unsigned.get("mission_lease_s", 0.0)) <= 0.0
+                or float(unsigned.get("mission_lease_s", 0.0))
+                > MISSION_LEASE_MAX_S
             ):
                 raise MissionValidationError(
                     "canonical hierarchical proposal semantics or provenance are invalid"
@@ -853,6 +865,8 @@ class MissionService:
                 validated.mission_id != row["mission_id"]
                 or validated.proposal_digest
                 != str(proposal.get("proposal_digest", ""))
+                or validated.mission_lease_s
+                != float(proposal.get("mission_lease_s", 0.0))
             ):
                 raise MissionValidationError(
                     "M7.6 approval does not bind the persisted canonical proposal"

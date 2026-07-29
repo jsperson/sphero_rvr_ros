@@ -14,6 +14,7 @@ from .hierarchical_physical_binding import (
     ACCEPTED_M7_3_EVIDENCE_SHA256,
     ACCEPTED_M7_4_EVIDENCE_SHA256,
     APPROVAL_SCHEMA,
+    MISSION_LEASE_MAX_S,
     PHYSICAL_PROPOSAL_SCHEMA,
     PREFLIGHT_SCHEMA,
     HierarchicalPhysicalLimits,
@@ -38,6 +39,24 @@ PREFLIGHT_MAX_AGE_S = {
     "localization": 0.300,
     "semantic_map": 1.00,
 }
+
+
+def _finite_mission_lease(value: Any) -> float:
+    if isinstance(value, bool):
+        raise MissionValidationError(
+            "M7.6 mission lease must be a finite JSON number"
+        )
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise MissionValidationError(
+            "M7.6 mission lease must be a finite JSON number"
+        ) from exc
+    if not math.isfinite(parsed):
+        raise MissionValidationError(
+            "M7.6 mission lease must be a finite JSON number"
+        )
+    return parsed
 
 
 class HierarchicalSessionLifecycle(Protocol):
@@ -107,9 +126,18 @@ class HierarchicalPhysicalMissionController:
             raise MissionValidationError(
                 "M7.6 accepts only the reviewed canonical semantic mission"
             )
-        if mission_lease_s is not None and float(mission_lease_s) != 900.0:
+        selected_lease_s = (
+            MISSION_LEASE_MAX_S
+            if mission_lease_s is None
+            else _finite_mission_lease(mission_lease_s)
+        )
+        if (
+            selected_lease_s <= 0.0
+            or selected_lease_s > MISSION_LEASE_MAX_S
+        ):
             raise MissionValidationError(
-                "M7.6 mission lease must remain exactly 900 seconds"
+                "M7.6 mission lease must be greater than 0 and no more than "
+                f"{MISSION_LEASE_MAX_S:g} seconds"
             )
         with self._lock:
             self._ensure_open()
@@ -138,6 +166,7 @@ class HierarchicalPhysicalMissionController:
                 ),
                 "source_sha": self.service.source_sha,
                 "created_at_s": created_at_s,
+                "mission_lease_s": selected_lease_s,
             }
             proposal = {
                 **payload,
@@ -201,6 +230,16 @@ class HierarchicalPhysicalMissionController:
         now_s = float(self._clock_s())
         preflight = self._sensor_preflight(now_s)
         limits = HierarchicalPhysicalLimits().to_json_dict()
+        selected_lease_s = _finite_mission_lease(
+            proposal.get("mission_lease_s")
+        )
+        if (
+            selected_lease_s <= 0.0
+            or selected_lease_s > limits["mission_lease_max_s"]
+        ):
+            raise MissionValidationError(
+                "persisted M7.6 proposal has an invalid mission lease"
+            )
         payload = {
             "schema": APPROVAL_SCHEMA,
             "gate": "m7.6",
@@ -212,7 +251,8 @@ class HierarchicalPhysicalMissionController:
             "proposal_digest": str(proposal["proposal_digest"]),
             "approval_id": f"m7.6-{uuid.uuid4().hex}",
             "approved_at_s": now_s,
-            "expires_at_s": now_s + limits["mission_lease_max_s"],
+            "expires_at_s": now_s + selected_lease_s,
+            "mission_lease_s": selected_lease_s,
             "m7_3_evidence_sha256": ACCEPTED_M7_3_EVIDENCE_SHA256,
             "directional_addendum_sha256": (
                 ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256

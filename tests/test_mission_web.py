@@ -1023,6 +1023,9 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
         "grid-template-columns:repeat(2,minmax(0,1fr))"
     ) in page
     assert "Lease minutes (max ${leaseMinutesText(maximum)})" in page
+    assert "const leaseSelectable = adaptiveMission || canonical;" in page
+    assert "if ((adaptiveMission && !leaseActive) || canonical)" in page
+    assert "Selected mission lease" in page
     assert "Duration changed: generate a new proposal" in page
     assert "Objective updated. The active lease" in page
     assert 'aria-label="Fixture room map showing rover, route, path, obstacles, and objects"' in page

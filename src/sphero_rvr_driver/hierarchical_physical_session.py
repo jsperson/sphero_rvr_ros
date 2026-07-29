@@ -116,6 +116,7 @@ class SystemdHierarchicalMissionSession:
         authority_binding = {
             "mission_id": validated_approval.mission_id,
             "proposal_digest": validated_approval.proposal_digest,
+            "mission_lease_s": validated_approval.mission_lease_s,
         }
         validated_proposal = validate_physical_proposal(
             proposal,

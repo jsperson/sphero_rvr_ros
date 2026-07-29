@@ -79,7 +79,9 @@ class _UnusedPromptProvider:
         )
 
 
-def _approval(*, now_s: float = 100.0) -> dict:
+def _approval(
+    *, now_s: float = 100.0, mission_lease_s: float = 300.0
+) -> dict:
     payload = {
         "schema": APPROVAL_SCHEMA,
         "gate": "m7.6",
@@ -91,7 +93,8 @@ def _approval(*, now_s: float = 100.0) -> dict:
         "proposal_digest": "b" * 64,
         "approval_id": "m7.6-test-approval",
         "approved_at_s": now_s,
-        "expires_at_s": now_s + 300.0,
+        "expires_at_s": now_s + mission_lease_s,
+        "mission_lease_s": mission_lease_s,
         "m7_3_evidence_sha256": ACCEPTED_M7_3_EVIDENCE_SHA256,
         "directional_addendum_sha256": (
             ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256
@@ -381,6 +384,7 @@ def _proposal(authority: dict) -> dict:
         "requested_object_classes": ["shoe", "person"],
         "source_sha": authority["source_sha"],
         "created_at_s": 99.0,
+        "mission_lease_s": authority["mission_lease_s"],
     }
     proposal = {**payload, "proposal_digest": canonical_digest(payload)}
     authority["proposal_digest"] = proposal["proposal_digest"]
@@ -416,6 +420,7 @@ def test_exact_digest_bound_authority_expires_and_relocks(
     assert heartbeat["motion_authority"] is True
     assert heartbeat["direct_twist_publisher"] is False
     assert heartbeat["restart_resume_allowed"] is False
+    assert heartbeat["mission_lease_s"] == 300.0
     assert heartbeat["limits"] == {
         "max_linear_mps": 0.10,
         "max_angular_rad_s": 0.4,
@@ -511,6 +516,15 @@ def test_bridge_heartbeat_fails_closed_on_staleness_or_sha_mismatch(
         deployed_sha=SHA,
         reviewed_sha="d" * 40,
     ) == (False, "authority_sha_mismatch")
+    invalid_lease = {**heartbeat, "mission_lease_s": 900.001}
+    assert validate_authority_heartbeat(
+        invalid_lease,
+        now_s=100.1,
+        received_at_s=100.1,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+    ) == (False, "mission_lease_invalid")
     journal.close()
 
 
@@ -552,6 +566,7 @@ def test_physical_proposal_is_semantic_only_and_authority_bound(
     assert validate_physical_proposal(
         proposal, authority=authority, source_sha=SHA
     )["requested_object_classes"] == ["shoe", "person"]
+    assert proposal["mission_lease_s"] == 300.0
 
     injected = dict(proposal)
     injected["x_m"] = 2.0
@@ -559,6 +574,47 @@ def test_physical_proposal_is_semantic_only_and_authority_bound(
         validate_physical_proposal(
             injected, authority=authority, source_sha=SHA
         )
+    mismatched_lease = dict(proposal)
+    mismatched_lease["mission_lease_s"] = 120.0
+    unsigned = dict(mismatched_lease)
+    unsigned.pop("proposal_digest")
+    mismatched_lease["proposal_digest"] = canonical_digest(unsigned)
+    authority["proposal_digest"] = mismatched_lease["proposal_digest"]
+    with pytest.raises(
+        MissionValidationError, match="does not bind active authority"
+    ):
+        validate_physical_proposal(
+            mismatched_lease, authority=authority, source_sha=SHA
+        )
+    journal.close()
+
+
+@pytest.mark.parametrize(
+    "mission_lease_s", [0.0, -1.0, 900.001, True]
+)
+def test_approval_rejects_invalid_selected_mission_lease(
+    tmp_path: Path, mission_lease_s: float
+) -> None:
+    owner, journal = _owner(tmp_path)
+    with pytest.raises(MissionValidationError, match="mission lease"):
+        owner.activate(
+            _approval(mission_lease_s=mission_lease_s),
+            now_s=100.0,
+        )
+    journal.close()
+
+
+def test_approval_expiry_must_exactly_match_selected_mission_lease(
+    tmp_path: Path,
+) -> None:
+    owner, journal = _owner(tmp_path)
+    approval = _approval(mission_lease_s=120.0)
+    approval["expires_at_s"] = approval["approved_at_s"] + 121.0
+    unsigned = dict(approval)
+    unsigned.pop("approval_digest")
+    approval["approval_digest"] = canonical_digest(unsigned)
+    with pytest.raises(MissionValidationError, match="exactly bind"):
+        owner.activate(approval, now_s=100.0)
     journal.close()
 
 
