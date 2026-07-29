@@ -6,7 +6,6 @@ import argparse
 import json
 import math
 from pathlib import Path
-import re
 import sqlite3
 import subprocess
 import time
@@ -53,33 +52,6 @@ def _json(value: str) -> dict[str, Any]:
     if not isinstance(parsed, Mapping):
         raise MissionValidationError("canonical evidence JSON must be an object")
     return dict(parsed)
-
-
-def _topic_count(output: str, kind: str) -> Optional[int]:
-    match = re.search(
-        rf"^{re.escape(kind)} count:\s*(\d+)\s*$",
-        str(output),
-        re.MULTILINE,
-    )
-    return None if match is None else int(match.group(1))
-
-
-def _topic_endpoint_names(output: str, kind: str) -> set[str]:
-    if kind not in {"Publisher", "Subscription"}:
-        return set()
-    text = str(output)
-    start = text.find(f"{kind} count:")
-    if start < 0:
-        return set()
-    other = "Subscription" if kind == "Publisher" else "Publisher"
-    end = text.find(f"{other} count:", start + 1)
-    section = text[start:] if end < 0 else text[start:end]
-    return {
-        match.group(1).strip().lstrip("/")
-        for match in re.finditer(
-            r"^Node name:\s*(\S+)\s*$", section, re.MULTILINE
-        )
-    }
 
 
 def capture_active_graph_evidence(
@@ -214,23 +186,6 @@ def active_graph_checks(
     def stdout(name: str) -> str:
         return str(observation(name).get("stdout", ""))
 
-    nodes = {
-        line.strip()
-        for line in stdout("nodes").splitlines()
-        if line.strip().startswith("/")
-    }
-    cmd_vel = stdout("cmd_vel")
-    motor = stdout("cmd_vel_motor")
-    expected_nodes = {
-        "/sphero_rvr_driver",
-        "/lidar_collision_stop_supervisor",
-        "/live_route_runner",
-        "/controller_server",
-        "/planner_server",
-        "/hierarchical_physical_authority",
-        "/hierarchical_mission_controller",
-        "/hierarchical_nav2_adapter",
-    }
     exact_source = str(source_sha).strip()
     return {
         "capture_digest_valid": (
@@ -248,27 +203,6 @@ def active_graph_checks(
         "source_checkout_clean": (
             returncode("git_status") == 0
             and not stdout("git_status").strip()
-        ),
-        "expected_nodes_present": (
-            returncode("nodes") == 0
-            and expected_nodes.issubset(nodes)
-        ),
-        "exclusive_cmd_vel_owner": (
-            returncode("cmd_vel") == 0
-            and _topic_count(cmd_vel, "Publisher") == 1
-            and _topic_endpoint_names(cmd_vel, "Publisher")
-            == {"live_route_runner"}
-            and _topic_endpoint_names(cmd_vel, "Subscription")
-            == {"lidar_collision_stop_supervisor"}
-        ),
-        "exclusive_motor_owner": (
-            returncode("cmd_vel_motor") == 0
-            and _topic_count(motor, "Publisher") == 1
-            and _topic_count(motor, "Subscription") == 1
-            and _topic_endpoint_names(motor, "Publisher")
-            == {"lidar_collision_stop_supervisor"}
-            and _topic_endpoint_names(motor, "Subscription")
-            == {"sphero_rvr_driver"}
         ),
     }
 

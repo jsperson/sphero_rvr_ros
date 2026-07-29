@@ -1118,7 +1118,7 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         service.close()
 
 
-def test_systemd_session_waits_for_complete_graph_then_consumes_files(
+def test_systemd_session_captures_diagnostic_graph_then_consumes_files(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1208,7 +1208,7 @@ def test_systemd_session_waits_for_complete_graph_then_consumes_files(
             cancel_event=None,
         )
         assert session.status()["active"] is True
-        assert len(captures) == 2
+        assert len(captures) == 1
         persisted_graph = json.loads(
             session.graph_audit_path.read_text()
         )
@@ -1291,7 +1291,7 @@ def test_wait_planning_intervals_are_reconstructed_without_hand_entered_duration
     ]
 
 
-def test_active_graph_capture_recomputes_exact_command_ownership() -> None:
+def test_active_graph_capture_keeps_ros_discovery_as_diagnostics() -> None:
     capture = _active_graph_capture()
     assert all(active_graph_checks(capture, source_sha=SHA).values())
     altered = json.loads(json.dumps(capture))
@@ -1303,14 +1303,22 @@ def test_active_graph_capture_recomputes_exact_command_ownership() -> None:
     unsigned = dict(altered)
     unsigned.pop("capture_digest")
     altered["capture_digest"] = canonical_digest(unsigned)
-    assert active_graph_checks(altered, source_sha=SHA)[
-        "exclusive_cmd_vel_owner"
-    ] is False
+    checks = active_graph_checks(altered, source_sha=SHA)
+    assert "exclusive_cmd_vel_owner" not in checks
+    assert "exclusive_motor_owner" not in checks
+    assert "expected_nodes_present" not in checks
+    assert all(checks.values())
 
 
 def test_active_graph_does_not_gate_on_discovery_only_diagnostics() -> None:
     capture = _active_graph_capture()
-    for observation in ("nav2_private", "serial_owner"):
+    for observation in (
+        "nodes",
+        "cmd_vel",
+        "cmd_vel_motor",
+        "nav2_private",
+        "serial_owner",
+    ):
         capture["observations"][observation].update(
             {"returncode": 1, "stdout": "", "stderr": "not discovered"}
         )
