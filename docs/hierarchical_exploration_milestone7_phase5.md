@@ -82,13 +82,13 @@ motor-capable unit has no install target and `Restart=no`.
 
 The semantic controller remains locked after graph startup. Before it may
 start the first provider call, the mission service generates a read-only
-active-graph capture from exact command output. The capture must prove the
-exact clean source SHA, required nodes, `live_route_runner` as the sole
-`/cmd_vel` publisher, `collision_stop` as the sole `/cmd_vel_motor`
-publisher, the expected driver subscriber and serial owner, and only the
-reviewed Nav2 publishers on `/nav2_cmd_vel_request`. The capture is
-digest-bound and persisted with the mission. Failure or cancellation during
-this audit stops the unit without semantic planning or a motion request.
+activation capture from exact command output. It proves the exact clean
+source SHA and that `bt_navigator` is lifecycle-active. Earlier phases and
+the fixed launch topology establish the command-owner chain; repeating five
+non-gating ROS-discovery queries here created startup latency and discovery
+races without adding authority. The readiness capture is digest-bound and
+persisted with the mission. Failure or cancellation during this check stops
+the unit without semantic planning or a motion request.
 
 Cancellation, terminal completion, timeout, authority loss, controller
 recovery, or service restart stops the unit. Cleanup consumes the three
@@ -131,13 +131,16 @@ and server-owned geometry rather than assigning a method itself.
 The live controller also consumes the collision supervisor's explicit
 `scan_healthy` state and receipt time. Missing, unhealthy, future-dated, or
 older-than-`0.300 s` collision evidence becomes `motion_evidence_stale`,
-enters `wait_planning`, and cancels any active Nav2 goal. The independent
-collision supervisor remains the final zero-motion authority. Camera and map
-source/receipt timestamps are independently gated at `1.000 s`; while a goal
-or odometry motion is active, the terminal mission monitor requires fresh
-lidar (`0.500 s`). Camera (`3.000 s`), localization (`0.500 s`), and
-semantic-map (`3.000 s`) staleness cancels the active Nav2 goal and enters an
-honest `wait_planning` hold; it does not destroy the physical session.
+forces motor zero through the independent collision supervisor, but preserves
+an accepted Nav2 goal so it can resume after a transient receipt gap. Camera,
+map, and localization freshness remain mandatory for creating or replacing a
+semantic plan. Their transient staleness pauses planning without canceling an
+already accepted route; Nav2 remains responsible for localization/path
+viability and the collision supervisor remains the final motor-zero
+authority. A transient `0.300 s` authority-heartbeat miss follows the same
+hold-and-resume rule at the private command bridge. SHA mismatch, malformed
+authority, lease expiry, STOP/ESTOP, and a true controller recovery remain
+terminal.
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`
 map gate.
@@ -185,9 +188,9 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
 - valid proposal, approval, exact SHAs, and all prior evidence bindings;
 - a valid fresh no-motion lidar/camera/SLAM/localization preflight persisted
   atomically with the approval;
-- a generated active-graph capture, made before semantic planning, whose raw
-  command output recomputes the exact command, motor, Nav2, driver, and serial
-  ownership chain;
+- a generated activation capture, made before semantic planning, whose raw
+  command output recomputes the exact clean checkout and lifecycle-active
+  Nav2 navigator;
 - one authority activation followed by relock;
 - at least two explicitly real provider completions with measured wall
   durations, closing the multi-call rather than single-smoke-call gate;
@@ -205,9 +208,9 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
   interval, derived from checkpoint receipt times rather than hand-entered
   durations;
 - nonzero odometry and at least `0.02 m` displacement;
-- no motion-critical lidar freshness violation; stale camera, localization,
-  or semantic-map evidence causes an honest planning hold/replan rather than
-  terminating the physical session during active goal or observed motion;
+- transient sensor/authority timing misses do not terminate the outer session
+  or cancel an accepted route; collision/lidar receipt loss still forces
+  motor zero independently, while stale planning evidence blocks new plans;
 - a complete terminal controller checkpoint and terminal MissionService state;
 - one authenticated, approval-operator-bound no-contact observation;
 - inactive hierarchical and telemetry units, absent motion nodes/processes,

@@ -22,6 +22,7 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     live_source_is_fresh,
     nav2_path_evidence,
     parse_collision_evidence,
+    planning_hold_controller_state,
     semantic_non_motion_status,
     semantic_target_invalidation_reason,
     updated_semantic_rejection_count,
@@ -44,6 +45,7 @@ from sphero_rvr_driver.hierarchical_physical_binding import (
     build_goal_dispatch,
     canonical_digest,
     resolve_goal_dispatch,
+    transient_authority_hold,
     validate_authority_heartbeat,
     validate_physical_proposal,
 )
@@ -508,6 +510,15 @@ def test_bridge_heartbeat_fails_closed_on_staleness_or_sha_mismatch(
         deployed_sha=SHA,
         reviewed_sha=SHA,
     ) == (False, "authority_heartbeat_stale")
+    assert transient_authority_hold("authority_heartbeat_stale") is True
+    for terminal_reason in (
+        "authority_missing",
+        "authority_sha_mismatch",
+        "mission_lease_expired",
+        "mission_lease_invalid",
+        "authority_schema_invalid",
+    ):
+        assert transient_authority_hold(terminal_reason) is False
     assert validate_authority_heartbeat(
         heartbeat,
         now_s=100.1,
@@ -845,6 +856,36 @@ def test_controller_fails_closed_on_nav2_recovery_status() -> None:
     )
 
 
+def test_planning_freshness_hold_preserves_only_an_active_nav2_goal() -> None:
+    assert planning_hold_controller_state(
+        {
+            "state": "navigating",
+            "goal_active": True,
+            "distance_remaining_m": 0.72,
+        }
+    ) == "navigating"
+    assert planning_hold_controller_state(
+        {
+            "state": "holding",
+            "goal_active": True,
+            "distance_remaining_m": 0.72,
+        }
+    ) == "navigating"
+    assert planning_hold_controller_state(
+        {
+            "state": "wait_planning",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        }
+    ) == "wait_planning"
+    assert planning_hold_controller_state(
+        {
+            "state": "recovery_required",
+            "goal_active": True,
+        }
+    ) == "wait_planning"
+
+
 def test_dispatch_queue_key_ignores_refresh_but_tracks_semantic_change() -> None:
     authority = _approval()
     snapshot = _snapshot()
@@ -970,6 +1011,7 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
         "mission_id": "m7-canonical-001",
         "state": "wait_planning",
         "reason": "event_triggered_replan",
+        "cancel_active_goal": True,
     }
     assert controller_status_cancel_mode(
         base,
@@ -979,12 +1021,13 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
     stale_localization = {
         **base,
         "reason": "live localization exceeds the fixed 0.500 s gate",
+        "cancel_active_goal": False,
     }
     assert controller_status_cancel_mode(
         stale_localization,
         source_sha=SHA,
         mission_id="m7-canonical-001",
-    ) == "replan"
+    ) == ""
 
     navigating = {**base, "state": "dispatching", "reason": "navigating"}
     assert controller_status_cancel_mode(

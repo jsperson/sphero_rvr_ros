@@ -767,7 +767,8 @@ def test_semantic_wait_holds_until_fresh_event_then_replans() -> None:
         )
         assert controller.ready_non_motion_goal() is None
         assert replanning.provider_in_flight is True
-        assert replanning.handoff.state == "wait_planning"
+        assert replanning.handoff.state == "navigating"
+        assert replanning.handoff.command.zero_required is False
         assert any(
             item["kind"] == "prefetch_started"
             for item in replanning.events
@@ -776,7 +777,7 @@ def test_semantic_wait_holds_until_fresh_event_then_replans() -> None:
         controller.close()
 
 
-def test_stable_new_detection_preempts_and_invalidates_inflight_snapshot() -> None:
+def test_stable_new_detection_invalidates_inflight_without_stopping_route() -> None:
     snapshot0 = _snapshot(event_generation=0)
     snapshot1 = _snapshot(event_generation=1)
     release = threading.Event()
@@ -815,7 +816,7 @@ def test_stable_new_detection_preempts_and_invalidates_inflight_snapshot() -> No
             snapshot0,
             now_s=0.1,
         )
-        preempted = controller.handle_event(
+        replanning = controller.handle_event(
             SemanticReplanEvent(
                 "detection-stable",
                 SemanticEventKind.NEW_DETECTION,
@@ -844,16 +845,16 @@ def test_stable_new_detection_preempts_and_invalidates_inflight_snapshot() -> No
         )
 
         assert unstable.events[-1]["kind"] == "semantic_event_coalesced"
-        assert preempted.handoff.state == "wait_planning"
-        assert preempted.handoff.command.reason == "semantic_replan"
-        assert preempted.events[-1]["kind"] == "event_triggered_replan"
+        assert replanning.handoff.state == "navigating"
+        assert replanning.handoff.command.zero_required is False
+        assert replanning.events[-1]["kind"] == "event_triggered_replan"
         assert any(
             event["kind"] == "prefetch_discarded"
             and "event_invalidated:new_detection" in event["reason"]
             for event in discarded.events
         )
         assert resumed.handoff.state == "navigating"
-        assert resumed.handoff.events[-1]["kind"] == "planning_resume"
+        assert resumed.prefetched_generation == 3
     finally:
         release.set()
         controller.close()
@@ -1009,6 +1010,63 @@ def test_real_provider_result_is_not_artificially_delayed_to_p95() -> None:
             event["kind"] == "prefetch_revalidated"
             for event in collected.events
         )
+    finally:
+        controller.close()
+
+
+def test_redundant_prefetch_does_not_redispatch_active_frontier() -> None:
+    snapshot = _snapshot()
+    provider = ScriptedSemanticGoalProvider(
+        [_frontier_decision(0), _frontier_decision(1)]
+    )
+    controller = AsyncSemanticGoalController(provider)
+    try:
+        active_frontier = snapshot["frontiers"][0]["signature"]
+        controller.start(
+            _decision(
+                snapshot,
+                "go_to_frontier",
+                {"frontier_id": active_frontier},
+            ),
+            snapshot,
+        )
+        controller.tick(
+            snapshot,
+            now_s=0.0,
+            remaining_distance_m=0.5,
+            eta_s=5.0,
+        )
+        _wait_for_provider(provider, 1)
+        redundant = controller.tick(
+            snapshot,
+            now_s=0.1,
+            remaining_distance_m=0.49,
+            eta_s=4.9,
+        )
+        assert any(
+            event["kind"] == "prefetch_redundant"
+            and event["reason"] == "same_as_active_target"
+            for event in redundant.events
+        )
+        assert redundant.prefetched_generation is None
+
+        suppressed = controller.tick(
+            snapshot,
+            now_s=1.0,
+            remaining_distance_m=0.30,
+            eta_s=3.0,
+        )
+        assert suppressed.provider_in_flight is False
+        assert provider.calls == 1
+
+        arrival = controller.tick(
+            snapshot,
+            now_s=2.0,
+            remaining_distance_m=0.04,
+            eta_s=0.4,
+        )
+        assert arrival.provider_in_flight is True
+        _wait_for_provider(provider, 2)
     finally:
         controller.close()
 

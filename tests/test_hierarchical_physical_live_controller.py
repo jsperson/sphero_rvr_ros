@@ -76,6 +76,8 @@ def _active_graph_capture():
             stdout = SHA + "\n"
         elif command[0] == "git":
             stdout = ""
+        elif "lifecycle" in command:
+            stdout = "active [3]\n"
         elif command[-4:-1] == ["list", "--spin-time", "3.0"]:
             stdout = "\n".join(
                 (
@@ -1233,8 +1235,8 @@ def test_systemd_session_captures_diagnostic_graph_then_consumes_files(
         del kwargs
         capture = _active_graph_capture()
         if not captures:
-            capture["observations"]["nodes"]["stdout"] = (
-                "/live_mission_service\n"
+            capture["observations"]["nav2_lifecycle"]["stdout"] = (
+                "inactive [2]\n"
             )
             unsigned = dict(capture)
             unsigned.pop("capture_digest")
@@ -1287,7 +1289,7 @@ def test_systemd_session_captures_diagnostic_graph_then_consumes_files(
             cancel_event=None,
         )
         assert session.status()["active"] is True
-        assert len(captures) == 1
+        assert len(captures) == 2
         persisted_graph = json.loads(
             session.graph_audit_path.read_text()
         )
@@ -1295,6 +1297,9 @@ def test_systemd_session_captures_diagnostic_graph_then_consumes_files(
             "active_graph_capture.v1"
         )
         assert "stale_previous_capture" not in persisted_graph
+        assert persisted_graph["observations"]["nav2_lifecycle"][
+            "stdout"
+        ].startswith("active")
         assert oct(session.environment_path.stat().st_mode & 0o777) == "0o600"
         assert "RVR_HIERARCHICAL_M7_6_APPROVED=\"true\"" in (
             session.environment_path.read_text()
@@ -1370,45 +1375,28 @@ def test_wait_planning_intervals_are_reconstructed_without_hand_entered_duration
     ]
 
 
-def test_active_graph_capture_keeps_ros_discovery_as_diagnostics() -> None:
+def test_active_graph_capture_uses_functional_nav2_readiness() -> None:
     capture = _active_graph_capture()
     assert all(active_graph_checks(capture, source_sha=SHA).values())
     altered = json.loads(json.dumps(capture))
-    altered["observations"]["cmd_vel"]["stdout"] = altered[
-        "observations"
-    ]["cmd_vel"]["stdout"].replace(
-        "Publisher count: 1", "Publisher count: 2"
+    altered["observations"]["nav2_lifecycle"]["stdout"] = (
+        "inactive [2]\n"
     )
     unsigned = dict(altered)
     unsigned.pop("capture_digest")
     altered["capture_digest"] = canonical_digest(unsigned)
     checks = active_graph_checks(altered, source_sha=SHA)
-    assert "exclusive_cmd_vel_owner" not in checks
-    assert "exclusive_motor_owner" not in checks
-    assert "expected_nodes_present" not in checks
-    assert all(checks.values())
+    assert checks["nav2_functionally_ready"] is False
 
 
-def test_active_graph_does_not_gate_on_discovery_only_diagnostics() -> None:
+def test_active_graph_startup_omits_non_gating_discovery_commands() -> None:
     capture = _active_graph_capture()
-    for observation in (
-        "nodes",
-        "cmd_vel",
-        "cmd_vel_motor",
-        "nav2_private",
-        "serial_owner",
-    ):
-        capture["observations"][observation].update(
-            {"returncode": 1, "stdout": "", "stderr": "not discovered"}
-        )
-    unsigned = dict(capture)
-    unsigned.pop("capture_digest")
-    capture["capture_digest"] = canonical_digest(unsigned)
-
-    checks = active_graph_checks(capture, source_sha=SHA)
-    assert "private_nav2_chain_only" not in checks
-    assert "serial_owner_present" not in checks
-    assert all(checks.values())
+    assert set(capture["observations"]) == {
+        "git_head",
+        "git_status",
+        "nav2_lifecycle",
+    }
+    assert all(active_graph_checks(capture, source_sha=SHA).values())
 
 
 def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(

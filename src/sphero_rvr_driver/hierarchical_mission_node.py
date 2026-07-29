@@ -38,6 +38,7 @@ from .hierarchical_physical_binding import (
     HierarchicalBindingJournal,
     build_goal_dispatch,
     resolve_goal_dispatch,
+    transient_authority_hold,
     validate_authority_heartbeat,
     validate_physical_proposal,
 )
@@ -200,6 +201,18 @@ def adapter_recovery_reason(status: Mapping[str, Any]) -> str:
         return ""
     reason = str(status.get("reason", "")).strip()
     return reason or "nav2_recovery_required"
+
+
+def planning_hold_controller_state(status: Mapping[str, Any]) -> str:
+    """Keep an accepted Nav2 route alive while planning evidence catches up."""
+
+    if (
+        str(status.get("state", "")).strip()
+        not in {"locked", "recovery_required", "rejected"}
+        and status.get("goal_active") is True
+    ):
+        return "navigating"
+    return "wait_planning"
 
 
 def semantic_non_motion_status(action: str) -> tuple[str, str, bool]:
@@ -1131,7 +1144,23 @@ def main(args=None):
             now_s = time.time()
             authority_valid, reason = self._authority_valid(now_s)
             if not authority_valid:
-                if self._controller is not None or self._initial_future is not None:
+                if (
+                    transient_authority_hold(reason)
+                    and (
+                        self._controller is not None
+                        or self._initial_future is not None
+                    )
+                ):
+                    self._publish_status(
+                        planning_hold_controller_state(
+                            self._adapter_status
+                        ),
+                        "authority_heartbeat_hold",
+                    )
+                elif (
+                    self._controller is not None
+                    or self._initial_future is not None
+                ):
                     self._terminal = True
                     self._provider.cancel()
                     self._publish_status("recovery_required", reason)
@@ -1165,7 +1194,17 @@ def main(args=None):
             try:
                 snapshot = self._snapshot(now_s)
             except MissionValidationError as exc:
-                self._publish_status("wait_planning", str(exc))
+                hold_state = planning_hold_controller_state(
+                    self._adapter_status
+                )
+                self._publish_status(
+                    hold_state,
+                    (
+                        f"planning_evidence_hold: {exc}"
+                        if hold_state == "navigating"
+                        else str(exc)
+                    ),
+                )
                 return
             motion_evidence_fresh = bool(
                 snapshot.get("safety", {}).get(
@@ -1203,6 +1242,20 @@ def main(args=None):
                 self._adapter_status, fallback_remaining
             )
             if not motion_evidence_fresh:
+                if (
+                    planning_hold_controller_state(
+                        self._adapter_status
+                    )
+                    == "navigating"
+                ):
+                    # The independent collision supervisor already forces
+                    # motor zero while scan evidence is unhealthy. Keep the
+                    # accepted Nav2 action alive so it can continue when the
+                    # supervisor reports fresh evidence again.
+                    self._publish_status(
+                        "navigating", "motion_evidence_hold"
+                    )
+                    return
                 step = self._controller.tick(
                     snapshot,
                     now_s=now_s,
@@ -1249,8 +1302,19 @@ def main(args=None):
                                 event.get("snapshot_id", "")
                             ),
                         )
+                cancel_active_goal = (
+                    step.handoff.state == "wait_planning"
+                )
                 self._publish_status(
-                    "wait_planning", "event_triggered_replan"
+                    (
+                        "wait_planning"
+                        if cancel_active_goal
+                        else planning_hold_controller_state(
+                            self._adapter_status
+                        )
+                    ),
+                    "event_replan_provider_in_flight",
+                    cancel_active_goal=cancel_active_goal,
                 )
                 return
             step = self._controller.tick(
@@ -1305,13 +1369,17 @@ def main(args=None):
                 )
                 return
             if any(
-                str(event.get("kind", "")) == "prefetch_revalidated"
+                str(event.get("kind", ""))
+                in {"prefetch_revalidated", "prefetch_redundant"}
                 for event in step.events
             ):
                 self._replan_pending = False
             if self._replan_pending and step.provider_in_flight:
                 self._publish_status(
-                    "wait_planning", "event_replan_provider_in_flight"
+                    planning_hold_controller_state(
+                        self._adapter_status
+                    ),
+                    "event_replan_provider_in_flight",
                 )
                 return
             ready_non_motion = self._controller.ready_non_motion_goal()
@@ -1321,7 +1389,11 @@ def main(args=None):
                 )
                 if terminal:
                     self._terminal = True
-                self._publish_status(state, reason)
+                self._publish_status(
+                    state,
+                    reason,
+                    cancel_active_goal=(state == "wait_planning"),
+                )
                 return
             self._publish_dispatch(snapshot, now_s, step.handoff.state)
 
@@ -1578,11 +1650,18 @@ def main(args=None):
                     recorded_at_s=now_s,
                 )
 
-        def _publish_status(self, state: str, reason: str) -> None:
+        def _publish_status(
+            self,
+            state: str,
+            reason: str,
+            *,
+            cancel_active_goal: bool = False,
+        ) -> None:
             payload = {
                 "schema": "sphero_rvr.hierarchical_controller_status.v1",
                 "state": str(state),
                 "reason": str(reason),
+                "cancel_active_goal": bool(cancel_active_goal),
                 "source_sha": self._source_sha,
                 "mission_id": (
                     ""

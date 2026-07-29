@@ -55,6 +55,12 @@ AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.30
 LOCALIZATION_MAX_AGE_S = 0.50
 MISSION_LEASE_MAX_S = 900.0
 
+
+def transient_authority_hold(reason: str) -> bool:
+    """Only scheduling-age misses are recoverable authority holds."""
+
+    return str(reason).strip() == "authority_heartbeat_stale"
+
 ACCEPTED_M7_3_EVIDENCE_SHA256 = (
     "7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55"
 )

@@ -21,6 +21,7 @@ from .hierarchical_physical_binding import (
     GOAL_DISPATCH_TOPIC,
     NAV2_ACTION,
     resolve_goal_dispatch,
+    transient_authority_hold,
     validate_authority_heartbeat,
 )
 
@@ -41,7 +42,10 @@ def controller_status_cancel_mode(
     ):
         return "veto"
     state = str(payload.get("state", "")).strip()
-    if state == "wait_planning":
+    if (
+        state == "wait_planning"
+        and payload.get("cancel_active_goal") is True
+    ):
         return "replan"
     if state == "complete":
         return "complete"
@@ -238,7 +242,14 @@ def main(args=None):
         def _check_authority(self) -> None:
             valid, reason = self._authority_valid()
             if not valid:
-                self._cancel_for_veto(reason)
+                if transient_authority_hold(reason):
+                    # The private command bridge independently publishes zero
+                    # while authority is stale.  Preserve the Nav2 action so a
+                    # transient Pi scheduling delay does not turn a safe hold
+                    # into a terminal route cancellation.
+                    self._publish_status("holding", reason)
+                else:
+                    self._cancel_for_veto(reason)
 
         def _on_dispatch(self, msg) -> None:
             valid, reason = self._authority_valid()

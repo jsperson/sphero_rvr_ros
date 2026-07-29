@@ -1451,6 +1451,7 @@ class AsyncSemanticGoalController:
         self._motion_goal_decisions = 0
         self._distance_m = 0.0
         self._last_remaining_m: Optional[float] = None
+        self._prefetch_suppressed_active_generation: Optional[int] = None
         self._closed = False
 
     @property
@@ -1564,10 +1565,23 @@ class AsyncSemanticGoalController:
                 self._prefetched = None
                 self._prefetched_snapshot = None
                 self._last_remaining_m = self._active.route_length_m
+                self._prefetch_suppressed_active_generation = None
+        if (
+            self._active is not None
+            and self._prefetch_suppressed_active_generation
+            == self._active.decision.decision_generation
+            and remaining_distance_m <= 0.05
+        ):
+            self._prefetch_suppressed_active_generation = None
         if (
             self._future is None
             and self._prefetched is None
             and self._ready_non_motion is None
+            and (
+                self._active is None
+                or self._prefetch_suppressed_active_generation
+                != self._active.decision.decision_generation
+            )
             and handoff.state in {"navigating", "wait_planning"}
             and eta_s <= self.prefetch_threshold_s
         ):
@@ -1640,9 +1654,21 @@ class AsyncSemanticGoalController:
             and self._ready_non_motion.decision.action == "wait"
         ):
             self._ready_non_motion = None
-        handoff = self.follower.preempt_for_replan(
-            now_s=now_s, reason=event.kind.value
-        )
+        if event.kind is SemanticEventKind.INVALID_TARGET:
+            handoff = self.follower.preempt_for_replan(
+                now_s=now_s, reason=event.kind.value
+            )
+        else:
+            # A new semantic observation is a planning concern, not a
+            # motor-safety veto. Keep the accepted Nav2 action alive while a
+            # successor is computed; Nav2 and the collision supervisor still
+            # own physical obstacle safety.
+            handoff = self.follower.advance(
+                now_s=now_s,
+                remaining_distance_m=max(
+                    0.0, self._last_remaining_m or 0.0
+                ),
+            )
         records = [
             self._record(
             "event_triggered_replan",
@@ -1805,6 +1831,26 @@ class AsyncSemanticGoalController:
                 )
             ]
         if resolved.kind == "motion":
+            if (
+                self._active is not None
+                and resolved.target_signature
+                == self._active.target_signature
+            ):
+                self._prefetch_suppressed_active_generation = (
+                    self._active.decision.decision_generation
+                )
+                return [
+                    self._record(
+                        "prefetch_redundant",
+                        now_s,
+                        generation=generation,
+                        action=decision.action,
+                        target_id=resolved.target_id,
+                        provider_elapsed_s=provider_elapsed_s,
+                        snapshot_id=str(captured["snapshot_id"]),
+                        reason="same_as_active_target",
+                    )
+                ]
             self.follower.submit_prefetch(resolved.as_frontier_goal())
             self._prefetched = resolved
             self._prefetched_snapshot = captured

@@ -860,10 +860,10 @@ class HierarchicalPhysicalMissionController:
                         # This loop is an evidence observer, not a second
                         # motion supervisor.  The fixed collision supervisor
                         # already forces motor zero when scan receipts exceed
-                        # 0.30 s, and the hierarchical controller cancels its
-                        # active Nav2 route while motion evidence is stale.
-                        # Record transient misses without tearing down the
-                        # entire graph and racing recovery.
+                        # 0.30 s. Planning/localization timing misses are
+                        # observations, not a second route-cancellation
+                        # authority. Record them without tearing down the
+                        # graph and racing recovery.
                 for source_name, record in (
                     (CONTROLLER_SOURCE, controller),
                     (ADAPTER_SOURCE, adapter),

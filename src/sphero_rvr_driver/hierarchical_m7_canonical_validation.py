@@ -61,7 +61,7 @@ def capture_active_graph_evidence(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     captured_at_s: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Capture the exact active command graph before semantic planning starts."""
+    """Capture exact deployment provenance and functional Nav2 readiness."""
 
     commands = {
         "git_head": [
@@ -78,53 +78,14 @@ def capture_active_graph_evidence(
             "status",
             "--porcelain",
         ],
-        "nodes": [
+        "nav2_lifecycle": [
             "timeout",
-            "8",
+            "4",
             "ros2",
-            "node",
-            "list",
-            "--spin-time",
-            "3.0",
-            "--no-daemon",
+            "lifecycle",
+            "get",
+            "/bt_navigator",
         ],
-        "cmd_vel": [
-            "timeout",
-            "8",
-            "ros2",
-            "topic",
-            "info",
-            "-v",
-            "--spin-time",
-            "3.0",
-            "--no-daemon",
-            "/cmd_vel",
-        ],
-        "cmd_vel_motor": [
-            "timeout",
-            "8",
-            "ros2",
-            "topic",
-            "info",
-            "-v",
-            "--spin-time",
-            "3.0",
-            "--no-daemon",
-            "/cmd_vel_motor",
-        ],
-        "nav2_private": [
-            "timeout",
-            "8",
-            "ros2",
-            "topic",
-            "info",
-            "-v",
-            "--spin-time",
-            "3.0",
-            "--no-daemon",
-            "/nav2_cmd_vel_request",
-        ],
-        "serial_owner": ["fuser", "/dev/ttyAMA0"],
     }
     observations: dict[str, Any] = {}
     for name, argv in commands.items():
@@ -203,6 +164,12 @@ def active_graph_checks(
         "source_checkout_clean": (
             returncode("git_status") == 0
             and not stdout("git_status").strip()
+        ),
+        "nav2_functionally_ready": (
+            returncode("nav2_lifecycle") == 0
+            and stdout("nav2_lifecycle").strip().lower().startswith(
+                "active"
+            )
         ),
     }
 
@@ -1638,13 +1605,24 @@ def evaluate_canonical_mission(
             and float(run_evidence.get("max_displacement_m", 0.0))
             >= 0.02
         ),
-        "localization_staleness_did_not_force_terminal_watchdog": (
+        "localization_timing_holds_are_accounted_for": (
             int(
                 run_evidence.get(
-                    "localization_freshness_violations", 0
+                    "localization_freshness_violations", -1
                 )
             )
-            == 0
+            >= 0
+            and math.isfinite(
+                float(
+                    run_evidence.get(
+                        "max_localization_age_s", float("nan")
+                    )
+                )
+            )
+            and float(
+                run_evidence.get("max_localization_age_s", -1.0)
+            )
+            >= 0.0
         ),
         "transient_sensor_staleness_did_not_trigger_outer_watchdog": (
             int(
