@@ -34,10 +34,13 @@ CANONICAL_APPROVAL_PREFIX = "APPROVE M7.6 CANONICAL MISSION "
 CONTROLLER_SOURCE = "hierarchical_controller"
 ADAPTER_SOURCE = "hierarchical_adapter"
 PREFLIGHT_MAX_AGE_S = {
-    "lidar": 2.00,
-    "camera": 2.00,
-    "localization": 1.00,
-    "semantic_map": 2.00,
+    # Stationary preflight only establishes that every required subsystem is
+    # alive. Motion remains locked here; the tighter active limits below are
+    # enforced before and throughout command authority.
+    "lidar": 5.00,
+    "camera": 5.00,
+    "localization": 5.00,
+    "semantic_map": 5.00,
 }
 ACTIVE_SENSOR_MAX_AGE_S = {
     "lidar": 0.50,
