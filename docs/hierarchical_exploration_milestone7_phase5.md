@@ -154,6 +154,14 @@ still aborts an exact digest-bound batch, its active frontier is excluded for
 the rest of that mission so the provider cannot repeatedly select the same
 unreachable target.
 
+The attended office run also established a drivetrain breakaway floor:
+sub-`0.07 m/s` Nav2 translation requests are raised to `0.07 m/s` only while
+the collision state is `CLEAR`. The independent downstream supervisor still
+owns `SLOW`, STOP, ESTOP, freshness, and the absolute `0.10 m/s` ceiling. The
+same loaded-Pi run showed one false fail-safe when a recovery stop missed the
+driver's former `0.10 s` scheduling allowance; the installed allowance is
+`0.20 s`, still inside the fixed `0.30 s` collision-veto bound.
+
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`
 map gate.

@@ -14,6 +14,7 @@ def test_default_node_config_uses_pi_serial_alias_and_floor_turn_motor_duty():
     assert config.max_linear_raw_motor_duty == 64
     assert config.max_angular_raw_motor_duty == 255
     assert config.velocity_control_mode == RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
+    assert config.safety_dispatch_timeout_s == 0.10
     assert config.battery_publish_period == 5.0
     assert config.temperature_publish_period == 2.0
     assert config.diagnostics_publish_period == 1.0
@@ -32,6 +33,7 @@ def test_create_driver_passes_base_driver_safety_limits():
         max_linear_raw_motor_duty=21,
         max_angular_raw_motor_duty=84,
         velocity_control_mode=RVRDriver.VELOCITY_CONTROL_RAW_MOTOR,
+        safety_dispatch_timeout_s=0.18,
     )
 
     driver = create_driver(config, transport=transport)
@@ -45,6 +47,7 @@ def test_create_driver_passes_base_driver_safety_limits():
     assert driver._max_linear_raw_motor_duty == 21
     assert driver._max_angular_raw_motor_duty == 84
     assert driver._velocity_control_mode == RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
+    assert driver._safety_dispatch_timeout_s == 0.18
 
 def test_checked_in_rvr_yaml_preserves_floor_turn_motor_duty():
     config_text = Path(__file__).resolve().parents[1].joinpath("config", "rvr.yaml").read_text()
@@ -53,6 +56,7 @@ def test_checked_in_rvr_yaml_preserves_floor_turn_motor_duty():
     assert "max_linear_raw_motor_duty: 64" in config_text
     assert "max_angular_raw_motor_duty: 255" in config_text
     assert "velocity_control_mode: raw_motor" in config_text
+    assert "safety_dispatch_timeout_s: 0.20" in config_text
     assert "motor_diagnostics_poll_period: 0.5" in config_text
     assert "odom_counts_per_meter: 4337.768" in config_text
 

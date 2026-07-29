@@ -4,6 +4,10 @@ sphero_rvr_driver:
     baud_rate: 115200
     cmd_vel_timeout: 0.5
     control_period: 0.05
+    # One loaded-Pi recovery stop exceeded the former 0.10 s scheduling
+    # allowance and latched a false-positive fail-safe. This remains below the
+    # fixed 0.30 s collision-veto bound.
+    safety_dispatch_timeout_s: 0.20
     max_linear_mps: 0.10
     max_angular_rad_s: 0.4
     max_raw_motor_duty: 160

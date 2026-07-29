@@ -11,6 +11,11 @@ live_route_runner:
     nav2_cmd_lease_s: 0.25
     hierarchical_max_linear_mps: 0.10
     hierarchical_max_angular_rad_s: 0.4
+    # The installed tracks did not advance on the office ridge when DWB
+    # requested 0.014 m/s. Apply a bounded breakaway floor only while the
+    # independent collision state is CLEAR; the downstream supervisor retains
+    # authority to scale or zero this request.
+    hierarchical_clear_breakaway_linear_mps: 0.07
     scan_topic: /scan
     odom_topic: /odom
     encoder_counts_topic: /encoder_counts

@@ -267,6 +267,32 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     assert stale.zero_required is True
     assert stale.reason == "nav2_command_stale"
 
+    physical = HierarchicalCommandBridge(
+        HierarchicalBridgeConfig(
+            enabled=True,
+            clear_breakaway_linear_mps=0.07,
+        )
+    )
+    physical.accept(0.014, 0.0, received_at_s=3.0)
+    clear = physical.evaluate(
+        now_s=3.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    slow = physical.evaluate(
+        now_s=3.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="SLOW",
+    )
+    assert clear.bridged_linear_mps == pytest.approx(0.07)
+    assert clear.reason == "clear_breakaway_floor"
+    assert slow.bridged_linear_mps == pytest.approx(0.007)
+    assert slow.reason == "supervisor_slowed"
+
 
 def test_hierarchical_executor_uses_existing_replay_seam_without_authority() -> None:
     executor = HierarchicalReplayAdaptiveMissionExecutor(queue_depth=3)

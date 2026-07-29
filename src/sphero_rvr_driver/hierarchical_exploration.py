@@ -550,6 +550,7 @@ class HierarchicalBridgeConfig:
     command_lease_s: float = 0.25
     max_linear_mps: float = 0.10
     max_angular_rad_s: float = 0.4
+    clear_breakaway_linear_mps: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -561,6 +562,16 @@ class HierarchicalBridgeConfig:
             raise ValueError("hierarchical linear ceiling exceeds 0.10 m/s")
         if not 0.0 < self.max_angular_rad_s <= 0.4:
             raise ValueError("hierarchical angular ceiling exceeds 0.4 rad/s")
+        if (
+            not math.isfinite(self.clear_breakaway_linear_mps)
+            or not 0.0
+            <= self.clear_breakaway_linear_mps
+            <= self.max_linear_mps
+        ):
+            raise ValueError(
+                "hierarchical CLEAR breakaway speed must be between zero "
+                "and the linear ceiling"
+            )
 
 
 class HierarchicalCommandBridge:
@@ -630,7 +641,16 @@ class HierarchicalCommandBridge:
             min(self.config.max_angular_rad_s, self._angular_rad_s),
         )
         reason = "clear"
-        if str(collision_state).upper() == "SLOW" and linear > 0.0:
+        if (
+            str(collision_state).upper() == "CLEAR"
+            and 0.0 < abs(linear) < self.config.clear_breakaway_linear_mps
+        ):
+            linear = math.copysign(
+                self.config.clear_breakaway_linear_mps,
+                linear,
+            )
+            reason = "clear_breakaway_floor"
+        elif str(collision_state).upper() == "SLOW" and linear > 0.0:
             linear *= 0.5
             reason = "supervisor_slowed"
         return ReplayCommand(

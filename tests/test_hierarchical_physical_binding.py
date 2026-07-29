@@ -987,6 +987,12 @@ def test_physical_nav2_clears_only_its_declared_footprint() -> None:
     assert "restore_cleared_footprint: true" in nav2
     assert nav2.count("robot_radius: 0.22") == 2
     assert PHYSICAL_FRONTIER_MIN_CLEARANCE_M == 0.22
+    assert "hierarchical_clear_breakaway_linear_mps: 0.07" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
+    assert "safety_dispatch_timeout_s: 0.20" in (
+        REPO_ROOT / "config" / "rvr.yaml"
+    ).read_text()
     assert nav2.count("topic: /scan") == 2
     assert "min_range_m: 0.08" in collision
     assert "footprint_front_m: 0.22" in collision
