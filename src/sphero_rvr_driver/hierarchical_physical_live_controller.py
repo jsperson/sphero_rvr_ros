@@ -48,6 +48,7 @@ ACTIVE_SENSOR_MAX_AGE_S = {
     "localization": 0.300,
     "semantic_map": 1.00,
 }
+MOTION_CRITICAL_SENSORS = frozenset({"lidar", "localization"})
 
 
 def _finite_mission_lease(value: Any) -> float:
@@ -690,6 +691,7 @@ class HierarchicalPhysicalMissionController:
                     for source_name in ACTIVE_SENSOR_MAX_AGE_S
                 },
                 "required_sensor_freshness_violations": 0,
+                "planning_sensor_freshness_observations": 0,
             }
             origin: Optional[tuple[float, float]] = None
             while not self._closed:
@@ -823,6 +825,11 @@ class HierarchicalPhysicalMissionController:
                             is not False
                         )
                         if not invalid:
+                            continue
+                        if source_name not in MOTION_CRITICAL_SENSORS:
+                            run_evidence[
+                                "planning_sensor_freshness_observations"
+                            ] += 1
                             continue
                         run_evidence[
                             "required_sensor_freshness_violations"

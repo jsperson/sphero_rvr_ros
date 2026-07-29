@@ -1383,9 +1383,7 @@ def evaluate_canonical_mission(
     )
     required_sensor_limits = {
         "lidar": 0.50,
-        "camera": 1.00,
         "localization": 0.300,
-        "semantic_map": 1.00,
     }
     required_sensor_maxima = run_evidence.get(
         "max_required_sensor_age_s", {}
@@ -1396,10 +1394,11 @@ def evaluate_canonical_mission(
     required_sensor_freshness_valid = False
     if (
         isinstance(required_sensor_maxima, Mapping)
-        and set(required_sensor_maxima) == set(required_sensor_limits)
+        and set(required_sensor_limits).issubset(required_sensor_maxima)
         and isinstance(required_sensor_source_maxima, Mapping)
-        and set(required_sensor_source_maxima)
-        == set(required_sensor_limits)
+        and set(required_sensor_limits).issubset(
+            required_sensor_source_maxima
+        )
     ):
         try:
             parsed_sensor_maxima = {
@@ -1702,7 +1701,7 @@ def evaluate_canonical_mission(
             )
             <= 0.300
         ),
-        "all_required_sensor_freshness_remained_within_gate": (
+        "all_motion_critical_sensor_freshness_remained_within_gate": (
             int(
                 run_evidence.get(
                     "required_sensor_freshness_violations", 0

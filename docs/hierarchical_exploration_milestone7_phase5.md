@@ -205,7 +205,9 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
   durations;
 - nonzero odometry and at least `0.02 m` displacement;
 - localization receipt age no greater than `0.300 s`;
-- no required lidar/camera/localization/semantic-map freshness violation
+- no motion-critical lidar/localization freshness violation; stale camera or
+  semantic-map evidence causes an honest planning hold/replan rather than
+  terminating the physical session
   during active goal or observed motion;
 - a complete terminal controller checkpoint and terminal MissionService state;
 - one authenticated, approval-operator-bound no-contact observation;

@@ -783,11 +783,9 @@ def test_active_motion_fails_closed_on_stale_localization(
     ("source_name", "stale_age_s"),
     (
         ("lidar", 0.501),
-        ("camera", 1.001),
-        ("semantic_map", 1.001),
     ),
 )
-def test_active_motion_fails_closed_on_any_stale_required_sensor(
+def test_active_motion_fails_closed_on_stale_motion_critical_sensor(
     tmp_path,
     source_name,
     stale_age_s,
@@ -842,6 +840,54 @@ def test_active_motion_fails_closed_on_any_stale_required_sensor(
             > stale_age_s - 0.001
         )
         assert session.active is False
+    finally:
+        controller.close()
+        service.close()
+
+
+@pytest.mark.parametrize("source_name", ("camera", "semantic_map"))
+def test_stale_planning_sensor_does_not_terminate_motion_session(
+    tmp_path,
+    source_name,
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    try:
+        proposed = controller.submit(
+            CANONICAL_M7_OBJECTIVE,
+            session_id="m7-browser",
+            mission_id=f"m7-canonical-planning-stale-{source_name}",
+        )
+        controller.approve(
+            proposed["mission_id"],
+            supplied_approval=(
+                "APPROVE M7.6 CANONICAL MISSION "
+                + proposed["proposal_digest"]
+            ),
+            operator="scott",
+            authentication_source="tailscale-serve",
+            physical_room_confirmation=ROOM,
+        )
+        deadline = time.monotonic() + 1.0
+        while not session.active and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert session.active is True
+        now = time.time()
+        prior = cache.snapshot(now_s=now).source(source_name)
+        cache.update(
+            source_name,
+            dict(prior.value),
+            received_at_s=now - 1.001,
+            source_timestamp_s=now,
+        )
+        cache.update(
+            "hierarchical_adapter",
+            {"goal_active": True},
+            received_at_s=now,
+        )
+        time.sleep(0.10)
+        assert controller.status(proposed["mission_id"])["status"] == "running"
+        assert session.active is True
+        controller.cancel(proposed["mission_id"])
     finally:
         controller.close()
         service.close()
