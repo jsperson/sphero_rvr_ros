@@ -1118,10 +1118,12 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         service.close()
 
 
-def test_systemd_session_files_are_private_and_consumed_on_relock(
+def test_systemd_session_waits_for_complete_graph_then_consumes_files(
     tmp_path,
+    monkeypatch,
 ) -> None:
     state = {"active": False}
+    captures = []
 
     def runner(command, **kwargs):
         del kwargs
@@ -1148,6 +1150,23 @@ def test_systemd_session_files_are_private_and_consumed_on_relock(
             command, 0, stdout="", stderr=""
         )
 
+    def capture_graph(**kwargs):
+        del kwargs
+        capture = _active_graph_capture()
+        if not captures:
+            capture["observations"]["nodes"]["stdout"] = (
+                "/live_mission_service\n"
+            )
+            unsigned = dict(capture)
+            unsigned.pop("capture_digest")
+            capture["capture_digest"] = canonical_digest(unsigned)
+        captures.append(capture)
+        return capture
+
+    monkeypatch.setattr(
+        "sphero_rvr_driver.hierarchical_physical_session.time.sleep",
+        lambda _duration_s: None,
+    )
     session = SystemdHierarchicalMissionSession(
         activation_capable=True,
         source_sha=SHA,
@@ -1155,9 +1174,7 @@ def test_systemd_session_files_are_private_and_consumed_on_relock(
         reviewed_sha=SHA,
         state_directory=tmp_path / "session",
         runner=runner,
-        active_graph_capture=(
-            lambda **kwargs: _active_graph_capture()
-        ),
+        active_graph_capture=capture_graph,
     )
     service, cache, fake, controller = _controller(tmp_path / "controller")
     del cache, fake
@@ -1191,6 +1208,7 @@ def test_systemd_session_files_are_private_and_consumed_on_relock(
             cancel_event=None,
         )
         assert session.status()["active"] is True
+        assert len(captures) == 2
         persisted_graph = json.loads(
             session.graph_audit_path.read_text()
         )

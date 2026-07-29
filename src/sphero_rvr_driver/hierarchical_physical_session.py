@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import threading
+import time
 from typing import Any, Callable, Mapping, Optional
 
 from .hierarchical_physical_binding import (
@@ -22,6 +23,8 @@ from .mission_api import MissionValidationError
 
 HIERARCHICAL_MISSION_UNIT = "rvr-hierarchical-mission.service"
 TELEMETRY_UNIT = "rvr-telemetry.service"
+ACTIVE_GRAPH_READY_TIMEOUT_S = 45.0
+ACTIVE_GRAPH_RETRY_INTERVAL_S = 1.0
 
 
 class SystemdHierarchicalMissionSession:
@@ -146,6 +149,11 @@ class SystemdHierarchicalMissionSession:
                 action="stop no-motion telemetry",
                 timeout_s=30.0,
             )
+            self._run(
+                ["systemctl", "--user", "reset-failed", TELEMETRY_UNIT],
+                action="clear no-motion telemetry stop result",
+                timeout_s=5.0,
+            )
             if cancel_event is not None and cancel_event.is_set():
                 self._remove_activation_files()
                 raise MissionValidationError(
@@ -173,14 +181,8 @@ class SystemdHierarchicalMissionSession:
                     raise MissionValidationError(
                         "canonical physical activation was cancelled during graph start"
                     )
-                graph_capture = dict(
-                    self._active_graph_capture(
-                        source_sha=self.source_sha,
-                        source_repository=self.source_repository,
-                    )
-                )
-                validate_active_graph_evidence(
-                    graph_capture, source_sha=self.source_sha
+                graph_capture = self._capture_ready_active_graph(
+                    cancel_event=cancel_event
                 )
                 if cancel_event is not None and cancel_event.is_set():
                     raise MissionValidationError(
@@ -201,6 +203,49 @@ class SystemdHierarchicalMissionSession:
                 f"{validated_approval.approval_digest[:12]}"
             )
             return self.status()
+
+    def _capture_ready_active_graph(
+        self,
+        *,
+        cancel_event: Optional[threading.Event],
+    ) -> dict[str, Any]:
+        """Wait for one complete, self-consistent ROS graph before authority."""
+
+        deadline = time.monotonic() + ACTIVE_GRAPH_READY_TIMEOUT_S
+        last_error = "active graph audit did not run"
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise MissionValidationError(
+                    "canonical physical activation was cancelled during graph audit"
+                )
+            status = self._unit_status()
+            if not status["active"]:
+                raise MissionValidationError(
+                    "canonical hierarchical mission graph exited before its "
+                    f"active graph was ready: {status['detail']}"
+                )
+            graph_capture = dict(
+                self._active_graph_capture(
+                    source_sha=self.source_sha,
+                    source_repository=self.source_repository,
+                )
+            )
+            try:
+                validate_active_graph_evidence(
+                    graph_capture, source_sha=self.source_sha
+                )
+                return graph_capture
+            except MissionValidationError as exc:
+                last_error = str(exc)
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0.0:
+                raise MissionValidationError(
+                    "canonical active graph did not become ready within "
+                    f"{ACTIVE_GRAPH_READY_TIMEOUT_S:.0f} seconds: {last_error}"
+                )
+            time.sleep(
+                min(ACTIVE_GRAPH_RETRY_INTERVAL_S, remaining_s)
+            )
 
     def deactivate(self, *, reason: str) -> Mapping[str, Any]:
         with self._lock:
