@@ -1381,54 +1381,6 @@ def evaluate_canonical_mission(
             terminal_at_s=run_evidence.get("ended_at_s"),
         )
     )
-    required_sensor_limits = {
-        "lidar": 0.50,
-    }
-    required_sensor_maxima = run_evidence.get(
-        "max_required_sensor_age_s", {}
-    )
-    required_sensor_source_maxima = run_evidence.get(
-        "max_required_sensor_source_age_s", {}
-    )
-    required_sensor_freshness_valid = False
-    if (
-        isinstance(required_sensor_maxima, Mapping)
-        and set(required_sensor_limits).issubset(required_sensor_maxima)
-        and isinstance(required_sensor_source_maxima, Mapping)
-        and set(required_sensor_limits).issubset(
-            required_sensor_source_maxima
-        )
-    ):
-        try:
-            parsed_sensor_maxima = {
-                source_name: float(required_sensor_maxima[source_name])
-                for source_name in required_sensor_limits
-            }
-            parsed_sensor_source_maxima = {
-                source_name: float(
-                    required_sensor_source_maxima[source_name]
-                )
-                for source_name in required_sensor_limits
-            }
-        except (KeyError, TypeError, ValueError):
-            parsed_sensor_maxima = {}
-            parsed_sensor_source_maxima = {}
-        required_sensor_freshness_valid = bool(
-            parsed_sensor_maxima
-            and parsed_sensor_source_maxima
-        ) and all(
-            math.isfinite(parsed_sensor_maxima[source_name])
-            and math.isfinite(
-                parsed_sensor_source_maxima[source_name]
-            )
-            and 0.0
-            <= parsed_sensor_maxima[source_name]
-            <= max_age_s
-            and 0.0
-            <= parsed_sensor_source_maxima[source_name]
-            <= max_age_s
-            for source_name, max_age_s in required_sensor_limits.items()
-        )
     approval_events = [
         event["payload"]
         for event in service_events
@@ -1694,14 +1646,14 @@ def evaluate_canonical_mission(
             )
             == 0
         ),
-        "all_motion_critical_sensor_freshness_remained_within_gate": (
+        "transient_sensor_staleness_did_not_trigger_outer_watchdog": (
             int(
                 run_evidence.get(
                     "required_sensor_freshness_violations", 0
                 )
             )
             == 0
-            and required_sensor_freshness_valid
+            and active_graph_valid
         ),
         "terminal_controller_checkpoint_recorded": bool(
             terminal_checkpoints

@@ -207,6 +207,7 @@ def test_stale_motion_evidence_holds_then_resumes_with_new_goal() -> None:
     held = follower.advance(
         now_s=0.5,
         remaining_distance_m=0.8,
+        collision_state="BLOCKED",
         motion_evidence_fresh=False,
     )
     follower.submit_prefetch(

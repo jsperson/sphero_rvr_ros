@@ -946,6 +946,7 @@ def test_stale_motion_hold_accepts_late_provider_result_and_resumes() -> None:
             now_s=0.01,
             remaining_distance_m=2.49,
             eta_s=9.9,
+            collision_state="BLOCKED",
             motion_evidence_fresh=False,
         )
 

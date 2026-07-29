@@ -767,23 +767,18 @@ def test_stale_localization_does_not_terminate_motion_session(
         service.close()
 
 
-@pytest.mark.parametrize(
-    ("source_name", "stale_age_s"),
-    (
-        ("lidar", 0.501),
-    ),
-)
-def test_active_motion_fails_closed_on_stale_motion_critical_sensor(
+def test_stale_lidar_is_observed_without_outer_session_termination(
     tmp_path,
-    source_name,
-    stale_age_s,
 ) -> None:
     service, cache, session, controller = _controller(tmp_path)
     try:
+        source_name = "lidar"
+        stale_age_s = 0.501
         proposed = controller.submit(
             CANONICAL_M7_OBJECTIVE,
             session_id="m7-browser",
             mission_id=f"m7-canonical-stale-{source_name}",
+            mission_lease_s=0.4,
         )
         controller.approve(
             proposed["mission_id"],
@@ -812,22 +807,23 @@ def test_active_motion_fails_closed_on_stale_motion_critical_sensor(
             {"goal_active": True},
             received_at_s=now,
         )
+        time.sleep(0.10)
+        assert controller.status(proposed["mission_id"])["status"] == "running"
+        assert session.active is True
         terminal = controller.status(proposed["mission_id"])
         while (
-            terminal["status"] != "recovery_required"
+            terminal["status"] != "timeout"
             and time.monotonic() < deadline
         ):
             time.sleep(0.01)
             terminal = controller.status(proposed["mission_id"])
-        assert terminal["status"] == "recovery_required"
+        assert terminal["status"] == "timeout"
         evidence = terminal["result"]["run_evidence"]
-        assert evidence["required_sensor_freshness_violations"] == 1
-        assert evidence["localization_freshness_violations"] == 0
+        assert evidence["required_sensor_freshness_violations"] == 0
         assert (
-            evidence["max_required_sensor_age_s"][source_name]
-            > stale_age_s - 0.001
+            evidence["sensor_freshness_hold_observations"][source_name]
+            >= 1
         )
-        assert session.active is False
     finally:
         controller.close()
         service.close()

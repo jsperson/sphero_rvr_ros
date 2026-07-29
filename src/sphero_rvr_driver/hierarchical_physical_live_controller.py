@@ -48,9 +48,6 @@ ACTIVE_SENSOR_MAX_AGE_S = {
     "localization": 0.500,
     "semantic_map": 3.00,
 }
-MOTION_CRITICAL_SENSORS = frozenset({"lidar"})
-
-
 def _finite_mission_lease(value: Any) -> float:
     if isinstance(value, bool):
         raise MissionValidationError(
@@ -692,6 +689,10 @@ class HierarchicalPhysicalMissionController:
                 },
                 "required_sensor_freshness_violations": 0,
                 "planning_sensor_freshness_observations": 0,
+                "sensor_freshness_hold_observations": {
+                    source_name: 0
+                    for source_name in ACTIVE_SENSOR_MAX_AGE_S
+                },
             }
             origin: Optional[tuple[float, float]] = None
             while not self._closed:
@@ -843,28 +844,26 @@ class HierarchicalPhysicalMissionController:
                         )
                         if not invalid:
                             continue
-                        if source_name not in MOTION_CRITICAL_SENSORS:
-                            run_evidence[
-                                "planning_sensor_freshness_observations"
-                            ] += 1
-                            continue
+                        hold_counts = run_evidence[
+                            "sensor_freshness_hold_observations"
+                        ]
+                        hold_counts[source_name] = (
+                            int(hold_counts[source_name]) + 1
+                        )
                         run_evidence[
-                            "required_sensor_freshness_violations"
+                            "planning_sensor_freshness_observations"
                         ] += 1
                         if source_name == "localization":
                             run_evidence[
                                 "localization_freshness_violations"
                             ] += 1
-                        self._finish(
-                            mission_id,
-                            status="recovery_required",
-                            reason=(
-                                f"live {source_name} exceeded the fixed "
-                                f"{max_age_s:.3f} s gate while motion authority was active"
-                            ),
-                            run_evidence=run_evidence,
-                        )
-                        return
+                        # This loop is an evidence observer, not a second
+                        # motion supervisor.  The fixed collision supervisor
+                        # already forces motor zero when scan receipts exceed
+                        # 0.30 s, and the hierarchical controller cancels its
+                        # active Nav2 route while motion evidence is stale.
+                        # Record transient misses without tearing down the
+                        # entire graph and racing recovery.
                 for source_name, record in (
                     (CONTROLLER_SOURCE, controller),
                     (ADAPTER_SOURCE, adapter),

@@ -805,8 +805,6 @@ class ContinuousGoalFollowerReplay:
             safety_reason = "operator_stop"
         elif cancelled:
             safety_reason = "cancelled"
-        elif str(collision_state).upper() not in {"CLEAR", "SLOW"}:
-            safety_reason = "collision_veto"
         if safety_reason:
             self.state = "terminal_safety"
             self.controller_active = False
@@ -824,6 +822,13 @@ class ContinuousGoalFollowerReplay:
             event = self._event("motion_evidence_stale", self.active, now_s)
             return self._step(
                 self._zero_command("motion_evidence_stale"), (event,)
+            )
+        if str(collision_state).upper() not in {"CLEAR", "SLOW"}:
+            self.state = "terminal_safety"
+            self.controller_active = False
+            event = self._event("collision_veto", self.active, now_s)
+            return self._step(
+                self._zero_command("collision_veto"), (event,)
             )
 
         events: list[Mapping[str, Any]] = []
