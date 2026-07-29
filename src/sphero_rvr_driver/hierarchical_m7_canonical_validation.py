@@ -1383,7 +1383,6 @@ def evaluate_canonical_mission(
     )
     required_sensor_limits = {
         "lidar": 0.50,
-        "localization": 0.300,
     }
     required_sensor_maxima = run_evidence.get(
         "max_required_sensor_age_s", {}
@@ -1687,19 +1686,13 @@ def evaluate_canonical_mission(
             and float(run_evidence.get("max_displacement_m", 0.0))
             >= 0.02
         ),
-        "localization_freshness_remained_within_gate": (
+        "localization_staleness_did_not_force_terminal_watchdog": (
             int(
                 run_evidence.get(
                     "localization_freshness_violations", 0
                 )
             )
             == 0
-            and float(
-                run_evidence.get(
-                    "max_localization_age_s", float("inf")
-                )
-            )
-            <= 0.300
         ),
         "all_motion_critical_sensor_freshness_remained_within_gate": (
             int(

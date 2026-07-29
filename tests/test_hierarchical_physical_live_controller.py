@@ -722,7 +722,7 @@ def test_cancel_during_activation_cannot_start_or_resume_graph(
         service.close()
 
 
-def test_active_motion_fails_closed_on_stale_localization(
+def test_stale_localization_does_not_terminate_motion_session(
     tmp_path,
 ) -> None:
     service, cache, session, controller = _controller(tmp_path)
@@ -758,22 +758,10 @@ def test_active_motion_fails_closed_on_stale_localization(
             {"goal_active": True},
             received_at_s=now,
         )
-        terminal = controller.status(proposed["mission_id"])
-        while (
-            terminal["status"] != "recovery_required"
-            and time.monotonic() < deadline
-        ):
-            time.sleep(0.01)
-            terminal = controller.status(proposed["mission_id"])
-        assert terminal["status"] == "recovery_required"
-        assert terminal["result"]["cleanup_verified"] is True
-        assert terminal["result"]["run_evidence"][
-            "localization_freshness_violations"
-        ] == 1
-        assert terminal["result"]["run_evidence"][
-            "max_localization_age_s"
-        ] > 0.300
-        assert session.active is False
+        time.sleep(0.10)
+        assert controller.status(proposed["mission_id"])["status"] == "running"
+        assert session.active is True
+        controller.cancel(proposed["mission_id"])
     finally:
         controller.close()
         service.close()

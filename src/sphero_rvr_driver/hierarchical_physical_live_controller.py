@@ -48,7 +48,7 @@ ACTIVE_SENSOR_MAX_AGE_S = {
     "localization": 0.300,
     "semantic_map": 1.00,
 }
-MOTION_CRITICAL_SENSORS = frozenset({"lidar", "localization"})
+MOTION_CRITICAL_SENSORS = frozenset({"lidar"})
 
 
 def _finite_mission_lease(value: Any) -> float:

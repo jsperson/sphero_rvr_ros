@@ -134,9 +134,10 @@ older-than-`0.300 s` collision evidence becomes `motion_evidence_stale`,
 enters `wait_planning`, and cancels any active Nav2 goal. The independent
 collision supervisor remains the final zero-motion authority. Camera and map
 source/receipt timestamps are independently gated at `1.000 s`; while a goal
-or odometry motion is active, the mission monitor also requires fresh lidar
-(`0.500 s`), camera (`1.000 s`), localization (`0.300 s`), and semantic-map
-(`1.000 s`) cache records. Any violation relocks the physical session.
+or odometry motion is active, the terminal mission monitor requires fresh
+lidar (`0.500 s`). Camera (`1.000 s`), localization (`0.300 s`), and
+semantic-map (`1.000 s`) staleness cancels the active Nav2 goal and enters an
+honest `wait_planning` hold; it does not destroy the physical session.
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`
 map gate.
@@ -204,11 +205,9 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
   interval, derived from checkpoint receipt times rather than hand-entered
   durations;
 - nonzero odometry and at least `0.02 m` displacement;
-- localization receipt age no greater than `0.300 s`;
-- no motion-critical lidar/localization freshness violation; stale camera or
-  semantic-map evidence causes an honest planning hold/replan rather than
-  terminating the physical session
-  during active goal or observed motion;
+- no motion-critical lidar freshness violation; stale camera, localization,
+  or semantic-map evidence causes an honest planning hold/replan rather than
+  terminating the physical session during active goal or observed motion;
 - a complete terminal controller checkpoint and terminal MissionService state;
 - one authenticated, approval-operator-bound no-contact observation;
 - inactive hierarchical and telemetry units, absent motion nodes/processes,
