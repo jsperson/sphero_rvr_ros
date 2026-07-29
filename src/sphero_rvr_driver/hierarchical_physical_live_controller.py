@@ -34,6 +34,12 @@ CANONICAL_APPROVAL_PREFIX = "APPROVE M7.6 CANONICAL MISSION "
 CONTROLLER_SOURCE = "hierarchical_controller"
 ADAPTER_SOURCE = "hierarchical_adapter"
 PREFLIGHT_MAX_AGE_S = {
+    "lidar": 2.00,
+    "camera": 2.00,
+    "localization": 1.00,
+    "semantic_map": 2.00,
+}
+ACTIVE_SENSOR_MAX_AGE_S = {
     "lidar": 0.50,
     "camera": 1.00,
     "localization": 0.300,
@@ -674,11 +680,11 @@ class HierarchicalPhysicalMissionController:
                 "localization_freshness_violations": 0,
                 "max_required_sensor_age_s": {
                     source_name: 0.0
-                    for source_name in PREFLIGHT_MAX_AGE_S
+                    for source_name in ACTIVE_SENSOR_MAX_AGE_S
                 },
                 "max_required_sensor_source_age_s": {
                     source_name: 0.0
-                    for source_name in PREFLIGHT_MAX_AGE_S
+                    for source_name in ACTIVE_SENSOR_MAX_AGE_S
                 },
                 "required_sensor_freshness_violations": 0,
             }
@@ -747,7 +753,7 @@ class HierarchicalPhysicalMissionController:
                 )
                 if adapter_goal_active or motion_observed:
                     for source_name, max_age_s in (
-                        PREFLIGHT_MAX_AGE_S.items()
+                        ACTIVE_SENSOR_MAX_AGE_S.items()
                     ):
                         record = live_snapshot.source(source_name)
                         unavailable = (

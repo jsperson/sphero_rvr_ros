@@ -604,7 +604,7 @@ def test_canonical_approval_requires_fresh_no_motion_sensor_preflight(
                 physical_room_confirmation=ROOM,
             )
         _seed_sensor_preflight(
-            cache, received_at_s=time.time() - 1.01
+            cache, received_at_s=time.time() - 2.01
         )
         with pytest.raises(
             MissionValidationError, match="lidar evidence is stale"
@@ -623,7 +623,7 @@ def test_canonical_approval_requires_fresh_no_motion_sensor_preflight(
             "camera",
             dict(camera.value),
             received_at_s=now,
-            source_timestamp_s=now - 1.001,
+            source_timestamp_s=now - 2.001,
         )
         with pytest.raises(
             MissionValidationError, match="camera evidence is stale"

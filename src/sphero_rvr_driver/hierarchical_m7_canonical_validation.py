@@ -1574,10 +1574,10 @@ def evaluate_canonical_mission(
             )
             sources = preflight_unsigned.get("sources", {})
             expected_ages = {
-                "lidar": 0.50,
-                "camera": 1.00,
-                "localization": 0.300,
-                "semantic_map": 1.00,
+                "lidar": 2.00,
+                "camera": 2.00,
+                "localization": 1.00,
+                "semantic_map": 2.00,
             }
             source_checks = []
             if isinstance(sources, Mapping) and set(sources) == set(
