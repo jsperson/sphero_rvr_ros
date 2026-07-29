@@ -17,6 +17,7 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     adapter_recovery_reason,
     adapter_remaining_distance,
     bounded_camera_evidence,
+    collision_hold_controller_state,
     goal_dispatch_queue_key,
     live_motion_evidence_is_fresh,
     live_semantic_track_signature,
@@ -870,6 +871,12 @@ def test_controller_fails_closed_on_nav2_recovery_status() -> None:
 def test_planning_freshness_hold_preserves_only_an_active_nav2_goal() -> None:
     assert planning_hold_controller_state(
         {
+            "state": "dispatching",
+            "goal_active": False,
+        }
+    ) == "navigating"
+    assert planning_hold_controller_state(
+        {
             "state": "navigating",
             "goal_active": True,
             "distance_remaining_m": 0.72,
@@ -889,6 +896,54 @@ def test_planning_freshness_hold_preserves_only_an_active_nav2_goal() -> None:
             "distance_remaining_m": 0.0,
         }
     ) == "wait_planning"
+    active = {
+        "state": "navigating",
+        "goal_active": True,
+    }
+    pending = {
+        "state": "dispatching",
+        "goal_active": False,
+    }
+    idle = {
+        "state": "wait_planning",
+        "goal_active": False,
+    }
+    assert (
+        collision_hold_controller_state(
+            active,
+            collision_state="BLOCKED",
+        )
+        == "navigating"
+    )
+    assert (
+        collision_hold_controller_state(
+            pending,
+            collision_state="BLOCKED",
+        )
+        == "navigating"
+    )
+    assert (
+        collision_hold_controller_state(
+            idle,
+            collision_state="BLOCKED",
+        )
+        == "wait_planning"
+    )
+    assert (
+        collision_hold_controller_state(
+            active,
+            collision_state="CLEAR",
+        )
+        == ""
+    )
+    assert (
+        collision_hold_controller_state(
+            active,
+            collision_state="BLOCKED",
+            estop=True,
+        )
+        == ""
+    )
     assert planning_hold_controller_state(
         {
             "state": "recovery_required",

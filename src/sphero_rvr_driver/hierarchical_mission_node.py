@@ -247,6 +247,12 @@ def rolling_frontier_invalidation_preserves_route(
 def planning_hold_controller_state(status: Mapping[str, Any]) -> str:
     """Keep an accepted Nav2 route alive while planning evidence catches up."""
 
+    if str(status.get("state", "")).strip() == "dispatching":
+        # The action request is already digest-bound and in Nav2's async
+        # acceptance window. No command can cross the private bridge until
+        # Nav2 publishes one, so treating this short window as a pending route
+        # avoids a transient evidence gap cancelling the just-sent goal.
+        return "navigating"
     if (
         str(status.get("state", "")).strip()
         not in {"locked", "recovery_required", "rejected"}
@@ -254,6 +260,26 @@ def planning_hold_controller_state(status: Mapping[str, Any]) -> str:
     ):
         return "navigating"
     return "wait_planning"
+
+
+def collision_hold_controller_state(
+    status: Mapping[str, Any],
+    *,
+    collision_state: str,
+    stop: bool = False,
+    estop: bool = False,
+    cancelled: bool = False,
+) -> str:
+    """Hold semantic state while the independent supervisor owns motor zero."""
+
+    if (
+        str(collision_state).strip().upper() != "BLOCKED"
+        or stop
+        or estop
+        or cancelled
+    ):
+        return ""
+    return planning_hold_controller_state(status)
 
 
 def semantic_non_motion_status(action: str) -> tuple[str, str, bool]:
@@ -1324,6 +1350,25 @@ def main(args=None):
                 )
                 self._publish_status(
                     "wait_planning", "motion_evidence_stale"
+                )
+                return
+            safety = snapshot.get("safety", {})
+            collision_hold_state = collision_hold_controller_state(
+                self._adapter_status,
+                collision_state=self._collision_state,
+                stop=bool(safety.get("stop")),
+                estop=bool(safety.get("estop")),
+                cancelled=bool(safety.get("cancelled")),
+            )
+            if collision_hold_state:
+                # The downstream collision supervisor is already publishing
+                # zero. Preserve the semantic controller and any in-flight
+                # provider result so a transient obstacle is a safe pause,
+                # not a 10 Hz terminal-event storm. Nav2 remains responsible
+                # for progress timeout and ordinary route abort/replanning.
+                self._publish_status(
+                    collision_hold_state,
+                    "collision_supervisor_hold",
                 )
                 return
             event_step = self._event_replan(snapshot, now_s)

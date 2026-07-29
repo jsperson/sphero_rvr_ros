@@ -162,6 +162,14 @@ same loaded-Pi run showed one false fail-safe when a recovery stop missed the
 driver's former `0.10 s` scheduling allowance; the installed allowance is
 `0.20 s`, still inside the fixed `0.30 s` collision-veto bound.
 
+A healthy collision `BLOCKED` state now remains an immediate downstream
+motor-zero hold without terminating the semantic controller or duplicating a
+terminal event at controller frequency. Nav2 keeps the accepted or
+digest-bound pending action and may replan; a persistent blockage still reaches
+Nav2's bounded progress timeout and ordinary failed-target exclusion. STOP,
+ESTOP, cancel, stale scan evidence, command leases, and authority expiry are
+not included in this resumable collision hold.
+
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`
 map gate.
