@@ -201,6 +201,15 @@ def _return_decision(snapshot: dict) -> dict:
     )
 
 
+def _wait_decision(snapshot: dict) -> dict:
+    return _decision(
+        snapshot,
+        "wait",
+        {},
+        rationale="Wait for a fresh server-owned planning event.",
+    )
+
+
 def _wait_for_provider(
     provider: ScriptedSemanticGoalProvider,
     calls: int,
@@ -699,6 +708,70 @@ def test_short_hop_under_recorded_p95_honestly_waits_then_resumes() -> None:
         assert resumed.handoff.state == "navigating"
         assert resumed.handoff.controller_session == 2
         assert resumed.handoff.events[-1]["kind"] == "planning_resume"
+    finally:
+        controller.close()
+
+
+def test_semantic_wait_holds_until_fresh_event_then_replans() -> None:
+    snapshot0 = _snapshot(event_generation=0)
+    snapshot1 = _snapshot(event_generation=1)
+    provider = ScriptedSemanticGoalProvider(
+        [_wait_decision, _frontier_decision(1)]
+    )
+    controller = AsyncSemanticGoalController(provider)
+    try:
+        controller.start(
+            _decision(
+                snapshot0,
+                "go_to_frontier",
+                {"frontier_id": snapshot0["frontiers"][0]["signature"]},
+            ),
+            snapshot0,
+        )
+        controller.tick(
+            snapshot0,
+            now_s=0.0,
+            remaining_distance_m=0.5,
+            eta_s=5.0,
+        )
+        _wait_for_provider(provider, 1)
+        waiting = controller.tick(
+            snapshot0,
+            now_s=0.1,
+            remaining_distance_m=0.49,
+            eta_s=4.9,
+        )
+
+        ready = controller.ready_non_motion_goal()
+        assert ready is not None
+        assert ready.decision.action == "wait"
+        event = next(
+            item
+            for item in waiting.events
+            if item["kind"] == "semantic_non_motion_goal_ready"
+        )
+        assert event["decision"]["action"] == "wait"
+        assert event["decision"]["arguments"] == {}
+
+        replanning = controller.handle_event(
+            SemanticReplanEvent(
+                "fresh-detection-1",
+                SemanticEventKind.NEW_DETECTION,
+                observed_at_s=2.2,
+                target_id="shoe-track-01",
+                confidence=0.9,
+                stable_observations=3,
+            ),
+            snapshot1,
+            now_s=2.2,
+        )
+        assert controller.ready_non_motion_goal() is None
+        assert replanning.provider_in_flight is True
+        assert replanning.handoff.state == "wait_planning"
+        assert any(
+            item["kind"] == "prefetch_started"
+            for item in replanning.events
+        )
     finally:
         controller.close()
 

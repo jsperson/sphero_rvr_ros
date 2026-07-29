@@ -42,6 +42,7 @@ setup(
                 "config/mission-stack.env.example",
                 "config/hierarchical_nav2.yaml",
                 "config/hierarchical_nav2_physical.yaml",
+                "config/hierarchical_slam_toolbox.yaml",
                 "config/hierarchical_navigate_through_poses.xml",
             ],
         ),

@@ -39,10 +39,16 @@ from .hierarchical_physical_binding import (
     validate_authority_heartbeat,
     validate_physical_proposal,
 )
+from .hierarchical_m7_canonical_validation import (
+    validate_active_graph_evidence,
+)
 from .mission_api import MissionValidationError
 
 
 MAX_CONSECUTIVE_SEMANTIC_REJECTIONS = 3
+COLLISION_EVIDENCE_MAX_AGE_S = 0.300
+CAMERA_EVIDENCE_MAX_AGE_S = 1.0
+MAP_EVIDENCE_MAX_AGE_S = 1.0
 TARGET_INVALIDATION_REASONS = {
     "event_generation_changed",
     "map_identity_changed",
@@ -194,6 +200,103 @@ def adapter_recovery_reason(status: Mapping[str, Any]) -> str:
     return reason or "nav2_recovery_required"
 
 
+def semantic_non_motion_status(action: str) -> tuple[str, str, bool]:
+    """Map a validated non-motion semantic action to controller state."""
+
+    normalized = str(action).strip()
+    if normalized == "finish":
+        return "complete", "finish", True
+    if normalized == "wait":
+        return "wait_planning", "semantic_wait", False
+    raise MissionValidationError(
+        "unsupported non-motion semantic action"
+    )
+
+
+def parse_collision_evidence(value: Any) -> tuple[str, bool]:
+    """Extract the supervisor state and scan-health bit without trusting defaults."""
+
+    raw = str(value).strip()
+    state = "BLOCKED"
+    scan_healthy = False
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, Mapping):
+        state = str(parsed.get("state", "BLOCKED")).upper()
+        scan_healthy = parsed.get("scan_healthy") is True
+    elif raw:
+        tokens = raw.split()
+        state = tokens[0].upper()
+        fields = {
+            key: field
+            for token in tokens[1:]
+            for key, separator, field in (token.partition("="),)
+            if separator
+        }
+        scan_healthy = fields.get("scan_healthy", "").lower() == "true"
+    if state not in {"CLEAR", "SLOW"}:
+        state = "BLOCKED"
+    return state, scan_healthy
+
+
+def live_motion_evidence_is_fresh(
+    *,
+    now_s: float,
+    collision_received_at_s: Optional[float],
+    scan_healthy: bool,
+    max_age_s: float = COLLISION_EVIDENCE_MAX_AGE_S,
+) -> bool:
+    """Require a recent healthy collision-supervisor receipt for motion."""
+
+    if collision_received_at_s is None or scan_healthy is not True:
+        return False
+    try:
+        now = float(now_s)
+        received = float(collision_received_at_s)
+        maximum = float(max_age_s)
+    except (TypeError, ValueError):
+        return False
+    age_s = now - received
+    return (
+        math.isfinite(now)
+        and math.isfinite(received)
+        and math.isfinite(maximum)
+        and maximum == COLLISION_EVIDENCE_MAX_AGE_S
+        and 0.0 <= age_s <= maximum
+    )
+
+
+def live_source_is_fresh(
+    *,
+    now_s: float,
+    received_at_s: Optional[float],
+    source_timestamp_s: Optional[float],
+    max_age_s: float,
+) -> bool:
+    """Require both source and local receipt ages to remain in bounds."""
+
+    if received_at_s is None or source_timestamp_s is None:
+        return False
+    try:
+        now = float(now_s)
+        received = float(received_at_s)
+        source = float(source_timestamp_s)
+        maximum = float(max_age_s)
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(now)
+        and math.isfinite(received)
+        and math.isfinite(source)
+        and math.isfinite(maximum)
+        and maximum > 0.0
+        and 0.0 <= now - received <= maximum
+        and 0.0 <= now - source <= maximum
+    )
+
+
 def goal_dispatch_queue_key(dispatch: Mapping[str, Any]) -> str:
     """Identify semantic queue changes without map-refresh churn."""
 
@@ -255,6 +358,7 @@ def main(args=None):
                 "deployed_sha": "",
                 "reviewed_sha": "",
                 "proposal_file": "",
+                "graph_audit_file": "",
                 "journal_path": (
                     "~/.local/state/sphero_rvr/"
                     "hierarchical-physical-evidence.sqlite3"
@@ -262,6 +366,7 @@ def main(args=None):
                 "map_topic": "/map",
                 "localization_topic": "/mission_api/v2/localization/status",
                 "semantic_map_topic": "/mission_api/v2/map/status",
+                "camera_topic": "/mission_api/v2/camera/status",
                 "collision_topic": "/collision_stop/state",
                 "authority_topic": AUTHORITY_TOPIC,
                 "adapter_status_topic": "/mission_api/v2/hierarchical/status",
@@ -319,6 +424,17 @@ def main(args=None):
                 proposal_file.read_text(encoding="utf-8"),
                 "hierarchical proposal",
             )
+            graph_audit_file = str(
+                self.get_parameter("graph_audit_file").value
+            ).strip()
+            if not graph_audit_file:
+                raise ValueError(
+                    "hierarchical mission controller requires an active graph audit path"
+                )
+            self._graph_audit_file = Path(
+                graph_audit_file
+            ).expanduser()
+            self._active_graph_evidence: Optional[dict[str, Any]] = None
             self._journal = HierarchicalBindingJournal(
                 str(self.get_parameter("journal_path").value)
             )
@@ -342,10 +458,17 @@ def main(args=None):
             self._authority_received_at_s: Optional[float] = None
             self._proposal: Optional[dict[str, Any]] = None
             self._grid: Optional[OccupancyGrid] = None
+            self._map_received_at_s: Optional[float] = None
+            self._map_source_timestamp_s: Optional[float] = None
             self._localization: Optional[dict[str, Any]] = None
             self._semantic_map: dict[str, Any] = {}
+            self._camera_received_at_s: Optional[float] = None
+            self._camera_source_timestamp_s: Optional[float] = None
+            self._camera_valid = False
             self._origin: Optional[tuple[float, float]] = None
             self._collision_state = "BLOCKED"
+            self._collision_scan_healthy = False
+            self._collision_received_at_s: Optional[float] = None
             self._adapter_status: dict[str, Any] = {}
             self._event_generation = 0
             self._known_stable_tracks: set[str] = set()
@@ -396,6 +519,12 @@ def main(args=None):
             )
             self.create_subscription(
                 String,
+                str(self.get_parameter("camera_topic").value),
+                self._on_camera,
+                10,
+            )
+            self.create_subscription(
+                String,
                 str(self.get_parameter("collision_topic").value),
                 self._on_collision,
                 10,
@@ -434,6 +563,8 @@ def main(args=None):
             resolution = float(message.info.resolution)
             if width <= 0 or height <= 0 or resolution <= 0.0:
                 self._grid = None
+                self._map_received_at_s = None
+                self._map_source_timestamp_s = None
                 return
             cells = tuple(
                 0 if int(value) == 0 else 100 if int(value) >= 50 else -1
@@ -463,6 +594,10 @@ def main(args=None):
                 revision=revision,
                 cells=cells,
                 source="slam_toolbox:/map",
+            )
+            self._map_received_at_s = time.time()
+            self._map_source_timestamp_s = _stamp_s(
+                message.header.stamp
             )
 
         def _on_localization(self, message: Any) -> None:
@@ -504,15 +639,57 @@ def main(args=None):
             except MissionValidationError:
                 self._semantic_map = {}
 
+        def _on_camera(self, message: Any) -> None:
+            try:
+                raw = _json_object(
+                    getattr(message, "data", ""), "camera"
+                )
+                camera = raw.get("camera", raw)
+                if (
+                    not isinstance(camera, Mapping)
+                    or camera.get("schema")
+                    != "sphero_rvr.live_camera_perception.v1"
+                    or camera.get("calibrated") is not True
+                    or not str(camera.get("frame_id", "")).strip()
+                ):
+                    raise MissionValidationError(
+                        "camera evidence is invalid"
+                    )
+                source_timestamp_s = float(camera["stamp_s"])
+                if (
+                    not math.isfinite(source_timestamp_s)
+                    or source_timestamp_s <= 0.0
+                ):
+                    raise MissionValidationError(
+                        "camera source timestamp is invalid"
+                    )
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                MissionValidationError,
+            ):
+                self._camera_valid = False
+                self._camera_received_at_s = None
+                self._camera_source_timestamp_s = None
+                return
+            self._camera_valid = True
+            self._camera_received_at_s = time.time()
+            self._camera_source_timestamp_s = source_timestamp_s
+
         def _on_collision(self, message: Any) -> None:
             raw = str(getattr(message, "data", "")).strip()
-            try:
-                payload = _json_object(raw, "collision")
-                state = str(payload.get("state", "BLOCKED")).upper()
-            except MissionValidationError:
-                state = raw.split(maxsplit=1)[0].upper() if raw else "BLOCKED"
-            self._collision_state = (
-                state if state in {"CLEAR", "SLOW"} else "BLOCKED"
+            (
+                self._collision_state,
+                self._collision_scan_healthy,
+            ) = parse_collision_evidence(raw)
+            self._collision_received_at_s = time.time()
+
+        def _motion_evidence_fresh(self, now_s: float) -> bool:
+            return live_motion_evidence_is_fresh(
+                now_s=now_s,
+                collision_received_at_s=self._collision_received_at_s,
+                scan_healthy=self._collision_scan_healthy,
             )
 
         def _on_adapter_status(self, message: Any) -> None:
@@ -538,6 +715,25 @@ def main(args=None):
                 reviewed_sha=self._reviewed_sha,
                 max_age_s=AUTHORITY_HEARTBEAT_MAX_AGE_S,
             )
+
+        def _active_graph_ready(self) -> tuple[bool, str]:
+            if self._active_graph_evidence is not None:
+                return True, "active_graph_verified"
+            if not self._graph_audit_file.is_file():
+                return False, "awaiting_active_graph_audit"
+            try:
+                raw = _json_object(
+                    self._graph_audit_file.read_text(encoding="utf-8"),
+                    "active graph audit",
+                )
+                self._active_graph_evidence = (
+                    validate_active_graph_evidence(
+                        raw, source_sha=self._source_sha
+                    )
+                )
+            except (OSError, MissionValidationError):
+                return False, "active_graph_audit_invalid"
+            return True, "active_graph_verified"
 
         def _tracks(self, grid: OccupancyGrid) -> tuple[SemanticTrack, ...]:
             result = []
@@ -585,6 +781,24 @@ def main(args=None):
                 raise MissionValidationError(
                     "live map, localization, and proposal are required"
                 )
+            if not live_source_is_fresh(
+                now_s=now_s,
+                received_at_s=self._map_received_at_s,
+                source_timestamp_s=self._map_source_timestamp_s,
+                max_age_s=MAP_EVIDENCE_MAX_AGE_S,
+            ):
+                raise MissionValidationError(
+                    "live map exceeds the fixed 1.000 s gate"
+                )
+            if not self._camera_valid or not live_source_is_fresh(
+                now_s=now_s,
+                received_at_s=self._camera_received_at_s,
+                source_timestamp_s=self._camera_source_timestamp_s,
+                max_age_s=CAMERA_EVIDENCE_MAX_AGE_S,
+            ):
+                raise MissionValidationError(
+                    "live camera exceeds the fixed 1.000 s gate"
+                )
             age = now_s - float(self._localization["timestamp_s"])
             if age < 0.0 or age > 0.300:
                 raise MissionValidationError(
@@ -614,6 +828,7 @@ def main(args=None):
                     )
                 except MissionValidationError:
                     continue
+            motion_evidence_fresh = self._motion_evidence_fresh(now_s)
             return build_semantic_world_snapshot(
                 mission_id=str(self._proposal["mission_id"]),
                 objective=str(self._proposal["objective"]),
@@ -646,9 +861,13 @@ def main(args=None):
                     )
                     / max(1, len(self._grid.cells))
                 ),
-                collision_state=self._collision_state,
+                collision_state=(
+                    self._collision_state
+                    if motion_evidence_fresh
+                    else "BLOCKED"
+                ),
                 mission_lease_valid=True,
-                motion_evidence_fresh=True,
+                motion_evidence_fresh=motion_evidence_fresh,
             )
 
         def _tick(self) -> None:
@@ -665,6 +884,16 @@ def main(args=None):
                     self._publish_status("locked", reason)
                 return
             assert self._authority is not None
+            graph_ready, graph_reason = self._active_graph_ready()
+            if not graph_ready:
+                if graph_reason == "active_graph_audit_invalid":
+                    self._terminal = True
+                    self._publish_status(
+                        "recovery_required", graph_reason
+                    )
+                else:
+                    self._publish_status("locked", graph_reason)
+                return
             if self._proposal is None:
                 try:
                     self._proposal = validate_physical_proposal(
@@ -683,7 +912,17 @@ def main(args=None):
             except MissionValidationError as exc:
                 self._publish_status("wait_planning", str(exc))
                 return
+            motion_evidence_fresh = bool(
+                snapshot.get("safety", {}).get(
+                    "motion_evidence_fresh", False
+                )
+            )
             if self._controller is None:
+                if not motion_evidence_fresh:
+                    self._publish_status(
+                        "wait_planning", "motion_evidence_stale"
+                    )
+                    return
                 self._known_stable_tracks.update(
                     self._stable_track_ids()
                 )
@@ -697,6 +936,35 @@ def main(args=None):
                 self._provider.cancel()
                 self._publish_status(
                     "recovery_required", recovery_reason
+                )
+                return
+            active_goals = self._controller.resolved_motion_goals()
+            fallback_remaining = (
+                0.0
+                if not active_goals
+                else active_goals[0][0].route_length_m
+            )
+            remaining = adapter_remaining_distance(
+                self._adapter_status, fallback_remaining
+            )
+            if not motion_evidence_fresh:
+                step = self._controller.tick(
+                    snapshot,
+                    now_s=now_s,
+                    remaining_distance_m=remaining,
+                    eta_s=remaining / 0.10,
+                    collision_state="BLOCKED",
+                    motion_evidence_fresh=False,
+                )
+                for event in step.events:
+                    self._journal.append(
+                        str(self._authority["mission_id"]),
+                        "controller_event",
+                        dict(event),
+                        recorded_at_s=now_s,
+                    )
+                self._publish_status(
+                    "wait_planning", "motion_evidence_stale"
                 )
                 return
             event_step = self._event_replan(snapshot, now_s)
@@ -714,20 +982,13 @@ def main(args=None):
                     "wait_planning", "event_triggered_replan"
                 )
                 return
-            active_goals = self._controller.resolved_motion_goals()
-            fallback_remaining = (
-                0.0 if not active_goals else active_goals[0][0].route_length_m
-            )
-            remaining = adapter_remaining_distance(
-                self._adapter_status, fallback_remaining
-            )
             step = self._controller.tick(
                 snapshot,
                 now_s=now_s,
                 remaining_distance_m=remaining,
                 eta_s=remaining / 0.10,
                 collision_state=self._collision_state,
-                motion_evidence_fresh=True,
+                motion_evidence_fresh=motion_evidence_fresh,
             )
             for event in step.events:
                 self._journal.append(
@@ -763,12 +1024,14 @@ def main(args=None):
                     "wait_planning", "event_replan_provider_in_flight"
                 )
                 return
-            if self._controller.ready_non_motion_goal() is not None:
-                self._terminal = True
-                self._publish_status(
-                    "complete",
-                    self._controller.ready_non_motion_goal().decision.action,
+            ready_non_motion = self._controller.ready_non_motion_goal()
+            if ready_non_motion is not None:
+                state, reason, terminal = semantic_non_motion_status(
+                    ready_non_motion.decision.action
                 )
+                if terminal:
+                    self._terminal = True
+                self._publish_status(state, reason)
                 return
             self._publish_dispatch(snapshot, now_s, step.handoff.state)
 

@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import time
@@ -23,6 +24,9 @@ from .mission_api import MissionValidationError
 
 REPORT_SCHEMA = "sphero_rvr.hierarchical_m7_canonical_report.v1"
 CLEANUP_SCHEMA = "sphero_rvr.hierarchical_m7_cleanup_capture.v1"
+ACTIVE_GRAPH_SCHEMA = (
+    "sphero_rvr.hierarchical_m7_active_graph_capture.v1"
+)
 DEFAULT_MISSION_DATABASE = (
     "~/.local/state/sphero_rvr/missions.sqlite3"
 )
@@ -35,6 +39,9 @@ DEFAULT_SESSION_DIRECTORY = (
 DEFAULT_EVIDENCE_DIRECTORY = (
     "~/.local/state/sphero_rvr/hierarchical-perception"
 )
+DEFAULT_SOURCE_REPOSITORY = (
+    "/home/jsperson/ros2_ws/src/sphero_rvr_ros"
+)
 
 
 def _json(value: str) -> dict[str, Any]:
@@ -42,6 +49,256 @@ def _json(value: str) -> dict[str, Any]:
     if not isinstance(parsed, Mapping):
         raise MissionValidationError("canonical evidence JSON must be an object")
     return dict(parsed)
+
+
+def _topic_count(output: str, kind: str) -> Optional[int]:
+    match = re.search(
+        rf"^{re.escape(kind)} count:\s*(\d+)\s*$",
+        str(output),
+        re.MULTILINE,
+    )
+    return None if match is None else int(match.group(1))
+
+
+def _topic_endpoint_names(output: str, kind: str) -> set[str]:
+    if kind not in {"Publisher", "Subscription"}:
+        return set()
+    text = str(output)
+    start = text.find(f"{kind} count:")
+    if start < 0:
+        return set()
+    other = "Subscription" if kind == "Publisher" else "Publisher"
+    end = text.find(f"{other} count:", start + 1)
+    section = text[start:] if end < 0 else text[start:end]
+    return {
+        match.group(1).strip().lstrip("/")
+        for match in re.finditer(
+            r"^Node name:\s*(\S+)\s*$", section, re.MULTILINE
+        )
+    }
+
+
+def capture_active_graph_evidence(
+    *,
+    source_sha: str,
+    source_repository: str | Path = DEFAULT_SOURCE_REPOSITORY,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    captured_at_s: Optional[float] = None,
+) -> dict[str, Any]:
+    """Capture the exact active command graph before semantic planning starts."""
+
+    commands = {
+        "git_head": [
+            "git",
+            "-C",
+            str(Path(source_repository).expanduser()),
+            "rev-parse",
+            "HEAD",
+        ],
+        "git_status": [
+            "git",
+            "-C",
+            str(Path(source_repository).expanduser()),
+            "status",
+            "--porcelain",
+        ],
+        "nodes": [
+            "timeout",
+            "8",
+            "ros2",
+            "node",
+            "list",
+            "--spin-time",
+            "3.0",
+            "--no-daemon",
+        ],
+        "cmd_vel": [
+            "timeout",
+            "8",
+            "ros2",
+            "topic",
+            "info",
+            "-v",
+            "--spin-time",
+            "3.0",
+            "--no-daemon",
+            "/cmd_vel",
+        ],
+        "cmd_vel_motor": [
+            "timeout",
+            "8",
+            "ros2",
+            "topic",
+            "info",
+            "-v",
+            "--spin-time",
+            "3.0",
+            "--no-daemon",
+            "/cmd_vel_motor",
+        ],
+        "nav2_private": [
+            "timeout",
+            "8",
+            "ros2",
+            "topic",
+            "info",
+            "-v",
+            "--spin-time",
+            "3.0",
+            "--no-daemon",
+            "/nav2_cmd_vel_request",
+        ],
+        "serial_owner": ["fuser", "/dev/ttyAMA0"],
+    }
+    observations: dict[str, Any] = {}
+    for name, argv in commands.items():
+        try:
+            completed = runner(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=12.0,
+                check=False,
+            )
+            observations[name] = {
+                "argv": list(argv),
+                "returncode": int(completed.returncode),
+                "stdout": str(completed.stdout),
+                "stderr": str(completed.stderr),
+            }
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            observations[name] = {
+                "argv": list(argv),
+                "returncode": 124,
+                "stdout": "",
+                "stderr": f"{exc.__class__.__name__}: {exc}",
+            }
+    payload = {
+        "schema": ACTIVE_GRAPH_SCHEMA,
+        "source_sha": str(source_sha).strip(),
+        "captured_at_s": float(
+            time.time() if captured_at_s is None else captured_at_s
+        ),
+        "observations": observations,
+        "motion_authority": False,
+    }
+    return {**payload, "capture_digest": canonical_digest(payload)}
+
+
+def active_graph_checks(
+    capture: Mapping[str, Any], *, source_sha: str
+) -> dict[str, bool]:
+    """Recompute active ownership only from raw command observations."""
+
+    payload = dict(capture)
+    supplied_digest = str(payload.pop("capture_digest", ""))
+    observations = payload.get("observations", {})
+    if not isinstance(observations, Mapping):
+        observations = {}
+
+    def observation(name: str) -> Mapping[str, Any]:
+        value = observations.get(name, {})
+        return value if isinstance(value, Mapping) else {}
+
+    def returncode(name: str) -> int:
+        try:
+            return int(observation(name).get("returncode", 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def stdout(name: str) -> str:
+        return str(observation(name).get("stdout", ""))
+
+    nodes = {
+        line.strip()
+        for line in stdout("nodes").splitlines()
+        if line.strip().startswith("/")
+    }
+    cmd_vel = stdout("cmd_vel")
+    motor = stdout("cmd_vel_motor")
+    private = stdout("nav2_private")
+    private_publishers = _topic_endpoint_names(private, "Publisher")
+    expected_nodes = {
+        "/sphero_rvr_driver",
+        "/lidar_collision_stop_supervisor",
+        "/live_route_runner",
+        "/controller_server",
+        "/planner_server",
+        "/hierarchical_physical_authority",
+        "/hierarchical_mission_controller",
+        "/hierarchical_nav2_adapter",
+    }
+    exact_source = str(source_sha).strip()
+    return {
+        "capture_digest_valid": (
+            supplied_digest == canonical_digest(payload)
+        ),
+        "capture_schema_valid": (
+            payload.get("schema") == ACTIVE_GRAPH_SCHEMA
+            and payload.get("motion_authority") is False
+        ),
+        "exact_source_sha": (
+            payload.get("source_sha") == exact_source
+            and returncode("git_head") == 0
+            and stdout("git_head").strip() == exact_source
+        ),
+        "source_checkout_clean": (
+            returncode("git_status") == 0
+            and not stdout("git_status").strip()
+        ),
+        "expected_nodes_present": (
+            returncode("nodes") == 0
+            and expected_nodes.issubset(nodes)
+        ),
+        "exclusive_cmd_vel_owner": (
+            returncode("cmd_vel") == 0
+            and _topic_count(cmd_vel, "Publisher") == 1
+            and _topic_endpoint_names(cmd_vel, "Publisher")
+            == {"live_route_runner"}
+            and _topic_endpoint_names(cmd_vel, "Subscription")
+            == {"lidar_collision_stop_supervisor"}
+        ),
+        "exclusive_motor_owner": (
+            returncode("cmd_vel_motor") == 0
+            and _topic_count(motor, "Publisher") == 1
+            and _topic_count(motor, "Subscription") == 1
+            and _topic_endpoint_names(motor, "Publisher")
+            == {"lidar_collision_stop_supervisor"}
+            and _topic_endpoint_names(motor, "Subscription")
+            == {"sphero_rvr_driver"}
+        ),
+        "private_nav2_chain_only": (
+            returncode("nav2_private") == 0
+            and _topic_count(private, "Publisher") in {1, 2}
+            and "controller_server" in private_publishers
+            and private_publishers
+            <= {"controller_server", "behavior_server"}
+            and _topic_endpoint_names(private, "Subscription")
+            == {"live_route_runner"}
+        ),
+        "serial_owner_present": (
+            returncode("serial_owner") == 0
+            and bool(
+                (
+                    stdout("serial_owner")
+                    + str(observation("serial_owner").get("stderr", ""))
+                ).strip()
+            )
+        ),
+    }
+
+
+def validate_active_graph_evidence(
+    capture: Mapping[str, Any], *, source_sha: str
+) -> dict[str, Any]:
+    checks = active_graph_checks(capture, source_sha=source_sha)
+    if not all(checks.values()):
+        failed = sorted(name for name, passed in checks.items() if not passed)
+        raise MissionValidationError(
+            "canonical active graph audit failed: " + ",".join(failed)
+        )
+    return {**dict(capture), "recomputed_checks": checks}
 
 
 def capture_cleanup_evidence(
@@ -131,7 +388,12 @@ def capture_cleanup_evidence(
     directory = Path(session_directory).expanduser()
     files = {
         name: (directory / name).exists()
-        for name in ("session.env", "proposal.json", "approval.json")
+        for name in (
+            "session.env",
+            "proposal.json",
+            "approval.json",
+            "active-graph.json",
+        )
     }
     evidence_root = Path(evidence_directory).expanduser()
     evidence_files = []
@@ -332,7 +594,12 @@ def _cleanup_checks(capture: Mapping[str, Any]) -> dict[str, bool]:
         ),
         "activation_files_consumed": (
             set(files)
-            == {"session.env", "proposal.json", "approval.json"}
+            == {
+                "session.env",
+                "proposal.json",
+                "approval.json",
+                "active-graph.json",
+            }
             and not any(bool(value) for value in files.values())
         ),
     }
@@ -413,6 +680,105 @@ def _mission_record(
         for item in event_rows
     ]
     return mission, events
+
+
+def _wait_planning_intervals(
+    service_events: Sequence[Mapping[str, Any]],
+    *,
+    terminal_at_s: Optional[float],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Reconstruct every controller wait interval from durable checkpoints."""
+
+    checkpoints: list[tuple[float, str, str, int]] = []
+    valid = True
+    for event in service_events:
+        if event.get("kind") != "hierarchical_checkpoint":
+            continue
+        payload = event.get("payload", {})
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("source") != "hierarchical_controller"
+            or not isinstance(payload.get("value"), Mapping)
+        ):
+            continue
+        value = payload["value"]
+        try:
+            observed_at_s = float(payload["received_at_s"])
+            event_id = int(event["event_id"])
+        except (KeyError, TypeError, ValueError):
+            valid = False
+            continue
+        if not math.isfinite(observed_at_s):
+            valid = False
+            continue
+        checkpoints.append(
+            (
+                observed_at_s,
+                str(value.get("state", "")).lower(),
+                str(value.get("reason", "")),
+                event_id,
+            )
+        )
+    if not checkpoints:
+        return [], False
+    if any(
+        current[0] < previous[0]
+        for previous, current in zip(checkpoints, checkpoints[1:])
+    ):
+        valid = False
+    intervals: list[dict[str, Any]] = []
+    active: Optional[dict[str, Any]] = None
+    for observed_at_s, state, reason, event_id in checkpoints:
+        if state == "wait_planning":
+            if active is None:
+                active = {
+                    "started_at_s": observed_at_s,
+                    "started_event_id": event_id,
+                    "reasons": [],
+                }
+            if reason and reason not in active["reasons"]:
+                active["reasons"].append(reason)
+            continue
+        if active is not None:
+            intervals.append(
+                {
+                    **active,
+                    "ended_at_s": observed_at_s,
+                    "ended_event_id": event_id,
+                    "duration_s": observed_at_s
+                    - float(active["started_at_s"]),
+                    "terminal_close": False,
+                }
+            )
+            active = None
+    if active is not None:
+        try:
+            terminal = float(terminal_at_s)
+        except (TypeError, ValueError):
+            valid = False
+        else:
+            if (
+                not math.isfinite(terminal)
+                or terminal < float(active["started_at_s"])
+            ):
+                valid = False
+            else:
+                intervals.append(
+                    {
+                        **active,
+                        "ended_at_s": terminal,
+                        "ended_event_id": None,
+                        "duration_s": terminal
+                        - float(active["started_at_s"]),
+                        "terminal_close": True,
+                    }
+                )
+    valid = valid and all(
+        math.isfinite(float(item["duration_s"]))
+        and float(item["duration_s"]) >= 0.0
+        for item in intervals
+    )
+    return intervals, valid
 
 
 def evaluate_canonical_mission(
@@ -501,22 +867,68 @@ def evaluate_canonical_mission(
                         track_id = str(track.get("track_id", ""))
                         if track_id:
                             tracks[track_id] = dict(track)
+    for event in controller_events:
+        if event.get("kind") != "semantic_non_motion_goal_ready":
+            continue
+        decision = event.get("decision")
+        if isinstance(decision, Mapping):
+            decisions.append(dict(decision))
+    expected_argument_keys = {
+        "go_to_frontier": {"frontier_id"},
+        "inspect": {"track_id"},
+        "search_region": {"region_id", "target_classes"},
+        "return_to_start": set(),
+        "wait": set(),
+        "finish": {"outcome", "evidence_ids"},
+    }
     semantic_only = all(
-        set(decision.get("arguments", {}))
-        <= {"frontier_id", "track_id", "view_id", "region_id"}
+        str(decision.get("action", "")) in expected_argument_keys
+        and isinstance(decision.get("arguments"), Mapping)
+        and set(decision["arguments"])
+        == expected_argument_keys[str(decision["action"])]
         and not any(
             name in decision
-            for name in ("x_m", "y_m", "pose", "route", "velocity")
+            for name in (
+                "x",
+                "y",
+                "x_m",
+                "y_m",
+                "yaw",
+                "yaw_rad",
+                "pose",
+                "route",
+                "path",
+                "speed",
+                "velocity",
+                "cmd_vel",
+            )
         )
         and bool(str(decision.get("rationale", "")).strip())
         for decision in decisions
     )
-    mapped_tracks_truthful = all(
-        bool(track.get("evidence_ids"))
-        and str(track.get("position_method", ""))
-        in {"lidar_range", "floor_projection"}
-        for track in tracks.values()
-    )
+    mapped_tracks_truthful = True
+    for track in tracks.values():
+        position = track.get("position", {})
+        try:
+            sigma_m = float(track["position_sigma_m"])
+            x_m = float(position["x_m"])
+            y_m = float(position["y_m"])
+        except (KeyError, TypeError, ValueError):
+            mapped_tracks_truthful = False
+            break
+        if (
+            not isinstance(position, Mapping)
+            or position.get("frame_id") != "map"
+            or not all(
+                math.isfinite(value) for value in (sigma_m, x_m, y_m)
+            )
+            or sigma_m < 0.0
+            or not track.get("evidence_ids")
+            or str(track.get("position_method", ""))
+            not in {"lidar_range", "floor_projection"}
+        ):
+            mapped_tracks_truthful = False
+            break
     terminal_checkpoints = [
         event["payload"]
         for event in service_events
@@ -531,6 +943,55 @@ def evaluate_canonical_mission(
         if event["kind"] == "hierarchical_checkpoint"
         and isinstance(event["payload"].get("value"), Mapping)
     ]
+    active_graph_events = [
+        event
+        for event in service_events
+        if event["kind"] == "hierarchical_checkpoint"
+        and event["payload"].get("source") == "active_graph_audit"
+        and isinstance(event["payload"].get("value"), Mapping)
+    ]
+    active_graph_capture: dict[str, Any] = {}
+    active_graph_valid = False
+    if len(active_graph_events) == 1:
+        active_graph_event = active_graph_events[0]
+        active_graph_capture = dict(
+            active_graph_event["payload"]["value"]
+        )
+        try:
+            validate_active_graph_evidence(
+                active_graph_capture,
+                source_sha=str(mission["source_sha"]),
+            )
+            graph_capture_at_s = float(
+                active_graph_capture["captured_at_s"]
+            )
+            graph_persisted_at_s = float(
+                active_graph_event["created_at_s"]
+            )
+            planning_times = [
+                float(event["recorded_at_s"])
+                for event in binding_events
+                if event["kind"]
+                in {
+                    "provider_call_completed",
+                    "controller_event",
+                    "goal_dispatch",
+                }
+            ]
+            active_graph_valid = (
+                math.isfinite(graph_capture_at_s)
+                and math.isfinite(graph_persisted_at_s)
+                and graph_capture_at_s <= graph_persisted_at_s
+                and bool(planning_times)
+                and graph_capture_at_s <= min(planning_times)
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            MissionValidationError,
+        ):
+            active_graph_valid = False
     distinct_semantic_goals = {
         (
             str(decision.get("action", "")),
@@ -545,6 +1006,62 @@ def evaluate_canonical_mission(
     run_evidence = result.get("run_evidence", {})
     if not isinstance(run_evidence, Mapping):
         run_evidence = {}
+    wait_planning_intervals, wait_planning_valid = (
+        _wait_planning_intervals(
+            service_events,
+            terminal_at_s=run_evidence.get("ended_at_s"),
+        )
+    )
+    required_sensor_limits = {
+        "lidar": 0.50,
+        "camera": 1.00,
+        "localization": 0.300,
+        "semantic_map": 1.00,
+    }
+    required_sensor_maxima = run_evidence.get(
+        "max_required_sensor_age_s", {}
+    )
+    required_sensor_source_maxima = run_evidence.get(
+        "max_required_sensor_source_age_s", {}
+    )
+    required_sensor_freshness_valid = False
+    if (
+        isinstance(required_sensor_maxima, Mapping)
+        and set(required_sensor_maxima) == set(required_sensor_limits)
+        and isinstance(required_sensor_source_maxima, Mapping)
+        and set(required_sensor_source_maxima)
+        == set(required_sensor_limits)
+    ):
+        try:
+            parsed_sensor_maxima = {
+                source_name: float(required_sensor_maxima[source_name])
+                for source_name in required_sensor_limits
+            }
+            parsed_sensor_source_maxima = {
+                source_name: float(
+                    required_sensor_source_maxima[source_name]
+                )
+                for source_name in required_sensor_limits
+            }
+        except (KeyError, TypeError, ValueError):
+            parsed_sensor_maxima = {}
+            parsed_sensor_source_maxima = {}
+        required_sensor_freshness_valid = bool(
+            parsed_sensor_maxima
+            and parsed_sensor_source_maxima
+        ) and all(
+            math.isfinite(parsed_sensor_maxima[source_name])
+            and math.isfinite(
+                parsed_sensor_source_maxima[source_name]
+            )
+            and 0.0
+            <= parsed_sensor_maxima[source_name]
+            <= max_age_s
+            and 0.0
+            <= parsed_sensor_source_maxima[source_name]
+            <= max_age_s
+            for source_name, max_age_s in required_sensor_limits.items()
+        )
     approval_events = [
         event["payload"]
         for event in service_events
@@ -618,6 +1135,9 @@ def evaluate_canonical_mission(
                         continue
                     try:
                         age_s = float(source["age_s"])
+                        source_age_s = float(
+                            source["source_age_s"]
+                        )
                         recorded_max_age_s = float(
                             source["max_age_s"]
                         )
@@ -626,6 +1146,9 @@ def evaluate_canonical_mission(
                         )
                         observed_at_s = float(
                             preflight_unsigned["observed_at_s"]
+                        )
+                        source_timestamp_s = float(
+                            source["source_timestamp_s"]
                         )
                     except (KeyError, TypeError, ValueError):
                         source_checks.append(False)
@@ -637,9 +1160,13 @@ def evaluate_canonical_mission(
                     source_checks.append(
                         math.isfinite(age_s)
                         and 0.0 <= age_s <= max_age_s
+                        and math.isfinite(source_age_s)
+                        and 0.0 <= source_age_s <= max_age_s
                         and recorded_max_age_s == max_age_s
                         and math.isfinite(received_at_s)
                         and received_at_s <= observed_at_s
+                        and math.isfinite(source_timestamp_s)
+                        and source_timestamp_s <= observed_at_s
                         and len(value_digest) == 64
                         and all(
                             character in "0123456789abcdef"
@@ -683,6 +1210,9 @@ def evaluate_canonical_mission(
             and approval_valid
         ),
         "fresh_no_motion_sensor_preflight_bound": preflight_valid,
+        "active_graph_ownership_verified_before_planning": (
+            active_graph_valid
+        ),
         "exact_source_deployed_sha": (
             str(mission["source_sha"])
             == str(mission["deployed_sha"])
@@ -726,9 +1256,20 @@ def evaluate_canonical_mission(
         ),
         "mapped_tracks_evidence_bound": mapped_tracks_truthful,
         "handoffs_and_pauses_reconstructable": (
-            bool(checkpoint_states)
+            wait_planning_valid
             and all(
                 "kind" in event and "at_s" in event
+                for event in controller_events
+            )
+            and any(
+                str(event.get("kind", ""))
+                in {
+                    "atomic_handoff",
+                    "planning_hold",
+                    "planning_resume",
+                    "prefetch_dispatched",
+                    "prefetch_revalidated",
+                }
                 for event in controller_events
             )
         ),
@@ -750,6 +1291,15 @@ def evaluate_canonical_mission(
                 )
             )
             <= 0.300
+        ),
+        "all_required_sensor_freshness_remained_within_gate": (
+            int(
+                run_evidence.get(
+                    "required_sensor_freshness_violations", 0
+                )
+            )
+            == 0
+            and required_sensor_freshness_valid
         ),
         "terminal_controller_checkpoint_recorded": bool(
             terminal_checkpoints
@@ -777,10 +1327,17 @@ def evaluate_canonical_mission(
         "mapped_tracks": list(tracks.values()),
         "provider_calls": provider_events,
         "sensor_preflight": preflight,
+        "active_graph_capture": active_graph_capture,
         "operator_no_contact_observation": no_contact_observation,
         "controller_events": controller_events,
+        "wait_planning_intervals": wait_planning_intervals,
         "checkpoint_states": checkpoint_states,
         "run_evidence": dict(run_evidence),
+        "goal_dispatches": dispatches,
+        "binding_events": binding_events,
+        "service_events": service_events,
+        "terminal_result": result,
+        "cleanup_capture": dict(cleanup_capture),
         "cleanup_capture_digest": str(
             cleanup_capture.get("capture_digest", "")
         ),
@@ -828,10 +1385,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    temporary.chmod(0o600)
+    temporary.replace(output)
     print(
         json.dumps(
             {

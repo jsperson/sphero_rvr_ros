@@ -72,10 +72,20 @@ no-motion telemetry unit, starts only
 `rvr-hierarchical-mission.service`, and verifies the unit is active. The
 motor-capable unit has no install target and `Restart=no`.
 
+The semantic controller remains locked after graph startup. Before it may
+start the first provider call, the mission service generates a read-only
+active-graph capture from exact command output. The capture must prove the
+exact clean source SHA, required nodes, `live_route_runner` as the sole
+`/cmd_vel` publisher, `collision_stop` as the sole `/cmd_vel_motor`
+publisher, the expected driver subscriber and serial owner, and only the
+reviewed Nav2 publishers on `/nav2_cmd_vel_request`. The capture is
+digest-bound and persisted with the mission. Failure or cancellation during
+this audit stops the unit without semantic planning or a motion request.
+
 Cancellation, terminal completion, timeout, authority loss, controller
 recovery, or service restart stops the unit. Cleanup consumes the three
-activation files. A prior approval cannot be replayed and a restart never
-resumes a route.
+approval/session files plus the active-graph capture. A prior approval cannot
+be replayed and a restart never resumes a route.
 
 The command chain is unchanged:
 
@@ -110,6 +120,19 @@ point-track store or generate an inspection viewpoint. The mission
 controller preserves the live method, uncertainty, camera/scan evidence IDs,
 and server-owned geometry rather than assigning a method itself.
 
+The live controller also consumes the collision supervisor's explicit
+`scan_healthy` state and receipt time. Missing, unhealthy, future-dated, or
+older-than-`0.300 s` collision evidence becomes `motion_evidence_stale`,
+enters `wait_planning`, and cancels any active Nav2 goal. The independent
+collision supervisor remains the final zero-motion authority. Camera and map
+source/receipt timestamps are independently gated at `1.000 s`; while a goal
+or odometry motion is active, the mission monitor also requires fresh lidar
+(`0.500 s`), camera (`1.000 s`), localization (`0.300 s`), and semantic-map
+(`1.000 s`) cache records. Any violation relocks the physical session.
+The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
+map update interval, leaving scheduling margin inside the fixed `1.000 s`
+map gate.
+
 ## Honest latency behavior
 
 The physical controller uses the Phase 4 real-provider distribution:
@@ -122,6 +145,11 @@ The physical controller uses the Phase 4 real-provider distribution:
 A compatible ready successor may hand off continuously. A short hop whose
 successor is not ready enters visible `wait_planning` with zero motion. The
 runtime does not pad fast provider calls and never moves speculatively.
+A model `wait()` is also nonterminal: it holds `wait_planning` until a fresh
+accepted semantic event starts another bounded provider call. Only a
+validated `finish(outcome, evidence_ids)` completes the mission. The complete
+final `finish()` decision and rationale are persisted in the binding journal
+and canonical report.
 
 ## Durable M7.7 evidence
 
@@ -144,21 +172,33 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
 - valid proposal, approval, exact SHAs, and all prior evidence bindings;
 - a valid fresh no-motion lidar/camera/SLAM/localization preflight persisted
   atomically with the approval;
+- a generated active-graph capture, made before semantic planning, whose raw
+  command output recomputes the exact command, motor, Nav2, driver, and serial
+  ownership chain;
 - one authority activation followed by relock;
 - real provider completion timing;
 - at least two materially distinct semantic goals with rationales and no model
   geometry;
 - evidence-bound mapped tracks when tracks exist;
 - reconstructable nonzero occupancy coverage samples;
-- reconstructable controller/adapter pause and handoff states;
+- reconstructable controller/adapter handoffs and every `wait_planning`
+  interval, derived from checkpoint receipt times rather than hand-entered
+  durations;
 - nonzero odometry and at least `0.02 m` displacement;
 - localization receipt age no greater than `0.300 s`;
+- no required lidar/camera/localization/semantic-map freshness violation
+  during active goal or observed motion;
 - a complete terminal controller checkpoint and terminal MissionService state;
 - one authenticated, approval-operator-bound no-contact observation;
 - inactive hierarchical and telemetry units, absent motion nodes/processes,
   zero `/cmd_vel` and `/cmd_vel_motor` publishers, no rover serial owner, no
   camera/rosbag evidence writer, at most 96 bounded JPEGs, and consumed
   activation files.
+
+The output report embeds the raw active-graph and cleanup captures, service
+events, binding events, dispatch snapshots, terminal result, and reconstructed
+wait intervals so that the final evidence artifact can be reviewed without
+trusting summary booleans.
 
 Example post-run evaluation:
 

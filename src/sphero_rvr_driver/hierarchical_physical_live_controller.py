@@ -257,21 +257,25 @@ class HierarchicalPhysicalMissionController:
             if (
                 not record.valid
                 or record.received_at_s is None
-                or (
-                    record.source_timestamp_s is not None
-                    and not math.isfinite(
-                        float(record.source_timestamp_s)
-                    )
+                or record.source_timestamp_s is None
+                or not math.isfinite(
+                    float(record.source_timestamp_s)
                 )
             ):
                 raise MissionValidationError(
                     f"M7.6 sensor preflight requires valid {source_name} evidence"
                 )
             age_s = now_s - float(record.received_at_s)
+            source_age_s = now_s - float(
+                record.source_timestamp_s
+            )
             if (
                 not math.isfinite(age_s)
                 or age_s < 0.0
                 or age_s > max_age_s
+                or not math.isfinite(source_age_s)
+                or source_age_s < 0.0
+                or source_age_s > max_age_s
             ):
                 raise MissionValidationError(
                     f"M7.6 sensor preflight {source_name} evidence is stale"
@@ -289,6 +293,7 @@ class HierarchicalPhysicalMissionController:
                 "received_at_s": float(record.received_at_s),
                 "source_timestamp_s": record.source_timestamp_s,
                 "age_s": age_s,
+                "source_age_s": source_age_s,
                 "max_age_s": max_age_s,
                 "value_digest": canonical_digest(value),
             }
@@ -590,7 +595,7 @@ class HierarchicalPhysicalMissionController:
         try:
             if cancellation.is_set():
                 return
-            self.session_lifecycle.activate(
+            activation = self.session_lifecycle.activate(
                 proposal=proposal,
                 approval=approval,
                 now_s=float(self._clock_s()),
@@ -603,6 +608,20 @@ class HierarchicalPhysicalMissionController:
                 return
             self.service.transition_prompt_mission(mission_id, "queued")
             self.service.transition_prompt_mission(mission_id, "running")
+            active_graph_capture = activation.get(
+                "active_graph_capture", {}
+            )
+            if isinstance(active_graph_capture, Mapping) and (
+                active_graph_capture
+            ):
+                self.service.record_hierarchical_checkpoint(
+                    mission_id,
+                    {
+                        "source": "active_graph_audit",
+                        "value": dict(active_graph_capture),
+                        "received_at_s": float(self._clock_s()),
+                    },
+                )
             expires_at_s = float(approval["expires_at_s"])
             last_checkpoints: dict[str, str] = {}
             run_evidence: dict[str, Any] = {
@@ -613,6 +632,15 @@ class HierarchicalPhysicalMissionController:
                 "max_displacement_m": 0.0,
                 "max_localization_age_s": 0.0,
                 "localization_freshness_violations": 0,
+                "max_required_sensor_age_s": {
+                    source_name: 0.0
+                    for source_name in PREFLIGHT_MAX_AGE_S
+                },
+                "max_required_sensor_source_age_s": {
+                    source_name: 0.0
+                    for source_name in PREFLIGHT_MAX_AGE_S
+                },
+                "required_sensor_freshness_violations": 0,
             }
             origin: Optional[tuple[float, float]] = None
             while not self._closed:
@@ -677,46 +705,89 @@ class HierarchicalPhysicalMissionController:
                     adapter.valid
                     and bool(adapter.value.get("goal_active", False))
                 )
-                localization = live_snapshot.source("localization")
                 if adapter_goal_active or motion_observed:
-                    if (
-                        not localization.valid
-                        or localization.received_at_s is None
+                    for source_name, max_age_s in (
+                        PREFLIGHT_MAX_AGE_S.items()
                     ):
-                        run_evidence[
-                            "localization_freshness_violations"
-                        ] += 1
-                        self._finish(
-                            mission_id,
-                            status="recovery_required",
-                            reason=(
-                                "live localization unavailable while motion authority was active"
-                            ),
-                            run_evidence=run_evidence,
+                        record = live_snapshot.source(source_name)
+                        unavailable = (
+                            not record.valid
+                            or record.received_at_s is None
                         )
-                        return
-                    localization_age_s = (
-                        now_s - float(localization.received_at_s)
-                    )
-                    run_evidence["max_localization_age_s"] = max(
-                        float(
-                            run_evidence["max_localization_age_s"]
-                        ),
-                        max(0.0, localization_age_s),
-                    )
-                    if (
-                        not math.isfinite(localization_age_s)
-                        or localization_age_s < 0.0
-                        or localization_age_s > 0.300
-                    ):
+                        age_s = (
+                            float("inf")
+                            if unavailable
+                            else now_s - float(record.received_at_s)
+                        )
+                        source_age_s = (
+                            float("inf")
+                            if unavailable
+                            or record.source_timestamp_s is None
+                            else now_s
+                            - float(record.source_timestamp_s)
+                        )
+                        if math.isfinite(age_s):
+                            maxima = run_evidence[
+                                "max_required_sensor_age_s"
+                            ]
+                            maxima[source_name] = max(
+                                float(maxima[source_name]),
+                                max(0.0, age_s),
+                            )
+                            if source_name == "localization":
+                                run_evidence[
+                                    "max_localization_age_s"
+                                ] = max(
+                                    float(
+                                        run_evidence[
+                                            "max_localization_age_s"
+                                        ]
+                                    ),
+                                    max(0.0, age_s),
+                                )
+                        if math.isfinite(source_age_s):
+                            source_maxima = run_evidence[
+                                "max_required_sensor_source_age_s"
+                            ]
+                            source_maxima[source_name] = max(
+                                float(source_maxima[source_name]),
+                                max(0.0, source_age_s),
+                            )
+                        value = (
+                            {}
+                            if unavailable
+                            else dict(record.value)
+                        )
+                        invalid = (
+                            unavailable
+                            or not math.isfinite(age_s)
+                            or age_s < 0.0
+                            or age_s > max_age_s
+                            or not math.isfinite(source_age_s)
+                            or source_age_s < 0.0
+                            or source_age_s > max_age_s
+                            or value.get("motion_authority")
+                            is not False
+                            or value.get(
+                                "physical_execution_enabled"
+                            )
+                            is not False
+                        )
+                        if not invalid:
+                            continue
                         run_evidence[
-                            "localization_freshness_violations"
+                            "required_sensor_freshness_violations"
                         ] += 1
+                        if source_name == "localization":
+                            run_evidence[
+                                "localization_freshness_violations"
+                            ] += 1
                         self._finish(
                             mission_id,
                             status="recovery_required",
                             reason=(
-                                "live localization exceeded the fixed 0.300 s gate"
+                                f"live {source_name} exceeded the fixed "
+                                f"{max_age_s:.3f} s gate while motion authority was active"
                             ),
                             run_evidence=run_evidence,
                         )

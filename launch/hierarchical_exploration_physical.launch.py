@@ -21,6 +21,9 @@ from launch_ros.actions import Node
 def generate_launch_description():
     share = Path(get_package_share_directory("sphero_rvr_driver"))
     mapping_launch = share / "launch" / "mapping.launch.py"
+    slam_params = str(
+        share / "config" / "hierarchical_slam_toolbox.yaml"
+    )
     nav2_params = str(share / "config" / "hierarchical_nav2_physical.yaml")
     route_params = str(share / "config" / "live_route_runner.yaml")
     navigation_tree = str(
@@ -38,6 +41,7 @@ def generate_launch_description():
     deployed_sha = LaunchConfiguration("deployed_sha")
     approval_file = LaunchConfiguration("approval_file")
     proposal_file = LaunchConfiguration("proposal_file")
+    graph_audit_file = LaunchConfiguration("graph_audit_file")
 
     exact_binding = PythonExpression(
         [
@@ -68,6 +72,7 @@ def generate_launch_description():
             "camera_info_url": camera_info_url,
             "start_slam": start_sensors,
             "slam_autostart": start_sensors,
+            "slam_params_file": slam_params,
             "start_live_route_runner": "false",
             "use_sim_time": "false",
         }.items(),
@@ -134,6 +139,7 @@ def generate_launch_description():
                 "deployed_sha": deployed_sha,
                 "reviewed_sha": reviewed_sha,
                 "proposal_file": proposal_file,
+                "graph_audit_file": graph_audit_file,
             }
         ],
         condition=IfCondition(exact_binding),
@@ -243,6 +249,7 @@ def generate_launch_description():
         DeclareLaunchArgument("reviewed_sha", default_value=""),
         DeclareLaunchArgument("approval_file", default_value=""),
         DeclareLaunchArgument("proposal_file", default_value=""),
+        DeclareLaunchArgument("graph_audit_file", default_value=""),
         mapping,
         *nodes,
         authority,
@@ -277,6 +284,7 @@ def generate_launch_description():
         ),
     ]
     for critical in (
+        *nodes,
         authority,
         semantic_perception,
         mission_controller,

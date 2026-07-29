@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 import time
@@ -17,6 +18,9 @@ from sphero_rvr_driver.hierarchical_physical_binding import (
 )
 from sphero_rvr_driver.hierarchical_m7_canonical_validation import (
     _cleanup_checks,
+    _wait_planning_intervals,
+    active_graph_checks,
+    capture_active_graph_evidence,
     capture_cleanup_evidence,
     evaluate_canonical_mission,
 )
@@ -44,6 +48,67 @@ ROOM = {
     "stairs_ledges_dropoffs_absent": True,
     "negative_obstacle_sensing_available": False,
 }
+
+
+def _active_graph_capture():
+    def runner(command, **kwargs):
+        del kwargs
+        stdout = ""
+        returncode = 0
+        if command[0] == "git" and command[-2:] == [
+            "rev-parse",
+            "HEAD",
+        ]:
+            stdout = SHA + "\n"
+        elif command[0] == "git":
+            stdout = ""
+        elif command[-4:-1] == ["list", "--spin-time", "3.0"]:
+            stdout = "\n".join(
+                (
+                    "/sphero_rvr_driver",
+                    "/lidar_collision_stop_supervisor",
+                    "/live_route_runner",
+                    "/controller_server",
+                    "/planner_server",
+                    "/hierarchical_physical_authority",
+                    "/hierarchical_mission_controller",
+                    "/hierarchical_nav2_adapter",
+                )
+            )
+        elif command[-1] == "/cmd_vel":
+            stdout = (
+                "Publisher count: 1\n"
+                "Node name: /live_route_runner\n"
+                "Subscription count: 1\n"
+                "Node name: /lidar_collision_stop_supervisor\n"
+            )
+        elif command[-1] == "/cmd_vel_motor":
+            stdout = (
+                "Publisher count: 1\n"
+                "Node name: /lidar_collision_stop_supervisor\n"
+                "Subscription count: 1\n"
+                "Node name: /sphero_rvr_driver\n"
+            )
+        elif command[-1] == "/nav2_cmd_vel_request":
+            stdout = (
+                "Publisher count: 2\n"
+                "Node name: /controller_server\n"
+                "Node name: /behavior_server\n"
+                "Subscription count: 1\n"
+                "Node name: /live_route_runner\n"
+            )
+        elif command[0] == "fuser":
+            stdout = "1234"
+        return subprocess.CompletedProcess(
+            command, returncode, stdout=stdout, stderr=""
+        )
+
+    return capture_active_graph_evidence(
+        source_sha=SHA,
+        source_repository="/reviewed/source",
+        runner=runner,
+        captured_at_s=100.0,
+    )
 
 
 def _seed_sensor_preflight(
@@ -148,6 +213,9 @@ class FakeSession:
             "detail": "active" if self.active else "locked",
             "unit": HIERARCHICAL_MISSION_UNIT,
             "restart_resume_allowed": False,
+            "active_graph_capture": (
+                _active_graph_capture() if self.active else {}
+            ),
         }
 
 
@@ -319,6 +387,25 @@ def test_canonical_approval_requires_fresh_no_motion_sensor_preflight(
                 authentication_source="tailscale-serve",
                 physical_room_confirmation=ROOM,
             )
+        now = time.time()
+        _seed_sensor_preflight(cache, received_at_s=now)
+        camera = cache.snapshot(now_s=now).source("camera")
+        cache.update(
+            "camera",
+            dict(camera.value),
+            received_at_s=now,
+            source_timestamp_s=now - 1.001,
+        )
+        with pytest.raises(
+            MissionValidationError, match="camera evidence is stale"
+        ):
+            controller.approve(
+                proposed["mission_id"],
+                supplied_approval=phrase,
+                operator="scott",
+                authentication_source="tailscale-serve",
+                physical_room_confirmation=ROOM,
+            )
     finally:
         controller.close()
         service.close()
@@ -435,6 +522,7 @@ def test_active_motion_fails_closed_on_stale_localization(
             "localization",
             {"pose": {"x_m": 0.0, "y_m": 0.0}},
             received_at_s=now - 0.301,
+            source_timestamp_s=now - 0.301,
         )
         cache.update(
             "hierarchical_adapter",
@@ -456,6 +544,74 @@ def test_active_motion_fails_closed_on_stale_localization(
         assert terminal["result"]["run_evidence"][
             "max_localization_age_s"
         ] > 0.300
+        assert session.active is False
+    finally:
+        controller.close()
+        service.close()
+
+
+@pytest.mark.parametrize(
+    ("source_name", "stale_age_s"),
+    (
+        ("lidar", 0.501),
+        ("camera", 1.001),
+        ("semantic_map", 1.001),
+    ),
+)
+def test_active_motion_fails_closed_on_any_stale_required_sensor(
+    tmp_path,
+    source_name,
+    stale_age_s,
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    try:
+        proposed = controller.submit(
+            CANONICAL_M7_OBJECTIVE,
+            session_id="m7-browser",
+            mission_id=f"m7-canonical-stale-{source_name}",
+        )
+        controller.approve(
+            proposed["mission_id"],
+            supplied_approval=(
+                "APPROVE M7.6 CANONICAL MISSION "
+                + proposed["proposal_digest"]
+            ),
+            operator="scott",
+            authentication_source="tailscale-serve",
+            physical_room_confirmation=ROOM,
+        )
+        deadline = time.monotonic() + 1.0
+        while not session.active and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert session.active is True
+        now = time.time()
+        prior = cache.snapshot(now_s=now).source(source_name)
+        cache.update(
+            source_name,
+            dict(prior.value),
+            received_at_s=now - stale_age_s,
+            source_timestamp_s=now,
+        )
+        cache.update(
+            "hierarchical_adapter",
+            {"goal_active": True},
+            received_at_s=now,
+        )
+        terminal = controller.status(proposed["mission_id"])
+        while (
+            terminal["status"] != "recovery_required"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+            terminal = controller.status(proposed["mission_id"])
+        assert terminal["status"] == "recovery_required"
+        evidence = terminal["result"]["run_evidence"]
+        assert evidence["required_sensor_freshness_violations"] == 1
+        assert evidence["localization_freshness_violations"] == 0
+        assert (
+            evidence["max_required_sensor_age_s"][source_name]
+            > stale_age_s - 0.001
+        )
         assert session.active is False
     finally:
         controller.close()
@@ -738,10 +894,17 @@ def test_systemd_session_files_are_private_and_consumed_on_relock(
         reviewed_sha=SHA,
         state_directory=tmp_path / "session",
         runner=runner,
+        active_graph_capture=(
+            lambda **kwargs: _active_graph_capture()
+        ),
     )
     service, cache, fake, controller = _controller(tmp_path / "controller")
     del cache, fake
     try:
+        session.state_directory.mkdir(parents=True)
+        session.graph_audit_path.write_text(
+            '{"stale_previous_capture":true}\n'
+        )
         proposed = controller.submit(
             CANONICAL_M7_OBJECTIVE,
             session_id="m7-browser",
@@ -767,6 +930,13 @@ def test_systemd_session_files_are_private_and_consumed_on_relock(
             cancel_event=None,
         )
         assert session.status()["active"] is True
+        persisted_graph = json.loads(
+            session.graph_audit_path.read_text()
+        )
+        assert persisted_graph["schema"].endswith(
+            "active_graph_capture.v1"
+        )
+        assert "stale_previous_capture" not in persisted_graph
         assert oct(session.environment_path.stat().st_mode & 0o777) == "0o600"
         assert "RVR_HIERARCHICAL_M7_6_APPROVED=\"true\"" in (
             session.environment_path.read_text()
@@ -774,12 +944,89 @@ def test_systemd_session_files_are_private_and_consumed_on_relock(
         session.deactivate(reason="test complete")
         assert session.status()["active"] is False
         assert session.environment_path.exists() is False
+        assert session.graph_audit_path.exists() is False
         assert session.approval_path.exists() is False
         assert session.proposal_path.exists() is False
     finally:
         controller.cancel(proposed["mission_id"])
         controller.close()
         service.close()
+
+
+def test_wait_planning_intervals_are_reconstructed_without_hand_entered_durations() -> None:
+    events = [
+        {
+            "event_id": 1,
+            "kind": "hierarchical_checkpoint",
+            "payload": {
+                "source": "hierarchical_controller",
+                "received_at_s": 10.0,
+                "value": {
+                    "state": "wait_planning",
+                    "reason": "initial_provider_in_flight",
+                },
+            },
+        },
+        {
+            "event_id": 2,
+            "kind": "hierarchical_checkpoint",
+            "payload": {
+                "source": "hierarchical_controller",
+                "received_at_s": 11.5,
+                "value": {
+                    "state": "wait_planning",
+                    "reason": "motion_evidence_stale",
+                },
+            },
+        },
+        {
+            "event_id": 3,
+            "kind": "hierarchical_checkpoint",
+            "payload": {
+                "source": "hierarchical_controller",
+                "received_at_s": 12.25,
+                "value": {
+                    "state": "dispatching",
+                    "reason": "initial_goal",
+                },
+            },
+        },
+    ]
+    intervals, valid = _wait_planning_intervals(
+        events, terminal_at_s=13.0
+    )
+    assert valid is True
+    assert intervals == [
+        {
+            "started_at_s": 10.0,
+            "started_event_id": 1,
+            "reasons": [
+                "initial_provider_in_flight",
+                "motion_evidence_stale",
+            ],
+            "ended_at_s": 12.25,
+            "ended_event_id": 3,
+            "duration_s": 2.25,
+            "terminal_close": False,
+        }
+    ]
+
+
+def test_active_graph_capture_recomputes_exact_command_ownership() -> None:
+    capture = _active_graph_capture()
+    assert all(active_graph_checks(capture, source_sha=SHA).values())
+    altered = json.loads(json.dumps(capture))
+    altered["observations"]["cmd_vel"]["stdout"] = altered[
+        "observations"
+    ]["cmd_vel"]["stdout"].replace(
+        "Publisher count: 1", "Publisher count: 2"
+    )
+    unsigned = dict(altered)
+    unsigned.pop("capture_digest")
+    altered["capture_digest"] = canonical_digest(unsigned)
+    assert active_graph_checks(altered, source_sha=SHA)[
+        "exclusive_cmd_vel_owner"
+    ] is False
 
 
 def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
@@ -819,8 +1066,13 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         )
         cache.update(
             "localization",
-            {"pose": {"x_m": 0.0, "y_m": 0.0}},
+            {
+                "pose": {"x_m": 0.0, "y_m": 0.0},
+                "motion_authority": False,
+                "physical_execution_enabled": False,
+            },
             received_at_s=now,
+            source_timestamp_s=now,
         )
         time.sleep(0.07)
         now = time.time()
@@ -836,8 +1088,13 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         )
         cache.update(
             "localization",
-            {"pose": {"x_m": 0.04, "y_m": 0.0}},
+            {
+                "pose": {"x_m": 0.04, "y_m": 0.0},
+                "motion_authority": False,
+                "physical_execution_enabled": False,
+            },
             received_at_s=now,
+            source_timestamp_s=now,
         )
         time.sleep(0.07)
         cache.update(
@@ -908,7 +1165,7 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         for index, (action, arguments) in enumerate(
             (
                 ("go_to_frontier", {"frontier_id": "frontier-001"}),
-                ("return_to_origin", {}),
+                ("return_to_start", {}),
             ),
             start=1,
         ):
@@ -939,6 +1196,25 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
                 },
                 recorded_at_s=approval["approved_at_s"] + index,
             )
+        journal.append(
+            mission_id,
+            "controller_event",
+            {
+                "kind": "semantic_non_motion_goal_ready",
+                "at_s": 2.5,
+                "decision": {
+                    "action": "finish",
+                    "arguments": {
+                        "outcome": "complete",
+                        "evidence_ids": ["camera-frame-01"],
+                    },
+                    "rationale": (
+                        "Finish complete with camera-frame-01."
+                    ),
+                },
+            },
+            recorded_at_s=approval["approved_at_s"] + 2.5,
+        )
         journal.append(
             mission_id,
             "controller_event",
@@ -990,7 +1266,7 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         )
         assert report["passed"] is True
         assert all(report["checks"].values())
-        assert len(report["evidence"]["semantic_decisions"]) == 2
+        assert len(report["evidence"]["semantic_decisions"]) == 3
         assert report["evidence"]["coverage_samples"] == [
             0.4,
             0.45,
@@ -998,6 +1274,10 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         assert report["evidence"][
             "operator_no_contact_observation"
         ]["no_contact"] is True
+        assert report["evidence"]["cleanup_capture"] == cleanup
+        assert report["evidence"]["binding_events"]
+        assert report["evidence"]["service_events"]
+        assert report["evidence"]["terminal_result"]["status"] == "complete"
 
         failed_graph = {
             **cleanup,

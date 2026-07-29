@@ -15,7 +15,11 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     adapter_recovery_reason,
     adapter_remaining_distance,
     goal_dispatch_queue_key,
+    live_motion_evidence_is_fresh,
     live_semantic_track_signature,
+    live_source_is_fresh,
+    parse_collision_evidence,
+    semantic_non_motion_status,
     semantic_target_invalidation_reason,
     updated_semantic_rejection_count,
 )
@@ -118,6 +122,87 @@ def _owner(tmp_path: Path, *, enabled: bool = True):
         boot_nonce="test-boot",
     )
     return owner, journal
+
+
+def test_live_collision_evidence_requires_explicit_healthy_scan_and_directional_state() -> None:
+    assert parse_collision_evidence(
+        "CLEAR reason=scan scan_healthy=true scan_age=0.01"
+    ) == ("CLEAR", True)
+    assert parse_collision_evidence(
+        "SLOW reason=front_slow scan_healthy=true"
+    ) == ("SLOW", True)
+    assert parse_collision_evidence(
+        "STOPPED reason=front_stop scan_healthy=true"
+    ) == ("BLOCKED", True)
+    assert parse_collision_evidence(
+        "CLEAR reason=scan scan_healthy=false"
+    ) == ("CLEAR", False)
+    assert parse_collision_evidence("CLEAR reason=scan") == (
+        "CLEAR",
+        False,
+    )
+    assert parse_collision_evidence(
+        '{"state":"CLEAR","scan_healthy":true}'
+    ) == ("CLEAR", True)
+    assert parse_collision_evidence(
+        '{"state":"CLEAR","scan_healthy":"true"}'
+    ) == ("CLEAR", False)
+
+
+def test_live_motion_evidence_uses_unrelaxed_collision_receipt_freshness() -> None:
+    assert live_motion_evidence_is_fresh(
+        now_s=100.297610,
+        collision_received_at_s=100.0,
+        scan_healthy=True,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.3001,
+        collision_received_at_s=100.0,
+        scan_healthy=True,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.1,
+        collision_received_at_s=100.0,
+        scan_healthy=False,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.1,
+        collision_received_at_s=None,
+        scan_healthy=True,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.1,
+        collision_received_at_s=100.0,
+        scan_healthy=True,
+        max_age_s=0.5,
+    )
+
+
+def test_live_camera_and_map_require_fresh_source_and_receipt_times() -> None:
+    assert live_source_is_fresh(
+        now_s=101.0,
+        received_at_s=100.2,
+        source_timestamp_s=100.0,
+        max_age_s=1.0,
+    )
+    assert not live_source_is_fresh(
+        now_s=101.0001,
+        received_at_s=100.2,
+        source_timestamp_s=100.0,
+        max_age_s=1.0,
+    )
+    assert not live_source_is_fresh(
+        now_s=100.5,
+        received_at_s=99.0,
+        source_timestamp_s=100.4,
+        max_age_s=1.0,
+    )
+    assert not live_source_is_fresh(
+        now_s=100.5,
+        received_at_s=100.4,
+        source_timestamp_s=None,
+        max_age_s=1.0,
+    )
 
 
 def _snapshot(*, localization_timestamp_s: float = 100.0) -> dict:
@@ -483,8 +568,18 @@ def test_physical_launch_and_unit_are_default_off_and_non_bootable() -> None:
     assert '"nav2_cmd_lease_s": 0.50' in launch
     assert "WantedBy=" not in unit
     assert "Restart=no" in unit
+
+    hierarchical_slam = (
+        REPO_ROOT / "config" / "hierarchical_slam_toolbox.yaml"
+    ).read_text()
+    assert "map_update_interval: 0.5" in hierarchical_slam
+    assert '"slam_params_file": slam_params' in launch
+    assert "hierarchical_slam_toolbox.yaml" in launch
+    assert "for critical in (\n        *nodes," in launch
     assert "RVR_HIERARCHICAL_M7_6_APPROVED" in unit
     assert "RVR_HIERARCHICAL_PROPOSAL_FILE" in unit
+    assert "RVR_HIERARCHICAL_GRAPH_AUDIT_FILE" in unit
+    assert '"graph_audit_file": graph_audit_file' in launch
     assert 'executable="hierarchical_mission_controller"' in launch
     assert 'executable="stationary_perception"' in launch
     assert "mission_lease_valid=authority_valid" in route
@@ -806,6 +901,24 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
     assert stronger_cancel_reason("veto", "controller_replan") == "veto"
     assert "_pending_batch_digest" in source
     assert "veto_pending_acceptance" in source
+
+
+def test_semantic_wait_holds_without_completing_the_mission() -> None:
+    assert semantic_non_motion_status("wait") == (
+        "wait_planning",
+        "semantic_wait",
+        False,
+    )
+    assert semantic_non_motion_status("finish") == (
+        "complete",
+        "finish",
+        True,
+    )
+    with pytest.raises(
+        MissionValidationError,
+        match="unsupported non-motion",
+    ):
+        semantic_non_motion_status("return_to_start")
 
 
 def test_browser_projection_exposes_installed_but_locked_binding(

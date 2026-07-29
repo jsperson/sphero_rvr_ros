@@ -1635,6 +1635,11 @@ class AsyncSemanticGoalController:
             )
             self._prefetched = None
             self._prefetched_snapshot = None
+        if (
+            self._ready_non_motion is not None
+            and self._ready_non_motion.decision.action == "wait"
+        ):
+            self._ready_non_motion = None
         handoff = self.follower.preempt_for_replan(
             now_s=now_s, reason=event.kind.value
         )
@@ -1809,6 +1814,7 @@ class AsyncSemanticGoalController:
                 action=decision.action,
                 target_id=resolved.target_id,
                 provider_elapsed_s=provider_elapsed_s,
+                decision=decision.to_json_dict(),
             )
         ]
 

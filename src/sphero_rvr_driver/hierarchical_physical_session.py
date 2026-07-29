@@ -13,6 +13,10 @@ from .hierarchical_physical_binding import (
     HierarchicalPhysicalApproval,
     validate_physical_proposal,
 )
+from .hierarchical_m7_canonical_validation import (
+    capture_active_graph_evidence,
+    validate_active_graph_evidence,
+)
 from .mission_api import MissionValidationError
 
 
@@ -34,8 +38,14 @@ class SystemdHierarchicalMissionSession:
         state_directory: str | Path = (
             "~/.local/state/sphero_rvr/hierarchical-session"
         ),
+        source_repository: str | Path = (
+            "/home/jsperson/ros2_ws/src/sphero_rvr_ros"
+        ),
         unit: str = HIERARCHICAL_MISSION_UNIT,
         runner: Optional[Callable[..., subprocess.CompletedProcess[str]]] = None,
+        active_graph_capture: Optional[
+            Callable[..., Mapping[str, Any]]
+        ] = None,
     ) -> None:
         if str(unit).strip() != HIERARCHICAL_MISSION_UNIT:
             raise MissionValidationError(
@@ -54,11 +64,18 @@ class SystemdHierarchicalMissionSession:
             )
         self.ros_workspace = str(Path(ros_workspace).expanduser())
         self.state_directory = Path(state_directory).expanduser()
+        self.source_repository = str(
+            Path(source_repository).expanduser()
+        )
         self.unit = HIERARCHICAL_MISSION_UNIT
         self._runner = runner or subprocess.run
+        self._active_graph_capture = (
+            active_graph_capture or capture_active_graph_evidence
+        )
         self._lock = threading.RLock()
         self._mission_id = ""
         self._active = False
+        self._active_graph: dict[str, Any] = {}
         self._detail = "canonical physical session locked"
 
     @property
@@ -72,6 +89,10 @@ class SystemdHierarchicalMissionSession:
     @property
     def environment_path(self) -> Path:
         return self.state_directory / "session.env"
+
+    @property
+    def graph_audit_path(self) -> Path:
+        return self.state_directory / "active-graph.json"
 
     def activate(
         self,
@@ -112,6 +133,10 @@ class SystemdHierarchicalMissionSession:
                 )
             self.state_directory.mkdir(parents=True, exist_ok=True)
             os.chmod(self.state_directory, 0o700)
+            # A crash may have left a prior capture behind. Remove it before
+            # graph startup so the controller can only observe this
+            # activation's newly generated audit.
+            self.graph_audit_path.unlink(missing_ok=True)
             self._write_json(self.proposal_path, validated_proposal)
             self._write_json(self.approval_path, dict(approval))
             self._write_environment()
@@ -147,12 +172,29 @@ class SystemdHierarchicalMissionSession:
                     raise MissionValidationError(
                         "canonical physical activation was cancelled during graph start"
                     )
+                graph_capture = dict(
+                    self._active_graph_capture(
+                        source_sha=self.source_sha,
+                        source_repository=self.source_repository,
+                    )
+                )
+                validate_active_graph_evidence(
+                    graph_capture, source_sha=self.source_sha
+                )
+                if cancel_event is not None and cancel_event.is_set():
+                    raise MissionValidationError(
+                        "canonical physical activation was cancelled during graph audit"
+                    )
+                self._write_json(
+                    self.graph_audit_path, graph_capture
+                )
             except Exception:
                 self._best_effort_stop()
                 self._remove_activation_files()
                 raise
             self._mission_id = validated_approval.mission_id
             self._active = True
+            self._active_graph = graph_capture
             self._detail = (
                 "canonical hierarchical graph active for approval "
                 f"{validated_approval.approval_digest[:12]}"
@@ -186,6 +228,7 @@ class SystemdHierarchicalMissionSession:
             self._remove_activation_files()
             self._active = False
             self._mission_id = ""
+            self._active_graph = {}
             self._detail = str(reason).strip() or "canonical physical session locked"
             return self.status()
 
@@ -212,6 +255,10 @@ class SystemdHierarchicalMissionSession:
                     self.proposal_path.is_file()
                     and self.approval_path.is_file()
                     and self.environment_path.is_file()
+                    and self.graph_audit_path.is_file()
+                ),
+                "active_graph_capture": (
+                    dict(self._active_graph) if active else {}
                 ),
                 "restart_resume_allowed": False,
             }
@@ -241,6 +288,9 @@ class SystemdHierarchicalMissionSession:
             "RVR_HIERARCHICAL_REVIEWED_SHA": self.reviewed_sha,
             "RVR_HIERARCHICAL_APPROVAL_FILE": str(self.approval_path),
             "RVR_HIERARCHICAL_PROPOSAL_FILE": str(self.proposal_path),
+            "RVR_HIERARCHICAL_GRAPH_AUDIT_FILE": str(
+                self.graph_audit_path
+            ),
             "RVR_ROS_WORKSPACE": self.ros_workspace,
         }
         for value in values.values():
@@ -261,6 +311,7 @@ class SystemdHierarchicalMissionSession:
     def _remove_activation_files(self) -> None:
         for path in (
             self.environment_path,
+            self.graph_audit_path,
             self.approval_path,
             self.proposal_path,
         ):
