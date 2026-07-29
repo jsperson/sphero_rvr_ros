@@ -612,15 +612,33 @@ def _telemetry_start_permitted(snapshot: Mapping[str, Any]) -> bool:
     adapter = snapshot.get("adapter", {})
     if not isinstance(adapter, Mapping):
         return False
+    binding = adapter.get("hierarchical_physical_binding", {})
+    physical_session = adapter.get("physical_session", {})
+    canonical_locked = bool(
+        adapter.get("hierarchical_canonical", False)
+        and isinstance(binding, Mapping)
+        and binding.get("motion_authority") is False
+        and binding.get("physical_execution_enabled") is False
+        and str(binding.get("state", "")).lower() == "locked"
+        and (
+            not isinstance(physical_session, Mapping)
+            or not physical_session.get("active", False)
+        )
+    )
     return bool(
         not adapter.get("fixture_only", True)
-        and (
-            adapter.get("stationary_perception", False)
-            or adapter.get("adaptive_mission", False)
-        )
         and not adapter.get("live_execution_enabled", False)
-        and adapter.get("motion_authority") is False
-        and adapter.get("physical_execution_enabled") is False
+        and (
+            canonical_locked
+            or (
+                (
+                    adapter.get("stationary_perception", False)
+                    or adapter.get("adaptive_mission", False)
+                )
+                and adapter.get("motion_authority") is False
+                and adapter.get("physical_execution_enabled") is False
+            )
+        )
     )
 
 
@@ -4337,7 +4355,8 @@ _INDEX_HTML = r'''<!doctype html>
       const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
       const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission)
         && !canonical;
-      const controllable = !snapshot.adapter.fixture_only && (stationary || adaptiveMission);
+      const controllable = !snapshot.adapter.fixture_only
+        && (stationary || adaptiveMission || canonical);
       const panel = $('telemetry-control');
       const button = $('telemetry-toggle');
       const label = $('telemetry-status');

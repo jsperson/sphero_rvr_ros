@@ -24,6 +24,7 @@ from sphero_rvr_driver.mission_web import (
     make_server,
     _connect_live_web_adapter,
     _stationary_projection,
+    _telemetry_start_permitted,
 )
 from sphero_rvr_driver.mission_api import MissionValidationError
 
@@ -37,12 +38,14 @@ class FakeLiveMissionClient:
         *,
         execution_enabled: bool = False,
         stationary_perception_enabled: bool = False,
+        hierarchical_canonical_enabled: bool = False,
     ) -> None:
         self.proposal = _proposal(MockReplayMissionAdapter(source_sha="live-source"))["proposal"]
         self.mission = None
         self.submissions = []
         self.execution_enabled = execution_enabled
         self.stationary_perception_enabled = stationary_perception_enabled
+        self.hierarchical_canonical_enabled = hierarchical_canonical_enabled
         self.approvals = []
 
     def service_snapshot(self):
@@ -54,6 +57,17 @@ class FakeLiveMissionClient:
             "planning_enabled": True,
             "live_execution_enabled": self.execution_enabled,
             "stationary_perception_enabled": self.stationary_perception_enabled,
+            "hierarchical_canonical_enabled": self.hierarchical_canonical_enabled,
+            "hierarchical_physical_binding": (
+                {
+                    "installed": True,
+                    "state": "locked",
+                    "motion_authority": False,
+                    "physical_execution_enabled": False,
+                }
+                if self.hierarchical_canonical_enabled
+                else {}
+            ),
             "capabilities": {
                 "query_status_telemetry@1.0": {
                     "evidence": {
@@ -649,6 +663,99 @@ def test_stationary_sensor_route_controls_only_no_motion_stationary_perception_s
     assert [request[0] for request in telemetry_control.requests] == [True, False]
 
 
+def test_canonical_browser_can_start_only_no_motion_preflight_telemetry() -> None:
+    adapter = LiveMissionWebAdapter(
+        FakeLiveMissionClient(hierarchical_canonical_enabled=True)
+    )
+    telemetry_control = FakeTelemetryControl()
+
+    ready = json.loads(
+        handle_mission_web_request(
+            "GET",
+            "/api/web/state",
+            "",
+            adapter,
+            telemetry_control,
+        ).body
+    )
+    assert ready["adapter"]["hierarchical_canonical"] is True
+    assert (
+        ready["adapter"]["hierarchical_physical_binding"]["motion_authority"]
+        is False
+    )
+    assert (
+        ready["adapter"]["hierarchical_physical_binding"][
+            "physical_execution_enabled"
+        ]
+        is False
+    )
+    assert ready["telemetry_control"]["start_permitted"] is True
+
+    started = json.loads(
+        handle_mission_web_request(
+            "POST",
+            TELEMETRY_CONTROL_PATH,
+            json.dumps({"active": True}),
+            adapter,
+            telemetry_control,
+        ).body
+    )
+    assert started["telemetry_control"]["active"] is True
+    assert len(telemetry_control.requests) == 1
+    assert telemetry_control.requests[0][0] is True
+    assert (
+        telemetry_control.requests[0][1]["adapter"]["hierarchical_canonical"]
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    ("binding", "physical_session"),
+    [
+        ({}, {}),
+        (
+            {
+                "state": "locked",
+                "motion_authority": True,
+                "physical_execution_enabled": False,
+            },
+            {},
+        ),
+        (
+            {
+                "state": "active",
+                "motion_authority": False,
+                "physical_execution_enabled": False,
+            },
+            {},
+        ),
+        (
+            {
+                "state": "locked",
+                "motion_authority": False,
+                "physical_execution_enabled": False,
+            },
+            {"active": True},
+        ),
+    ],
+)
+def test_canonical_preflight_telemetry_fails_closed_unless_binding_is_locked(
+    binding: Mapping[str, object],
+    physical_session: Mapping[str, object],
+) -> None:
+    assert not _telemetry_start_permitted(
+        {
+            "adapter": {
+                "fixture_only": False,
+                "live_execution_enabled": False,
+                "hierarchical_canonical": True,
+                "hierarchical_physical_binding": dict(binding),
+                "physical_session": dict(physical_session),
+            }
+        }
+    )
+
+
 def test_active_adaptive_lease_owns_telemetry_until_terminal_shutdown() -> None:
     adapter = LiveMissionWebAdapter(
         FakeAdaptiveMissionLiveMissionClient(
@@ -1063,6 +1170,7 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "Turn telemetry on" in page
     assert "Turn telemetry off" in page
     assert "Telemetry lease-managed" in page
+    assert "&& (stationary || adaptiveMission || canonical);" in page
     assert "leaseDurationLabel(snapshot)" in page
     assert "const sensorDataFresh = Boolean(" in page
     assert "snapshot.safety && snapshot.safety.telemetry_fresh" in page
