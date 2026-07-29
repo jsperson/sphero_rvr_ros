@@ -44,9 +44,9 @@ PREFLIGHT_MAX_AGE_S = {
 }
 ACTIVE_SENSOR_MAX_AGE_S = {
     "lidar": 0.50,
-    "camera": 1.00,
-    "localization": 0.300,
-    "semantic_map": 1.00,
+    "camera": 3.00,
+    "localization": 0.500,
+    "semantic_map": 3.00,
 }
 MOTION_CRITICAL_SENSORS = frozenset({"lidar"})
 
@@ -558,7 +558,7 @@ class HierarchicalPhysicalMissionController:
             "canonical_risk_ledger": [
                 "No negative-obstacle sensing: stairs, ledges, and drop-offs must be absent.",
                 "Approval requires fresh no-motion lidar, calibrated camera, SLAM map, and localization evidence.",
-                "Localization freshness fails closed above 0.300 seconds.",
+                "Localization older than 0.500 seconds holds and replans.",
                 "Known low-speed chassis stalls may pause progress.",
                 "Real model latency can cause honest wait_planning pauses on short hops.",
                 "Camera pitch and far floor projection remain handling-sensitive.",

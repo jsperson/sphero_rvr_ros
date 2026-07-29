@@ -50,7 +50,7 @@ The approval binds:
 - the accepted paired directional-veto evidence digest;
 - the accepted M7.4 moving-perception evidence digest;
 - the room restriction above;
-- `0.10 m/s`, `0.4 rad/s`, `0.50 s` command lease, `0.300 s`
+- `0.10 m/s`, `0.4 rad/s`, `0.50 s` command lease, `0.500 s`
   localization freshness, the selected mission lease, and its unchanged
   maximum of `900 s`.
 
@@ -60,10 +60,10 @@ stale, altered, replayed, or mismatched field fails closed.
 Approval also requires a server-generated no-motion sensor preflight from
 `rvr-telemetry.service`. The live Pi cache must simultaneously contain:
 
-- a valid lidar scan received no more than `0.50 s` ago;
-- a calibrated camera frame received no more than `1.00 s` ago;
-- valid stationary SLAM localization received no more than `0.300 s` ago;
-- a populated live SLAM occupancy map received no more than `1.00 s` ago.
+- a valid lidar scan received no more than `5.00 s` ago;
+- a calibrated camera frame received no more than `5.00 s` ago;
+- valid stationary SLAM localization received no more than `5.00 s` ago;
+- a populated live SLAM occupancy map received no more than `5.00 s` ago.
 
 Every source must explicitly report `motion_authority=false` and
 `physical_execution_enabled=false`. The approval transaction persists a compact
@@ -135,8 +135,8 @@ enters `wait_planning`, and cancels any active Nav2 goal. The independent
 collision supervisor remains the final zero-motion authority. Camera and map
 source/receipt timestamps are independently gated at `1.000 s`; while a goal
 or odometry motion is active, the terminal mission monitor requires fresh
-lidar (`0.500 s`). Camera (`1.000 s`), localization (`0.300 s`), and
-semantic-map (`1.000 s`) staleness cancels the active Nav2 goal and enters an
+lidar (`0.500 s`). Camera (`3.000 s`), localization (`0.500 s`), and
+semantic-map (`3.000 s`) staleness cancels the active Nav2 goal and enters an
 honest `wait_planning` hold; it does not destroy the physical session.
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`

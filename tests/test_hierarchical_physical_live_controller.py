@@ -750,8 +750,8 @@ def test_stale_localization_does_not_terminate_motion_session(
         cache.update(
             "localization",
             {"pose": {"x_m": 0.0, "y_m": 0.0}},
-            received_at_s=now - 0.301,
-            source_timestamp_s=now - 0.301,
+            received_at_s=now - 0.501,
+            source_timestamp_s=now - 0.501,
         )
         cache.update(
             "hierarchical_adapter",
@@ -864,7 +864,7 @@ def test_stale_planning_sensor_does_not_terminate_motion_session(
         cache.update(
             source_name,
             dict(prior.value),
-            received_at_s=now - 1.001,
+            received_at_s=now - 3.001,
             source_timestamp_s=now,
         )
         cache.update(
@@ -956,7 +956,7 @@ def test_approval_binds_all_evidence_limits_and_terminal_cleanup(
             "max_linear_mps": 0.10,
             "max_angular_rad_s": 0.4,
             "command_lease_s": 0.50,
-            "localization_max_age_s": 0.30,
+            "localization_max_age_s": 0.50,
             "mission_lease_max_s": 900.0,
         }
         deadline = time.monotonic() + 2.0

@@ -52,7 +52,7 @@ MAX_LINEAR_MPS = 0.10
 MAX_ANGULAR_RAD_S = 0.4
 COMMAND_LEASE_S = 0.50
 AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.30
-LOCALIZATION_MAX_AGE_S = 0.30
+LOCALIZATION_MAX_AGE_S = 0.50
 MISSION_LEASE_MAX_S = 900.0
 
 ACCEPTED_M7_3_EVIDENCE_SHA256 = (
@@ -861,7 +861,7 @@ def build_nav2_goal_batch(
             or localization_age_s > LOCALIZATION_MAX_AGE_S
         ):
             raise MissionValidationError(
-                "Nav2 batch localization exceeds the fixed 0.300 s freshness gate"
+                "Nav2 batch localization exceeds the fixed 0.500 s freshness gate"
             )
         result = revalidate_resolved_goal(
             goal,

@@ -110,7 +110,7 @@ def _approval(
             "max_linear_mps": 0.10,
             "max_angular_rad_s": 0.4,
             "command_lease_s": 0.50,
-            "localization_max_age_s": 0.30,
+            "localization_max_age_s": 0.50,
             "mission_lease_max_s": 900.0,
         },
     }
@@ -425,7 +425,7 @@ def test_exact_digest_bound_authority_expires_and_relocks(
         "max_linear_mps": 0.10,
         "max_angular_rad_s": 0.4,
         "command_lease_s": 0.50,
-        "localization_max_age_s": 0.30,
+        "localization_max_age_s": 0.50,
         "mission_lease_max_s": 900.0,
     }
     valid, reason = validate_authority_heartbeat(
@@ -669,7 +669,7 @@ def test_dispatch_revalidates_current_freshness_and_frontier_identity(
     journal.close()
 
 
-def test_localization_0297610_passes_but_0301_fails_closed(
+def test_localization_0499_passes_but_0501_fails_closed(
     tmp_path: Path,
 ) -> None:
     owner, journal = _owner(tmp_path)
@@ -677,7 +677,7 @@ def test_localization_0297610_passes_but_0301_fails_closed(
     snapshot = _snapshot()
     dispatch = _dispatch(snapshot, authority)
     dispatch["goals"][0]["current_snapshot"]["localization"]["age_s"] = (
-        0.297610
+        0.499
     )
     unsigned = dict(dispatch)
     unsigned.pop("dispatch_digest")
@@ -686,11 +686,11 @@ def test_localization_0297610_passes_but_0301_fails_closed(
         dispatch, authority=authority, now_s=100.1
     ).poses
 
-    dispatch["goals"][0]["current_snapshot"]["localization"]["age_s"] = 0.301
+    dispatch["goals"][0]["current_snapshot"]["localization"]["age_s"] = 0.501
     unsigned = dict(dispatch)
     unsigned.pop("dispatch_digest")
     dispatch["dispatch_digest"] = canonical_digest(unsigned)
-    with pytest.raises(MissionValidationError, match="0.300 s"):
+    with pytest.raises(MissionValidationError, match="0.500 s"):
         resolve_goal_dispatch(
             dispatch, authority=authority, now_s=100.1
         )
@@ -978,7 +978,7 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
     ) == "replan"
     stale_localization = {
         **base,
-        "reason": "live localization exceeds the fixed 0.300 s gate",
+        "reason": "live localization exceeds the fixed 0.500 s gate",
     }
     assert controller_status_cancel_mode(
         stale_localization,

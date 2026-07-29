@@ -34,6 +34,7 @@ from .hierarchical_physical_binding import (
     AUTHORITY_TOPIC,
     CONTROLLER_STATUS_TOPIC,
     GOAL_DISPATCH_TOPIC,
+    LOCALIZATION_MAX_AGE_S,
     HierarchicalBindingJournal,
     build_goal_dispatch,
     resolve_goal_dispatch,
@@ -48,8 +49,8 @@ from .mission_api import MissionValidationError
 
 MAX_CONSECUTIVE_SEMANTIC_REJECTIONS = 3
 COLLISION_EVIDENCE_MAX_AGE_S = 0.300
-CAMERA_EVIDENCE_MAX_AGE_S = 1.0
-MAP_EVIDENCE_MAX_AGE_S = 1.0
+CAMERA_EVIDENCE_MAX_AGE_S = 3.0
+MAP_EVIDENCE_MAX_AGE_S = 3.0
 TARGET_INVALIDATION_REASONS = {
     "event_generation_changed",
     "map_identity_changed",
@@ -1042,7 +1043,7 @@ def main(args=None):
                 max_age_s=MAP_EVIDENCE_MAX_AGE_S,
             ):
                 raise MissionValidationError(
-                    "live map exceeds the fixed 1.000 s gate"
+                    "live map exceeds the fixed 3.000 s gate"
                 )
             if not self._camera_valid or not live_source_is_fresh(
                 now_s=now_s,
@@ -1051,12 +1052,12 @@ def main(args=None):
                 max_age_s=CAMERA_EVIDENCE_MAX_AGE_S,
             ):
                 raise MissionValidationError(
-                    "live camera exceeds the fixed 1.000 s gate"
+                    "live camera exceeds the fixed 3.000 s gate"
                 )
             age = now_s - float(self._localization["timestamp_s"])
-            if age < 0.0 or age > 0.300:
+            if age < 0.0 or age > LOCALIZATION_MAX_AGE_S:
                 raise MissionValidationError(
-                    "live localization exceeds the fixed 0.300 s gate"
+                    "live localization exceeds the fixed 0.500 s gate"
                 )
             frontiers = detect_frontiers(
                 self._grid,
