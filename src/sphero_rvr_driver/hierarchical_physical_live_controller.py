@@ -706,6 +706,23 @@ class HierarchicalPhysicalMissionController:
                         run_evidence=run_evidence,
                     )
                     return
+                session_status = dict(self.session_lifecycle.status())
+                if not bool(session_status.get("active", False)):
+                    self._finish(
+                        mission_id,
+                        status="recovery_required",
+                        reason=(
+                            "canonical hierarchical graph exited while "
+                            "the mission was active: "
+                            + str(
+                                session_status.get(
+                                    "detail", "unit is not active"
+                                )
+                            )
+                        ),
+                        run_evidence=run_evidence,
+                    )
+                    return
                 live_snapshot = self.cache.snapshot(now_s=now_s)
                 odom = live_snapshot.source("odom")
                 motion_observed = False

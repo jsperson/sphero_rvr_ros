@@ -915,6 +915,55 @@ def test_controller_close_relocks_active_session_and_never_resumes(
     service.close()
 
 
+def test_active_graph_exit_relocks_and_marks_mission_recovery_required(
+    tmp_path,
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    del cache
+    try:
+        proposed = controller.submit(
+            CANONICAL_M7_OBJECTIVE,
+            session_id="m7-browser",
+            mission_id="m7-canonical-graph-exit",
+        )
+        controller.approve(
+            proposed["mission_id"],
+            supplied_approval=(
+                "APPROVE M7.6 CANONICAL MISSION "
+                + proposed["proposal_digest"]
+            ),
+            operator="scott",
+            authentication_source="tailscale-serve",
+            physical_room_confirmation=ROOM,
+        )
+        deadline = time.monotonic() + 1.0
+        while not session.active and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert session.active is True
+
+        session.active = False
+        terminal = controller.status(proposed["mission_id"])
+        while (
+            terminal["status"] != "recovery_required"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+            terminal = controller.status(proposed["mission_id"])
+
+        assert terminal["status"] == "recovery_required"
+        assert (
+            "graph exited while the mission was active"
+            in terminal["result"]["reason"]
+        )
+        assert terminal["result"]["cleanup_verified"] is True
+        assert terminal["result"]["motion_authority"] is False
+        assert terminal["result"]["restart_resume_allowed"] is False
+        assert session.active is False
+    finally:
+        controller.close()
+        service.close()
+
+
 def test_approval_binds_all_evidence_limits_and_terminal_cleanup(
     tmp_path,
 ) -> None:

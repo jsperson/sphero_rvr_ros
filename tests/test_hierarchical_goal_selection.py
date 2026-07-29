@@ -896,6 +896,81 @@ def test_supervisor_veto_is_immediate_while_provider_is_blocked() -> None:
         assert vetoed.handoff.command.zero_required is True
         assert vetoed.handoff.command.reason == "collision_veto"
         assert vetoed.events[-1]["kind"] == "safety_veto_during_provider"
+
+        release.set()
+        _wait_for_provider(provider, 1)
+        discarded = controller.tick(
+            snapshot,
+            now_s=0.02,
+            remaining_distance_m=2.49,
+            eta_s=9.8,
+        )
+        assert discarded.handoff.state == "terminal_safety"
+        assert discarded.handoff.command.zero_required is True
+        assert any(
+            event["kind"] == "prefetch_discarded"
+            and event["reason"] == "follower_terminal_safety"
+            for event in discarded.events
+        )
+    finally:
+        release.set()
+        controller.close()
+
+
+def test_stale_motion_hold_accepts_late_provider_result_and_resumes() -> None:
+    snapshot = _snapshot()
+    release = threading.Event()
+    provider = ScriptedSemanticGoalProvider(
+        [_frontier_decision(1)],
+        release_event=release,
+    )
+    controller = AsyncSemanticGoalController(provider)
+    try:
+        controller.start(
+            _decision(
+                snapshot,
+                "go_to_frontier",
+                {"frontier_id": snapshot["frontiers"][0]["signature"]},
+            ),
+            snapshot,
+        )
+        controller.tick(
+            snapshot,
+            now_s=0.0,
+            remaining_distance_m=2.5,
+            eta_s=10.0,
+        )
+        _wait_for_provider(provider, 1, completed=False)
+        held = controller.tick(
+            snapshot,
+            now_s=0.01,
+            remaining_distance_m=2.49,
+            eta_s=9.9,
+            motion_evidence_fresh=False,
+        )
+
+        assert held.provider_in_flight is True
+        assert held.handoff.state == "wait_planning"
+        assert held.handoff.controller_active is False
+        assert held.handoff.command.zero_required is True
+        assert held.handoff.command.reason == "motion_evidence_stale"
+
+        release.set()
+        _wait_for_provider(provider, 1)
+        resumed = controller.tick(
+            snapshot,
+            now_s=0.02,
+            remaining_distance_m=2.49,
+            eta_s=9.8,
+        )
+
+        assert resumed.handoff.state == "navigating"
+        assert resumed.handoff.controller_active is True
+        assert resumed.handoff.events[-1]["kind"] == "planning_resume"
+        assert any(
+            event["kind"] == "prefetch_revalidated"
+            for event in resumed.events
+        )
     finally:
         release.set()
         controller.close()

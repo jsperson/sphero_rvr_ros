@@ -805,8 +805,6 @@ class ContinuousGoalFollowerReplay:
             safety_reason = "operator_stop"
         elif cancelled:
             safety_reason = "cancelled"
-        elif not motion_evidence_fresh:
-            safety_reason = "motion_evidence_stale"
         elif str(collision_state).upper() not in {"CLEAR", "SLOW"}:
             safety_reason = "collision_veto"
         if safety_reason:
@@ -814,6 +812,19 @@ class ContinuousGoalFollowerReplay:
             self.controller_active = False
             event = self._event(safety_reason, self.active, now_s)
             return self._step(self._zero_command(safety_reason), (event,))
+        if not motion_evidence_fresh:
+            # Fresh localization is required for motion, but a transient
+            # freshness miss is a recoverable planning hold rather than an
+            # operator/supervisor terminal.  The physical adapter cancels the
+            # active Nav2 route on this zero-motion result.  A revalidated
+            # prefetched goal may then start a new controller session once
+            # motion evidence is fresh again.
+            self.state = "wait_planning"
+            self.controller_active = False
+            event = self._event("motion_evidence_stale", self.active, now_s)
+            return self._step(
+                self._zero_command("motion_evidence_stale"), (event,)
+            )
 
         events: list[Mapping[str, Any]] = []
         while self._pending and self._pending[0].ready_at_s <= now_s:

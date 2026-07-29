@@ -1759,6 +1759,18 @@ class AsyncSemanticGoalController:
                     snapshot_id=str(captured["snapshot_id"]),
                 )
             ]
+        if self.follower.state == "terminal_safety":
+            self._provider_rejections += 1
+            return [
+                self._record(
+                    "prefetch_discarded",
+                    now_s,
+                    generation=generation,
+                    reason="follower_terminal_safety",
+                    provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
+                )
+            ]
         try:
             raw = future.result()
             decision = SemanticGoalDecision.validated(

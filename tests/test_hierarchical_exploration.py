@@ -200,6 +200,37 @@ def test_invalid_prefetch_discards_and_supervisor_veto_is_immediate() -> None:
     assert stopped.command.reason == "collision_veto"
 
 
+def test_stale_motion_evidence_holds_then_resumes_with_new_goal() -> None:
+    follower = ContinuousGoalFollowerReplay(queue_depth=2)
+    follower.start([replay_goal(1, route_length_m=1.0, ready_at_s=0.0)])
+
+    held = follower.advance(
+        now_s=0.5,
+        remaining_distance_m=0.8,
+        motion_evidence_fresh=False,
+    )
+    follower.submit_prefetch(
+        replay_goal(2, route_length_m=0.7, ready_at_s=0.6)
+    )
+    resumed = follower.advance(
+        now_s=0.6,
+        remaining_distance_m=0.8,
+        motion_evidence_fresh=True,
+    )
+
+    assert held.state == "wait_planning"
+    assert held.controller_active is False
+    assert held.command.zero_required is True
+    assert held.command.reason == "motion_evidence_stale"
+    assert held.events[-1]["kind"] == "motion_evidence_stale"
+    assert resumed.state == "navigating"
+    assert resumed.controller_session == 2
+    assert resumed.controller_active is True
+    assert resumed.command.zero_required is False
+    assert resumed.events[-1]["kind"] == "planning_resume"
+    assert resumed.events[-1]["generation"] == 2
+
+
 def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> None:
     disabled = HierarchicalCommandBridge()
     disabled.accept(0.1, 0.4, received_at_s=1.0)
