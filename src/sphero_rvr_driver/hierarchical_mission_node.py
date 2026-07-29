@@ -708,9 +708,9 @@ def main(args=None):
             self._terminal = False
             # Map hashing and frontier extraction are intentionally
             # server-owned and can occupy the main callback group long enough
-            # to exceed the 0.300 s authority lease on a loaded Pi. Keep only
+            # to delay authority receipt on a loaded Pi. Keep only
             # heartbeat receipt in an independent callback group; the command
-            # bridge still enforces the same unrelaxed 0.300 s lease.
+            # bridge still enforces the bounded authority age independently.
             self._authority_callbacks = MutuallyExclusiveCallbackGroup()
             self._status_pub = self.create_publisher(
                 String,

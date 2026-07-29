@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import time
@@ -147,6 +148,12 @@ def active_graph_checks(
     def stdout(name: str) -> str:
         return str(observation(name).get("stdout", ""))
 
+    nav2_lifecycle_stdout = stdout("nav2_lifecycle").strip()
+    nav2_active = re.fullmatch(
+        r"(?:.+\s+is\s+)?active\s+\[3\]",
+        nav2_lifecycle_stdout,
+        flags=re.IGNORECASE,
+    )
     exact_source = str(source_sha).strip()
     return {
         "capture_digest_valid": (
@@ -167,9 +174,7 @@ def active_graph_checks(
         ),
         "nav2_functionally_ready": (
             returncode("nav2_lifecycle") == 0
-            and stdout("nav2_lifecycle").strip().lower().startswith(
-                "active"
-            )
+            and nav2_active is not None
         ),
     }
 

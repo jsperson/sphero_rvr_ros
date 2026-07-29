@@ -77,7 +77,7 @@ def _active_graph_capture():
         elif command[0] == "git":
             stdout = ""
         elif "lifecycle" in command:
-            stdout = "active [3]\n"
+            stdout = "bt_navigator is active [3]\n"
         elif command[-4:-1] == ["list", "--spin-time", "3.0"]:
             stdout = "\n".join(
                 (
@@ -1299,7 +1299,7 @@ def test_systemd_session_captures_diagnostic_graph_then_consumes_files(
         assert "stale_previous_capture" not in persisted_graph
         assert persisted_graph["observations"]["nav2_lifecycle"][
             "stdout"
-        ].startswith("active")
+        ] == "bt_navigator is active [3]\n"
         assert oct(session.environment_path.stat().st_mode & 0o777) == "0o600"
         assert "RVR_HIERARCHICAL_M7_6_APPROVED=\"true\"" in (
             session.environment_path.read_text()
@@ -1378,6 +1378,9 @@ def test_wait_planning_intervals_are_reconstructed_without_hand_entered_duration
 def test_active_graph_capture_uses_functional_nav2_readiness() -> None:
     capture = _active_graph_capture()
     assert all(active_graph_checks(capture, source_sha=SHA).values())
+    assert capture["observations"]["nav2_lifecycle"]["stdout"] == (
+        "bt_navigator is active [3]\n"
+    )
     altered = json.loads(json.dumps(capture))
     altered["observations"]["nav2_lifecycle"]["stdout"] = (
         "inactive [2]\n"

@@ -137,7 +137,7 @@ map, and localization freshness remain mandatory for creating or replacing a
 semantic plan. Their transient staleness pauses planning without canceling an
 already accepted route; Nav2 remains responsible for localization/path
 viability and the collision supervisor remains the final motor-zero
-authority. A transient `0.300 s` authority-heartbeat miss follows the same
+authority. A transient `0.750 s` authority-heartbeat miss follows the same
 hold-and-resume rule at the private command bridge. SHA mismatch, malformed
 authority, lease expiry, STOP/ESTOP, and a true controller recovery remain
 terminal.

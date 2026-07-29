@@ -504,12 +504,20 @@ def test_bridge_heartbeat_fails_closed_on_staleness_or_sha_mismatch(
 
     assert validate_authority_heartbeat(
         heartbeat,
-        now_s=100.31,
+        now_s=100.751,
         received_at_s=100.0,
         source_sha=SHA,
         deployed_sha=SHA,
         reviewed_sha=SHA,
     ) == (False, "authority_heartbeat_stale")
+    assert validate_authority_heartbeat(
+        heartbeat,
+        now_s=100.70,
+        received_at_s=100.0,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+    ) == (True, "active")
     assert transient_authority_hold("authority_heartbeat_stale") is True
     for terminal_reason in (
         "authority_missing",
@@ -800,7 +808,7 @@ def test_controller_keeps_authority_heartbeat_live_during_map_processing() -> No
     assert "MutuallyExclusiveCallbackGroup" in controller
     assert "callback_group=self._authority_callbacks" in controller
     assert "MultiThreadedExecutor(num_threads=2)" in controller
-    assert "AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.30" in (
+    assert "AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.75" in (
         REPO_ROOT
         / "src"
         / "sphero_rvr_driver"

@@ -70,13 +70,15 @@ canonical SHA-256 approval envelope containing:
 - the accepted M7.4 moving-perception session digest;
 - an attended, level, bounded room declaration with stairs, ledges, and
   drop-offs absent;
-- fixed `0.10 m/s`, `0.4 rad/s`, `0.50 s` command lease, `0.300 s`
+- fixed `0.10 m/s`, `0.4 rad/s`, `0.50 s` command lease, `0.500 s`
   localization freshness, and `900 s` maximum mission lease.
 
-The owner emits a short-lived heartbeat. `live_route_runner` validates the
-heartbeat independently on every control tick. Missing, malformed, stale,
-expired, or SHA-mismatched authority makes `mission_lease_valid=false` and
-therefore publishes zero.
+The owner emits a 10 Hz heartbeat. `live_route_runner` validates the
+heartbeat independently on every control tick with a bounded `0.750 s`
+receipt-age limit. Missing, malformed, stale, expired, or SHA-mismatched
+authority makes `mission_lease_valid=false` and therefore publishes zero.
+Collision evidence remains bounded at `0.300 s` and the private Nav2 command
+lease remains `0.500 s`.
 
 The journal is append-only SQLite evidence. If the last durable event says
 authority was active and no relock event exists, a new owner process enters

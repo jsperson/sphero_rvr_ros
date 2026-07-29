@@ -51,7 +51,12 @@ MOTOR_TOPIC = "/cmd_vel_motor"
 MAX_LINEAR_MPS = 0.10
 MAX_ANGULAR_RAD_S = 0.4
 COMMAND_LEASE_S = 0.50
-AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.30
+# The authority process publishes at 10 Hz, but its consumers share a loaded
+# Raspberry Pi with SLAM, Nav2, camera inference, and lidar.  A 0.30 s receipt
+# deadline produced false holds while the authority owner remained healthy.
+# Keep this bounded below one second; collision/scan freshness and the command
+# lease remain the independent, tighter motor-safety deadlines.
+AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.75
 LOCALIZATION_MAX_AGE_S = 0.50
 MISSION_LEASE_MAX_S = 900.0
 
