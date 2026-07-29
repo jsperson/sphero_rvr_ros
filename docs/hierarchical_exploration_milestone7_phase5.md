@@ -141,6 +141,14 @@ authority. A transient `0.750 s` authority-heartbeat miss follows the same
 hold-and-resume rule at the private command bridge. SHA mismatch, malformed
 authority, lease expiry, STOP/ESTOP, and a true controller recovery remain
 terminal.
+
+An accepted Nav2 route is also preserved when its rolling-map frontier
+signature disappears. A frontier signature is planning metadata, not a
+physical hazard; Nav2 still owns path validity and the collision supervisor
+still owns obstacle safety. Nav2 `ABORTED` results such as `no valid path`
+discard that goal and return to `wait_planning` for a different semantic
+target instead of escalating an ordinary exploration dead end to process
+recovery.
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`
 map gate.

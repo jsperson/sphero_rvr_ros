@@ -57,6 +57,11 @@ def controller_status_cancel_mode(
 def nav2_result_state(status: int, cancel_reason: str) -> tuple[str, str]:
     if status == 4:
         return "wait_planning", "nav2_result_status_4"
+    if status == 6:
+        # Nav2 uses ABORTED for ordinary planning/execution outcomes such as
+        # "no valid path".  Exploration must discard that target and choose a
+        # new one; it is not a loss of motor safety or process integrity.
+        return "wait_planning", "nav2_result_status_6"
     if status == 5 and cancel_reason == "controller_replan":
         return "wait_planning", "controller_replan_cancelled"
     if status == 5 and cancel_reason == "controller_complete":

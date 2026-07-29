@@ -15,6 +15,7 @@ from sphero_rvr_driver.hierarchical_goal_selection import (
 from sphero_rvr_driver.hierarchical_mission_node import (
     adapter_recovery_reason,
     adapter_remaining_distance,
+    rolling_frontier_invalidation_preserves_route,
     bounded_camera_evidence,
     goal_dispatch_queue_key,
     live_motion_evidence_is_fresh,
@@ -1095,9 +1096,24 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
         "controller_complete_cancelled",
     )
     assert nav2_result_state(6, "") == (
-        "recovery_required",
+        "wait_planning",
         "nav2_result_status_6",
     )
+    assert adapter_remaining_distance(
+        {
+            "state": "wait_planning",
+            "reason": "nav2_result_status_6",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        },
+        1.25,
+    ) == 0.0
+    assert adapter_recovery_reason(
+        {
+            "state": "wait_planning",
+            "reason": "nav2_result_status_6",
+        }
+    ) == ""
     assert stronger_cancel_reason("", "controller_replan") == (
         "controller_replan"
     )
@@ -1108,6 +1124,23 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
     assert stronger_cancel_reason("veto", "controller_replan") == "veto"
     assert "_pending_batch_digest" in source
     assert "veto_pending_acceptance" in source
+
+
+def test_rolling_frontier_churn_preserves_only_a_live_accepted_route() -> None:
+    navigating = {
+        "state": "navigating",
+        "goal_active": True,
+    }
+    assert rolling_frontier_invalidation_preserves_route(
+        "frontier_signature_invalidated", navigating
+    ) is True
+    assert rolling_frontier_invalidation_preserves_route(
+        "track_signature_changed", navigating
+    ) is False
+    assert rolling_frontier_invalidation_preserves_route(
+        "frontier_signature_invalidated",
+        {"state": "wait_planning", "goal_active": False},
+    ) is False
 
 
 def test_semantic_wait_holds_without_completing_the_mission() -> None:

@@ -180,7 +180,10 @@ def adapter_remaining_distance(
         state == "navigating" and status.get("goal_active") is True
     ) or (
         state == "wait_planning"
-        and reason == "nav2_result_status_4"
+        and reason in {
+            "nav2_result_status_4",
+            "nav2_result_status_6",
+        }
         and status.get("goal_active") is False
     )
     if not trustworthy:
@@ -201,6 +204,20 @@ def adapter_recovery_reason(status: Mapping[str, Any]) -> str:
         return ""
     reason = str(status.get("reason", "")).strip()
     return reason or "nav2_recovery_required"
+
+
+def rolling_frontier_invalidation_preserves_route(
+    invalidation_reason: str,
+    adapter_status: Mapping[str, Any],
+) -> bool:
+    """Let Nav2 finish a safe accepted route through rolling-map churn."""
+
+    return (
+        str(invalidation_reason).strip()
+        == "frontier_signature_invalidated"
+        and str(adapter_status.get("state", "")).strip() == "navigating"
+        and adapter_status.get("goal_active") is True
+    )
 
 
 def planning_hold_controller_state(status: Mapping[str, Any]) -> str:
@@ -1427,6 +1444,16 @@ def main(args=None):
                     invalidation = semantic_target_invalidation_reason(
                         active_goal, captured, snapshot
                     )
+                    if rolling_frontier_invalidation_preserves_route(
+                        invalidation, self._adapter_status
+                    ):
+                        # Frontier signatures describe the rolling exploration
+                        # boundary, not a physical hazard.  Once Nav2 accepted
+                        # server-owned geometry, let Nav2 and the collision
+                        # supervisor continue to own path and obstacle safety.
+                        # A changed frontier will naturally be discarded on
+                        # completion/abort or during successor revalidation.
+                        return None
                     if invalidation:
                         kind = SemanticEventKind.INVALID_TARGET
                         target_id = active_goal.target_id
