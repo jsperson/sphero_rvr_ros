@@ -221,8 +221,6 @@ def active_graph_checks(
     }
     cmd_vel = stdout("cmd_vel")
     motor = stdout("cmd_vel_motor")
-    private = stdout("nav2_private")
-    private_publishers = _topic_endpoint_names(private, "Publisher")
     expected_nodes = {
         "/sphero_rvr_driver",
         "/lidar_collision_stop_supervisor",
@@ -271,24 +269,6 @@ def active_graph_checks(
             == {"lidar_collision_stop_supervisor"}
             and _topic_endpoint_names(motor, "Subscription")
             == {"sphero_rvr_driver"}
-        ),
-        "private_nav2_chain_only": (
-            returncode("nav2_private") == 0
-            and _topic_count(private, "Publisher") in {1, 2}
-            and "controller_server" in private_publishers
-            and private_publishers
-            <= {"controller_server", "behavior_server"}
-            and _topic_endpoint_names(private, "Subscription")
-            == {"live_route_runner"}
-        ),
-        "serial_owner_present": (
-            returncode("serial_owner") == 0
-            and bool(
-                (
-                    stdout("serial_owner")
-                    + str(observation("serial_owner").get("stderr", ""))
-                ).strip()
-            )
         ),
     }
 

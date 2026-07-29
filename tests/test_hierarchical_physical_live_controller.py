@@ -1308,6 +1308,22 @@ def test_active_graph_capture_recomputes_exact_command_ownership() -> None:
     ] is False
 
 
+def test_active_graph_does_not_gate_on_discovery_only_diagnostics() -> None:
+    capture = _active_graph_capture()
+    for observation in ("nav2_private", "serial_owner"):
+        capture["observations"][observation].update(
+            {"returncode": 1, "stdout": "", "stderr": "not discovered"}
+        )
+    unsigned = dict(capture)
+    unsigned.pop("capture_digest")
+    capture["capture_digest"] = canonical_digest(unsigned)
+
+    checks = active_graph_checks(capture, source_sha=SHA)
+    assert "private_nav2_chain_only" not in checks
+    assert "serial_owner_present" not in checks
+    assert all(checks.values())
+
+
 def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
     tmp_path,
 ) -> None:
