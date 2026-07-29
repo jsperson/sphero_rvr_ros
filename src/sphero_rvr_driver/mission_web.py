@@ -2836,6 +2836,14 @@ class LiveMissionWebAdapter:
                 "adaptive_mission": adaptive_mission_projection_enabled,
                 "authenticated": bool(approval.get("authenticated", False)),
                 "authenticated_operator": str(approval.get("operator", "")),
+                "request_authenticated": (
+                    self._operator_authenticated()
+                ),
+                "request_operator": (
+                    self._operator_identity()
+                    if self._operator_authenticated()
+                    else ""
+                ),
                 "authentication_source": str(
                     approval.get("authentication_source", "")
                 ),
@@ -3947,6 +3955,10 @@ _INDEX_HTML = r'''<!doctype html>
     .danger { color:#ffd9d6; background:#3b1d25; border-color:#7e3541; }
     .hint, .empty { color:var(--muted); font-size:.83rem; }
     .digest { display:block; overflow-wrap:anywhere; padding:.6rem; border-radius:.55rem; background:#071421; color:var(--amber); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.72rem; }
+    .canonical-binding-envelope { display:grid; grid-template-columns:minmax(9rem,auto) minmax(0,1fr); gap:.35rem .65rem; margin-top:.7rem; padding:.65rem; border:1px solid var(--border); border-radius:.55rem; background:#071421; }
+    .canonical-binding-envelope strong { grid-column:1 / -1; color:var(--amber); }
+    .canonical-binding-envelope span { color:var(--muted); font-size:.72rem; }
+    .canonical-binding-envelope code { overflow-wrap:anywhere; color:var(--text); font-size:.68rem; }
     .plan-meta { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
     .meta { padding:.6rem; background:#0a1726; border-radius:.65rem; }
     .meta span { display:block; color:var(--muted); font-size:.68rem; text-transform:uppercase; }
@@ -4123,6 +4135,7 @@ _INDEX_HTML = r'''<!doctype html>
             <label><input id="room-no-dropoffs" type="checkbox"> There are no stairs, ledges, or drop-offs.</label>
             <label><input id="room-no-negative-sensing" type="checkbox"> I understand the rover has no negative-obstacle sensing.</label>
             <div class="hint" id="canonical-risk-ledger"></div>
+            <div class="canonical-binding-envelope" id="canonical-binding-envelope"></div>
           </fieldset>
           <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
           <code class="digest" id="approval-required-phrase" hidden></code>
@@ -4523,8 +4536,30 @@ _INDEX_HTML = r'''<!doctype html>
       const physicalAdaptiveMission = adaptiveMission && live;
       const leaseLabel = leaseDurationLabel(snapshot);
       $('canonical-room-confirmation').hidden = !canonical;
+      const canonicalLimits = snapshot.adapter.canonical_limits || {};
+      const canonicalBinding =
+        snapshot.adapter.hierarchical_physical_binding || {};
+      const proposalDigest = snapshot.approval.proposal_digest || '';
+      const approvalOperator =
+        snapshot.approval.authenticated_operator
+        || snapshot.approval.request_operator
+        || 'Authentication required';
       $('canonical-risk-ledger').innerHTML = canonical
-        ? `<strong>Fixed limits:</strong> 0.10 m/s · 0.4 rad/s · 0.50 s command lease · 0.300 s localization gate · 900 s mission lease.<br>${(snapshot.adapter.canonical_risk_ledger || []).map((item) => `• ${escapeHtml(item)}`).join('<br>')}`
+        ? `<strong>Fixed limits:</strong> ${escapeHtml(canonicalLimits.max_linear_mps)} m/s · ${escapeHtml(canonicalLimits.max_angular_rad_s)} rad/s · ${escapeHtml(canonicalLimits.command_lease_s)} s command lease · ${escapeHtml(canonicalLimits.localization_max_age_s)} s localization gate · ${escapeHtml(canonicalLimits.mission_lease_max_s)} s mission lease.<br>${(snapshot.adapter.canonical_risk_ledger || []).map((item) => `• ${escapeHtml(item)}`).join('<br>')}`
+        : '';
+      $('canonical-binding-envelope').innerHTML = canonical
+        ? [
+            `<strong>Exact approval envelope</strong>`,
+            `<span>Proposal digest</span><code>${escapeHtml(proposalDigest || 'Generate and persist the proposal first')}</code>`,
+            `<span>Authenticated operator</span><code>${escapeHtml(approvalOperator)}</code>`,
+            `<span>Source SHA</span><code>${escapeHtml(snapshot.adapter.service_source_sha || '')}</code>`,
+            `<span>Deployed SHA</span><code>${escapeHtml(snapshot.adapter.service_deployed_sha || '')}</code>`,
+            `<span>Reviewed SHA</span><code>${escapeHtml(canonicalBinding.reviewed_sha || '')}</code>`,
+            `<span>M7.3 collision evidence</span><code>${escapeHtml(canonicalBinding.m7_3_evidence_sha256 || '')}</code>`,
+            `<span>Directional-veto evidence</span><code>${escapeHtml(canonicalBinding.directional_addendum_sha256 || '')}</code>`,
+            `<span>M7.4 moving-perception evidence</span><code>${escapeHtml(canonicalBinding.m7_4_evidence_sha256 || '')}</code>`,
+            `<span>Room binding</span><code>attended · level bounded floor · no stairs/ledges/drop-offs · no negative-obstacle sensing</code>`,
+          ].join('')
         : '';
       $('lease-duration-control').hidden = !adaptiveMission;
       if (adaptiveMission) {

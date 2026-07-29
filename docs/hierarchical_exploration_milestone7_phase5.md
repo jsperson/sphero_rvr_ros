@@ -25,9 +25,10 @@ geometry.
 
 ## One authenticated M7.6 approval
 
-The browser displays the exact proposal, deployment provenance, full risk
-ledger, room restriction, and fixed limits. Four explicit confirmations are
-required:
+The browser displays an explicit approval envelope containing the exact
+proposal digest, authenticated operator, source/deployed/reviewed SHAs, all
+three accepted prior-evidence bindings, room restriction, fixed limits, and
+the full risk ledger. Four explicit confirmations are required:
 
 - the operator is present with chassis power cut reachable;
 - the floor area is level and bounded;
@@ -156,8 +157,12 @@ and canonical report.
 MissionService persists the proposal, approval, state transitions, controller
 and adapter checkpoints, terminal result, source/deployed SHA, and cleanup
 state. The binding journal persists authority activation/relock, real provider
-durations, model decisions and rationales, captured/current snapshots,
-server-resolved dispatches, event replans, handoffs, and pauses.
+durations, the exact bounded world snapshot supplied to every provider call,
+bounded camera detections and localization provenance, model decisions and
+rationales, semantic dispatches, independently reproducible server-resolved
+goal batches, the actual bounded Nav2 `/plan` paths, event replans, handoffs,
+and pauses. Repeated publication of an unchanged Nav2 plan is deduplicated by
+its content digest.
 
 The browser can reconstruct a mission by ID with:
 
@@ -176,9 +181,16 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
   command output recomputes the exact command, motor, Nav2, driver, and serial
   ownership chain;
 - one authority activation followed by relock;
-- real provider completion timing;
+- at least two explicitly real provider completions with measured wall
+  durations, closing the multi-call rather than single-smoke-call gate;
+- one exact, digest-bound world/camera evidence capture for every real provider
+  completion, with the recorded provider snapshot ID equal to the snapshot
+  digest;
 - at least two materially distinct semantic goals with rationales and no model
   geometry;
+- server-resolved goal batches that exactly recompute from the recorded strict
+  semantic dispatches, plus at least one digest-bound actual Nav2 path for
+  every dispatched semantic queue;
 - evidence-bound mapped tracks when tracks exist;
 - reconstructable nonzero occupancy coverage samples;
 - reconstructable controller/adapter handoffs and every `wait_planning`
@@ -196,9 +208,10 @@ capture. It does not accept hand-entered pass booleans. The evaluator requires:
   activation files.
 
 The output report embeds the raw active-graph and cleanup captures, service
-events, binding events, dispatch snapshots, terminal result, and reconstructed
-wait intervals so that the final evidence artifact can be reviewed without
-trusting summary booleans.
+events, binding events, provider-time world/camera snapshots, WFD frontier
+history, semantic dispatches, recomputed goal batches, actual Nav2 paths,
+terminal result, and reconstructed wait intervals so that the final evidence
+artifact can be reviewed without trusting summary booleans.
 
 Example post-run evaluation:
 

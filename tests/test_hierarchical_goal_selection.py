@@ -964,6 +964,18 @@ def test_invalidated_frontier_event_preempts_and_replans_from_fresh_snapshot() -
             snapshot1,
             now_s=1.0,
         )
+        provider_snapshot = controller.provider_snapshot_in_flight()
+        assert provider_snapshot is not None
+        assert (
+            provider_snapshot["snapshot_id"]
+            == preempted.events[-1]["snapshot_id"]
+        )
+        assert provider_snapshot["decision_generation"] == 2
+        provider_snapshot["objective"] = "mutated evidence copy"
+        assert (
+            controller.provider_snapshot_in_flight()["objective"]
+            == snapshot1["objective"]
+        )
         _wait_for_provider(provider, 1)
         resumed = controller.tick(
             snapshot1,

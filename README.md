@@ -33,8 +33,11 @@ browser-owned semantic-only proposal, authenticated M7.6 room/risk/limit
 confirmation, a mandatory fresh no-motion lidar/camera/SLAM/localization
 preflight before approval can exist, one-shot supervised-unit activation,
 durable live checkpoints, mission-ID reopening, and an evidence-derived M7.7
-evaluator. It remains default-off and does not claim a physical canonical run
-until exact-SHA Pi preflight, attended execution, and cleanup evaluation pass.
+evaluator. The candidate also records the exact provider-time world/camera
+evidence, independently reproducible server-resolved goal batches, and actual
+bounded Nav2 plans. It remains default-off and does not claim a physical
+canonical run until exact-SHA Pi preflight, attended execution, and cleanup
+evaluation pass.
 
 ## Documentation map for operators and maintainers
 

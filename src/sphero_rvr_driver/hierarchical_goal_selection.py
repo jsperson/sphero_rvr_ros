@@ -1756,6 +1756,7 @@ class AsyncSemanticGoalController:
                     generation=generation,
                     reason=f"event_invalidated:{invalidated_reason}",
                     provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
                 )
             ]
         try:
@@ -1788,6 +1789,7 @@ class AsyncSemanticGoalController:
                     generation=generation,
                     reason=str(exc),
                     provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
                 )
             ]
         if resolved.kind == "motion":
@@ -1803,6 +1805,7 @@ class AsyncSemanticGoalController:
                     action=decision.action,
                     target_id=resolved.target_id,
                     provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
                 )
             ]
         self._ready_non_motion = resolved
@@ -1814,6 +1817,7 @@ class AsyncSemanticGoalController:
                 action=decision.action,
                 target_id=resolved.target_id,
                 provider_elapsed_s=provider_elapsed_s,
+                snapshot_id=str(captured["snapshot_id"]),
                 decision=decision.to_json_dict(),
             )
         ]
@@ -1854,6 +1858,15 @@ class AsyncSemanticGoalController:
             if self._prefetched is None
             else self._prefetched.decision.decision_generation
         )
+
+    def provider_snapshot_in_flight(
+        self,
+    ) -> Optional[dict[str, Any]]:
+        """Return an evidence-only copy of the exact snapshot sent upstream."""
+
+        if self._future_snapshot is None:
+            return None
+        return json.loads(json.dumps(self._future_snapshot))
 
     def resolved_motion_goals(
         self,

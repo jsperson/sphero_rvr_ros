@@ -14,11 +14,14 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .hierarchical_physical_binding import (
     APPROVAL_SCHEMA,
+    NAV2_BATCH_SCHEMA,
     PHYSICAL_PROPOSAL_SCHEMA,
     PREFLIGHT_SCHEMA,
     HierarchicalPhysicalApproval,
     canonical_digest,
+    resolve_goal_dispatch,
 )
+from .hierarchical_goal_selection import SemanticGoalDecision
 from .mission_api import MissionValidationError
 
 
@@ -781,6 +784,102 @@ def _wait_planning_intervals(
     return intervals, valid
 
 
+def _camera_evidence_is_bounded(value: Mapping[str, Any]) -> bool:
+    allowed_top_level = {
+        "schema",
+        "frame_id",
+        "stamp_s",
+        "width",
+        "height",
+        "calibrated",
+        "uncertain_track_id",
+        "detections",
+        "image_attachment",
+    }
+    allowed_detection_fields = {
+        "kind",
+        "label",
+        "confidence",
+        "status",
+        "track_id",
+        "bbox",
+        "position_method",
+        "calibration_id",
+        "map_revision",
+        "localization_evidence_ids",
+        "localization_reason",
+        "source_timestamps_ns",
+        "bearing",
+    }
+    if set(value) != allowed_top_level:
+        return False
+    try:
+        stamp_s = float(value["stamp_s"])
+        width = int(value["width"])
+        height = int(value["height"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    detections = value.get("detections")
+    attachment = value.get("image_attachment")
+    if (
+        value.get("schema")
+        != "sphero_rvr.live_camera_perception.v1"
+        or not str(value.get("frame_id", "")).strip()
+        or value.get("calibrated") is not True
+        or not math.isfinite(stamp_s)
+        or stamp_s <= 0.0
+        or width <= 0
+        or height <= 0
+        or not isinstance(detections, list)
+        or len(detections) > 32
+        or any(
+            not isinstance(detection, Mapping)
+            or not set(detection) <= allowed_detection_fields
+            for detection in detections
+        )
+        or not isinstance(attachment, Mapping)
+    ):
+        return False
+    if not attachment:
+        return True
+    if set(attachment) != {
+        "schema",
+        "frame_id",
+        "path",
+        "mime_type",
+        "sha256",
+        "byte_count",
+    }:
+        return False
+    try:
+        byte_count = int(attachment["byte_count"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    digest = str(attachment.get("sha256", ""))
+    return (
+        attachment.get("schema")
+        == "sphero_rvr.camera_image_attachment.v1"
+        and attachment.get("frame_id") == value.get("frame_id")
+        and str(attachment.get("path", "")).startswith("/")
+        and attachment.get("mime_type") == "image/jpeg"
+        and len(digest) == 64
+        and all(character in "0123456789abcdef" for character in digest)
+        and 0 < byte_count <= 512_000
+    )
+
+
+def _semantic_snapshot_digest_valid(value: Mapping[str, Any]) -> bool:
+    unsigned = dict(value)
+    supplied = str(unsigned.pop("snapshot_id", ""))
+    try:
+        return (
+            len(supplied) == 64
+            and supplied == canonical_digest(unsigned)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def evaluate_canonical_mission(
     *,
     mission_database: str | Path,
@@ -820,11 +919,10 @@ def evaluate_canonical_mission(
         for event in binding_events
     )
     kinds = [event["kind"] for event in binding_events]
-    dispatches = [
-        event["payload"]
-        for event in binding_events
-        if event["kind"] == "goal_dispatch"
+    dispatch_events = [
+        event for event in binding_events if event["kind"] == "goal_dispatch"
     ]
+    dispatches = [event["payload"] for event in dispatch_events]
     provider_events = [
         event["payload"]
         for event in binding_events
@@ -840,39 +938,130 @@ def evaluate_canonical_mission(
         for event in binding_events
         if event["kind"] == "controller_event"
     ]
+    world_snapshots = [
+        event["payload"]
+        for event in binding_events
+        if event["kind"] == "world_snapshot"
+    ]
+    resolved_batch_events = [
+        event
+        for event in binding_events
+        if event["kind"] == "resolved_goal_batch"
+    ]
+    resolved_goal_batches = [
+        event["payload"] for event in resolved_batch_events
+    ]
+    nav2_paths = [
+        event["payload"]
+        for event in binding_events
+        if event["kind"] == "nav2_path"
+    ]
     decisions: list[dict[str, Any]] = []
+    decision_bindings: list[
+        tuple[dict[str, Any], Mapping[str, Any]]
+    ] = []
     tracks: dict[str, dict[str, Any]] = {}
     coverage_samples: list[float] = []
+    frontier_snapshots: list[dict[str, Any]] = []
+    dispatch_snapshots_valid = bool(dispatches)
+
+    def observe_snapshot(snapshot: Mapping[str, Any]) -> None:
+        map_snapshot = snapshot.get("map", {})
+        if isinstance(map_snapshot, Mapping):
+            try:
+                coverage = float(map_snapshot["coverage_fraction"])
+            except (KeyError, TypeError, ValueError):
+                coverage = float("nan")
+            if math.isfinite(coverage):
+                coverage_samples.append(coverage)
+        frontiers = snapshot.get("frontiers", ())
+        frontier_snapshots.append(
+            {
+                "snapshot_id": str(snapshot.get("snapshot_id", "")),
+                "map_id": str(
+                    map_snapshot.get("map_id", "")
+                    if isinstance(map_snapshot, Mapping)
+                    else ""
+                ),
+                "map_revision": str(
+                    map_snapshot.get("map_revision", "")
+                    if isinstance(map_snapshot, Mapping)
+                    else ""
+                ),
+                "signatures": [
+                    str(item.get("signature", ""))
+                    for item in frontiers
+                    if isinstance(item, Mapping)
+                    and str(item.get("signature", ""))
+                ],
+            }
+        )
+        for track in snapshot.get("tracks", ()):
+            if isinstance(track, Mapping):
+                track_id = str(track.get("track_id", ""))
+                if track_id:
+                    tracks[track_id] = dict(track)
+
     for dispatch in dispatches:
         for goal in dispatch.get("goals", ()):
             if not isinstance(goal, Mapping):
+                dispatch_snapshots_valid = False
                 continue
+            captured = goal.get("captured_snapshot", {})
             decision = goal.get("decision", {})
             if isinstance(decision, Mapping):
-                decisions.append(dict(decision))
+                recorded_decision = dict(decision)
+                decisions.append(recorded_decision)
+                if isinstance(captured, Mapping):
+                    decision_bindings.append(
+                        (recorded_decision, captured)
+                    )
+                else:
+                    dispatch_snapshots_valid = False
+            else:
+                dispatch_snapshots_valid = False
             current = goal.get("current_snapshot", {})
-            if isinstance(current, Mapping):
-                map_snapshot = current.get("map", {})
-                if isinstance(map_snapshot, Mapping):
-                    try:
-                        coverage = float(
-                            map_snapshot["coverage_fraction"]
-                        )
-                    except (KeyError, TypeError, ValueError):
-                        coverage = float("nan")
-                    if math.isfinite(coverage):
-                        coverage_samples.append(coverage)
-                for track in current.get("tracks", ()):
-                    if isinstance(track, Mapping):
-                        track_id = str(track.get("track_id", ""))
-                        if track_id:
-                            tracks[track_id] = dict(track)
+            if (
+                not isinstance(captured, Mapping)
+                or not _semantic_snapshot_digest_valid(captured)
+                or not isinstance(current, Mapping)
+                or not _semantic_snapshot_digest_valid(current)
+            ):
+                dispatch_snapshots_valid = False
+            if not world_snapshots:
+                if isinstance(current, Mapping):
+                    observe_snapshot(current)
+    if world_snapshots:
+        for evidence in world_snapshots:
+            snapshot = evidence.get("snapshot", {})
+            if isinstance(snapshot, Mapping):
+                observe_snapshot(snapshot)
+    provider_snapshots_by_id = {
+        str(evidence["snapshot"].get("snapshot_id", "")): evidence[
+            "snapshot"
+        ]
+        for evidence in world_snapshots
+        if isinstance(evidence.get("snapshot"), Mapping)
+        and str(evidence["snapshot"].get("snapshot_id", ""))
+    }
+    provider_event_snapshot_ids = [
+        str(event.get("snapshot_id", "")).strip()
+        for event in provider_events
+    ]
     for event in controller_events:
         if event.get("kind") != "semantic_non_motion_goal_ready":
             continue
         decision = event.get("decision")
         if isinstance(decision, Mapping):
-            decisions.append(dict(decision))
+            recorded_decision = dict(decision)
+            decisions.append(recorded_decision)
+            provider_snapshot = provider_snapshots_by_id.get(
+                str(recorded_decision.get("snapshot_id", ""))
+            )
+            if provider_snapshot is not None:
+                decision_bindings.append(
+                    (recorded_decision, provider_snapshot)
+                )
     expected_argument_keys = {
         "go_to_frontier": {"frontier_id"},
         "inspect": {"track_id"},
@@ -906,6 +1095,55 @@ def evaluate_canonical_mission(
         and bool(str(decision.get("rationale", "")).strip())
         for decision in decisions
     )
+    strict_semantic_bindings_valid = (
+        bool(decisions)
+        and len(decision_bindings) == len(decisions)
+    )
+    semantic_response_fields = {
+        "schema",
+        "mission_id",
+        "snapshot_id",
+        "decision_generation",
+        "event_generation",
+        "action",
+        "arguments",
+        "rationale",
+    }
+    semantic_evidence_fields = {"provider_id", "model_id"}
+    for decision, snapshot in decision_bindings:
+        if (
+            not semantic_response_fields <= set(decision)
+            or not set(decision)
+            <= semantic_response_fields | semantic_evidence_fields
+        ):
+            strict_semantic_bindings_valid = False
+            break
+        response = {
+            key: decision[key] for key in semantic_response_fields
+        }
+        try:
+            SemanticGoalDecision.validated(
+                response,
+                snapshot=snapshot,
+                expected_generation=int(
+                    snapshot.get("decision_generation", 0)
+                ),
+                provider_id=str(
+                    decision.get(
+                        "provider_id",
+                        "mission-service-semantic-provider",
+                    )
+                ),
+                model_id=str(
+                    decision.get(
+                        "model_id",
+                        "mission-service-semantic-model",
+                    )
+                ),
+            )
+        except (TypeError, ValueError, MissionValidationError):
+            strict_semantic_bindings_valid = False
+            break
     mapped_tracks_truthful = True
     for track in tracks.values():
         position = track.get("position", {})
@@ -929,6 +1167,200 @@ def evaluate_canonical_mission(
         ):
             mapped_tracks_truthful = False
             break
+    world_evidence_valid = bool(world_snapshots) and all(
+        evidence.get("schema")
+        == "sphero_rvr.hierarchical_world_evidence.v1"
+        and evidence.get("source_sha") == str(mission["source_sha"])
+        and evidence.get("mission_id") == str(mission_id)
+        and isinstance(evidence.get("snapshot"), Mapping)
+        and bool(str(evidence.get("provider_snapshot_id", "")).strip())
+        and evidence.get("provider_snapshot_id")
+        == evidence["snapshot"].get("snapshot_id")
+        and _semantic_snapshot_digest_valid(evidence["snapshot"])
+        and isinstance(evidence.get("camera_evidence"), Mapping)
+        and _camera_evidence_is_bounded(
+            evidence["camera_evidence"]
+        )
+        for evidence in world_snapshots
+    )
+    dispatch_digests = {
+        str(dispatch.get("dispatch_digest", ""))
+        for dispatch in dispatches
+        if len(str(dispatch.get("dispatch_digest", ""))) == 64
+    }
+    resolved_batches_valid = (
+        bool(resolved_goal_batches)
+        and len(resolved_goal_batches) == len(dispatches)
+        and dispatch_snapshots_valid
+    )
+    resolution_authority = {
+        "mission_id": str(mission_id),
+        "source_sha": str(mission["source_sha"]),
+        "approval_digest": str(approval.get("approval_digest", "")),
+    }
+    for dispatch_event, batch_event in zip(
+        dispatch_events, resolved_batch_events
+    ):
+        batch = batch_event["payload"]
+        unsigned = dict(batch)
+        supplied = str(unsigned.pop("batch_digest", ""))
+        poses = batch.get("poses", ())
+        if (
+            batch_event["event_index"]
+            != dispatch_event["event_index"] + 1
+            or supplied != canonical_digest(unsigned)
+            or batch.get("schema") != NAV2_BATCH_SCHEMA
+            or batch.get("mission_id") != str(mission_id)
+            or batch.get("source_sha") != str(mission["source_sha"])
+            or batch.get("approval_digest")
+            != str(approval.get("approval_digest", ""))
+            or not isinstance(poses, list)
+            or not poses
+        ):
+            resolved_batches_valid = False
+            break
+        try:
+            created_at_s = float(batch["created_at_s"])
+            recomputed_batch = resolve_goal_dispatch(
+                dispatch_event["payload"],
+                authority=resolution_authority,
+                now_s=created_at_s,
+            ).to_json_dict()
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            MissionValidationError,
+        ):
+            resolved_batches_valid = False
+            break
+        if (
+            not math.isfinite(created_at_s)
+            or created_at_s != float(batch_event["recorded_at_s"])
+            or recomputed_batch != batch
+        ):
+            resolved_batches_valid = False
+            break
+        for pose in poses:
+            try:
+                values = (
+                    float(pose["x_m"]),
+                    float(pose["y_m"]),
+                    float(pose["yaw_rad"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                resolved_batches_valid = False
+                break
+            if (
+                not isinstance(pose, Mapping)
+                or not all(math.isfinite(value) for value in values)
+                or not str(pose.get("target_id", "")).strip()
+                or not str(
+                    pose.get("target_signature", "")
+                ).strip()
+            ):
+                resolved_batches_valid = False
+                break
+        if not resolved_batches_valid:
+            break
+    goal_batches_by_digest = {
+        str(batch.get("batch_digest", "")): batch
+        for batch in resolved_goal_batches
+        if len(str(batch.get("batch_digest", ""))) == 64
+    }
+    dispatch_batch_bindings = {
+        str(dispatch_event["payload"].get("dispatch_digest", "")): str(
+            batch_event["payload"].get("batch_digest", "")
+        )
+        for dispatch_event, batch_event in zip(
+            dispatch_events, resolved_batch_events
+        )
+    }
+    nav2_paths_valid = bool(nav2_paths)
+    for path in nav2_paths:
+        unsigned = dict(path)
+        supplied = str(unsigned.pop("path_digest", ""))
+        supplied_content = str(unsigned.get("path_content_digest", ""))
+        content = dict(unsigned)
+        content.pop("path_content_digest", None)
+        content.pop("recorded_at_s", None)
+        poses = path.get("poses", ())
+        try:
+            original_count = int(path["original_pose_count"])
+            sampled_count = int(path["sampled_pose_count"])
+        except (KeyError, TypeError, ValueError):
+            nav2_paths_valid = False
+            break
+        if (
+            supplied != canonical_digest(unsigned)
+            or supplied_content != canonical_digest(content)
+            or path.get("schema")
+            != "sphero_rvr.hierarchical_nav2_path_evidence.v1"
+            or path.get("source_sha") != str(mission["source_sha"])
+            or path.get("mission_id") != str(mission_id)
+            or path.get("dispatch_digest") not in dispatch_digests
+            or path.get("goal_batch_digest")
+            not in goal_batches_by_digest
+            or path.get("goal_batch_digest")
+            != dispatch_batch_bindings.get(
+                str(path.get("dispatch_digest", ""))
+            )
+            or path.get("frame_id") != "map"
+            or not isinstance(poses, list)
+            or not poses
+            or sampled_count != len(poses)
+            or original_count < sampled_count
+        ):
+            nav2_paths_valid = False
+            break
+        try:
+            source_indices = [
+                int(pose["source_index"]) for pose in poses
+            ]
+            if (
+                not all(
+                    math.isfinite(float(pose[name]))
+                    for pose in poses
+                    if isinstance(pose, Mapping)
+                    for name in ("x_m", "y_m", "yaw_rad")
+                )
+                or any(not isinstance(pose, Mapping) for pose in poses)
+                or source_indices != sorted(set(source_indices))
+                or source_indices[0] != 0
+                or source_indices[-1] != original_count - 1
+            ):
+                nav2_paths_valid = False
+                break
+        except (KeyError, TypeError, ValueError):
+            nav2_paths_valid = False
+            break
+        batch = goal_batches_by_digest[
+            str(path["goal_batch_digest"])
+        ]
+        endpoint = poses[-1]
+        try:
+            endpoint_matches_batch = any(
+                math.hypot(
+                    float(endpoint["x_m"]) - float(goal["x_m"]),
+                    float(endpoint["y_m"]) - float(goal["y_m"]),
+                )
+                <= 0.02
+                for goal in batch["poses"]
+                if isinstance(goal, Mapping)
+            )
+        except (KeyError, TypeError, ValueError):
+            endpoint_matches_batch = False
+        if not endpoint_matches_batch:
+            nav2_paths_valid = False
+            break
+    nav2_paths_valid = (
+        nav2_paths_valid
+        and {
+            str(path.get("dispatch_digest", ""))
+            for path in nav2_paths
+        }
+        == dispatch_digests
+    )
     terminal_checkpoints = [
         event["payload"]
         for event in service_events
@@ -976,6 +1408,9 @@ def evaluate_canonical_mission(
                     "provider_call_completed",
                     "controller_event",
                     "goal_dispatch",
+                    "world_snapshot",
+                    "resolved_goal_batch",
+                    "nav2_path",
                 }
             ]
             active_graph_valid = (
@@ -1231,7 +1666,8 @@ def evaluate_canonical_mission(
         else False,
         "binding_event_digests_valid": binding_digests_valid,
         "real_provider_completion_recorded": bool(provider_events)
-        and any(
+        and len(provider_events) >= 2
+        and all(
             event.get("real_provider") is True
             for event in provider_events
         )
@@ -1241,8 +1677,29 @@ def evaluate_canonical_mission(
             for event in provider_events
         ),
         "semantic_goal_dispatch_recorded": bool(decisions),
+        "provider_world_snapshots_recorded": (
+            world_evidence_valid
+            and len(world_snapshots) == len(provider_events)
+            and len(set(provider_event_snapshot_ids))
+            == len(provider_event_snapshot_ids)
+            and set(provider_event_snapshot_ids)
+            == set(provider_snapshots_by_id)
+        ),
         "material_semantic_replanning_recorded": (
             len(distinct_semantic_goals) >= 2
+        ),
+        "wfd_frontier_history_reconstructable": (
+            len(frontier_snapshots) >= 2
+            and all(
+                bool(snapshot["snapshot_id"])
+                and bool(snapshot["map_id"])
+                and bool(snapshot["map_revision"])
+                for snapshot in frontier_snapshots
+            )
+            and any(
+                bool(snapshot["signatures"])
+                for snapshot in frontier_snapshots
+            )
         ),
         "coverage_reconstructable": (
             len(coverage_samples) >= 2
@@ -1252,7 +1709,25 @@ def evaluate_canonical_mission(
             )
         ),
         "model_geometry_absent_and_rationales_present": (
-            bool(decisions) and semantic_only
+            bool(decisions)
+            and semantic_only
+            and strict_semantic_bindings_valid
+        ),
+        "server_resolved_goal_batches_recorded": (
+            resolved_batches_valid
+        ),
+        "nav2_planned_paths_recorded": nav2_paths_valid,
+        "camera_detection_evidence_recorded": (
+            world_evidence_valid
+            and all(
+                isinstance(
+                    evidence["camera_evidence"].get(
+                        "detections", ()
+                    ),
+                    list,
+                )
+                for evidence in world_snapshots
+            )
         ),
         "mapped_tracks_evidence_bound": mapped_tracks_truthful,
         "handoffs_and_pauses_reconstructable": (
@@ -1324,8 +1799,12 @@ def evaluate_canonical_mission(
         "service_event_count": len(service_events),
         "semantic_decisions": decisions,
         "coverage_samples": coverage_samples,
+        "frontier_snapshots": frontier_snapshots,
         "mapped_tracks": list(tracks.values()),
         "provider_calls": provider_events,
+        "world_snapshots": world_snapshots,
+        "resolved_goal_batches": resolved_goal_batches,
+        "nav2_paths": nav2_paths,
         "sensor_preflight": preflight,
         "active_graph_capture": active_graph_capture,
         "operator_no_contact_observation": no_contact_observation,

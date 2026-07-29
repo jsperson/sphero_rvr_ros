@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from sphero_rvr_driver.hierarchical_exploration import FrontierCandidate
+from sphero_rvr_driver.hierarchical_goal_selection import (
+    SemanticTrack,
+    build_semantic_world_snapshot,
+)
 from sphero_rvr_driver.hierarchical_physical_binding import (
     ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256,
     ACCEPTED_M7_3_EVIDENCE_SHA256,
     ACCEPTED_M7_4_EVIDENCE_SHA256,
     APPROVAL_SCHEMA,
+    GOAL_DISPATCH_SCHEMA,
     PHYSICAL_PROPOSAL_SCHEMA,
     HierarchicalBindingJournal,
     canonical_digest,
+    resolve_goal_dispatch,
 )
 from sphero_rvr_driver.hierarchical_m7_canonical_validation import (
     _cleanup_checks,
@@ -28,6 +37,10 @@ from sphero_rvr_driver.hierarchical_physical_live_controller import (
     CANONICAL_M7_OBJECTIVE,
     HierarchicalPhysicalMissionController,
 )
+from sphero_rvr_driver.hierarchical_mission_node import (
+    bounded_camera_evidence,
+    nav2_path_evidence,
+)
 from sphero_rvr_driver.hierarchical_physical_session import (
     HIERARCHICAL_MISSION_UNIT,
     SystemdHierarchicalMissionSession,
@@ -38,6 +51,7 @@ from sphero_rvr_driver.mission_service import MissionService
 from sphero_rvr_driver.mission_web import (
     LiveMissionWebAdapter,
     _is_adaptive_preapproval,
+    build_mission_web_bundle,
 )
 
 
@@ -108,6 +122,196 @@ def _active_graph_capture():
         source_repository="/reviewed/source",
         runner=runner,
         captured_at_s=100.0,
+    )
+
+
+def _evaluator_snapshot(
+    mission_id: str,
+    *,
+    generation: int,
+    coverage: float,
+    robot_x_m: float,
+) -> dict:
+    frontier = FrontierCandidate(
+        signature=f"frontier-{generation:03d}",
+        map_id="live-room",
+        map_revision=f"map-revision-{generation:03d}",
+        cells=((1, 1), (1, 2), (2, 1)),
+        approach_cells=((0, 1),),
+        approach_cell=(0, 1),
+        approach_x_m=1.25 + generation / 10.0,
+        approach_y_m=-0.40,
+        clearance_m=0.35,
+        path_distance_m=1.60,
+        information_gain_m=0.80,
+    )
+    track = SemanticTrack(
+        track_id="object-0007",
+        signature="object-0007-surveyed",
+        class_name="shoe",
+        x_m=0.7,
+        y_m=0.2,
+        position_method="floor_projection",
+        position_sigma_m=0.04,
+        last_seen_s=100.0 + generation,
+        evidence_ids=("camera-frame-01", "surveyed-floor-01"),
+        stable_observations=3,
+    )
+    return build_semantic_world_snapshot(
+        mission_id=mission_id,
+        objective=CANONICAL_M7_OBJECTIVE,
+        objective_revision=1,
+        decision_generation=generation,
+        event_generation=generation - 1,
+        requested_object_classes=("shoe", "person"),
+        map_id="live-room",
+        map_revision=f"map-revision-{generation:03d}",
+        robot_x_m=robot_x_m,
+        robot_y_m=0.0,
+        robot_yaw_rad=0.0,
+        localization_timestamp_s=100.0 + generation,
+        now_s=100.1 + generation,
+        frontiers=(frontier,),
+        tracks=(track,),
+        next_best_views=(),
+        origin_x_m=0.0,
+        origin_y_m=0.0,
+        coverage_fraction=coverage,
+    )
+
+
+def _evaluator_dispatch(
+    snapshot: dict,
+    approval: dict,
+    *,
+    action: str,
+    arguments: dict,
+    rationale: str,
+    recorded_at_s: float,
+) -> tuple[dict, dict]:
+    decision = {
+        "schema": "sphero_rvr.semantic_goal.v1",
+        "mission_id": snapshot["mission_id"],
+        "snapshot_id": snapshot["snapshot_id"],
+        "decision_generation": snapshot["decision_generation"],
+        "event_generation": snapshot["event_generation"],
+        "action": action,
+        "arguments": arguments,
+        "rationale": rationale,
+    }
+    payload = {
+        "schema": GOAL_DISPATCH_SCHEMA,
+        "mission_id": snapshot["mission_id"],
+        "source_sha": SHA,
+        "approval_digest": approval["approval_digest"],
+        "controller_session": 1,
+        "reason": f"reviewed_{action}",
+        "goals": [
+            {
+                "decision": decision,
+                "captured_snapshot": snapshot,
+                "current_snapshot": snapshot,
+            }
+        ],
+    }
+    dispatch = {
+        **payload,
+        "dispatch_digest": canonical_digest(payload),
+    }
+    authority = {
+        "mission_id": snapshot["mission_id"],
+        "source_sha": SHA,
+        "approval_digest": approval["approval_digest"],
+    }
+    resolved = resolve_goal_dispatch(
+        dispatch,
+        authority=authority,
+        now_s=recorded_at_s,
+    ).to_json_dict()
+    return dispatch, resolved
+
+
+def _world_evidence(
+    snapshot: dict, *, recorded_at_s: float
+) -> dict:
+    camera = bounded_camera_evidence(
+        {
+            "schema": "sphero_rvr.live_camera_perception.v1",
+            "frame_id": (
+                f"live-camera-{snapshot['decision_generation']:08d}"
+            ),
+            "stamp_s": recorded_at_s,
+            "width": 800,
+            "height": 600,
+            "calibrated": True,
+            "detections": [
+                {
+                    "kind": "shoe",
+                    "label": "shoe",
+                    "confidence": 0.91,
+                    "status": "mapped",
+                    "track_id": "object-0007",
+                    "position_method": "floor_projection",
+                    "localization_evidence_ids": ["camera-frame-01"],
+                }
+            ],
+        }
+    )
+    return {
+        "schema": "sphero_rvr.hierarchical_world_evidence.v1",
+        "source_sha": SHA,
+        "mission_id": snapshot["mission_id"],
+        "recorded_at_s": recorded_at_s,
+        "reason": "provider_call",
+        "provider_snapshot_id": snapshot["snapshot_id"],
+        "snapshot": snapshot,
+        "camera_evidence": camera,
+    }
+
+
+def _path_evidence(
+    mission_id: str,
+    dispatch_digest: str,
+    goal_batch_digest: str,
+    endpoint: dict,
+    *,
+    recorded_at_s: float,
+) -> dict:
+    poses = []
+    for fraction in (0.0, 0.5, 1.0):
+        poses.append(
+            SimpleNamespace(
+                header=SimpleNamespace(frame_id="map"),
+                pose=SimpleNamespace(
+                    position=SimpleNamespace(
+                        x=float(endpoint["x_m"]) * fraction,
+                        y=float(endpoint["y_m"]) * fraction,
+                    ),
+                    orientation=SimpleNamespace(
+                        x=0.0,
+                        y=0.0,
+                        z=0.0,
+                        w=1.0,
+                    ),
+                ),
+            )
+        )
+    return nav2_path_evidence(
+        SimpleNamespace(
+            header=SimpleNamespace(
+                frame_id="map",
+                stamp=SimpleNamespace(
+                    sec=int(recorded_at_s),
+                    nanosec=0,
+                ),
+            ),
+            poses=poses,
+        ),
+        source_sha=SHA,
+        mission_id=mission_id,
+        dispatch_digest=dispatch_digest,
+        goal_batch_digest=goal_batch_digest,
+        recorded_at_s=recorded_at_s,
     )
 
 
@@ -803,12 +1007,37 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         assert initial["adapter"]["hierarchical_canonical"] is True
         assert initial["adapter"].get("adaptive_mission", False) is False
         assert initial["approval"]["enabled"] is False
+        assert initial["approval"]["request_authenticated"] is True
+        assert initial["approval"]["request_operator"] == (
+            "scott@example.com"
+        )
         assert _is_adaptive_preapproval(initial) is False
         proposed = browser.propose(
             CANONICAL_M7_OBJECTIVE, "live", mission_lease_s=900.0
         )
         assert proposed["adapter"]["hierarchical_canonical"] is True
         assert proposed["approval"]["enabled"] is True
+        assert proposed["approval"]["proposal_digest"] == (
+            proposed["proposal"]["proposal_digest"]
+        )
+        binding = proposed["adapter"][
+            "hierarchical_physical_binding"
+        ]
+        assert binding["reviewed_sha"] == SHA
+        assert binding["m7_3_evidence_sha256"] == (
+            ACCEPTED_M7_3_EVIDENCE_SHA256
+        )
+        assert binding["directional_addendum_sha256"] == (
+            ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256
+        )
+        assert binding["m7_4_evidence_sha256"] == (
+            ACCEPTED_M7_4_EVIDENCE_SHA256
+        )
+        html = build_mission_web_bundle()["index_html"]
+        assert 'id="canonical-binding-envelope"' in html
+        assert "Proposal digest" in html
+        assert "Directional-veto evidence" in html
+        assert "Authenticated operator" in html
         approved = browser.approve(
             "",
             confirm_current_proposal=True,
@@ -1153,56 +1382,166 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
             },
             recorded_at_s=approval["approved_at_s"],
         )
+        snapshots = [
+            _evaluator_snapshot(
+                mission_id,
+                generation=1,
+                coverage=0.40,
+                robot_x_m=0.0,
+            ),
+            _evaluator_snapshot(
+                mission_id,
+                generation=2,
+                coverage=0.45,
+                robot_x_m=0.4,
+            ),
+            _evaluator_snapshot(
+                mission_id,
+                generation=3,
+                coverage=0.50,
+                robot_x_m=0.0,
+            ),
+        ]
+        dispatch_inputs = (
+            (
+                snapshots[0],
+                "go_to_frontier",
+                {"frontier_id": "frontier-001"},
+                "Select frontier-001 from current bounded evidence.",
+            ),
+            (
+                snapshots[1],
+                "return_to_start",
+                {},
+                "Return to the server-owned mission origin.",
+            ),
+        )
+        dispatch_records = [
+            _evaluator_dispatch(
+                snapshot,
+                approval,
+                action=action,
+                arguments=arguments,
+                rationale=rationale,
+                recorded_at_s=approval["approved_at_s"] + index,
+            )
+            for index, (
+                snapshot,
+                action,
+                arguments,
+                rationale,
+            ) in enumerate(dispatch_inputs, start=1)
+        ]
+        journal.append(
+            mission_id,
+            "world_snapshot",
+            _world_evidence(
+                snapshots[0],
+                recorded_at_s=approval["approved_at_s"] + 0.1,
+            ),
+            recorded_at_s=approval["approved_at_s"] + 0.1,
+        )
         journal.append(
             mission_id,
             "provider_call_completed",
             {
                 "provider_elapsed_s": 11.02,
                 "real_provider": True,
+                "snapshot_id": snapshots[0]["snapshot_id"],
             },
-            recorded_at_s=approval["approved_at_s"] + 0.1,
+            recorded_at_s=approval["approved_at_s"] + 0.9,
         )
-        for index, (action, arguments) in enumerate(
-            (
-                ("go_to_frontier", {"frontier_id": "frontier-001"}),
-                ("return_to_start", {}),
-            ),
-            start=1,
+        for index, (dispatch, resolved) in enumerate(
+            dispatch_records, start=1
         ):
+            if index == 2:
+                journal.append(
+                    mission_id,
+                    "world_snapshot",
+                    _world_evidence(
+                        snapshots[1],
+                        recorded_at_s=(
+                            approval["approved_at_s"] + 1.2
+                        ),
+                    ),
+                    recorded_at_s=(
+                        approval["approved_at_s"] + 1.2
+                    ),
+                )
+                journal.append(
+                    mission_id,
+                    "controller_event",
+                    {
+                        "kind": "prefetch_revalidated",
+                        "at_s": 1.9,
+                        "provider_elapsed_s": 10.4,
+                        "real_provider": True,
+                        "snapshot_id": snapshots[1]["snapshot_id"],
+                    },
+                    recorded_at_s=(
+                        approval["approved_at_s"] + 1.9
+                    ),
+                )
             journal.append(
                 mission_id,
                 "goal_dispatch",
-                {
-                    "goals": [
-                        {
-                            "decision": {
-                                "action": action,
-                                "arguments": arguments,
-                                "rationale": f"reviewed semantic goal {index}",
-                            },
-                            "current_snapshot": {
-                                "tracks": [],
-                                "map": {
-                                    "coverage_fraction": (
-                                        round(
-                                            0.35 + index * 0.05,
-                                            2,
-                                        )
-                                    )
-                                },
-                            },
-                        }
-                    ]
-                },
+                dispatch,
                 recorded_at_s=approval["approved_at_s"] + index,
             )
+            journal.append(
+                mission_id,
+                "resolved_goal_batch",
+                resolved,
+                recorded_at_s=approval["approved_at_s"] + index,
+            )
+            journal.append(
+                mission_id,
+                "nav2_path",
+                _path_evidence(
+                    mission_id,
+                    dispatch["dispatch_digest"],
+                    resolved["batch_digest"],
+                    resolved["poses"][-1],
+                    recorded_at_s=(
+                        approval["approved_at_s"]
+                        + index
+                        + 0.05
+                    ),
+                ),
+                recorded_at_s=(
+                    approval["approved_at_s"] + index + 0.05
+                ),
+            )
+        journal.append(
+            mission_id,
+            "controller_event",
+            {"kind": "atomic_handoff", "at_s": 2.1},
+            recorded_at_s=approval["approved_at_s"] + 2.1,
+        )
+        journal.append(
+            mission_id,
+            "world_snapshot",
+            _world_evidence(
+                snapshots[2],
+                recorded_at_s=approval["approved_at_s"] + 2.2,
+            ),
+            recorded_at_s=approval["approved_at_s"] + 2.2,
+        )
         journal.append(
             mission_id,
             "controller_event",
             {
                 "kind": "semantic_non_motion_goal_ready",
                 "at_s": 2.5,
+                "provider_elapsed_s": 9.8,
+                "real_provider": True,
+                "snapshot_id": snapshots[2]["snapshot_id"],
                 "decision": {
+                    "schema": "sphero_rvr.semantic_goal.v1",
+                    "mission_id": mission_id,
+                    "snapshot_id": snapshots[2]["snapshot_id"],
+                    "decision_generation": 3,
+                    "event_generation": 2,
                     "action": "finish",
                     "arguments": {
                         "outcome": "complete",
@@ -1211,15 +1550,11 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
                     "rationale": (
                         "Finish complete with camera-frame-01."
                     ),
+                    "provider_id": "openai-codex-oauth",
+                    "model_id": "gpt-5.6-luna",
                 },
             },
             recorded_at_s=approval["approved_at_s"] + 2.5,
-        )
-        journal.append(
-            mission_id,
-            "controller_event",
-            {"kind": "atomic_handoff", "at_s": 2.0},
-            recorded_at_s=approval["approved_at_s"] + 2.0,
         )
         journal.append(
             mission_id,
@@ -1270,6 +1605,7 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         assert report["evidence"]["coverage_samples"] == [
             0.4,
             0.45,
+            0.5,
         ]
         assert report["evidence"][
             "operator_no_contact_observation"
@@ -1278,6 +1614,102 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         assert report["evidence"]["binding_events"]
         assert report["evidence"]["service_events"]
         assert report["evidence"]["terminal_result"]["status"] == "complete"
+
+        connection = sqlite3.connect(journal_path)
+        try:
+            batch_row = connection.execute(
+                """
+                SELECT event_index,payload_json,payload_sha256
+                FROM hierarchical_binding_events
+                WHERE mission_id=? AND kind='resolved_goal_batch'
+                ORDER BY event_index LIMIT 1
+                """,
+                (mission_id,),
+            ).fetchone()
+            assert batch_row is not None
+            tampered_batch = json.loads(batch_row[1])
+            tampered_batch["poses"][0]["x_m"] += 0.125
+            unsigned_batch = dict(tampered_batch)
+            unsigned_batch.pop("batch_digest")
+            tampered_batch["batch_digest"] = canonical_digest(
+                unsigned_batch
+            )
+            tampered_batch_json = json.dumps(
+                tampered_batch,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            connection.execute(
+                """
+                UPDATE hierarchical_binding_events
+                SET payload_json=?,payload_sha256=?
+                WHERE event_index=?
+                """,
+                (
+                    tampered_batch_json,
+                    canonical_digest(tampered_batch),
+                    batch_row[0],
+                ),
+            )
+            connection.commit()
+            tampered_report = evaluate_canonical_mission(
+                mission_database=service.database,
+                binding_journal=journal_path,
+                mission_id=mission_id,
+                cleanup_capture=cleanup,
+            )
+            assert tampered_report["passed"] is False
+            assert tampered_report["checks"][
+                "server_resolved_goal_batches_recorded"
+            ] is False
+            connection.execute(
+                """
+                UPDATE hierarchical_binding_events
+                SET payload_json=?,payload_sha256=?
+                WHERE event_index=?
+                """,
+                (batch_row[1], batch_row[2], batch_row[0]),
+            )
+
+            path_row = connection.execute(
+                """
+                SELECT mission_id,event_index,kind,recorded_at_s,
+                       payload_json,payload_sha256
+                FROM hierarchical_binding_events
+                WHERE mission_id=? AND kind='nav2_path'
+                ORDER BY event_index DESC LIMIT 1
+                """,
+                (mission_id,),
+            ).fetchone()
+            assert path_row is not None
+            connection.execute(
+                "DELETE FROM hierarchical_binding_events WHERE event_index=?",
+                (path_row[1],),
+            )
+            connection.commit()
+            missing_path_report = evaluate_canonical_mission(
+                mission_database=service.database,
+                binding_journal=journal_path,
+                mission_id=mission_id,
+                cleanup_capture=cleanup,
+            )
+            assert missing_path_report["passed"] is False
+            assert missing_path_report["checks"][
+                "nav2_planned_paths_recorded"
+            ] is False
+            connection.execute(
+                """
+                INSERT INTO hierarchical_binding_events(
+                    mission_id,event_index,kind,recorded_at_s,
+                    payload_json,payload_sha256
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                path_row,
+            )
+            connection.commit()
+        finally:
+            connection.close()
 
         failed_graph = {
             **cleanup,

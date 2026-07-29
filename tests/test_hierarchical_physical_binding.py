@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,10 +15,12 @@ from sphero_rvr_driver.hierarchical_goal_selection import (
 from sphero_rvr_driver.hierarchical_mission_node import (
     adapter_recovery_reason,
     adapter_remaining_distance,
+    bounded_camera_evidence,
     goal_dispatch_queue_key,
     live_motion_evidence_is_fresh,
     live_semantic_track_signature,
     live_source_is_fresh,
+    nav2_path_evidence,
     parse_collision_evidence,
     semantic_non_motion_status,
     semantic_target_invalidation_reason,
@@ -203,6 +206,103 @@ def test_live_camera_and_map_require_fresh_source_and_receipt_times() -> None:
         source_timestamp_s=None,
         max_age_s=1.0,
     )
+
+
+def test_camera_and_nav2_path_evidence_are_bounded_and_digest_bound() -> None:
+    camera = bounded_camera_evidence(
+        {
+            "schema": "sphero_rvr.live_camera_perception.v1",
+            "frame_id": "live-camera-00000001",
+            "stamp_s": 100.0,
+            "width": 800,
+            "height": 600,
+            "calibrated": True,
+            "thumbnail_data_url": "data:image/jpeg;base64,forbidden",
+            "image_attachment": {
+                "schema": "sphero_rvr.camera_image_attachment.v1",
+                "frame_id": "live-camera-00000001",
+                "path": "/bounded/live-camera-00000001.jpg",
+                "mime_type": "image/jpeg",
+                "sha256": "c" * 64,
+                "byte_count": 42,
+                "thumbnail_data_url": "data:image/jpeg;base64,forbidden",
+            },
+            "detections": [
+                {
+                    "kind": "shoe",
+                    "label": "shoe",
+                    "confidence": 0.91,
+                    "track_id": "object-0001",
+                    "position_method": "floor_projection",
+                    "x_m": 9.9,
+                    "y_m": 8.8,
+                    "localization_evidence_ids": ["frame-1"],
+                }
+            ],
+        }
+    )
+    assert camera["frame_id"] == "live-camera-00000001"
+    assert "thumbnail_data_url" not in camera
+    assert "thumbnail_data_url" not in camera["image_attachment"]
+    assert camera["image_attachment"]["byte_count"] == 42
+    assert "x_m" not in camera["detections"][0]
+    assert camera["detections"][0]["position_method"] == (
+        "floor_projection"
+    )
+
+    def pose(index: int):
+        return SimpleNamespace(
+            header=SimpleNamespace(frame_id="map"),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(
+                    x=index / 100.0,
+                    y=index / 200.0,
+                ),
+                orientation=SimpleNamespace(
+                    x=0.0,
+                    y=0.0,
+                    z=0.0,
+                    w=1.0,
+                ),
+            ),
+        )
+
+    message = SimpleNamespace(
+        header=SimpleNamespace(
+            frame_id="map",
+            stamp=SimpleNamespace(sec=100, nanosec=500_000_000),
+        ),
+        poses=[pose(index) for index in range(600)],
+    )
+    evidence = nav2_path_evidence(
+        message,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+        dispatch_digest="b" * 64,
+        goal_batch_digest="d" * 64,
+        recorded_at_s=101.0,
+    )
+    assert evidence["original_pose_count"] == 600
+    assert evidence["sampled_pose_count"] == 512
+    assert evidence["poses"][0]["source_index"] == 0
+    assert evidence["poses"][-1]["source_index"] == 599
+    unsigned = dict(evidence)
+    supplied = unsigned.pop("path_digest")
+    assert supplied == canonical_digest(unsigned)
+    content = dict(unsigned)
+    supplied_content = content.pop("path_content_digest")
+    content.pop("recorded_at_s")
+    assert supplied_content == canonical_digest(content)
+    later_capture = nav2_path_evidence(
+        message,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+        dispatch_digest="b" * 64,
+        goal_batch_digest="d" * 64,
+        recorded_at_s=102.0,
+    )
+    assert later_capture["path_content_digest"] == supplied_content
+    assert later_capture["path_digest"] != supplied
 
 
 def _snapshot(*, localization_timestamp_s: float = 100.0) -> dict:
