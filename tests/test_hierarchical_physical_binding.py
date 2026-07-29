@@ -13,17 +13,19 @@ from sphero_rvr_driver.hierarchical_goal_selection import (
     build_semantic_world_snapshot,
 )
 from sphero_rvr_driver.hierarchical_mission_node import (
+    PHYSICAL_FRONTIER_MIN_CLEARANCE_M,
     adapter_recovery_reason,
     adapter_remaining_distance,
-    rolling_frontier_invalidation_preserves_route,
     bounded_camera_evidence,
     goal_dispatch_queue_key,
     live_motion_evidence_is_fresh,
     live_semantic_track_signature,
     live_source_is_fresh,
+    nav2_abort_matches_dispatch,
     nav2_path_evidence,
     parse_collision_evidence,
     planning_hold_controller_state,
+    rolling_frontier_invalidation_preserves_route,
     semantic_non_motion_status,
     semantic_target_invalidation_reason,
     updated_semantic_rejection_count,
@@ -984,10 +986,19 @@ def test_physical_nav2_clears_only_its_declared_footprint() -> None:
     assert nav2.count("footprint_clearing_enabled: true") == 3
     assert "restore_cleared_footprint: true" in nav2
     assert nav2.count("robot_radius: 0.22") == 2
+    assert PHYSICAL_FRONTIER_MIN_CLEARANCE_M == 0.22
     assert nav2.count("topic: /scan") == 2
     assert "min_range_m: 0.08" in collision
     assert "footprint_front_m: 0.22" in collision
     assert "footprint_rear_m: 0.16" in collision
+    controller = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    assert "config=FrontierDetectionConfig(" in controller
+    assert '"nav2_failed_target"' in controller
 
 
 def test_nav2_adapter_binds_feedback_and_results_to_active_batch() -> None:
@@ -1114,6 +1125,21 @@ def test_controller_replan_status_can_only_cancel_nav2() -> None:
             "reason": "nav2_result_status_6",
         }
     ) == ""
+    failed_batch = "f" * 64
+    aborted = {
+        "state": "wait_planning",
+        "reason": "nav2_result_status_6",
+        "goal_active": False,
+        "last_batch_digest": failed_batch,
+    }
+    assert nav2_abort_matches_dispatch(aborted, failed_batch) is True
+    assert nav2_abort_matches_dispatch(aborted, "e" * 64) is False
+    assert (
+        nav2_abort_matches_dispatch(
+            {**aborted, "goal_active": True}, failed_batch
+        )
+        is False
+    )
     assert stronger_cancel_reason("", "controller_replan") == (
         "controller_replan"
     )

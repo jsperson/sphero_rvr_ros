@@ -17,7 +17,11 @@ from pathlib import Path
 import time
 from typing import Any, Mapping, Optional
 
-from .hierarchical_exploration import OccupancyGrid, detect_frontiers
+from .hierarchical_exploration import (
+    FrontierDetectionConfig,
+    OccupancyGrid,
+    detect_frontiers,
+)
 from .hierarchical_goal_selection import (
     AsyncSemanticGoalController,
     CodexOAuthSemanticGoalProvider,
@@ -52,6 +56,10 @@ MAX_CONSECUTIVE_SEMANTIC_REJECTIONS = 3
 COLLISION_EVIDENCE_MAX_AGE_S = 0.300
 CAMERA_EVIDENCE_MAX_AGE_S = 3.0
 MAP_EVIDENCE_MAX_AGE_S = 3.0
+# Match the physical Nav2 circular footprint. The generic replay WFD default is
+# intentionally smaller, but exposing those point-clear candidates to the live
+# model creates goals that Nav2 must reject for the real 0.22 m radius rover.
+PHYSICAL_FRONTIER_MIN_CLEARANCE_M = 0.22
 TARGET_INVALIDATION_REASONS = {
     "event_generation_changed",
     "map_identity_changed",
@@ -204,6 +212,22 @@ def adapter_recovery_reason(status: Mapping[str, Any]) -> str:
         return ""
     reason = str(status.get("reason", "")).strip()
     return reason or "nav2_recovery_required"
+
+
+def nav2_abort_matches_dispatch(
+    status: Mapping[str, Any], expected_batch_digest: str
+) -> bool:
+    """Bind an ordinary Nav2 abort to the exact server-resolved batch."""
+
+    expected = str(expected_batch_digest).strip()
+    return (
+        bool(expected)
+        and str(status.get("state", "")).strip() == "wait_planning"
+        and str(status.get("reason", "")).strip()
+        == "nav2_result_status_6"
+        and status.get("goal_active") is False
+        and str(status.get("last_batch_digest", "")).strip() == expected
+    )
 
 
 def rolling_frontier_invalidation_preserves_route(
@@ -722,6 +746,8 @@ def main(args=None):
             self._last_dispatch_queue_key = ""
             self._last_resolved_batch_digest = ""
             self._last_nav2_path_content_digest = ""
+            self._processed_nav2_abort_batches: set[str] = set()
+            self._rejected_frontier_signatures: set[str] = set()
             self._terminal = False
             # Map hashing and frontier extraction are intentionally
             # server-owned and can occupy the main callback group long enough
@@ -1089,10 +1115,20 @@ def main(args=None):
                 raise MissionValidationError(
                     "live localization exceeds the fixed 0.500 s gate"
                 )
-            frontiers = detect_frontiers(
-                self._grid,
-                robot_x_m=float(self._localization["x_m"]),
-                robot_y_m=float(self._localization["y_m"]),
+            frontiers = tuple(
+                frontier
+                for frontier in detect_frontiers(
+                    self._grid,
+                    robot_x_m=float(self._localization["x_m"]),
+                    robot_y_m=float(self._localization["y_m"]),
+                    config=FrontierDetectionConfig(
+                        minimum_clearance_m=(
+                            PHYSICAL_FRONTIER_MIN_CLEARANCE_M
+                        )
+                    ),
+                )
+                if frontier.signature
+                not in self._rejected_frontier_signatures
             )
             tracks = self._tracks(self._grid)
             if self._origin is None:
@@ -1208,6 +1244,8 @@ def main(args=None):
                         "recovery_required", "proposal_binding_invalid"
                     )
                     return
+            if self._controller is not None:
+                self._remember_nav2_aborted_target(now_s)
             try:
                 snapshot = self._snapshot(now_s)
             except MissionValidationError as exc:
@@ -1413,6 +1451,54 @@ def main(args=None):
                 )
                 return
             self._publish_dispatch(snapshot, now_s, step.handoff.state)
+
+        def _remember_nav2_aborted_target(self, now_s: float) -> None:
+            """Exclude one exact Nav2-aborted frontier for this mission."""
+
+            assert self._controller is not None
+            batch_digest = str(
+                self._adapter_status.get("last_batch_digest", "")
+            ).strip()
+            if (
+                batch_digest in self._processed_nav2_abort_batches
+                or not nav2_abort_matches_dispatch(
+                    self._adapter_status,
+                    self._last_resolved_batch_digest,
+                )
+            ):
+                return
+            self._processed_nav2_abort_batches.add(batch_digest)
+            goals = self._controller.resolved_motion_goals()
+            if not goals:
+                return
+            failed_goal = goals[0][0]
+            if failed_goal.decision.action not in {
+                "go_to_frontier",
+                "search_region",
+            }:
+                return
+            self._rejected_frontier_signatures.add(
+                failed_goal.target_signature
+            )
+            assert self._authority is not None
+            self._journal.append(
+                str(self._authority["mission_id"]),
+                "nav2_failed_target",
+                {
+                    "schema": (
+                        "sphero_rvr.hierarchical_nav2_failed_target.v1"
+                    ),
+                    "source_sha": self._source_sha,
+                    "mission_id": str(self._authority["mission_id"]),
+                    "recorded_at_s": float(now_s),
+                    "batch_digest": batch_digest,
+                    "action": failed_goal.decision.action,
+                    "target_id": failed_goal.target_id,
+                    "target_signature": failed_goal.target_signature,
+                    "reason": "nav2_result_status_6",
+                },
+                recorded_at_s=now_s,
+            )
 
         def _stable_track_ids(self) -> set[str]:
             return {

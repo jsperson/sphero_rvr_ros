@@ -148,7 +148,12 @@ physical hazard; Nav2 still owns path validity and the collision supervisor
 still owns obstacle safety. Nav2 `ABORTED` results such as `no valid path`
 discard that goal and return to `wait_planning` for a different semantic
 target instead of escalating an ordinary exploration dead end to process
-recovery.
+recovery. The physical WFD view uses the same `0.22 m` circular-footprint
+clearance as Nav2, rather than the replay-only point-clear default. If Nav2
+still aborts an exact digest-bound batch, its active frontier is excluded for
+the rest of that mission so the provider cannot repeatedly select the same
+unreachable target.
+
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`
 map gate.
