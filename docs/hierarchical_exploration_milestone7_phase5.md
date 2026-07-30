@@ -205,6 +205,14 @@ supervisor reason and requests the same rear-checked reverse escape for
 forward/left/right trajectory-blocked reasons. It never bypasses the
 supervisor's rear or trajectory veto.
 
+The next exact-SHA run proved that reverse escape, then stalled on the office
+ridge while Nav2 requested `0.086 m/s`. The motor request remained nonzero but
+odometry made no useful progress through repeated Nav2 retries. CLEAR forward
+translation now uses the existing `0.10 m/s` mission ceiling as its physical
+breakaway floor. Reverse escape remains separately fixed at the physically
+proven gentler `0.07 m/s`; collision distances, freshness gates, and the
+supervisor's rear/swept-path vetoes are unchanged.
+
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a
 terminal event at controller frequency. Nav2 keeps the accepted or

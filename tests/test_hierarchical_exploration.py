@@ -270,8 +270,9 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     physical = HierarchicalCommandBridge(
         HierarchicalBridgeConfig(
             enabled=True,
-            clear_breakaway_linear_mps=0.07,
+            clear_breakaway_linear_mps=0.10,
             clear_breakaway_angular_rad_s=0.35,
+            reverse_escape_linear_mps=0.07,
         )
     )
     physical.accept(0.014, 0.0, received_at_s=3.0)
@@ -289,7 +290,7 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
         motion_evidence_fresh=True,
         collision_state="SLOW",
     )
-    assert clear.bridged_linear_mps == pytest.approx(0.07)
+    assert clear.bridged_linear_mps == pytest.approx(0.10)
     assert clear.reason == "clear_breakaway_floor"
     assert slow.bridged_linear_mps == pytest.approx(-0.07)
     assert slow.bridged_angular_rad_s == 0.0
@@ -319,7 +320,7 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     assert reverse.bridged_angular_rad_s == 0.0
     assert reverse.reason == "clear"
 
-    physical.accept(0.04, 0.1, received_at_s=3.6)
+    physical.accept(0.10, 0.1, received_at_s=3.6)
     stopped_escape = physical.evaluate(
         now_s=3.7,
         goal_active=True,
@@ -367,7 +368,7 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
         motion_evidence_fresh=True,
         collision_state="CLEAR",
     )
-    assert mixed.bridged_linear_mps == pytest.approx(0.07)
+    assert mixed.bridged_linear_mps == pytest.approx(0.10)
     assert mixed.bridged_angular_rad_s == pytest.approx(0.036)
     assert mixed.reason == "clear_breakaway_floor"
 

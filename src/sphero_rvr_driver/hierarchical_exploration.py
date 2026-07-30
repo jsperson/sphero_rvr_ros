@@ -552,6 +552,7 @@ class HierarchicalBridgeConfig:
     max_angular_rad_s: float = 0.4
     clear_breakaway_linear_mps: float = 0.0
     clear_breakaway_angular_rad_s: float = 0.0
+    reverse_escape_linear_mps: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -582,6 +583,16 @@ class HierarchicalBridgeConfig:
             raise ValueError(
                 "hierarchical CLEAR angular breakaway speed must be between "
                 "zero and the angular ceiling"
+            )
+        if (
+            not math.isfinite(self.reverse_escape_linear_mps)
+            or not 0.0
+            <= self.reverse_escape_linear_mps
+            <= self.max_linear_mps
+        ):
+            raise ValueError(
+                "hierarchical reverse escape speed must be between zero "
+                "and the linear ceiling"
             )
 
 
@@ -657,7 +668,7 @@ class HierarchicalCommandBridge:
         reason = "clear"
         if normalized_collision_state == "STOPPED":
             if (
-                self.config.clear_breakaway_linear_mps <= 0.0
+                self.config.reverse_escape_linear_mps <= 0.0
                 or (linear == 0.0 and angular == 0.0)
             ):
                 return ContinuousGoalFollowerReplay._zero_command(
@@ -670,10 +681,7 @@ class HierarchicalCommandBridge:
             return ReplayCommand(
                 requested_linear_mps=self._linear_mps,
                 requested_angular_rad_s=self._angular_rad_s,
-                bridged_linear_mps=-max(
-                    abs(linear),
-                    self.config.clear_breakaway_linear_mps,
-                ),
+                bridged_linear_mps=-self.config.reverse_escape_linear_mps,
                 bridged_angular_rad_s=0.0,
                 reason="stopped_reverse_escape_request",
                 zero_required=False,
@@ -722,20 +730,20 @@ class HierarchicalCommandBridge:
                     angular,
                 )
                 reason = "slow_pivot_breakaway"
-            elif self.config.clear_breakaway_linear_mps > 0.0:
+            elif self.config.reverse_escape_linear_mps > 0.0:
                 # A straight approach cannot steer around the obstacle and a
                 # twice-scaled crawl cannot break this drivetrain free.
                 # Request the user's explicit "front obstacle -> back away"
                 # behavior. The downstream supervisor evaluates the actual
                 # reverse trajectory and keeps unconditional rear veto power.
-                linear = -self.config.clear_breakaway_linear_mps
+                linear = -self.config.reverse_escape_linear_mps
                 angular = 0.0
                 reason = "slow_reverse_escape"
             else:
                 reason = "supervisor_slow_passthrough"
         elif (
             normalized_collision_state == "SLOW"
-            and self.config.clear_breakaway_linear_mps > 0.0
+            and self.config.reverse_escape_linear_mps > 0.0
             and normalized_collision_reason
             in {
                 "forward_trajectory_blocked",
@@ -747,7 +755,7 @@ class HierarchicalCommandBridge:
             # A blocked turn cannot clear its own swept footprint. Request
             # the same rear-checked escape as a blocked forward trajectory;
             # the downstream supervisor remains the final arbiter.
-            linear = -self.config.clear_breakaway_linear_mps
+            linear = -self.config.reverse_escape_linear_mps
             angular = 0.0
             reason = "blocked_trajectory_reverse_escape"
         return ReplayCommand(

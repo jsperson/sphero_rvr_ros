@@ -1043,7 +1043,10 @@ def test_physical_nav2_clears_only_its_declared_footprint() -> None:
     assert "restore_cleared_footprint: true" in nav2
     assert nav2.count("robot_radius: 0.22") == 2
     assert PHYSICAL_FRONTIER_MIN_CLEARANCE_M == 0.22
-    assert "hierarchical_clear_breakaway_linear_mps: 0.07" in (
+    assert "hierarchical_clear_breakaway_linear_mps: 0.10" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
+    assert "hierarchical_reverse_escape_linear_mps: 0.07" in (
         REPO_ROOT / "config" / "live_route_runner.yaml"
     ).read_text()
     assert "hierarchical_clear_breakaway_angular_rad_s: 0.35" in (
