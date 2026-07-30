@@ -373,6 +373,84 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     assert mixed.reason == "clear_breakaway_floor"
 
 
+def test_physical_turn_breakaway_is_rate_modulated_and_filters_reversals() -> None:
+    bridge = HierarchicalCommandBridge(
+        HierarchicalBridgeConfig(
+            enabled=True,
+            clear_breakaway_angular_rad_s=0.35,
+            clear_breakaway_angular_measured_rate_rad_s=3.2,
+            clear_breakaway_angular_pulse_s=0.05,
+        )
+    )
+
+    samples = []
+    for now_s in (1.0, 1.1, 1.2, 1.3, 1.4, 1.5):
+        bridge.accept(0.0, 0.35, received_at_s=now_s)
+        samples.append(
+            bridge.evaluate(
+                now_s=now_s,
+                goal_active=True,
+                mission_lease_valid=True,
+                motion_evidence_fresh=True,
+                collision_state="CLEAR",
+            )
+        )
+
+    assert all(
+        sample.reason == "angular_breakaway_rate_hold"
+        and sample.zero_required is True
+        and sample.bridged_angular_rad_s == 0.0
+        for sample in samples[:-1]
+    )
+    assert samples[-1].reason == "angular_breakaway_rate_pulse"
+    assert samples[-1].zero_required is False
+    assert samples[-1].bridged_angular_rad_s == pytest.approx(0.35)
+
+    # One opposite request and then another reversal cannot immediately
+    # manufacture full-torque left/right commands.
+    bridge.accept(0.0, -0.35, received_at_s=1.6)
+    opposite = bridge.evaluate(
+        now_s=1.6,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    bridge.accept(0.0, 0.35, received_at_s=1.7)
+    reversed_again = bridge.evaluate(
+        now_s=1.7,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert opposite.reason == "angular_breakaway_rate_hold"
+    assert opposite.bridged_angular_rad_s == 0.0
+    assert reversed_again.reason == "angular_breakaway_rate_hold"
+    assert reversed_again.bridged_angular_rad_s == 0.0
+
+    # Every fail-closed zero clears accumulated yaw so stale intent cannot
+    # emit a delayed pulse after authority resumes.
+    bridge.accept(0.0, 0.35, received_at_s=2.0)
+    assert bridge.evaluate(
+        now_s=2.0,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=False,
+        collision_state="CLEAR",
+    ).reason == "motion_evidence_stale"
+    bridge.accept(0.0, 0.35, received_at_s=2.1)
+    resumed = bridge.evaluate(
+        now_s=2.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert resumed.reason == "angular_breakaway_rate_hold"
+    assert resumed.bridged_angular_rad_s == 0.0
+
+
 def test_hierarchical_executor_uses_existing_replay_seam_without_authority() -> None:
     executor = HierarchicalReplayAdaptiveMissionExecutor(queue_depth=3)
     active = executor.update_map(

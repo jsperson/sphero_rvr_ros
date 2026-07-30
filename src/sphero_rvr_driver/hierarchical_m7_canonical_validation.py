@@ -46,6 +46,9 @@ DEFAULT_EVIDENCE_DIRECTORY = (
 DEFAULT_SOURCE_REPOSITORY = (
     "/home/jsperson/ros2_ws/src/sphero_rvr_ros"
 )
+# Smac's 5 cm grid may snap the final path pose by half a cell on both axes.
+# This is an evidence-binding allowance, not a motion or goal tolerance.
+MAX_NAV2_ENDPOINT_GRID_SNAP_M = math.hypot(0.025, 0.025) + 1.0e-6
 
 
 def _json(value: str) -> dict[str, Any]:
@@ -386,22 +389,33 @@ def _cleanup_checks(capture: Mapping[str, Any]) -> dict[str, bool]:
         "slam_toolbox",
         "rosbag",
     )
+    # Match executable path/argv tokens rather than arbitrary substrings.
+    # The persistent, non-driving mission service legitimately contains
+    # disabled parameter names such as
+    # ``stationary_perception_enabled:=false``.
     forbidden_processes = (
-        "sphero_rvr_driver.rvr_node",
-        " rvr_node",
-        "live_route_runner",
-        "collision_stop_node",
-        "rplidar_node",
-        "nav2_controller",
-        "hierarchical_physical_authority",
-        "hierarchical_mission_controller",
-        "hierarchical_nav2_adapter",
-        "camera_node",
-        "stationary_perception",
-        "semantic_perception",
-        "slam_toolbox",
-        "ros2 bag record",
-        "rosbag2",
+        "/rvr_node ",
+        "/sphero_rvr_driver ",
+        "/live_route_runner ",
+        "/collision_stop_node ",
+        "/rplidar_node ",
+        "/rplidar_composition ",
+        "/controller_server ",
+        "/planner_server ",
+        "/behavior_server ",
+        "/bt_navigator ",
+        "/hierarchical_physical_authority ",
+        "/hierarchical_mission_controller ",
+        "/hierarchical_nav2_adapter ",
+        "/camera_node ",
+        "/stationary_perception ",
+        "/hierarchical_semantic_perception ",
+        "/async_slam_toolbox_node ",
+        "/sync_slam_toolbox_node ",
+        " ros2 launch sphero_rvr_driver "
+        "hierarchical_exploration_physical.launch.py",
+        " ros2 bag record ",
+        "/rosbag2_",
     )
     storage = payload.get("evidence_storage", {})
     storage_files = (
@@ -471,11 +485,11 @@ def _cleanup_checks(capture: Mapping[str, Any]) -> dict[str, bool]:
             and not any(
                 token in processes
                 for token in (
-                    "camera_node",
-                    "stationary_perception",
-                    "semantic_perception",
-                    "ros2 bag record",
-                    "rosbag2",
+                    "/camera_node ",
+                    "/stationary_perception ",
+                    "/hierarchical_semantic_perception ",
+                    " ros2 bag record ",
+                    "/rosbag2_",
                 )
             )
         ),
@@ -1250,7 +1264,7 @@ def evaluate_canonical_mission(
                     float(endpoint["x_m"]) - float(goal["x_m"]),
                     float(endpoint["y_m"]) - float(goal["y_m"]),
                 )
-                <= 0.02
+                <= MAX_NAV2_ENDPOINT_GRID_SNAP_M
                 for goal in batch["poses"]
                 if isinstance(goal, Mapping)
             )
@@ -1488,6 +1502,30 @@ def evaluate_canonical_mission(
                 and all(source_checks)
             )
     cleanup_checks = _cleanup_checks(cleanup_capture)
+    controller_events_well_formed = all(
+        "kind" in event and "at_s" in event
+        for event in controller_events
+    )
+    motion_handoff_observed = any(
+        str(event.get("kind", ""))
+        in {
+            "atomic_handoff",
+            "planning_hold",
+            "planning_resume",
+            "prefetch_dispatched",
+            "prefetch_revalidated",
+        }
+        for event in controller_events
+    )
+    terminal_handoff_observed = any(
+        str(event.get("kind", ""))
+        == "semantic_non_motion_goal_ready"
+        and str(event.get("action", "")) == "finish"
+        and event.get("real_provider") is True
+        and isinstance(event.get("decision"), Mapping)
+        and str(event["decision"].get("action", "")) == "finish"
+        for event in controller_events
+    )
     checks = {
         "proposal_schema_and_digest_valid": (
             proposal.get("schema") == PHYSICAL_PROPOSAL_SCHEMA
@@ -1589,20 +1627,10 @@ def evaluate_canonical_mission(
         "mapped_tracks_evidence_bound": mapped_tracks_truthful,
         "handoffs_and_pauses_reconstructable": (
             wait_planning_valid
-            and all(
-                "kind" in event and "at_s" in event
-                for event in controller_events
-            )
-            and any(
-                str(event.get("kind", ""))
-                in {
-                    "atomic_handoff",
-                    "planning_hold",
-                    "planning_resume",
-                    "prefetch_dispatched",
-                    "prefetch_revalidated",
-                }
-                for event in controller_events
+            and controller_events_well_formed
+            and (
+                motion_handoff_observed
+                or terminal_handoff_observed
             )
         ),
         "physical_motion_observed_from_odom": (

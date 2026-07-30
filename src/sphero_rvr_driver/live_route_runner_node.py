@@ -221,6 +221,16 @@ def main(args=None):
                             "hierarchical_clear_breakaway_angular_rad_s"
                         ).value
                     ),
+                    clear_breakaway_angular_measured_rate_rad_s=float(
+                        self.get_parameter(
+                            "hierarchical_clear_breakaway_angular_measured_rate_rad_s"
+                        ).value
+                    ),
+                    clear_breakaway_angular_pulse_s=float(
+                        self.get_parameter(
+                            "hierarchical_clear_breakaway_angular_pulse_s"
+                        ).value
+                    ),
                     reverse_escape_linear_mps=float(
                         self.get_parameter(
                             "hierarchical_reverse_escape_linear_mps"
@@ -301,6 +311,8 @@ def main(args=None):
                 "hierarchical_max_angular_rad_s": 0.4,
                 "hierarchical_clear_breakaway_linear_mps": 0.0,
                 "hierarchical_clear_breakaway_angular_rad_s": 0.0,
+                "hierarchical_clear_breakaway_angular_measured_rate_rad_s": 0.0,
+                "hierarchical_clear_breakaway_angular_pulse_s": 0.05,
                 "hierarchical_reverse_escape_linear_mps": 0.0,
                 "scan_topic": "/scan",
                 "odom_topic": "/odom",

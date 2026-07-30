@@ -278,6 +278,8 @@ def _path_evidence(
     endpoint: dict,
     *,
     recorded_at_s: float,
+    grid_snap_x_m: float = 0.0,
+    grid_snap_y_m: float = 0.0,
 ) -> dict:
     poses = []
     for fraction in (0.0, 0.5, 1.0):
@@ -286,8 +288,14 @@ def _path_evidence(
                 header=SimpleNamespace(frame_id="map"),
                 pose=SimpleNamespace(
                     position=SimpleNamespace(
-                        x=float(endpoint["x_m"]) * fraction,
-                        y=float(endpoint["y_m"]) * fraction,
+                        x=(
+                            float(endpoint["x_m"]) + grid_snap_x_m
+                        )
+                        * fraction,
+                        y=(
+                            float(endpoint["y_m"]) + grid_snap_y_m
+                        )
+                        * fraction,
                     ),
                     orientation=SimpleNamespace(
                         x=0.0,
@@ -1651,17 +1659,13 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
                         + index
                         + 0.05
                     ),
+                    grid_snap_x_m=0.025,
+                    grid_snap_y_m=0.025,
                 ),
                 recorded_at_s=(
                     approval["approved_at_s"] + index + 0.05
                 ),
             )
-        journal.append(
-            mission_id,
-            "controller_event",
-            {"kind": "atomic_handoff", "at_s": 2.1},
-            recorded_at_s=approval["approved_at_s"] + 2.1,
-        )
         journal.append(
             mission_id,
             "world_snapshot",
@@ -1728,6 +1732,17 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
                 return subprocess.CompletedProcess(
                     command, 1, stdout="", stderr=""
                 )
+            if command[0] == "ps":
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        "101 /usr/bin/python3 /opt/ros/jazzy/bin/ros2 run "
+                        "sphero_rvr_driver live_mission_service "
+                        "-p stationary_perception_enabled:=false\n"
+                    ),
+                    stderr="",
+                )
             return subprocess.CompletedProcess(
                 command, 0, stdout="", stderr=""
             )
@@ -1758,6 +1773,28 @@ def test_canonical_evaluator_recomputes_motion_goals_authority_and_cleanup(
         assert report["evidence"]["binding_events"]
         assert report["evidence"]["service_events"]
         assert report["evidence"]["terminal_result"]["status"] == "complete"
+        running_writer = {
+            **cleanup,
+            "observations": {
+                **cleanup["observations"],
+                "processes": {
+                    **cleanup["observations"]["processes"],
+                    "stdout": (
+                        "/home/jsperson/ros2_ws/install/"
+                        "camera_ros/lib/camera_ros/camera_node "
+                        "--ros-args\n"
+                    ),
+                },
+            },
+        }
+        running_writer_unsigned = dict(running_writer)
+        running_writer_unsigned.pop("capture_digest")
+        running_writer["capture_digest"] = canonical_digest(
+            running_writer_unsigned
+        )
+        assert _cleanup_checks(running_writer)[
+            "evidence_writers_absent"
+        ] is False
 
         connection = sqlite3.connect(journal_path)
         try:

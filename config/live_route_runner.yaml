@@ -21,6 +21,13 @@ live_route_runner:
     # this only to near-pure turns on CLEAR paths; mixed arcs retain Nav2's
     # requested angular rate.
     hierarchical_clear_breakaway_angular_rad_s: 0.35
+    # Raw-duty breakaway turns were measured near 3.2 rad/s even though Nav2
+    # requested 0.35 rad/s. Emit one 50 ms breakaway pulse only after the
+    # signed Nav2 yaw budget accumulates enough angle. A sign reversal resets
+    # the budget, preventing alternating 10 Hz planner corrections from being
+    # amplified into full-torque left/right oscillation.
+    hierarchical_clear_breakaway_angular_measured_rate_rad_s: 3.2
+    hierarchical_clear_breakaway_angular_pulse_s: 0.05
     # Keep obstacle escape at the physically proven gentler reverse speed.
     # Rear-sector and swept-trajectory vetoes remain authoritative.
     hierarchical_reverse_escape_linear_mps: 0.07

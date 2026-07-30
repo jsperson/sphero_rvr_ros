@@ -1103,6 +1103,13 @@ def test_physical_nav2_clears_only_its_declared_footprint() -> None:
     assert "hierarchical_clear_breakaway_angular_rad_s: 0.35" in (
         REPO_ROOT / "config" / "live_route_runner.yaml"
     ).read_text()
+    assert (
+        "hierarchical_clear_breakaway_angular_measured_rate_rad_s: 3.2"
+        in (REPO_ROOT / "config" / "live_route_runner.yaml").read_text()
+    )
+    assert "hierarchical_clear_breakaway_angular_pulse_s: 0.05" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
     assert "safety_dispatch_timeout_s: 0.20" in (
         REPO_ROOT / "config" / "rvr.yaml"
     ).read_text()

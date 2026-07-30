@@ -213,6 +213,21 @@ breakaway floor. Reverse escape remains separately fixed at the physically
 proven gentler `0.07 m/s`; collision distances, freshness gates, and the
 supervisor's rear/swept-path vetoes are unchanged.
 
+The first naturally completing canonical runs then exposed the angular side
+of the same drivetrain mismatch. DWB requested at most `0.4 rad/s`, but the
+raw duty required to break static turn friction produced about `3.2 rad/s` of
+measured yaw. Small alternating planner corrections were therefore amplified
+into rapid full-torque left/right pivots, while the attended run advanced only
+`0.127 m`. The physical bridge now integrates Nav2's signed requested yaw and
+emits the measured `0.35 rad/s` breakaway command as a single `0.05 s` pulse
+only after enough same-direction yaw budget accumulates. A sign reversal,
+stale command/evidence, invalid authority, collision veto, STOP, ESTOP, or
+cancel clears the budget before any later pulse. This changes neither the
+`0.4 rad/s` ceiling nor the collision supervisor; it prevents the drivetrain's
+nonlinear breakaway torque from turning 10 Hz planner dithering into physical
+oscillation. A fresh exact-SHA attended run must still validate the measured
+improvement before canonical evidence is final.
+
 That run also exposed a terminal-policy deadlock: live camera detections were
 truthfully `bearing_only`, so they did not become mapped semantic tracks. The
 model snapshot consequently had no `evidence_ids`, while the validated
