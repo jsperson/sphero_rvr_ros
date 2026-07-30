@@ -511,6 +511,41 @@ def camera_observation_evidence(
     return tuple(result[:16])
 
 
+def requested_observation_supports_finish(
+    observations: Any,
+    requested_object_classes: Any,
+) -> bool:
+    """Require accepted, high-confidence evidence for a requested class."""
+
+    if not isinstance(observations, (tuple, list)) or not isinstance(
+        requested_object_classes,
+        (tuple, list),
+    ):
+        return False
+    requested = {
+        str(item).strip().lower()
+        for item in requested_object_classes
+        if str(item).strip()
+    }
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            continue
+        try:
+            confidence = float(observation.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if (
+            str(observation.get("label", "")).strip().lower()
+            in requested
+            and str(observation.get("status", "")).strip().lower()
+            == "accepted"
+            and math.isfinite(confidence)
+            and confidence >= 0.70
+        ):
+            return True
+    return False
+
+
 def nav2_path_evidence(
     message: Any,
     *,
@@ -1251,6 +1286,15 @@ def main(args=None):
                 except MissionValidationError:
                     continue
             motion_evidence_fresh = self._motion_evidence_fresh(now_s)
+            observation_evidence = tuple(
+                self._camera_observation_history.values()
+            )[:16]
+            requested_evidence_observed = (
+                requested_observation_supports_finish(
+                    observation_evidence,
+                    self._proposal["requested_object_classes"],
+                )
+            )
             return build_semantic_world_snapshot(
                 mission_id=str(self._proposal["mission_id"]),
                 objective=str(self._proposal["objective"]),
@@ -1283,9 +1327,7 @@ def main(args=None):
                     )
                     / max(1, len(self._grid.cells))
                 ),
-                observation_evidence=tuple(
-                    self._camera_observation_history.values()
-                )[:16],
+                observation_evidence=observation_evidence,
                 evaluation={
                     "motion_goal_dispatches": self._dispatch_count,
                     "nav2_failed_targets": len(
@@ -1294,9 +1336,18 @@ def main(args=None):
                     "camera_observations": len(
                         self._camera_observation_history
                     ),
+                    "requested_evidence_observed": (
+                        requested_evidence_observed
+                    ),
                     "recommend_finish": (
-                        self._dispatch_count >= 3
-                        and bool(self._camera_observation_history)
+                        (
+                            self._dispatch_count >= 1
+                            and requested_evidence_observed
+                        )
+                        or (
+                            self._dispatch_count >= 3
+                            and bool(self._camera_observation_history)
+                        )
                     ),
                 },
                 collision_state=(

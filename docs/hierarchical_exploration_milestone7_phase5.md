@@ -219,9 +219,11 @@ model snapshot consequently had no `evidence_ids`, while the validated
 `finish` action requires at least one cited evidence ID. Bounded camera
 observation IDs are now retained as geometry-free evidence across the mission.
 They may support only a truthful `partial` or `blocked` finish when unmapped.
-After three motion-goal dispatches with camera evidence, the snapshot recommends
-that terminal choice instead of endlessly selecting unreachable room
-frontiers; the LLM still selects and cites the validated semantic action.
+After one motion-goal dispatch, accepted evidence at confidence `>= 0.70` for
+an explicitly requested class recommends that terminal choice. Three motion
+dispatches with any camera evidence remain the fallback for a blocked partial
+run. This avoids endlessly selecting unreachable room frontiers while the LLM
+still selects and cites the validated semantic action.
 
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a

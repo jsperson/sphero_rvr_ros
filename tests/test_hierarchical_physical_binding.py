@@ -28,6 +28,7 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     parse_collision_evidence,
     planning_hold_controller_state,
     rolling_frontier_invalidation_preserves_route,
+    requested_observation_supports_finish,
     semantic_non_motion_status,
     semantic_rejection_rollover_due,
     semantic_target_invalidation_reason,
@@ -80,7 +81,7 @@ def test_camera_observation_evidence_is_bounded_and_geometry_free() -> None:
                 {
                     "label": "shoe",
                     "confidence": 0.82,
-                    "status": "review",
+                    "status": "accepted",
                     "position_method": "bearing_only",
                     "localization_evidence_ids": [
                         "live-camera-00000015-shoe-01",
@@ -97,7 +98,7 @@ def test_camera_observation_evidence_is_bounded_and_geometry_free() -> None:
         {
             "label": "shoe",
             "confidence": 0.82,
-            "status": "review",
+            "status": "accepted",
             "position_method": "bearing_only",
             "evidence_ids": [
                 "live-camera-00000015-shoe-01",
@@ -107,6 +108,19 @@ def test_camera_observation_evidence_is_bounded_and_geometry_free() -> None:
     )
     assert "bbox" not in observations[0]
     assert "bearing" not in observations[0]
+    assert requested_observation_supports_finish(
+        observations,
+        ("shoe", "person"),
+    )
+    assert not requested_observation_supports_finish(
+        (
+            {
+                **observations[0],
+                "confidence": 0.69,
+            },
+        ),
+        ("shoe", "person"),
+    )
 
 
 class _UnusedPromptProvider:
