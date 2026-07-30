@@ -318,6 +318,71 @@ def test_world_snapshot_is_bounded_digest_bound_and_has_no_authority() -> None:
         "live_sensors": False,
         "serial_access": False,
     }
+
+
+def test_bearing_only_camera_observation_can_truthfully_finish_partial() -> None:
+    snapshot = build_semantic_world_snapshot(
+        mission_id="phase3-camera-only",
+        objective="Explore and identify shoes, then stop safely.",
+        objective_revision=1,
+        event_generation=4,
+        requested_object_classes=("shoe",),
+        map_id="live-room",
+        map_revision=_grid().revision,
+        robot_x_m=0.0,
+        robot_y_m=0.0,
+        robot_yaw_rad=0.0,
+        localization_timestamp_s=100.0,
+        now_s=100.1,
+        frontiers=_frontiers(1),
+        tracks=(),
+        next_best_views=(),
+        origin_x_m=0.0,
+        origin_y_m=0.0,
+        observation_evidence=(
+            {
+                "label": "shoe",
+                "confidence": 0.82,
+                "status": "review",
+                "position_method": "bearing_only",
+                "evidence_ids": [
+                    "live-camera-00000015-shoe-01",
+                    "live-scan-00000123",
+                ],
+            },
+        ),
+        evaluation={
+            "motion_goal_dispatches": 3,
+            "recommend_finish": True,
+        },
+    )
+    prompt = json.loads(
+        semantic_goal_prompt(snapshot["objective"], snapshot)
+    )
+    evidence_id = "live-camera-00000015-shoe-01"
+    decision = SemanticGoalDecision.validated(
+        _decision(
+            snapshot,
+            "finish",
+            {
+                "outcome": "partial",
+                "evidence_ids": [evidence_id],
+            },
+            rationale=(
+                f"Finish partial with bearing-only evidence {evidence_id}."
+            ),
+        ),
+        snapshot=snapshot,
+        expected_generation=1,
+        provider_id="test-provider",
+        model_id="test-model",
+    )
+
+    assert snapshot["tracks"] == []
+    assert snapshot["observations"][0]["mapped"] is False
+    assert evidence_id in snapshot["evidence_ids"]
+    assert prompt["evaluation"]["recommend_finish"] is True
+    assert decision.action == "finish"
     assert prompt["world_snapshot"]["snapshot_id"] == snapshot["snapshot_id"]
     assert all(
         "approach_pose" not in frontier

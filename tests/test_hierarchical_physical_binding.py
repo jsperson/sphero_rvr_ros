@@ -17,6 +17,7 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     adapter_recovery_reason,
     adapter_remaining_distance,
     bounded_camera_evidence,
+    camera_observation_evidence,
     collision_hold_controller_state,
     goal_dispatch_queue_key,
     live_motion_evidence_is_fresh,
@@ -70,6 +71,42 @@ from sphero_rvr_driver.prompt_mission_controller import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SHA = "a" * 40
+
+
+def test_camera_observation_evidence_is_bounded_and_geometry_free() -> None:
+    observations = camera_observation_evidence(
+        {
+            "detections": [
+                {
+                    "label": "shoe",
+                    "confidence": 0.82,
+                    "status": "review",
+                    "position_method": "bearing_only",
+                    "localization_evidence_ids": [
+                        "live-camera-00000015-shoe-01",
+                        "live-scan-00000123",
+                    ],
+                    "bbox": {"x": 1, "y": 2, "width": 3, "height": 4},
+                    "bearing": {"center_rad": 0.1},
+                }
+            ]
+        }
+    )
+
+    assert observations == (
+        {
+            "label": "shoe",
+            "confidence": 0.82,
+            "status": "review",
+            "position_method": "bearing_only",
+            "evidence_ids": [
+                "live-camera-00000015-shoe-01",
+                "live-scan-00000123",
+            ],
+        },
+    )
+    assert "bbox" not in observations[0]
+    assert "bearing" not in observations[0]
 
 
 class _UnusedPromptProvider:

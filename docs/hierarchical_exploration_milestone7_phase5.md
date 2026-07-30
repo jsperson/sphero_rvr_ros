@@ -213,6 +213,16 @@ breakaway floor. Reverse escape remains separately fixed at the physically
 proven gentler `0.07 m/s`; collision distances, freshness gates, and the
 supervisor's rear/swept-path vetoes are unchanged.
 
+That run also exposed a terminal-policy deadlock: live camera detections were
+truthfully `bearing_only`, so they did not become mapped semantic tracks. The
+model snapshot consequently had no `evidence_ids`, while the validated
+`finish` action requires at least one cited evidence ID. Bounded camera
+observation IDs are now retained as geometry-free evidence across the mission.
+They may support only a truthful `partial` or `blocked` finish when unmapped.
+After three motion-goal dispatches with camera evidence, the snapshot recommends
+that terminal choice instead of endlessly selecting unreachable room
+frontiers; the LLM still selects and cites the validated semantic action.
+
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a
 terminal event at controller frequency. Nav2 keeps the accepted or

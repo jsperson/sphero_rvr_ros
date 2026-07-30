@@ -388,6 +388,8 @@ def build_semantic_world_snapshot(
     active_goal: Optional[Mapping[str, Any]] = None,
     coverage_fraction: float = 0.0,
     remaining_route_budget_m: float = 20.0,
+    observation_evidence: Sequence[Mapping[str, Any]] = (),
+    evaluation: Optional[Mapping[str, Any]] = None,
     mission_lease_valid: bool = True,
     motion_evidence_fresh: bool = True,
     stop: bool = False,
@@ -433,11 +435,68 @@ def build_semantic_world_snapshot(
         plan.track_id: [candidate.to_json_dict() for candidate in plan.candidates]
         for plan in next_best_views
     }
+    if len(observation_evidence) > 16:
+        raise MissionValidationError(
+            "semantic snapshot observation evidence exceeds bounds"
+        )
+    bounded_observations = []
+    for raw in observation_evidence:
+        if not isinstance(raw, Mapping):
+            raise MissionValidationError(
+                "semantic snapshot observation evidence is invalid"
+            )
+        label = str(raw.get("label", "")).strip()
+        status = str(raw.get("status", "")).strip()
+        position_method = str(raw.get("position_method", "")).strip()
+        raw_evidence_ids = raw.get("evidence_ids", ())
+        if (
+            not label
+            or not status
+            or position_method
+            not in {"bearing_only", "lidar_range", "floor_projection"}
+            or not isinstance(raw_evidence_ids, Sequence)
+            or isinstance(raw_evidence_ids, (str, bytes))
+        ):
+            raise MissionValidationError(
+                "semantic snapshot observation evidence is invalid"
+            )
+        observation_ids = tuple(
+            dict.fromkeys(str(item).strip() for item in raw_evidence_ids)
+        )
+        confidence = _finite(
+            raw.get("confidence", 0.0),
+            "observation confidence",
+        )
+        if (
+            not observation_ids
+            or len(observation_ids) > 8
+            or any(not item for item in observation_ids)
+            or not 0.0 <= confidence <= 1.0
+        ):
+            raise MissionValidationError(
+                "semantic snapshot observation evidence is invalid"
+            )
+        bounded_observations.append(
+            {
+                "label": label,
+                "confidence": confidence,
+                "status": status,
+                "position_method": position_method,
+                "evidence_ids": list(observation_ids),
+                "mapped": position_method
+                in {"lidar_range", "floor_projection"},
+            }
+        )
     evidence_ids = sorted(
         {
             evidence_id
             for track in tracks
             for evidence_id in track.evidence_ids
+        }
+        | {
+            evidence_id
+            for observation in bounded_observations
+            for evidence_id in observation["evidence_ids"]
         }
     )
     payload: dict[str, Any] = {
@@ -481,6 +540,7 @@ def build_semantic_world_snapshot(
             for candidate in bounded_frontiers
         ],
         "tracks": [track.to_json_dict() for track in tuple(tracks)[:16]],
+        "observations": bounded_observations,
         "next_best_views": nbv_by_track,
         "active_goal": dict(active_goal or {}),
         "safety": {
@@ -506,6 +566,20 @@ def build_semantic_world_snapshot(
             "serial_access": False,
         },
     }
+    if evaluation is not None:
+        try:
+            payload["evaluation"] = json.loads(
+                json.dumps(
+                    dict(evaluation),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            )
+        except (TypeError, ValueError):
+            raise MissionValidationError(
+                "semantic snapshot evaluation is invalid"
+            )
     payload["snapshot_id"] = _digest(payload)
     return payload
 
@@ -860,6 +934,8 @@ def semantic_goal_prompt(
             "Select only stable frontier, track, region, origin, wait, or evidence IDs supplied by the snapshot.",
             "Never emit poses, routes, paths, speeds, acceleration, clearance, leases, ROS names, files, credentials, motor commands, or code.",
             "Cite the selected candidate or evidence IDs in the concise rationale.",
+            "Camera observations are evidence but are not mapped objects when mapped is false; bearing-only evidence may support a partial or blocked finish but never a mapped-object claim.",
+            "When evaluation.recommend_finish is true, prefer finish with outcome partial or blocked and cite supplied evidence IDs instead of repeatedly selecting unreachable frontiers.",
         ],
     }
     evaluation = snapshot.get("evaluation")

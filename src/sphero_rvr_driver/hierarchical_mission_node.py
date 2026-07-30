@@ -458,6 +458,59 @@ def bounded_camera_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         return {}
 
 
+def camera_observation_evidence(
+    value: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Project camera detections into stable, geometry-free evidence."""
+
+    result = []
+    detections = value.get("detections", ())
+    if not isinstance(detections, list):
+        return ()
+    for raw in detections[:32]:
+        if not isinstance(raw, Mapping):
+            continue
+        label = str(raw.get("label", "")).strip()
+        status = str(raw.get("status", "")).strip()
+        position_method = str(
+            raw.get("position_method", "")
+        ).strip()
+        raw_ids = raw.get("localization_evidence_ids", ())
+        if (
+            not label
+            or not status
+            or position_method
+            not in {"bearing_only", "lidar_range", "floor_projection"}
+            or not isinstance(raw_ids, list)
+        ):
+            continue
+        evidence_ids = tuple(
+            dict.fromkeys(str(item).strip() for item in raw_ids)
+        )
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if (
+            not evidence_ids
+            or len(evidence_ids) > 8
+            or any(not item for item in evidence_ids)
+            or not math.isfinite(confidence)
+            or not 0.0 <= confidence <= 1.0
+        ):
+            continue
+        result.append(
+            {
+                "label": label,
+                "confidence": confidence,
+                "status": status,
+                "position_method": position_method,
+                "evidence_ids": list(evidence_ids),
+            }
+        )
+    return tuple(result[:16])
+
+
 def nav2_path_evidence(
     message: Any,
     *,
@@ -764,6 +817,9 @@ def main(args=None):
             self._camera_source_timestamp_s: Optional[float] = None
             self._camera_valid = False
             self._camera_evidence: dict[str, Any] = {}
+            self._camera_observation_history: dict[
+                tuple[str, str, str], dict[str, Any]
+            ] = {}
             self._origin: Optional[tuple[float, float]] = None
             self._collision_state = "BLOCKED"
             self._collision_scan_healthy = False
@@ -778,6 +834,7 @@ def main(args=None):
             self._last_dispatch_queue_key = ""
             self._last_resolved_batch_digest = ""
             self._last_nav2_path_content_digest = ""
+            self._dispatch_count = 0
             self._processed_nav2_abort_batches: set[str] = set()
             self._rejected_frontier_signatures: set[str] = set()
             self._terminal = False
@@ -985,6 +1042,18 @@ def main(args=None):
                 return
             self._camera_valid = True
             self._camera_evidence = bounded_camera_evidence(camera)
+            for observation in camera_observation_evidence(
+                self._camera_evidence
+            ):
+                key = (
+                    str(observation["label"]),
+                    str(observation["status"]),
+                    str(observation["position_method"]),
+                )
+                self._camera_observation_history.setdefault(
+                    key,
+                    observation,
+                )
             self._camera_received_at_s = time.time()
             self._camera_source_timestamp_s = source_timestamp_s
 
@@ -1214,6 +1283,22 @@ def main(args=None):
                     )
                     / max(1, len(self._grid.cells))
                 ),
+                observation_evidence=tuple(
+                    self._camera_observation_history.values()
+                )[:16],
+                evaluation={
+                    "motion_goal_dispatches": self._dispatch_count,
+                    "nav2_failed_targets": len(
+                        self._processed_nav2_abort_batches
+                    ),
+                    "camera_observations": len(
+                        self._camera_observation_history
+                    ),
+                    "recommend_finish": (
+                        self._dispatch_count >= 3
+                        and bool(self._camera_observation_history)
+                    ),
+                },
                 collision_state=(
                     self._collision_state
                     if motion_evidence_fresh
@@ -1763,6 +1848,7 @@ def main(args=None):
                 dispatch,
                 recorded_at_s=now_s,
             )
+            self._dispatch_count += 1
             self._journal.append(
                 str(self._authority["mission_id"]),
                 "resolved_goal_batch",
