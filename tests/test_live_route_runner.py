@@ -17,7 +17,11 @@ from sphero_rvr_driver.live_route_runner import (
     route_request_from_json,
     run_route_replay,
 )
-from sphero_rvr_driver.live_route_runner_node import _collision_state_value, _encoder_state
+from sphero_rvr_driver.live_route_runner_node import (
+    _collision_reason_value,
+    _collision_state_value,
+    _encoder_state,
+)
 from sphero_rvr_driver.mission_api import ToolResultStatus
 from sphero_rvr_driver.mission_api import MissionValidationError
 from sphero_rvr_driver.odometry import MotionPrimitiveConfig, OdomMotionState
@@ -100,6 +104,21 @@ def _route() -> LiveRouteRequest:
 )
 def test_live_route_node_parses_collision_supervisor_state_token(raw, expected) -> None:
     assert _collision_state_value(raw) == expected
+
+
+def test_live_route_node_preserves_collision_supervisor_reason() -> None:
+    assert (
+        _collision_reason_value(
+            "SLOW reason=left_trajectory_blocked scan_healthy=true"
+        )
+        == "left_trajectory_blocked"
+    )
+    assert (
+        _collision_reason_value(
+            '{"state":"STOPPED","reason":"front_stop"}'
+        )
+        == "front_stop"
+    )
 
 
 def test_live_route_request_parses_canonical_mission_api_invocations_with_budgets() -> None:
@@ -1286,5 +1305,6 @@ def test_live_route_node_is_installed_default_off_and_cannot_own_motor_or_serial
     assert "encoder_counts=self._latest_encoder_counts" in node_source
     assert 'create_publisher(String, "encoder_counts", 10)' in driver_source
     assert "sphero_rvr.encoder_counts.v1" in driver_source
-    assert "_collision_state_value(getattr(msg, \"data\", None))" in node_source
+    assert "self._collision_state = _collision_state_value(raw)" in node_source
+    assert "self._collision_reason = _collision_reason_value(raw)" in node_source
     assert setup_text.count("config/live_route_runner.yaml") == 1

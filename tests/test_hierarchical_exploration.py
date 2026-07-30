@@ -331,6 +331,22 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     assert stopped_escape.bridged_angular_rad_s == 0.0
     assert stopped_escape.reason == "stopped_reverse_escape_request"
 
+    physical.accept(0.0, 0.4, received_at_s=3.8)
+    blocked_turn_escape = physical.evaluate(
+        now_s=3.9,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="SLOW",
+        collision_reason="left_trajectory_blocked",
+    )
+    assert blocked_turn_escape.bridged_linear_mps == pytest.approx(-0.07)
+    assert blocked_turn_escape.bridged_angular_rad_s == 0.0
+    assert (
+        blocked_turn_escape.reason
+        == "blocked_trajectory_reverse_escape"
+    )
+
     physical.accept(0.0, -0.036, received_at_s=4.0)
     turn = physical.evaluate(
         now_s=4.1,

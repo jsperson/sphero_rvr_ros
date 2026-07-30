@@ -197,6 +197,14 @@ that logic. The bridge now forwards only a bounded reverse escape while
 and its live rear-sector and projected-trajectory checks must still pass; every
 other STOPPED condition remains motor zero.
 
+The following handoff run then reached a close obstacle while Nav2 requested a
+pure turn. The supervisor correctly reported `left_trajectory_blocked` and
+zeroed the swept-footprint collision, but the bridge retained only the `SLOW`
+state token and repeated that blocked turn. The bridge now preserves the
+supervisor reason and requests the same rear-checked reverse escape for
+forward/left/right trajectory-blocked reasons. It never bypasses the
+supervisor's rear or trajectory veto.
+
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a
 terminal event at controller frequency. Nav2 keeps the accepted or

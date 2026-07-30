@@ -613,6 +613,7 @@ class HierarchicalCommandBridge:
         mission_lease_valid: bool,
         motion_evidence_fresh: bool,
         collision_state: str,
+        collision_reason: str = "",
         stop: bool = False,
         estop: bool = False,
         cancelled: bool = False,
@@ -634,6 +635,7 @@ class HierarchicalCommandBridge:
                 "motion_evidence_stale"
             )
         normalized_collision_state = str(collision_state).upper()
+        normalized_collision_reason = str(collision_reason).lower().strip()
         if normalized_collision_state not in {"CLEAR", "SLOW", "STOPPED"}:
             return ContinuousGoalFollowerReplay._zero_command("collision_veto")
         if (
@@ -656,7 +658,7 @@ class HierarchicalCommandBridge:
         if normalized_collision_state == "STOPPED":
             if (
                 self.config.clear_breakaway_linear_mps <= 0.0
-                or linear == 0.0
+                or (linear == 0.0 and angular == 0.0)
             ):
                 return ContinuousGoalFollowerReplay._zero_command(
                     "collision_veto"
@@ -731,6 +733,23 @@ class HierarchicalCommandBridge:
                 reason = "slow_reverse_escape"
             else:
                 reason = "supervisor_slow_passthrough"
+        elif (
+            normalized_collision_state == "SLOW"
+            and self.config.clear_breakaway_linear_mps > 0.0
+            and normalized_collision_reason
+            in {
+                "forward_trajectory_blocked",
+                "left_trajectory_blocked",
+                "right_trajectory_blocked",
+                "front_stop_reverse_escape",
+            }
+        ):
+            # A blocked turn cannot clear its own swept footprint. Request
+            # the same rear-checked escape as a blocked forward trajectory;
+            # the downstream supervisor remains the final arbiter.
+            linear = -self.config.clear_breakaway_linear_mps
+            angular = 0.0
+            reason = "blocked_trajectory_reverse_escape"
         return ReplayCommand(
             requested_linear_mps=self._linear_mps,
             requested_angular_rad_s=self._angular_rad_s,
