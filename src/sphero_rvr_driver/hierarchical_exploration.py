@@ -678,8 +678,29 @@ class HierarchicalCommandBridge:
             )
             reason = "clear_breakaway_floor"
         elif str(collision_state).upper() == "SLOW" and linear > 0.0:
-            linear *= 0.5
-            reason = "supervisor_slowed"
+            if (
+                abs(angular) > 0.0
+                and self.config.clear_breakaway_angular_rad_s > 0.0
+            ):
+                # Do not crawl a mixed arc toward a close obstacle at a
+                # drivetrain-stalling speed. Remove its approach component
+                # and pivot in Nav2's requested direction. The independent
+                # downstream supervisor still evaluates the swept footprint
+                # and can scale or veto this request.
+                linear = 0.0
+                angular = math.copysign(
+                    max(
+                        abs(angular),
+                        self.config.clear_breakaway_angular_rad_s,
+                    ),
+                    angular,
+                )
+                reason = "slow_pivot_breakaway"
+            else:
+                # The downstream supervisor owns the one and only SLOW scale.
+                # Pre-scaling here caused a measured double reduction from
+                # 0.071 m/s to 0.006 m/s and no useful odometry.
+                reason = "supervisor_slow_passthrough"
         return ReplayCommand(
             requested_linear_mps=self._linear_mps,
             requested_angular_rad_s=self._angular_rad_s,

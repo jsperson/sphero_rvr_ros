@@ -175,6 +175,15 @@ rollover, and immediately continues safe replanning while preserving any
 already accepted Nav2 route. It does not relax collision, localization,
 geometry ownership, command-lease, or motion-limit gates.
 
+A follow-up physical probe found a second compounding hold: with a `0.39 m`
+front clearance, the bridge and independent supervisor both scaled the same
+`0.071 m/s` forward arc, producing only `0.006 m/s` at the motor topic and
+`<1 mm` of odometry in ten seconds. The bridge no longer duplicates the
+supervisor's SLOW scale. A forward SLOW arc with a steering component is
+converted to a zero-linear, `0.35 rad/s` pivot in Nav2's requested direction;
+the downstream supervisor still evaluates the swept footprint and retains
+unconditional scale/zero authority.
+
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a
 terminal event at controller frequency. Nav2 keeps the accepted or
