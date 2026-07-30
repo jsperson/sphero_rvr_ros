@@ -170,6 +170,11 @@ Nav2's bounded progress timeout and ordinary failed-target exclusion. STOP,
 ESTOP, cancel, stale scan evidence, command leases, and authority expiry are
 not included in this resumable collision hold.
 
+Near-horizon floor anchors also fail closed to `bearing_only` when any pixel or
+floor-height uncertainty perturbation cannot intersect the floor. Such an
+anchor cannot support a bounded mapped point, but it is ordinary rejected
+evidence and must not terminate the live perception process.
+
 The canonical graph uses a moving-rover SLAM configuration with a `0.500 s`
 map update interval, leaving scheduling margin inside the fixed `1.000 s`
 map gate.

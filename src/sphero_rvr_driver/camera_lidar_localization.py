@@ -476,22 +476,42 @@ def localize_floor_object(
 
     map_dx, map_dy = _rotate_xy(base_x, base_y, pose.yaw)
     point = MapPoint(x=pose.x + map_dx, y=pose.y + map_dy)
-    perturbations = [
-        _floor_point_in_base(
-            ImageAnchor(anchor.u + du, anchor.v + dv, anchor.timestamp_ns, anchor.evidence_ids),
-            calibration,
-            camera,
-            camera_height_offset_m=dh,
+    try:
+        perturbations = [
+            _floor_point_in_base(
+                ImageAnchor(
+                    anchor.u + du,
+                    anchor.v + dv,
+                    anchor.timestamp_ns,
+                    anchor.evidence_ids,
+                ),
+                calibration,
+                camera,
+                camera_height_offset_m=dh,
+            )
+            for du, dv, dh in (
+                (config.pixel_sigma_px, 0.0, 0.0),
+                (-config.pixel_sigma_px, 0.0, 0.0),
+                (0.0, config.pixel_sigma_px, 0.0),
+                (0.0, -config.pixel_sigma_px, 0.0),
+                (0.0, 0.0, config.floor_height_sigma_m),
+                (0.0, 0.0, -config.floor_height_sigma_m),
+            )
+        ]
+    except ValueError:
+        # A nominal ray can intersect the floor while one uncertainty
+        # perturbation crosses the horizon. In that case the mapped point
+        # cannot carry a bounded floor-projection uncertainty, so preserve
+        # only the coarse bearing instead of crashing the perception node.
+        return _bearing_fallback(
+            anchor=anchor,
+            calibration=calibration,
+            camera=camera,
+            pose=pose,
+            config=config,
+            reason="floor_intersection_invalid",
+            timestamps=timestamps,
         )
-        for du, dv, dh in (
-            (config.pixel_sigma_px, 0.0, 0.0),
-            (-config.pixel_sigma_px, 0.0, 0.0),
-            (0.0, config.pixel_sigma_px, 0.0),
-            (0.0, -config.pixel_sigma_px, 0.0),
-            (0.0, 0.0, config.floor_height_sigma_m),
-            (0.0, 0.0, -config.floor_height_sigma_m),
-        )
-    ]
     projection_sigma = max(math.hypot(x - base_x, y - base_y) for x, y in perturbations)
     position_sigma = math.sqrt(
         pose.position_sigma_m**2 + config.extrinsic_position_sigma_m**2 + projection_sigma**2
