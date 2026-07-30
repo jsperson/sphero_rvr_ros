@@ -1340,14 +1340,8 @@ def main(args=None):
                         requested_evidence_observed
                     ),
                     "recommend_finish": (
-                        (
-                            self._dispatch_count >= 1
-                            and requested_evidence_observed
-                        )
-                        or (
-                            self._dispatch_count >= 3
-                            and bool(self._camera_observation_history)
-                        )
+                        self._dispatch_count >= 1
+                        and bool(observation_evidence)
                     ),
                 },
                 collision_state=(
