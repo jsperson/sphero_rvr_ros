@@ -28,6 +28,7 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     planning_hold_controller_state,
     rolling_frontier_invalidation_preserves_route,
     semantic_non_motion_status,
+    semantic_rejection_rollover_due,
     semantic_target_invalidation_reason,
     updated_semantic_rejection_count,
 )
@@ -1022,7 +1023,7 @@ def test_semantic_revalidation_churn_is_bounded_and_success_resets() -> None:
             ({"kind": "prefetch_discarded"},),
         )
     assert count == 3
-    assert count >= 3
+    assert semantic_rejection_rollover_due(count)
     assert (
         updated_semantic_rejection_count(
             count,
@@ -1083,8 +1084,9 @@ def test_nav2_adapter_binds_feedback_and_results_to_active_batch() -> None:
         / "sphero_rvr_driver"
         / "hierarchical_mission_node.py"
     ).read_text()
-    assert "MAX_CONSECUTIVE_SEMANTIC_REJECTIONS = 3" in controller
-    assert "semantic_revalidation_exhausted" in controller
+    assert "SEMANTIC_REJECTION_ROLLOVER = 3" in controller
+    assert '"kind": "semantic_revalidation_retry"' in controller
+    assert '"terminal": False' in controller
     assert "_initial_pool.shutdown(wait=True" in controller
 
 

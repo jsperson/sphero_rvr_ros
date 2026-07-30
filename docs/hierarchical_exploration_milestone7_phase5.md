@@ -166,6 +166,15 @@ same loaded-Pi run showed one false fail-safe when a recovery stop missed the
 driver's former `0.10 s` scheduling allowance; the installed allowance is
 `0.20 s`, still inside the fixed `0.30 s` collision-veto bound.
 
+The first exact-SHA canonical attempt also exposed ordinary rolling-map churn:
+three asynchronous model responses were correctly rejected after their
+frontier signatures changed, but the controller then treated that planning
+churn as a terminal `semantic_revalidation_exhausted` fault. The installed
+policy keeps the stale-response rejection, records every three-rejection
+rollover, and immediately continues safe replanning while preserving any
+already accepted Nav2 route. It does not relax collision, localization,
+geometry ownership, command-lease, or motion-limit gates.
+
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a
 terminal event at controller frequency. Nav2 keeps the accepted or

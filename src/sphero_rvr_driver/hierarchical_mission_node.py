@@ -52,7 +52,7 @@ from .hierarchical_m7_canonical_validation import (
 from .mission_api import MissionValidationError
 
 
-MAX_CONSECUTIVE_SEMANTIC_REJECTIONS = 3
+SEMANTIC_REJECTION_ROLLOVER = 3
 COLLISION_EVIDENCE_MAX_AGE_S = 0.300
 CAMERA_EVIDENCE_MAX_AGE_S = 3.0
 MAP_EVIDENCE_MAX_AGE_S = 3.0
@@ -174,6 +174,12 @@ def updated_semantic_rejection_count(
     ):
         return 0
     return count
+
+
+def semantic_rejection_rollover_due(count: int) -> bool:
+    """Bound churn accounting without turning a safe replan into a fault."""
+
+    return max(0, int(count)) >= SEMANTIC_REJECTION_ROLLOVER
 
 
 def adapter_remaining_distance(
@@ -1457,17 +1463,34 @@ def main(args=None):
                     step.events,
                 )
             )
-            if (
+            if semantic_rejection_rollover_due(
                 self._consecutive_semantic_rejections
-                >= MAX_CONSECUTIVE_SEMANTIC_REJECTIONS
             ):
-                self._terminal = True
-                self._provider.cancel()
-                self._publish_status(
-                    "recovery_required",
-                    "semantic_revalidation_exhausted",
+                # A live SLAM frontier is expected to change while the rover
+                # is mapping and moving.  The stale model result has already
+                # been discarded fail-closed; do not also terminate a healthy
+                # accepted Nav2 route merely because three successive
+                # asynchronous responses lost their frontier binding.
+                self._record_controller_events(
+                    (
+                        {
+                            "at_s": float(now_s),
+                            "kind": "semantic_revalidation_retry",
+                            "consecutive_rejections": int(
+                                self._consecutive_semantic_rejections
+                            ),
+                            "active_route_preserved": (
+                                planning_hold_controller_state(
+                                    self._adapter_status
+                                )
+                                == "navigating"
+                            ),
+                            "terminal": False,
+                        },
+                    ),
+                    now_s=now_s,
                 )
-                return
+                self._consecutive_semantic_rejections = 0
             if any(
                 str(event.get("kind", ""))
                 in {"prefetch_revalidated", "prefetch_redundant"}
