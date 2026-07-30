@@ -188,6 +188,15 @@ becomes a `-0.07 m/s` reverse escape, implementing the operator's explicit
 and reverse scale/zero authority remain entirely downstream; an unsafe reverse
 never reaches the motors.
 
+The next run proved that escape and raised front clearance from `0.39 m` to
+`1.22 m`, but also exposed a wiring contradiction: the downstream supervisor
+latched `front_stop` and explicitly supports `front_stop_reverse_escape`, while
+the bridge zeroed every `STOPPED` state before a reverse request could reach
+that logic. The bridge now forwards only a bounded reverse escape while
+`STOPPED`. The supervisor's private latch reason must still be `front_stop`,
+and its live rear-sector and projected-trajectory checks must still pass; every
+other STOPPED condition remains motor zero.
+
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a
 terminal event at controller frequency. Nav2 keeps the accepted or

@@ -633,7 +633,8 @@ class HierarchicalCommandBridge:
             return ContinuousGoalFollowerReplay._zero_command(
                 "motion_evidence_stale"
             )
-        if str(collision_state).upper() not in {"CLEAR", "SLOW"}:
+        normalized_collision_state = str(collision_state).upper()
+        if normalized_collision_state not in {"CLEAR", "SLOW", "STOPPED"}:
             return ContinuousGoalFollowerReplay._zero_command("collision_veto")
         if (
             self._received_at_s is None
@@ -652,12 +653,35 @@ class HierarchicalCommandBridge:
             min(self.config.max_angular_rad_s, self._angular_rad_s),
         )
         reason = "clear"
+        if normalized_collision_state == "STOPPED":
+            if (
+                self.config.clear_breakaway_linear_mps <= 0.0
+                or linear == 0.0
+            ):
+                return ContinuousGoalFollowerReplay._zero_command(
+                    "collision_veto"
+                )
+            # The downstream supervisor permits this only when its private
+            # latch reason is front_stop and its live rear sector plus swept
+            # reverse trajectory are clear. Every other STOPPED latch still
+            # receives motor zero.
+            return ReplayCommand(
+                requested_linear_mps=self._linear_mps,
+                requested_angular_rad_s=self._angular_rad_s,
+                bridged_linear_mps=-max(
+                    abs(linear),
+                    self.config.clear_breakaway_linear_mps,
+                ),
+                bridged_angular_rad_s=0.0,
+                reason="stopped_reverse_escape_request",
+                zero_required=False,
+            )
         near_pure_turn = (
             abs(self._linear_mps) <= 0.01
             and abs(self._angular_rad_s) > 0.0
         )
         if (
-            str(collision_state).upper() == "CLEAR"
+            normalized_collision_state == "CLEAR"
             and near_pure_turn
             and abs(angular) < self.config.clear_breakaway_angular_rad_s
         ):
@@ -668,7 +692,7 @@ class HierarchicalCommandBridge:
             )
             reason = "clear_angular_breakaway_floor"
         elif (
-            str(collision_state).upper() == "CLEAR"
+            normalized_collision_state == "CLEAR"
             and not near_pure_turn
             and 0.0 < abs(linear) < self.config.clear_breakaway_linear_mps
         ):
@@ -677,7 +701,7 @@ class HierarchicalCommandBridge:
                 linear,
             )
             reason = "clear_breakaway_floor"
-        elif str(collision_state).upper() == "SLOW" and linear > 0.0:
+        elif normalized_collision_state == "SLOW" and linear > 0.0:
             if (
                 abs(angular) > 0.0
                 and self.config.clear_breakaway_angular_rad_s > 0.0
