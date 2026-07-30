@@ -551,6 +551,7 @@ class HierarchicalBridgeConfig:
     max_linear_mps: float = 0.10
     max_angular_rad_s: float = 0.4
     clear_breakaway_linear_mps: float = 0.0
+    clear_breakaway_angular_rad_s: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -571,6 +572,16 @@ class HierarchicalBridgeConfig:
             raise ValueError(
                 "hierarchical CLEAR breakaway speed must be between zero "
                 "and the linear ceiling"
+            )
+        if (
+            not math.isfinite(self.clear_breakaway_angular_rad_s)
+            or not 0.0
+            <= self.clear_breakaway_angular_rad_s
+            <= self.max_angular_rad_s
+        ):
+            raise ValueError(
+                "hierarchical CLEAR angular breakaway speed must be between "
+                "zero and the angular ceiling"
             )
 
 
@@ -641,8 +652,24 @@ class HierarchicalCommandBridge:
             min(self.config.max_angular_rad_s, self._angular_rad_s),
         )
         reason = "clear"
+        near_pure_turn = (
+            abs(self._linear_mps) <= 0.01
+            and abs(self._angular_rad_s) > 0.0
+        )
         if (
             str(collision_state).upper() == "CLEAR"
+            and near_pure_turn
+            and abs(angular) < self.config.clear_breakaway_angular_rad_s
+        ):
+            linear = 0.0
+            angular = math.copysign(
+                self.config.clear_breakaway_angular_rad_s,
+                angular,
+            )
+            reason = "clear_angular_breakaway_floor"
+        elif (
+            str(collision_state).upper() == "CLEAR"
+            and not near_pure_turn
             and 0.0 < abs(linear) < self.config.clear_breakaway_linear_mps
         ):
             linear = math.copysign(

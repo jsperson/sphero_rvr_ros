@@ -200,6 +200,11 @@ def main(args=None):
                             "hierarchical_clear_breakaway_linear_mps"
                         ).value
                     ),
+                    clear_breakaway_angular_rad_s=float(
+                        self.get_parameter(
+                            "hierarchical_clear_breakaway_angular_rad_s"
+                        ).value
+                    ),
                 )
             )
             self._latest_nav2_command_received_at: Optional[float] = None
@@ -273,6 +278,7 @@ def main(args=None):
                 "hierarchical_max_linear_mps": 0.10,
                 "hierarchical_max_angular_rad_s": 0.4,
                 "hierarchical_clear_breakaway_linear_mps": 0.0,
+                "hierarchical_clear_breakaway_angular_rad_s": 0.0,
                 "scan_topic": "/scan",
                 "odom_topic": "/odom",
                 "encoder_counts_topic": "/encoder_counts",

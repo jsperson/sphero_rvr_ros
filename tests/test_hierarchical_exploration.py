@@ -271,6 +271,7 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
         HierarchicalBridgeConfig(
             enabled=True,
             clear_breakaway_linear_mps=0.07,
+            clear_breakaway_angular_rad_s=0.35,
         )
     )
     physical.accept(0.014, 0.0, received_at_s=3.0)
@@ -292,6 +293,30 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     assert clear.reason == "clear_breakaway_floor"
     assert slow.bridged_linear_mps == pytest.approx(0.007)
     assert slow.reason == "supervisor_slowed"
+
+    physical.accept(0.0, -0.036, received_at_s=4.0)
+    turn = physical.evaluate(
+        now_s=4.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert turn.bridged_linear_mps == 0.0
+    assert turn.bridged_angular_rad_s == pytest.approx(-0.35)
+    assert turn.reason == "clear_angular_breakaway_floor"
+
+    physical.accept(0.02, 0.036, received_at_s=5.0)
+    mixed = physical.evaluate(
+        now_s=5.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert mixed.bridged_linear_mps == pytest.approx(0.07)
+    assert mixed.bridged_angular_rad_s == pytest.approx(0.036)
+    assert mixed.reason == "clear_breakaway_floor"
 
 
 def test_hierarchical_executor_uses_existing_replay_seam_without_authority() -> None:

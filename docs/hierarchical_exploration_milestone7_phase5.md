@@ -158,6 +158,10 @@ The attended office run also established a drivetrain breakaway floor:
 sub-`0.07 m/s` Nav2 translation requests are raised to `0.07 m/s` only while
 the collision state is `CLEAR`. The independent downstream supervisor still
 owns `SLOW`, STOP, ESTOP, freshness, and the absolute `0.10 m/s` ceiling. The
+same rule uses the previously measured `0.35 rad/s` breakaway command for
+near-pure CLEAR turns after a live `0.036 rad/s` Nav2 turn produced no odometry;
+mixed arcs retain Nav2's angular rate and the absolute ceiling remains
+`0.4 rad/s`. The
 same loaded-Pi run showed one false fail-safe when a recovery stop missed the
 driver's former `0.10 s` scheduling allowance; the installed allowance is
 `0.20 s`, still inside the fixed `0.30 s` collision-veto bound.

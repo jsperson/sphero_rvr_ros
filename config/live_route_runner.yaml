@@ -16,6 +16,11 @@ live_route_runner:
     # independent collision state is CLEAR; the downstream supervisor retains
     # authority to scale or zero this request.
     hierarchical_clear_breakaway_linear_mps: 0.07
+    # Attended testing established that 0.15 and 0.25 rad/s pure turns stall
+    # while 0.35 rad/s breaks the installed skid-steer drivetrain free. Apply
+    # this only to near-pure turns on CLEAR paths; mixed arcs retain Nav2's
+    # requested angular rate.
+    hierarchical_clear_breakaway_angular_rad_s: 0.35
     scan_topic: /scan
     odom_topic: /odom
     encoder_counts_topic: /encoder_counts
