@@ -291,8 +291,9 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     )
     assert clear.bridged_linear_mps == pytest.approx(0.07)
     assert clear.reason == "clear_breakaway_floor"
-    assert slow.bridged_linear_mps == pytest.approx(0.014)
-    assert slow.reason == "supervisor_slow_passthrough"
+    assert slow.bridged_linear_mps == pytest.approx(-0.07)
+    assert slow.bridged_angular_rad_s == 0.0
+    assert slow.reason == "slow_reverse_escape"
 
     physical.accept(0.071, 0.109, received_at_s=3.2)
     pivot = physical.evaluate(
@@ -305,6 +306,18 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     assert pivot.bridged_linear_mps == 0.0
     assert pivot.bridged_angular_rad_s == pytest.approx(0.35)
     assert pivot.reason == "slow_pivot_breakaway"
+
+    physical.accept(-0.04, 0.0, received_at_s=3.4)
+    reverse = physical.evaluate(
+        now_s=3.5,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="SLOW",
+    )
+    assert reverse.bridged_linear_mps == pytest.approx(-0.04)
+    assert reverse.bridged_angular_rad_s == 0.0
+    assert reverse.reason == "clear"
 
     physical.accept(0.0, -0.036, received_at_s=4.0)
     turn = physical.evaluate(

@@ -696,10 +696,16 @@ class HierarchicalCommandBridge:
                     angular,
                 )
                 reason = "slow_pivot_breakaway"
+            elif self.config.clear_breakaway_linear_mps > 0.0:
+                # A straight approach cannot steer around the obstacle and a
+                # twice-scaled crawl cannot break this drivetrain free.
+                # Request the user's explicit "front obstacle -> back away"
+                # behavior. The downstream supervisor evaluates the actual
+                # reverse trajectory and keeps unconditional rear veto power.
+                linear = -self.config.clear_breakaway_linear_mps
+                angular = 0.0
+                reason = "slow_reverse_escape"
             else:
-                # The downstream supervisor owns the one and only SLOW scale.
-                # Pre-scaling here caused a measured double reduction from
-                # 0.071 m/s to 0.006 m/s and no useful odometry.
                 reason = "supervisor_slow_passthrough"
         return ReplayCommand(
             requested_linear_mps=self._linear_mps,

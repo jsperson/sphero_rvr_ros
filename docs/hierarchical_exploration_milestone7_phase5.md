@@ -182,7 +182,11 @@ front clearance, the bridge and independent supervisor both scaled the same
 supervisor's SLOW scale. A forward SLOW arc with a steering component is
 converted to a zero-linear, `0.35 rad/s` pivot in Nav2's requested direction;
 the downstream supervisor still evaluates the swept footprint and retains
-unconditional scale/zero authority.
+unconditional scale/zero authority. A straight forward SLOW request instead
+becomes a `-0.07 m/s` reverse escape, implementing the operator's explicit
+"front obstacle -> back away" policy. Rear clearance, swept-footprint checks,
+and reverse scale/zero authority remain entirely downstream; an unsafe reverse
+never reaches the motors.
 
 A healthy collision `BLOCKED` state now remains an immediate downstream
 motor-zero hold without terminating the semantic controller or duplicating a
