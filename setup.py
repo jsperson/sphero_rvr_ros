@@ -97,6 +97,7 @@ setup(
                 "docs/stationary_perception.md",
                 "docs/adaptive_mission_authority.md",
                 "docs/adaptive_mission_controller.md",
+                "docs/architecture_map.md",
                 "docs/hierarchical_exploration.md",
                 "docs/hierarchical_exploration_phase1.md",
                 "docs/hierarchical_exploration_phase2.md",

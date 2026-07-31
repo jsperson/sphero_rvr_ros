@@ -4,43 +4,24 @@ Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission fram
 
 The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
 
-Milestone 6 continuous hierarchical exploration is replay-complete. The active
-product direction is Milestone 7, its separately gated physical realization.
-Phase 0 resolved short-hop behavior as an explicit product decision: compatible
-ready goals hand off continuously, while a late successor produces a bounded,
-visible `wait_planning` hold rather than speculative stale lookahead. Every
-physical authority gate remains unchanged; physical hierarchical exploration
-is still unavailable. Phase 1 has passed the exact-SHA Pi no-motion gate:
-recorded-map WFD was deterministic across 50 passes and the loopback-only ROS
-graph preserved exclusive command ownership with zero nonzero motor samples.
-Phase 2 has passed surveyed stationary localization without motion. Phase 3's
-attended M7.3 collision gate now passes at a reviewed exact SHA: SLOW, collision
-STOP without contact, blocked/clear reset, stale-command veto, STOP, ESTOP,
-restart recovery, exclusive ownership, and cleanup were recorded. A paired
-physical addendum also proves block-toward and permit-away behavior for an
-already-overlapping rear obstacle return. M7.4 now also passes under its
-separate approval bound to both accepted evidence digests: live
-lidar/SLAM/camera freshness, mapped floor projection, stable-track replanning,
-pitch stability, stale-sensor zeroing, no contact, and cleanup were recorded
-while the rover moved. The M7.5 live hierarchical binding is implemented as a
-separate default-off live M6 controller, moving-perception/WFD input, Nav2
-semantic-goal adapter, and supervised command chain with exact-SHA/digest
-authority, restart recovery, durable evidence, and a locked browser projection.
-Its exact-SHA Pi build and no-motion graph audit pass. Phase 5 adds the
-browser-owned semantic-only proposal, authenticated M7.6 room/risk/limit
-confirmation, a mandatory fresh no-motion lidar/camera/SLAM/localization
-preflight before approval can exist, one-shot supervised-unit activation,
-durable live checkpoints, mission-ID reopening, and an evidence-derived M7.7
-evaluator. The candidate also records the exact provider-time world/camera
-evidence, independently reproducible server-resolved goal batches, and actual
-bounded Nav2 plans. An attended 2026-07-31 exact-SHA canonical mission passed
-M7.6 and M7.7 with two real model calls, physical odometry, no contact, and
-generated cleanup. The full stack remains default-off; substantial rapid
-left/right turning jitter is explicitly retained as follow-up drive-quality
-work rather than represented as solved.
+## Agent cold start
+
+Canonical project status and the next action live only in the Obsidian vault at
+`Projects/Sphero RVR ROS/Current Status.md`. Repository [STATUS.md](STATUS.md)
+is only a pointer. After reading the vault status, load
+[docs/architecture_map.md](docs/architecture_map.md), the single maintained map
+of current modules, processes, topics, bounds, and authority ownership. Phase
+documents are historical design/evidence, not alternate status or seam maps.
+
+The repository contains replay, no-motion, and default-off physical paths for
+hierarchical semantic exploration plus their durable validation evidence. The
+README intentionally does not mirror milestone status, approval state, or the
+next action; those change frequently and belong only in the canonical vault
+status note.
 
 ## Documentation map for operators and maintainers
 
+- [docs/architecture_map.md](docs/architecture_map.md) is the read-first, single maintained map of current module/process/topic ownership, command flow, fixed names, bounds, and legacy seams.
 - [docs/product_direction.md](docs/product_direction.md) defines the current product end state, system shape, and delivery sequence.
 - [docs/rvr_capability_matrix.md](docs/rvr_capability_matrix.md) is the full official SDK/protocol capability matrix. It is the source of truth for core API parity, ROS exposure decisions, and required validation tokens.
 - [docs/rvr_ros_exposure_policy.md](docs/rvr_ros_exposure_policy.md) explains the ROS exposure policy: full API parity belongs in `sphero_rvr_core`; ROS exposes only typed, bounded, operational surfaces.

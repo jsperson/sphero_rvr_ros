@@ -102,22 +102,14 @@ Phase 0 does not:
 
 ## Existing seams
 
-| Responsibility | Current seam | Milestone 6 relationship |
-|---|---|---|
-| LLM decision | `adaptive_mission_controller.py` | Evolves from primitive intent to snapshot-bound semantic goal selection. |
-| Executor protocol | `AdaptiveMissionExecutor` | Evolves to accept one validated goal while retaining snapshot, cancellation, refresh, and evidence boundaries. |
-| Replay | `ReplayAdaptiveMissionExecutor` | Remains the default no-authority integration seam. It gains deterministic map/frontier/goal-following replay behavior in later phases. |
-| Physical adapter | `PhysicalAdaptiveMissionExecutor` | Later resolves a validated goal into the Nav2 goal-follower boundary; it never publishes motor commands. |
-| Route transport | `RosLiveRouteExecutor` | Remains available for legacy primitive missions. Hierarchical mode uses the same exact-SHA and correlation principles. |
-| Requested velocity | `live_route_runner_node.py` | Remains the sole hierarchical-mode `/cmd_vel` publisher, but only as a thin lease/bounds bridge for private Nav2 commands. |
-| Final motor arbitration | `collision_stop_node.py` | Remains the sole `/cmd_vel_motor` publisher and independent STOP/ESTOP/collision/stale-command boundary. |
-| Persistence and approval | `MissionService` | Persists goal proposals, decisions, prefetches, handoffs, outcomes, authority flags, and restart recovery. |
-| Semantic perception | `stationary_perception.py` and `adaptive_mission_perception.launch.py` | Supply timestamped camera evidence and semantic tracks without motion authority. |
-| Browser replay | `mission_web.py --mode adaptive-mission-replay` | Shows frontiers, active/prefetched goals, paths, evidence, decisions, and terminal truth. |
+The Phase 0 table was intentionally retired after physical integration changed
+several seams. [Architecture Map](architecture_map.md) is the only maintained
+current ownership/seam table. This document preserves the original design
+rationale and must not duplicate that map.
 
-The current executor protocol is synchronous and primitive-shaped. Phase 1 and
-Phase 3 must evolve it deliberately rather than hide a long-running Nav2 action
-inside `execute()` while retaining misleading primitive result semantics.
+At Phase 0, the executor protocol was synchronous and primitive-shaped. The
+later implementation history in this document records how it evolved; current
+ownership remains defined only by the architecture map.
 
 ## Target data and authority flow
 

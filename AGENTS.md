@@ -1,5 +1,14 @@
 # Project agent instructions
 
+## Cold-start sources of truth
+
+- Canonical project status and next action live only in the Obsidian vault at
+  `Projects/Sphero RVR ROS/Current Status.md`.
+- Repository `STATUS.md` is a pointer, never a second status document.
+- After the vault status, read `docs/architecture_map.md`; it is the single
+  maintained ownership/seam map. Phase documents are historical design and
+  evidence records, not competing current maps.
+
 ## Bounded test execution
 
 - Never run bare `pytest` or `python -m pytest` for this repository.
