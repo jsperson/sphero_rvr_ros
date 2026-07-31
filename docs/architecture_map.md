@@ -84,6 +84,7 @@ bounded room without stairs, ledges, or open drop-offs.
 | `RosLiveRouteExecutor` and `/mission_api/v2/live_route/request` | Legacy bounded primitive-route transport; hierarchical mode disables this input and consumes the private Nav2 request instead. |
 | `hierarchical_exploration_replay.launch.py` and replay validators | ROS-free/no-hardware acceptance and regression seams; never evidence of physical authority. |
 | `range_motion_controller` and manual TUI commands | Manual/primitive control and calibration surfaces; not hierarchical goal selection. |
+| `scripts/rvr_drivetrain_bench.py` | Standalone attended diagnostic that directly owns the rover UART while invoked and sweeps bounded raw-duty and tank-SI pulses with encoder measurement. It must run with every stack UART owner stopped; it grants no mission authority and changes no deployed configuration. |
 | Phase documents | Historical design, gate, and evidence records. They must link here rather than maintain another current seam table. |
 
 ## Maintenance rule
