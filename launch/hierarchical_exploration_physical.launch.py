@@ -159,6 +159,8 @@ def generate_launch_description():
                 "source_sha": source_sha,
                 "deployed_sha": deployed_sha,
                 "hierarchical_physical_reviewed_sha": reviewed_sha,
+                "drive_trace_enabled": True,
+                "drive_trace_proposal_file": proposal_file,
             },
         ],
         condition=IfCondition(exact_binding),

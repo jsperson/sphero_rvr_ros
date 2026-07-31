@@ -546,7 +546,13 @@ def main(args=None):
     from rclpy.duration import Duration
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
-    from rclpy.qos import qos_profile_sensor_data
+    from rclpy.qos import (
+        DurabilityPolicy,
+        HistoryPolicy,
+        QoSProfile,
+        ReliabilityPolicy,
+        qos_profile_sensor_data,
+    )
     from sensor_msgs.msg import CameraInfo, Image, LaserScan
     from std_msgs.msg import String
     from tf2_ros import Buffer, TransformException, TransformListener
@@ -692,7 +698,15 @@ def main(args=None):
                 Image,
                 str(self.get_parameter("image_topic").value),
                 self._on_image,
-                qos_profile_sensor_data,
+                # Detection is intentionally slower than camera acquisition.
+                # Keep only the newest frame so CPU load cannot turn the
+                # sensor-data profile's queue into multi-second-old evidence.
+                QoSProfile(
+                    reliability=ReliabilityPolicy.BEST_EFFORT,
+                    durability=DurabilityPolicy.VOLATILE,
+                    history=HistoryPolicy.KEEP_LAST,
+                    depth=1,
+                ),
                 callback_group=self._sensor_callbacks,
             )
             self.create_subscription(
