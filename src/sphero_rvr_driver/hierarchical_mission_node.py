@@ -69,6 +69,17 @@ TARGET_INVALIDATION_REASONS = {
     "track_position_changed",
     "viewpoint_invalidated",
 }
+INDEPENDENT_FINISH_GATE_BYPASS_REASONS = frozenset(
+    {
+        "operator_stop",
+        "estop",
+        "collision_veto",
+        "cancelled",
+        "motion_evidence_stale",
+        "mission_lease_expired",
+        "authority_invalid",
+    }
+)
 
 
 def _json_object(value: Any, name: str) -> dict[str, Any]:
@@ -315,6 +326,38 @@ def semantic_non_motion_status(action: str) -> tuple[str, str, bool]:
     raise MissionValidationError(
         "unsupported non-motion semantic action"
     )
+
+
+def semantic_finish_gate(
+    action: str,
+    adapter_status: Mapping[str, Any],
+    *,
+    independent_termination_reason: str = "",
+) -> tuple[str, str]:
+    """Decide only whether a semantic finish may consume a Nav2 leg.
+
+    Independent STOP, ESTOP, collision, cancellation, evidence-freshness,
+    lease, and authority paths bypass this gate. Their zero/cancel behavior
+    must run before a semantic result is considered and must never be deferred
+    by an active leg.
+    """
+
+    normalized_action = str(action).strip()
+    if normalized_action != "finish":
+        return "not_applicable", "non_finish_action"
+    termination = str(independent_termination_reason).strip()
+    if termination:
+        normalized = (
+            termination
+            if termination in INDEPENDENT_FINISH_GATE_BYPASS_REASONS
+            else "other_independent_termination"
+        )
+        return "bypass", f"independent_termination:{normalized}"
+    state = str(adapter_status.get("state", "")).strip()
+    goal_active = adapter_status.get("goal_active")
+    if state == "wait_planning" and goal_active is False:
+        return "eligible", "nav2_leg_outcome_observed"
+    return "defer", "active_or_unsettled_nav2_leg"
 
 
 def parse_collision_evidence(value: Any) -> tuple[str, bool]:
@@ -888,6 +931,7 @@ def main(args=None):
             self._dispatch_count = 0
             self._processed_nav2_abort_batches: set[str] = set()
             self._rejected_frontier_signatures: set[str] = set()
+            self._deferred_finish_generations: set[int] = set()
             self._terminal = False
             # Map hashing and frontier extraction are intentionally
             # server-owned and can occupy the main callback group long enough
@@ -1653,6 +1697,68 @@ def main(args=None):
                 return
             ready_non_motion = self._controller.ready_non_motion_goal()
             if ready_non_motion is not None:
+                # FINISH-ONLY boundary: authority, graph, adapter recovery,
+                # motion-evidence, collision, STOP/ESTOP, cancellation, and
+                # lease enforcement have already run above or independently
+                # downstream. This guard may preserve a safe Nav2 leg only;
+                # it never delays any independent zero/cancel path.
+                gate, gate_reason = semantic_finish_gate(
+                    ready_non_motion.decision.action,
+                    self._adapter_status,
+                )
+                generation = int(
+                    ready_non_motion.decision.decision_generation
+                )
+                if gate == "defer":
+                    if generation not in self._deferred_finish_generations:
+                        self._deferred_finish_generations.add(generation)
+                        self._record_controller_events(
+                            (
+                                {
+                                    "at_s": float(now_s),
+                                    "kind": "semantic_finish_deferred",
+                                    "generation": generation,
+                                    "reason": gate_reason,
+                                    "adapter_state": str(
+                                        self._adapter_status.get("state", "")
+                                    ),
+                                    "goal_active": self._adapter_status.get(
+                                        "goal_active"
+                                    ),
+                                    "finish_only": True,
+                                },
+                            ),
+                            now_s=now_s,
+                        )
+                    self._publish_status(
+                        planning_hold_controller_state(
+                            self._adapter_status
+                        ),
+                        "semantic_finish_deferred_active_leg",
+                    )
+                    return
+                if (
+                    ready_non_motion.decision.action == "finish"
+                    and generation in self._deferred_finish_generations
+                ):
+                    self._record_controller_events(
+                        (
+                            {
+                                "at_s": float(now_s),
+                                "kind": "semantic_finish_released",
+                                "generation": generation,
+                                "reason": gate_reason,
+                                "adapter_state": str(
+                                    self._adapter_status.get("state", "")
+                                ),
+                                "goal_active": self._adapter_status.get(
+                                    "goal_active"
+                                ),
+                                "finish_only": True,
+                            },
+                        ),
+                        now_s=now_s,
+                    )
                 state, reason, terminal = semantic_non_motion_status(
                     ready_non_motion.decision.action
                 )

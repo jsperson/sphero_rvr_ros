@@ -109,6 +109,8 @@ setup(
                 "docs/hierarchical_exploration_milestone7_phase3.md",
                 "docs/hierarchical_exploration_milestone7_phase4.md",
                 "docs/hierarchical_exploration_milestone7_phase5.md",
+                "docs/hierarchical_exploration_milestone8_phase0.md",
+                "docs/hierarchical_exploration_milestone8_phase1.md",
             ],
         ),
         (
@@ -133,6 +135,14 @@ setup(
                 "artifacts/m7_phase4_physical_binding/environment.json",
                 "artifacts/m7_phase4_physical_binding/graph.json",
                 "artifacts/m7_phase4_physical_binding/validation.json",
+            ],
+        ),
+        (
+            "share/sphero_rvr_driver/artifacts/m8_phase0_drive_trace_analysis",
+            [
+                "artifacts/m8_phase0_drive_trace_analysis/README.md",
+                "artifacts/m8_phase0_drive_trace_analysis/context.json",
+                "artifacts/m8_phase0_drive_trace_analysis/report.json",
             ],
         ),
         (
