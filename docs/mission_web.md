@@ -162,6 +162,13 @@ Missing or unsafe STOP/ESTOP/collision evidence prevents execution. Every
 terminal path stops the graph again, and a relock failure is shown as
 `RECOVERY_REQUIRED`.
 
+For hierarchical physical missions, the single authenticated **Approve** click
+also confirms the displayed fixed room conditions: the operator is present
+with chassis power cut reachable, the floor is level and bounded, stairs,
+ledges, and drop-offs are absent, and negative-obstacle sensing is unavailable.
+The browser shows those conditions beside the button; there are no separate
+room-confirmation checkboxes.
+
 While a lease is active, **Generate proposal** becomes **Update objective**.
 An authenticated update keeps the same mission ID, operator, expiration,
 telemetry owner, and safety limits. If an older model call is still in flight,

@@ -1214,7 +1214,6 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
         approved = browser.approve(
             "",
             confirm_current_proposal=True,
-            physical_room_confirmation=ROOM,
         )
         assert approved["mission"]["state"] in {"APPROVED", "QUEUED"}
         assert approved["approval"]["required_phrase"] == ""

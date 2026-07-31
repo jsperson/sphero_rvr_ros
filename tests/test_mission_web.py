@@ -1145,7 +1145,13 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "&& snapshot.adapter.canonical_objective" not in page
     assert "HIERARCHICAL PHYSICAL MISSION — APPROVAL LOCKED" in page
     assert "Physical mission approval" in page
-    assert "<legend>Physical room confirmation</legend>" in page
+    assert "<strong>Approve</strong> confirms that you are present" in page
+    assert 'id="room-attended"' not in page
+    assert 'id="room-level"' not in page
+    assert 'id="room-no-dropoffs"' not in page
+    assert 'id="room-no-negative-sensing"' not in page
+    assert "body.physical_room_confirmation" not in page
+    assert "Starting the supervised hierarchical graph" in page
     assert "$('mission-prompt').addEventListener('input'" in page
     assert 'id="safety-corridor"' in page
     assert 'id="safety-trajectory"' in page
