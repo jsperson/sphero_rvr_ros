@@ -499,6 +499,21 @@
       "window": 9
     }
   ],
+  "phase1_motion_evidence": {
+    "outcome": "geometry_ineligible",
+    "qualifying_forward_windows": [],
+    "reason": "the initial target bearing was not a genuinely forward validation leg",
+    "routes_to_phase0b": false,
+    "thresholds": {
+      "max_forward_angular_rad_s": 0.05,
+      "max_initial_absolute_bearing_deg": 45.0,
+      "min_forward_mean_mps": 0.09,
+      "min_forward_window_s": 1.0,
+      "min_mission_net_odometry_m": 0.5,
+      "min_window_net_odometry_m": 0.05
+    },
+    "translating_forward_windows": []
+  },
   "schema": "sphero_rvr.m8_phase0_drive_trace_analysis.v1",
   "source_sha": "c8cbff35d156332806f0fe8d16b47b23514eac6d",
   "trace": {

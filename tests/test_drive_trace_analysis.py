@@ -9,6 +9,7 @@ from sphero_rvr_driver.drive_trace_analysis import (
     CONTEXT_SCHEMA,
     DriveTraceAnalysisError,
     analyze_trace,
+    phase1_motion_evidence_routing,
 )
 
 
@@ -192,6 +193,45 @@ def test_analysis_time_aligns_commands_odometry_and_goal_context(tmp_path: Path)
     geometry = report["goal_geometry_and_completion"]
     assert geometry["target_was_behind"] is True
     assert geometry["relative_bearing_deg"] == pytest.approx(180.0)
+    assert report["phase1_motion_evidence"]["outcome"] == "geometry_ineligible"
+    assert report["phase1_motion_evidence"]["routes_to_phase0b"] is False
+
+
+@pytest.mark.parametrize(
+    ("bearing_deg", "duration_s", "window_odom_m", "mission_odom_m", "outcome"),
+    [
+        (46.0, 1.1, 0.06, 0.60, "geometry_ineligible"),
+        (0.0, 0.9, 0.06, 0.60, "forward_command_inconclusive"),
+        (0.0, 1.1, 0.04, 0.60, "phase0b_breakaway_required"),
+        (0.0, 1.1, 0.06, 0.49, "mission_distance_incomplete"),
+        (0.0, 1.1, 0.06, 0.60, "motion_evidence_pass"),
+    ],
+)
+def test_phase1_motion_evidence_routes_only_a_real_stall_to_phase0b(
+    bearing_deg: float,
+    duration_s: float,
+    window_odom_m: float,
+    mission_odom_m: float,
+    outcome: str,
+) -> None:
+    result = phase1_motion_evidence_routing(
+        goal_geometry={"relative_bearing_deg": bearing_deg},
+        active_navigation_odometry={"net_displacement_m": mission_odom_m},
+        motor_forward_windows=[
+            {
+                "window": 1,
+                "duration_s": duration_s,
+                "linear_x_time_weighted_mean_mps": 0.10,
+                "angular_z_max_abs_rad_s": 0.0,
+                "odometry": {"net_displacement_m": window_odom_m},
+            }
+        ],
+    )
+
+    assert result["outcome"] == outcome
+    assert result["routes_to_phase0b"] is (
+        outcome == "phase0b_breakaway_required"
+    )
 
 
 def test_analysis_treats_expired_commands_as_zero(tmp_path: Path) -> None:

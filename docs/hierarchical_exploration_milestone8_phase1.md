@@ -96,7 +96,13 @@ browser approval while the operator is present in a level bounded room. All M7
 safety gates and generated cleanup evidence remain mandatory.
 
 The physical acceptance run must preserve the private synchronized trace and
-pass all of the following:
+pass all of the following. Before attributing any failure to motor breakaway,
+the SHA-bound dispatch geometry must show an initial target bearing within
+`±45°` of the rover heading. This is an evidence-eligibility rule, not a runtime
+motion or safety gate. A target outside that forward sector makes the trial
+geometry-ineligible: terminate/clean up normally and repeat only under a new
+attended authorization. It produces no motor verdict and cannot route to Phase
+0B.
 
 1. The controller records a deferred finish without the adapter receiving
    `controller_complete` while its goal is active, if the model returns finish
@@ -118,10 +124,32 @@ pass all of the following:
    units, no UART/lidar owner, consumed activation files, and bounded evidence.
 
 The 1.0-second straight window is the key load test: many sub-0.3-second
-fragments do not qualify. If the motor window occurs but aligned odometry does
-not reach 0.05 m—or if no qualifying straight window can be produced—the
-attended result is not a Phase 1 pass. Phase 0B becomes the next action; this
-must not be interpreted as proof that the 0.10 m/s motor floor is adequate.
+fragments do not qualify. The analyzer records one of these motion-evidence
+outcomes; safety, cleanup, jitter, and operator-observation gates remain
+separate and can still fail the attended run:
+
+- `geometry_ineligible`: initial absolute target bearing is greater than 45°.
+  The trial is invalid for forward-breakaway attribution; address/retest the
+  ranked geometry/forward-bias follow-up, with no Phase 0B verdict.
+- `forward_command_inconclusive`: eligible geometry, but no continuous
+  motor-output window meets the duration, linear, and angular thresholds.
+  Inspect path/controller/bridge command generation; this is not evidence of a
+  motor stall and does not route to Phase 0B.
+- `phase0b_breakaway_required`: eligible geometry and a qualifying sustained
+  straight motor-output window exist, but none reaches 0.05 m aligned odometry.
+  This is the only outcome that routes to the separately authorized Phase 0B
+  breakaway sweep.
+- `mission_distance_incomplete`: a qualifying window translates, but total
+  aligned mission travel remains below 0.50 m. Forward breakaway is no longer
+  the diagnosis; the run still fails Phase 1 acceptance.
+- `motion_evidence_pass`: geometry, straight-window translation, and total
+  distance meet the motion thresholds. This is necessary but not sufficient
+  for the full attended pass.
+
+Thus neither a rotation-dominant goal nor failure to produce the commanded
+straight test window can be misreported as a motor-floor failure. Skipping 0B
+before this fix still must not be interpreted as proof that the 0.10 m/s motor
+floor is adequate.
 
 The exact command for post-run analysis remains:
 

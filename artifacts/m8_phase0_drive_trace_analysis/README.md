@@ -8,7 +8,9 @@ not committed.
   from the Pi mission/binding databases. Event payload digests preserve the
   database bindings without copying those private databases.
 - `report.json` is the deterministic output of
-  `sphero_rvr_driver.drive_trace_analysis`.
+  `sphero_rvr_driver.drive_trace_analysis`. Its Phase 1 motion-evidence routing
+  keeps geometry-ineligible and command-inconclusive trials distinct from the
+  one result that can justify a Phase 0B breakaway sweep.
 
 The source trace is mission
 `m7-canonical-e90f7828e13843d981eab942b16751a4`, executable source

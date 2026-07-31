@@ -14,6 +14,12 @@ ANALYSIS_SCHEMA = "sphero_rvr.m8_phase0_drive_trace_analysis.v1"
 CONTEXT_SCHEMA = "sphero_rvr.m8_phase0_drive_trace_context.v1"
 TRACE_SAMPLE_SCHEMA = "sphero_rvr.physical_drive_trace_sample.v1"
 _COMMAND_STREAMS = ("nav2_request", "supervisor_request", "motor_output")
+PHASE1_MAX_INITIAL_BEARING_DEG = 45.0
+PHASE1_MIN_FORWARD_WINDOW_S = 1.0
+PHASE1_MIN_FORWARD_MEAN_MPS = 0.09
+PHASE1_MAX_FORWARD_ANGULAR_RAD_S = 0.05
+PHASE1_MIN_WINDOW_ODOM_M = 0.05
+PHASE1_MIN_MISSION_ODOM_M = 0.50
 
 
 class DriveTraceAnalysisError(ValueError):
@@ -625,6 +631,120 @@ def _goal_context(
     }
 
 
+def phase1_motion_evidence_routing(
+    *,
+    goal_geometry: Optional[Mapping[str, Any]],
+    active_navigation_odometry: Mapping[str, Any],
+    motor_forward_windows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Route Phase-1 motion evidence without mistaking geometry for breakaway.
+
+    This is an after-run evidence classifier, not a runtime safety or motion
+    gate.  Phase 0B is eligible only when the dispatched goal was initially
+    forward and the motor actually received a sustained, nearly straight
+    command that failed to translate.
+    """
+
+    thresholds = {
+        "max_initial_absolute_bearing_deg": PHASE1_MAX_INITIAL_BEARING_DEG,
+        "min_forward_window_s": PHASE1_MIN_FORWARD_WINDOW_S,
+        "min_forward_mean_mps": PHASE1_MIN_FORWARD_MEAN_MPS,
+        "max_forward_angular_rad_s": PHASE1_MAX_FORWARD_ANGULAR_RAD_S,
+        "min_window_net_odometry_m": PHASE1_MIN_WINDOW_ODOM_M,
+        "min_mission_net_odometry_m": PHASE1_MIN_MISSION_ODOM_M,
+    }
+
+    def result(
+        outcome: str,
+        reason: str,
+        *,
+        qualifying_windows: Sequence[int] = (),
+        translating_windows: Sequence[int] = (),
+    ) -> dict[str, Any]:
+        return {
+            "outcome": outcome,
+            "reason": reason,
+            "routes_to_phase0b": outcome == "phase0b_breakaway_required",
+            "qualifying_forward_windows": list(qualifying_windows),
+            "translating_forward_windows": list(translating_windows),
+            "thresholds": thresholds,
+        }
+
+    if goal_geometry is None:
+        return result(
+            "not_evaluable_without_goal_geometry",
+            "SHA-bound dispatch geometry is required before assigning a motor verdict",
+        )
+    bearing_deg = abs(
+        _finite(goal_geometry.get("relative_bearing_deg"), "relative goal bearing")
+    )
+    if bearing_deg > PHASE1_MAX_INITIAL_BEARING_DEG:
+        return result(
+            "geometry_ineligible",
+            "the initial target bearing was not a genuinely forward validation leg",
+        )
+
+    qualifying: list[Mapping[str, Any]] = []
+    for window in motor_forward_windows:
+        if (
+            _finite(window.get("duration_s"), "forward-window duration")
+            >= PHASE1_MIN_FORWARD_WINDOW_S
+            and _finite(
+                window.get("linear_x_time_weighted_mean_mps"),
+                "forward-window mean linear command",
+            )
+            >= PHASE1_MIN_FORWARD_MEAN_MPS
+            and _finite(
+                window.get("angular_z_max_abs_rad_s"),
+                "forward-window maximum angular command",
+            )
+            <= PHASE1_MAX_FORWARD_ANGULAR_RAD_S
+        ):
+            qualifying.append(window)
+    qualifying_ids = [int(item["window"]) for item in qualifying]
+    if not qualifying:
+        return result(
+            "forward_command_inconclusive",
+            "no sustained nearly straight motor-output window tested forward breakaway",
+        )
+
+    translating = [
+        window
+        for window in qualifying
+        if isinstance(window.get("odometry"), Mapping)
+        and _finite(
+            window["odometry"].get("net_displacement_m"),
+            "forward-window net odometry",
+        )
+        >= PHASE1_MIN_WINDOW_ODOM_M
+    ]
+    translating_ids = [int(item["window"]) for item in translating]
+    if not translating:
+        return result(
+            "phase0b_breakaway_required",
+            "a sustained nearly straight motor command failed to translate",
+            qualifying_windows=qualifying_ids,
+        )
+
+    mission_odom = _finite(
+        active_navigation_odometry.get("net_displacement_m"),
+        "active-navigation net odometry",
+    )
+    if mission_odom < PHASE1_MIN_MISSION_ODOM_M:
+        return result(
+            "mission_distance_incomplete",
+            "forward breakaway was demonstrated but the mission distance gate was not met",
+            qualifying_windows=qualifying_ids,
+            translating_windows=translating_ids,
+        )
+    return result(
+        "motion_evidence_pass",
+        "the geometry, sustained forward command, and translation gates were met",
+        qualifying_windows=qualifying_ids,
+        translating_windows=translating_ids,
+    )
+
+
 def analyze_trace(
     path: str | Path,
     *,
@@ -695,6 +815,12 @@ def analyze_trace(
     for event in events:
         key = f"{event.get('kind', '')}:{event.get('stream', '')}".rstrip(":")
         event_counts[key] = event_counts.get(key, 0) + 1
+    forward_windows = _forward_windows(
+        motor_segments,
+        collision,
+        odom,
+        response_lag_s=response_lag_s,
+    )
     report = {
         "schema": ANALYSIS_SCHEMA,
         "mission_id": mission_id,
@@ -729,13 +855,13 @@ def analyze_trace(
             for state in sorted({str(item["state"]) for item in collision})
         },
         "active_navigation_odometry": overall_odom,
-        "motor_forward_windows": _forward_windows(
-            motor_segments,
-            collision,
-            odom,
-            response_lag_s=response_lag_s,
-        ),
+        "motor_forward_windows": forward_windows,
         "goal_geometry_and_completion": goal,
+        "phase1_motion_evidence": phase1_motion_evidence_routing(
+            goal_geometry=goal,
+            active_navigation_odometry=overall_odom,
+            motor_forward_windows=forward_windows,
+        ),
         "limitations": {
             "encoder_samples_available": False,
             "angular_jerk_is_sample_timing_sensitive": True,
