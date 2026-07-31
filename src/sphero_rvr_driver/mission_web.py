@@ -79,6 +79,7 @@ TERMINAL_ARTIFACT_PATH = "/api/web/artifacts/terminal-result"
 TELEMETRY_CONTROL_PATH = "/api/web/telemetry"
 TELEMETRY_UNIT = "rvr-telemetry.service"
 ADAPTIVE_MISSION_UNIT = "rvr-adaptive-mission.service"
+HIERARCHICAL_PREFLIGHT_WAIT_S = 30.0
 
 
 class MissionWebError(ValueError):
@@ -3440,10 +3441,19 @@ def handle_mission_web_request(
                 payload.get("confirm_current_proposal", False)
             )
         }
-        result = adapter.approve(
-            str(payload.get("approval_phrase", "")),
-            **approval_arguments,
-        )
+        before_approval = adapter.snapshot()
+        if _is_hierarchical_preapproval(before_approval):
+            result = _approve_hierarchical_with_preflight(
+                adapter,
+                telemetry_control,
+                approval_phrase=str(payload.get("approval_phrase", "")),
+                approval_arguments=approval_arguments,
+            )
+        else:
+            result = adapter.approve(
+                str(payload.get("approval_phrase", "")),
+                **approval_arguments,
+            )
     elif normalized_path == "/api/web/mission/advance":
         result = adapter.advance()
     elif normalized_path == "/api/web/mission/cancel":
@@ -3509,6 +3519,76 @@ def _is_adaptive_preapproval(snapshot: Mapping[str, Any]) -> bool:
         and str(mission.get("state", "")).upper()
         not in {"APPROVED", "QUEUED", "RUNNING"}
     )
+
+
+def _is_hierarchical_preapproval(snapshot: Mapping[str, Any]) -> bool:
+    adapter = snapshot.get("adapter", {})
+    mission = snapshot.get("mission", {})
+    physical_session = (
+        adapter.get("physical_session", {})
+        if isinstance(adapter, Mapping)
+        else {}
+    )
+    return bool(
+        isinstance(adapter, Mapping)
+        and isinstance(mission, Mapping)
+        and adapter.get("hierarchical_canonical", False)
+        and str(mission.get("state", "")).upper() == "PROPOSED"
+        and (
+            not isinstance(physical_session, Mapping)
+            or not physical_session.get("active", False)
+        )
+    )
+
+
+def _approve_hierarchical_with_preflight(
+    adapter: MissionWebAdapter,
+    telemetry_control: Optional[TelemetryControl],
+    *,
+    approval_phrase: str,
+    approval_arguments: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Acquire fresh no-motion evidence before consuming physical approval."""
+
+    if telemetry_control is None:
+        raise MissionWebError(
+            "physical approval requires the fixed no-motion telemetry service"
+        )
+    authority_snapshot = adapter.snapshot()
+    started_here = not bool(
+        telemetry_control.status().get("active", False)
+    )
+    if started_here:
+        telemetry_control.set_active(
+            True,
+            authority_snapshot=authority_snapshot,
+        )
+    deadline = time.monotonic() + HIERARCHICAL_PREFLIGHT_WAIT_S
+    try:
+        while True:
+            try:
+                return adapter.approve(
+                    approval_phrase,
+                    **dict(approval_arguments),
+                )
+            except MissionWebError as exc:
+                if "sensor preflight" not in str(exc).lower():
+                    raise
+                if time.monotonic() >= deadline:
+                    raise MissionWebError(
+                        "physical approval timed out waiting for fresh lidar, "
+                        "camera, localization, and map evidence"
+                    ) from exc
+                time.sleep(0.1)
+    except BaseException:
+        if started_here:
+            cleanup_snapshot = adapter.snapshot()
+            telemetry_control.set_active(
+                False,
+                authority_snapshot=cleanup_snapshot,
+            )
+            _wait_for_telemetry_evidence_stale(adapter)
+        raise
 
 
 def _wait_for_telemetry_evidence_stale(
@@ -5095,7 +5175,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('request-status').textContent = current && current.adapter.stationary_perception
         ? 'Starting stationary snapshots and the leased LLM observation-intent loop…'
         : current && current.adapter.hierarchical_canonical
-          ? 'Starting the supervised hierarchical graph under the selected mission lease…'
+          ? 'Starting no-motion lidar, camera, localization, and map preflight; supervised execution begins after evidence is fresh…'
         : current && current.adapter.adaptive_mission
           ? 'Activating the supervised graph and waiting for fresh camera, lidar, localization, and safety evidence…'
           : 'Confirming the exact persisted proposal…';

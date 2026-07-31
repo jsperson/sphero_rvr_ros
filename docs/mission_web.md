@@ -167,7 +167,11 @@ also confirms the displayed fixed room conditions: the operator is present
 with chassis power cut reachable, the floor is level and bounded, stairs,
 ledges, and drop-offs are absent, and negative-obstacle sensing is unavailable.
 The browser shows those conditions beside the button; there are no separate
-room-confirmation checkboxes.
+room-confirmation checkboxes. The same approval request starts the fixed
+no-motion telemetry unit and waits up to 30 seconds for fresh lidar, calibrated
+camera, localization, and occupancy-map evidence before consuming approval and
+handing off to the supervised physical unit. A failed or timed-out preflight
+stops telemetry again when the approval request started it.
 
 While a lease is active, **Generate proposal** becomes **Update objective**.
 An authenticated update keeps the same mission ID, operator, expiration,
