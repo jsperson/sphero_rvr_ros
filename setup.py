@@ -61,6 +61,7 @@ setup(
                 "scripts/rvr_adaptive_mission_oauth_replay.py",
                 "scripts/rvr_adaptive_planner_benchmark.py",
                 "scripts/rvr_motion_calibration.py",
+                "scripts/rvr_drivetrain_bench.py",
                 "scripts/analyze_ground_calibration.py",
                 "scripts/aggregate_ground_calibration.py",
             ],
@@ -70,6 +71,7 @@ setup(
             [
                 "docs/mapping.md",
                 "docs/motion_calibration.md",
+                "docs/rvr_drivetrain_bench.md",
                 "docs/rosbag_capture_replay.md",
                 "docs/camera_lidar_calibration.md",
                 "docs/lidar_collision_stop_supervisor.md",
