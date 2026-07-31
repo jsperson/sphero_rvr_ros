@@ -1,0 +1,109 @@
+{
+  "camera": {
+    "comparison_max_receipt_age_s": 1.1069650650024414,
+    "comparison_max_source_age_s": 2.122269630432129,
+    "diagnosed_max_receipt_age_s": 3.46,
+    "diagnosed_max_source_age_s": 8.16,
+    "evidence_directories": 3,
+    "images_per_directory": 96,
+    "total_images": 288,
+    "total_image_bytes_approx": 2900000
+  },
+  "cleanup": {
+    "downstream_terminal_zero": true,
+    "driver_and_sensor_processes_absent": true,
+    "lidar_stop_motor_logged": true,
+    "motion_authority": false,
+    "physical_unit_inactive": true,
+    "serial_and_lidar_devices_ownerless": true,
+    "telemetry_units_inactive": true
+  },
+  "comparison": {
+    "canonical_max_displacement_m": 0.03938496331893974,
+    "duration_s": 35.52296566963196,
+    "mission_id": "m7-canonical-e90f7828e13843d981eab942b16751a4",
+    "nonzero_odom_samples": 21,
+    "odom_samples": 100,
+    "provider_calls": 2,
+    "required_sensor_freshness_violations": 0,
+    "terminal_reason": "finish",
+    "terminal_status": "complete"
+  },
+  "diagnosis": {
+    "diagnosed_mission_id": "m7-canonical-1d28354e024e4939a841b5d4fc3cb203",
+    "diagnosed_source_sha": "5e8460731cf7456be7ff32afffb0aba0823d1e9a",
+    "max_displacement_m": 0.07503112882517486,
+    "observation": "A mostly-behind initial target, translation-only progress checking, repeated no-progress recovery, and alternating turn requests produced small bursts and rapid left/right jitter. Camera evidence lag was queued-frame backlog, not repeated camera restarts.",
+    "run_duration_s_approx": 210.0
+  },
+  "implementation": {
+    "deployed_sha": "c8cbff35d156332806f0fe8d16b47b23514eac6d",
+    "merged_pr": 58,
+    "preserved_max_angular_rad_s": 0.4,
+    "preserved_max_linear_mps": 0.1,
+    "progress_angle_rad": 0.1,
+    "progress_radius_m": 0.02,
+    "progress_time_allowance_s": 15.0,
+    "progress_checker": "nav2_controller::PoseProgressChecker",
+    "rotation_controller": "nav2_rotation_shim_controller::RotationShimController"
+  },
+  "limitations": {
+    "effective_forward_driving_proven": false,
+    "operator_reported_appreciable_forward_movement": false,
+    "next_milestone_carryover": "Improve effective forward travel and maneuvering while retaining the reduced angular jitter and unchanged safety invariants."
+  },
+  "operator_observation": {
+    "contact": false,
+    "jitter": "less",
+    "recorded_date": "2026-07-31",
+    "statement": "It was fine - no appreciable forward movement. Less jitter.",
+    "source": "authenticated project conversation"
+  },
+  "schema": "sphero_rvr.physical_drive_jitter_comparison.v1",
+  "trace": {
+    "collision_states": {
+      "CLEAR": 1314,
+      "SENSOR_STALE": 71,
+      "SLOW": 12
+    },
+    "command_streams": {
+      "motor_output": {
+        "angular_sign_reversals": 0,
+        "max_abs_angular_rad_s": 0.4,
+        "max_abs_linear_mps": 0.1,
+        "nonzero_samples": 52,
+        "samples": 1397
+      },
+      "nav2_request": {
+        "angular_sign_reversals": 1,
+        "max_abs_angular_rad_s": 0.4,
+        "max_abs_linear_mps": 0.04285714285714286,
+        "nonzero_samples": 74,
+        "samples": 75
+      },
+      "supervisor_request": {
+        "angular_sign_reversals": 0,
+        "max_abs_angular_rad_s": 0.4,
+        "max_abs_linear_mps": 0.1,
+        "nonzero_samples": 36,
+        "samples": 743
+      }
+    },
+    "controller_state_samples": 983,
+    "file_mode": "0600",
+    "max_displacement_m": 0.03961407422222546,
+    "odom_samples": 363,
+    "path": "/home/jsperson/.local/state/sphero_rvr/drive-diagnostics/drive-trace-m7-canonical-e90f7828e13843d981eab942b16751a4.jsonl",
+    "sha256": "54a6af978736c1f1dfac2fe405b20b7a0049429b175d5bcb6ee146172dbc49a0",
+    "size_bytes": 2793335,
+    "terminal_motor_zero": true,
+    "terminal_supervisor_request_zero": true,
+    "yaw_change_rad": -2.1453298928379594
+  },
+  "validation": {
+    "mac_focused": "104 passed in 0.50 s, exit 0, clean process group",
+    "mac_full": "1163 passed in 37.77 s, exit 0, clean process group",
+    "pi_controller_lifecycle": "exact candidate configured successfully to inactive state in isolated ROS_DOMAIN_ID=77",
+    "pi_focused": "151 passed in 3.87 s, exit 0, clean process group"
+  }
+}
