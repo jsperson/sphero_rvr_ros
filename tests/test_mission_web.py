@@ -1191,6 +1191,8 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'data-testid="confirm-no-contact"' in page
     assert "/api/web/mission/no-contact" in page
     assert "M7.7 remains incomplete" in page
+    assert "snapshot.mission.no_contact_eligible" in page
+    assert "snapshot.mission.state === 'COMPLETE'" not in page
     assert 'data-testid="lease-duration-minutes"' in page
     assert page.index('data-testid="lease-duration-minutes"') < page.index(
         'data-testid="approve"'

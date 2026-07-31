@@ -62,14 +62,32 @@ def _load_json(path: Path) -> Mapping[str, Any]:
     return value
 
 
-def load_trace(path: str | Path) -> tuple[list[dict[str, Any]], str, int]:
-    """Load one private JSONL trace and return events, digest, and byte size."""
+def _trace_paths(
+    path: str | Path | Sequence[str | Path],
+) -> list[Path]:
+    if isinstance(path, (str, Path)):
+        return [Path(path)]
+    paths = [Path(item) for item in path]
+    if not paths:
+        raise DriveTraceAnalysisError("at least one drive trace segment is required")
+    return paths
 
-    trace_path = Path(path)
-    try:
-        raw = trace_path.read_bytes()
-    except OSError as exc:
-        raise DriveTraceAnalysisError(f"cannot read drive trace: {trace_path}") from exc
+
+def load_trace(
+    path: str | Path | Sequence[str | Path],
+) -> tuple[list[dict[str, Any]], str, int]:
+    """Load ordered private JSONL segments and return events and combined digest."""
+
+    paths = _trace_paths(path)
+    chunks: list[bytes] = []
+    for trace_path in paths:
+        try:
+            chunks.append(trace_path.read_bytes())
+        except OSError as exc:
+            raise DriveTraceAnalysisError(
+                f"cannot read drive trace: {trace_path}"
+            ) from exc
+    raw = b"".join(chunks)
     events: list[dict[str, Any]] = []
     for line_number, line in enumerate(raw.splitlines(), start=1):
         if not line.strip():
@@ -108,6 +126,14 @@ def _validate_provenance(
         raise DriveTraceAnalysisError("trace must contain one start record")
     if sum(event.get("kind") == "trace_summary" for event in events) != 1:
         raise DriveTraceAnalysisError("trace must contain one terminal summary")
+    if (
+        events[0].get("kind") != "trace_started"
+        or events[-1].get("kind") != "trace_summary"
+    ):
+        raise DriveTraceAnalysisError(
+            "drive trace segment order must begin with trace_started and end "
+            "with trace_summary"
+        )
     return next(iter(missions)), next(iter(sources))
 
 
@@ -523,7 +549,21 @@ def _forward_windows(
     return windows
 
 
-def _find_interval(events: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+def _accepted_controller_terminal(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    state = str(value.get("state", ""))
+    if state == "complete":
+        return True
+    return bool(
+        state == "recovery_required"
+        and value.get("reason") == "mission_lease_expired"
+    )
+
+
+def _find_interval(
+    events: Sequence[Mapping[str, Any]], mission_id: str
+) -> dict[str, Any]:
     nav2 = _command_events(events, "nav2_request")
     nonzero = [
         sample
@@ -533,26 +573,32 @@ def _find_interval(events: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     if not nonzero:
         raise DriveTraceAnalysisError("trace contains no active Nav2 command")
     start_s = nonzero[0]["time_s"]
-    completions = [
+    terminals = [
         sample
         for sample in _state_events(events, "hierarchical_controller")
         if sample["time_s"] > start_s
         and isinstance(sample.get("value"), Mapping)
-        and sample["value"].get("state") == "complete"
+        and sample["value"].get("mission_id") == mission_id
+        and _accepted_controller_terminal(sample["value"])
     ]
-    if not completions:
-        raise DriveTraceAnalysisError("trace has no controller completion after motion")
-    end_s = float(completions[0]["time_s"])
+    if not terminals:
+        raise DriveTraceAnalysisError(
+            "trace has no accepted controller terminal after motion"
+        )
+    terminal = terminals[0]
+    end_s = float(terminal["time_s"])
     return {
         "start_s": start_s,
         "end_s": end_s,
         "duration_s": end_s - start_s,
+        "terminal_state": str(terminal["value"].get("state", "")),
+        "terminal_reason": str(terminal["value"].get("reason", "")),
     }
 
 
 def _find_mission_interval(
     events: Sequence[Mapping[str, Any]], mission_id: str
-) -> dict[str, float]:
+) -> dict[str, Any]:
     controller = [
         sample
         for sample in _state_events(events, "hierarchical_controller")
@@ -561,17 +607,24 @@ def _find_mission_interval(
     ]
     if not controller:
         raise DriveTraceAnalysisError("trace has no mission-bound controller state")
-    completions = [
-        sample for sample in controller if sample["value"].get("state") == "complete"
+    terminals = [
+        sample
+        for sample in controller
+        if _accepted_controller_terminal(sample["value"])
     ]
-    if not completions:
-        raise DriveTraceAnalysisError("trace has no mission-bound completion")
+    if not terminals:
+        raise DriveTraceAnalysisError(
+            "trace has no accepted mission-bound terminal"
+        )
     start_s = float(controller[0]["time_s"])
-    end_s = float(completions[0]["time_s"])
+    terminal = terminals[0]
+    end_s = float(terminal["time_s"])
     return {
         "start_s": start_s,
         "end_s": end_s,
         "duration_s": end_s - start_s,
+        "terminal_state": str(terminal["value"].get("state", "")),
+        "terminal_reason": str(terminal["value"].get("reason", "")),
     }
 
 
@@ -595,21 +648,44 @@ def _goal_context(
             raise DriveTraceAnalysisError(f"drive trace context {field} mismatch")
     dispatch = context.get("goal_dispatch")
     completion = context.get("semantic_completion")
-    if not isinstance(dispatch, Mapping) or not isinstance(completion, Mapping):
+    mission_terminal = context.get("mission_terminal")
+    if not isinstance(dispatch, Mapping):
         raise DriveTraceAnalysisError("drive trace context is incomplete")
+    if isinstance(completion, Mapping) == isinstance(mission_terminal, Mapping):
+        raise DriveTraceAnalysisError(
+            "drive trace context requires exactly one semantic completion or "
+            "mission terminal"
+        )
     localization = dispatch.get("localization")
     target = dispatch.get("target")
     if not isinstance(localization, Mapping) or not isinstance(target, Mapping):
         raise DriveTraceAnalysisError("goal-dispatch geometry is incomplete")
+    terminal_context = (
+        completion if isinstance(completion, Mapping) else mission_terminal
+    )
+    assert isinstance(terminal_context, Mapping)
+    terminal_name = (
+        "semantic completion"
+        if isinstance(completion, Mapping)
+        else "mission terminal"
+    )
     for name, value in (
         ("goal dispatch", dispatch.get("event_sha256")),
-        ("semantic completion", completion.get("event_sha256")),
+        (terminal_name, terminal_context.get("event_sha256")),
     ):
         digest = str(value or "")
         if len(digest) != 64 or any(
             character not in "0123456789abcdef" for character in digest
         ):
             raise DriveTraceAnalysisError(f"{name} event digest is invalid")
+    if isinstance(mission_terminal, Mapping) and (
+        mission_terminal.get("status") != "timeout"
+        or mission_terminal.get("controller_state") != "recovery_required"
+        or mission_terminal.get("reason") != "mission_lease_expired"
+    ):
+        raise DriveTraceAnalysisError(
+            "drive trace mission terminal is not a safe lease expiry"
+        )
     dx = _finite(target.get("x_m"), "target x") - _finite(
         localization.get("x_m"), "localization x"
     )
@@ -627,7 +703,14 @@ def _goal_context(
         "relative_bearing_rad": relative,
         "relative_bearing_deg": math.degrees(relative),
         "target_was_behind": abs(relative) > math.pi / 2.0,
-        "semantic_completion": dict(completion),
+        "semantic_completion": (
+            dict(completion) if isinstance(completion, Mapping) else None
+        ),
+        "mission_terminal": (
+            dict(mission_terminal)
+            if isinstance(mission_terminal, Mapping)
+            else None
+        ),
     }
 
 
@@ -746,7 +829,7 @@ def phase1_motion_evidence_routing(
 
 
 def analyze_trace(
-    path: str | Path,
+    path: str | Path | Sequence[str | Path],
     *,
     context: Optional[Mapping[str, Any]] = None,
     response_lag_s: float = 0.25,
@@ -758,7 +841,7 @@ def analyze_trace(
     events, trace_digest, size_bytes = load_trace(path)
     mission_id, source_sha = _validate_provenance(events)
     timed = _timed(events)
-    interval = _find_interval(timed)
+    interval = _find_interval(timed, mission_id)
     mission_interval = _find_mission_interval(timed, mission_id)
     start_s = interval["start_s"]
     end_s = interval["end_s"]
@@ -828,12 +911,14 @@ def analyze_trace(
         "trace": {
             "sha256": trace_digest,
             "size_bytes": size_bytes,
+            "segment_count": len(_trace_paths(path)),
             "event_counts": dict(sorted(event_counts.items())),
         },
         "analysis_config": {
             "interval_rule": (
                 "first nonzero nav2_request through first subsequent "
-                "hierarchical-controller complete"
+                "mission-bound hierarchical-controller complete or safe "
+                "mission_lease_expired recovery terminal"
             ),
             "command_max_hold_s": 0.50,
             "collision_max_hold_s": 0.30,
@@ -874,7 +959,7 @@ def analyze_trace(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("trace", type=Path)
+    parser.add_argument("trace", type=Path, nargs="+")
     parser.add_argument("--context", type=Path)
     parser.add_argument(
         "--output",

@@ -28,7 +28,12 @@ def _event(kind: str, **values):
     }
 
 
-def _write_trace(path: Path) -> str:
+def _write_trace(
+    path: Path,
+    *,
+    terminal_state: str = "complete",
+    terminal_reason: str = "finish",
+) -> str:
     events = [
         _event("trace_started"),
         _event(
@@ -130,8 +135,8 @@ def _write_trace(path: Path) -> str:
             recorded_at_s=4.0,
             value={
                 "mission_id": MISSION,
-                "state": "complete",
-                "reason": "finish",
+                "state": terminal_state,
+                "reason": terminal_reason,
             },
         ),
         _event(
@@ -168,6 +173,18 @@ def _context(trace_sha256: str):
     }
 
 
+def _timeout_context(trace_sha256: str):
+    context = _context(trace_sha256)
+    context.pop("semantic_completion")
+    context["mission_terminal"] = {
+        "event_sha256": "d" * 64,
+        "status": "timeout",
+        "controller_state": "recovery_required",
+        "reason": "mission_lease_expired",
+    }
+    return context
+
+
 def test_analysis_time_aligns_commands_odometry_and_goal_context(tmp_path: Path) -> None:
     trace = tmp_path / "trace.jsonl"
     digest = _write_trace(trace)
@@ -195,6 +212,70 @@ def test_analysis_time_aligns_commands_odometry_and_goal_context(tmp_path: Path)
     assert geometry["relative_bearing_deg"] == pytest.approx(180.0)
     assert report["phase1_motion_evidence"]["outcome"] == "geometry_ineligible"
     assert report["phase1_motion_evidence"]["routes_to_phase0b"] is False
+
+
+def test_analysis_accepts_ordered_rotation_segments_and_safe_lease_terminal(
+    tmp_path: Path,
+) -> None:
+    combined = tmp_path / "combined.jsonl"
+    digest = _write_trace(
+        combined,
+        terminal_state="recovery_required",
+        terminal_reason="mission_lease_expired",
+    )
+    raw = combined.read_bytes()
+    split = raw.find(b"\n", len(raw) // 2) + 1
+    previous = tmp_path / "trace.previous.jsonl"
+    current = tmp_path / "trace.jsonl"
+    previous.write_bytes(raw[:split])
+    current.write_bytes(raw[split:])
+
+    report = analyze_trace(
+        [previous, current], context=_timeout_context(digest)
+    )
+
+    assert report["trace"]["sha256"] == digest
+    assert report["trace"]["segment_count"] == 2
+    assert report["active_navigation_interval"]["terminal_state"] == (
+        "recovery_required"
+    )
+    assert report["active_navigation_interval"]["terminal_reason"] == (
+        "mission_lease_expired"
+    )
+    assert report["mission_interval"]["terminal_state"] == (
+        "recovery_required"
+    )
+    geometry = report["goal_geometry_and_completion"]
+    assert geometry["semantic_completion"] is None
+    assert geometry["mission_terminal"]["status"] == "timeout"
+
+
+def test_analysis_rejects_non_lease_recovery_terminal(tmp_path: Path) -> None:
+    trace = tmp_path / "trace.jsonl"
+    digest = _write_trace(
+        trace,
+        terminal_state="recovery_required",
+        terminal_reason="controller_failure",
+    )
+
+    with pytest.raises(
+        DriveTraceAnalysisError, match="accepted controller terminal"
+    ):
+        analyze_trace(trace, context=_timeout_context(digest))
+
+
+def test_analysis_rejects_reversed_rotation_segments(tmp_path: Path) -> None:
+    combined = tmp_path / "combined.jsonl"
+    digest = _write_trace(combined)
+    raw = combined.read_bytes()
+    split = raw.find(b"\n", len(raw) // 2) + 1
+    previous = tmp_path / "trace.previous.jsonl"
+    current = tmp_path / "trace.jsonl"
+    previous.write_bytes(raw[:split])
+    current.write_bytes(raw[split:])
+
+    with pytest.raises(DriveTraceAnalysisError, match="segment order"):
+        analyze_trace([current, previous], context=_context(digest))
 
 
 @pytest.mark.parametrize(

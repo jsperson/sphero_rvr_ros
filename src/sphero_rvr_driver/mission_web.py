@@ -2876,6 +2876,12 @@ class LiveMissionWebAdapter:
                 "terminal": state in {item.value for item in TERMINAL_STATES},
                 "terminal_reason": terminal_reason,
                 "result": dict(result),
+                "no_contact_eligible": bool(
+                    mission is not None
+                    and mission.get(
+                        "no_contact_observation_eligible", False
+                    )
+                ),
                 "no_contact_confirmed": (
                     len(no_contact_observations) == 1
                 ),
@@ -4510,7 +4516,7 @@ _INDEX_HTML = r'''<!doctype html>
         || !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       $('cancel').textContent = 'Cancel';
       const noContactVisible = canonical
-        && snapshot.mission.state === 'COMPLETE';
+        && Boolean(snapshot.mission.no_contact_eligible);
       const noContactConfirmed = Boolean(
         snapshot.mission.no_contact_confirmed
       );

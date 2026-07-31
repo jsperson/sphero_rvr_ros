@@ -22,6 +22,7 @@ from sphero_rvr_driver.mission_service import (
     ExecutorBinding,
     MissionService,
     MissionServiceServer,
+    _hierarchical_no_contact_observation_eligible,
 )
 
 
@@ -31,6 +32,61 @@ def _service(database: Path, **kwargs):
     return MissionService(database, **kwargs)
 
 
+def _safe_timeout_row() -> dict[str, object]:
+    return {
+        "mission_id": "canonical-timeout",
+        "status": "timeout",
+        "proposal_json": json.dumps(
+            {"schema": "sphero_rvr.hierarchical_physical_proposal.v1"}
+        ),
+        "result_json": json.dumps(
+            {
+                "schema": "sphero_rvr.hierarchical_canonical_result.v1",
+                "mission_id": "canonical-timeout",
+                "status": "timeout",
+                "reason": "canonical M7.6 mission lease expired",
+                "source_sha": "source-test-sha",
+                "deployed_sha": "deployed-test-sha",
+                "cleanup_verified": True,
+                "motion_authority": False,
+                "restart_resume_allowed": False,
+                "run_evidence": {
+                    "started_at_s": 10.0,
+                    "ended_at_s": 20.0,
+                },
+            }
+        ),
+        "terminal_reason": "canonical M7.6 mission lease expired",
+        "source_sha": "source-test-sha",
+        "deployed_sha": "deployed-test-sha",
+    }
+
+
+def test_safe_lease_timeout_is_eligible_for_attended_observation() -> None:
+    assert _hierarchical_no_contact_observation_eligible(
+        _safe_timeout_row()
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("result_field", "value"),
+    [
+        ("cleanup_verified", False),
+        ("motion_authority", True),
+        ("restart_resume_allowed", True),
+        ("reason", "controller_failed"),
+        ("source_sha", "wrong-source"),
+    ],
+)
+def test_unsafe_timeout_is_not_eligible_for_attended_observation(
+    result_field: str, value: object
+) -> None:
+    row = _safe_timeout_row()
+    result = json.loads(str(row["result_json"]))
+    result[result_field] = value
+    row["result_json"] = json.dumps(result)
+
+    assert _hierarchical_no_contact_observation_eligible(row) is False
 
 def _status_plan(goal_id: str, correlation_id: str) -> MissionPlan:
     return MissionPlan(
