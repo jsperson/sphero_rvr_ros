@@ -508,6 +508,55 @@ def test_canonical_proposal_is_semantic_only_and_durable(tmp_path) -> None:
         service.close()
 
 
+def test_operator_written_objective_is_accepted_and_digest_bound(
+    tmp_path,
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    del cache, session
+    objective = "Explore the entire room."
+    try:
+        proposed = controller.submit(
+            objective,
+            session_id="operator-browser",
+            source="web",
+            mission_id="operator-objective-test",
+            mission_lease_s=120.0,
+        )
+        assert proposed["status"] == "proposed"
+        assert proposed["prompt"] == objective
+        assert proposed["proposal"]["objective"] == objective
+        unsigned = dict(proposed["proposal"])
+        supplied_digest = unsigned.pop("proposal_digest")
+        assert canonical_digest(unsigned) == supplied_digest
+        assert proposed["proposal"]["requested_object_classes"] == [
+            "shoe",
+            "person",
+        ]
+    finally:
+        controller.close()
+        service.close()
+
+
+@pytest.mark.parametrize("objective", ["", "   ", "x" * 601, None])
+def test_operator_objective_rejects_only_malformed_text(
+    tmp_path, objective
+) -> None:
+    service, cache, session, controller = _controller(tmp_path)
+    del cache, session
+    try:
+        with pytest.raises(
+            MissionValidationError, match="physical mission objective"
+        ):
+            controller.submit(
+                objective,
+                session_id="operator-browser",
+                mission_id="invalid-operator-objective",
+            )
+    finally:
+        controller.close()
+        service.close()
+
+
 def test_canonical_approval_requires_auth_room_and_exact_proposal(
     tmp_path,
 ) -> None:
@@ -1131,8 +1180,9 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
             "scott@example.com"
         )
         assert _is_adaptive_preapproval(initial) is False
+        operator_objective = "Explore the entire room."
         proposed = browser.propose(
-            CANONICAL_M7_OBJECTIVE, "live", mission_lease_s=120.0
+            operator_objective, "live", mission_lease_s=120.0
         )
         assert proposed["adapter"]["hierarchical_canonical"] is True
         assert proposed["approval"]["enabled"] is True
@@ -1140,6 +1190,8 @@ def test_browser_creates_and_approves_canonical_mission_without_hash_entry(
             proposed["proposal"]["proposal_digest"]
         )
         assert proposed["proposal"]["mission_lease_s"] == 120.0
+        assert proposed["proposal"]["objective"] == operator_objective
+        assert proposed["adapter"]["operator_objectives_enabled"] is True
         binding = proposed["adapter"][
             "hierarchical_physical_binding"
         ]

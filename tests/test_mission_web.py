@@ -1142,11 +1142,10 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert "let hydratedMissionId = null;" in page
     assert "if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';" in page
     assert "&& !canonical;" in page
-    assert (
-        "canonical\n"
-        "        && !promptDirty\n"
-        "        && snapshot.adapter.canonical_objective"
-    ) in page
+    assert "&& snapshot.adapter.canonical_objective" not in page
+    assert "HIERARCHICAL PHYSICAL MISSION — APPROVAL LOCKED" in page
+    assert "Physical mission approval" in page
+    assert "<legend>Physical room confirmation</legend>" in page
     assert "$('mission-prompt').addEventListener('input'" in page
     assert 'id="safety-corridor"' in page
     assert 'id="safety-trajectory"' in page

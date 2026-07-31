@@ -134,7 +134,12 @@ another untrusted proxy between Serve and this listener, do not expose the port 
 the LAN, and do not use Tailscale Funnel.
 
 The product Pi configuration reports approval-time activation capability while
-the physical session remains locked. If planning evidence is stale, **Generate
+the physical session remains locked. The hierarchical physical console accepts
+the operator's non-empty semantic objective (up to 600 characters); it does not
+limit the prompt to the historical M7.6 evidence sentence. The objective is
+included in the proposal digest, while poses, routes, velocities, safety
+settings, and ROS names remain server-owned and absent from the proposal. If
+planning evidence is stale, **Generate
 proposal** starts the fixed no-motion telemetry graph and waits for fresh
 camera/lidar/localization evidence before it submits the proposal. It never
 submits a predictably stale request. Once the proposal succeeds or fails, the
