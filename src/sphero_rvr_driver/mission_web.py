@@ -4909,6 +4909,9 @@ _INDEX_HTML = r'''<!doctype html>
       const image = $('live-camera-preview');
       const empty = $('camera-empty');
       const interruption = $('camera-interruption');
+      const physicalSession = Boolean(((snapshot.adapter || {}).physical_session || {}).active);
+      const telemetryActive = Boolean((snapshot.telemetry_control || {}).active);
+      const sourceActive = physicalSession || telemetryActive;
 
       image.hidden = !hasPixels;
       if (hasPixels) {
@@ -4939,7 +4942,11 @@ _INDEX_HTML = r'''<!doctype html>
       const cameraTone = hasPixels && preview.fresh ? '' : state === 'interrupted' ? 'interrupted' : state === 'stale' ? 'stale' : 'unavailable';
       const age = finiteNumber(preview.age_s);
       $('camera-status').innerHTML = statusPill(
-        'Input',
+        'Source',
+        sourceActive ? 'running' : hasPixels ? 'recorded' : 'off',
+        sourceActive ? '' : hasPixels ? 'stale' : 'unavailable'
+      ) + statusPill(
+        'Evidence',
         hasPixels ? (preview.fresh ? 'fresh' : state) : frameId ? 'metadata only' : state,
         cameraTone
       ) + (age !== null ? statusPill('Age', `${age.toFixed(2)} s`, age > 1.5 ? 'stale' : '') : '');

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 import subprocess
+import time
 from typing import Any, Optional
 
 from .collision_stop import (
@@ -36,12 +38,29 @@ from .hierarchical_exploration import (
 from .hierarchical_physical_binding import (
     AUTHORITY_HEARTBEAT_MAX_AGE_S,
     AUTHORITY_TOPIC,
+    CONTROLLER_STATUS_TOPIC,
+    MOTOR_TOPIC,
     validate_authority_heartbeat,
 )
+from .drive_trace import BoundedDriveTrace
 from .odometry import MotionPrimitiveConfig, OdomMotionState
 from .range_motion_node import _stamp_seconds, _tf_error_reason, _transform2d_from_transform_stamped
 
 MAX_TURN_CORRECTION_CONTROL_PERIOD_S = 0.05
+
+
+def _drive_trace_mission_id(proposal_file: Any) -> str:
+    path = Path(str(proposal_file)).expanduser().resolve()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("drive trace requires a readable proposal file") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("drive trace proposal must be an object")
+    mission_id = str(payload.get("mission_id", "")).strip()
+    if not mission_id:
+        raise ValueError("drive trace proposal has no mission ID")
+    return mission_id
 
 
 def _odom_state(msg: Any) -> Optional[OdomMotionState]:
@@ -256,6 +275,38 @@ def main(args=None):
             self._estop = False
             self._cancel = False
             self._source_sha = str(self.get_parameter("source_sha").value) or _source_sha()
+            self._drive_trace: Optional[BoundedDriveTrace] = None
+            self._drive_trace_error_logged = False
+            if bool(self.get_parameter("drive_trace_enabled").value):
+                if not self._hierarchical_physical:
+                    raise ValueError(
+                        "drive trace is available only for the exact-SHA physical hierarchy"
+                    )
+                self._drive_trace = BoundedDriveTrace(
+                    Path(
+                        str(
+                            self.get_parameter(
+                                "drive_trace_directory"
+                            ).value
+                        )
+                    ),
+                    mission_id=_drive_trace_mission_id(
+                        self.get_parameter(
+                            "drive_trace_proposal_file"
+                        ).value
+                    ),
+                    source_sha=self._source_sha_value(),
+                    max_segment_bytes=int(
+                        self.get_parameter(
+                            "drive_trace_max_segment_bytes"
+                        ).value
+                    ),
+                    retained_files=int(
+                        self.get_parameter(
+                            "drive_trace_retained_files"
+                        ).value
+                    ),
+                )
 
             self._cmd_pub = self.create_publisher(Twist, self._supervisor_cmd_topic(), 10)
             self._status_pub = self.create_publisher(String, str(self.get_parameter("status_topic").value), 10)
@@ -274,6 +325,25 @@ def main(args=None):
                         self._on_hierarchical_authority,
                         10,
                     )
+                    if self._drive_trace is not None:
+                        self.create_subscription(
+                            Twist,
+                            MOTOR_TOPIC,
+                            self._on_motor_output,
+                            10,
+                        )
+                        self.create_subscription(
+                            String,
+                            CONTROLLER_STATUS_TOPIC,
+                            self._on_controller_status,
+                            10,
+                        )
+                        self.create_subscription(
+                            String,
+                            "/mission_api/v2/hierarchical/status",
+                            self._on_adapter_status,
+                            10,
+                        )
             else:
                 self.create_subscription(String, str(self.get_parameter("route_request_topic").value), self._on_route_request, 10)
             self.create_subscription(
@@ -288,6 +358,8 @@ def main(args=None):
             self.create_subscription(String, str(self.get_parameter("stop_state_topic").value), self._on_stop_state, 10)
             self.create_service(Trigger, "live_route/cancel", self._on_cancel)
             self.create_timer(control_period_s, self._tick)
+            if self._drive_trace is not None:
+                self.create_timer(1.0, self._flush_drive_trace)
 
         def _declare_parameters(self) -> None:
             odom_defaults = MotionPrimitiveConfig()
@@ -321,6 +393,13 @@ def main(args=None):
                 "stop_state_topic": "/mission_api/v2/control_state",
                 "control_period_s": 0.05,
                 "source_sha": "",
+                "drive_trace_enabled": False,
+                "drive_trace_directory": (
+                    "/home/jsperson/.local/state/sphero_rvr/drive-diagnostics"
+                ),
+                "drive_trace_proposal_file": "",
+                "drive_trace_max_segment_bytes": 8_000_000,
+                "drive_trace_retained_files": 16,
                 "base_frame": scan_defaults.base_frame,
                 "laser_frame": scan_defaults.laser_frame,
                 "fail_on_missing_tf": scan_defaults.fail_on_missing_tf,
@@ -440,6 +519,12 @@ def main(args=None):
         def _on_nav2_command(self, msg) -> None:
             now_s = self._now_seconds()
             self._latest_nav2_command_received_at = now_s
+            self._trace_command(
+                "nav2_request",
+                float(msg.linear.x),
+                float(msg.angular.z),
+                recorded_at_s=now_s,
+            )
             self._hierarchical_bridge.accept(
                 float(msg.linear.x),
                 float(msg.angular.z),
@@ -519,6 +604,19 @@ def main(args=None):
         def _on_odom(self, msg) -> None:
             self._latest_odom = _odom_state(msg)
             self._latest_odom_received_at = self._now_seconds()
+            if self._latest_odom is not None and self._drive_trace is not None:
+                try:
+                    sample = self._drive_trace.metrics.record_odom(
+                        self._latest_odom.x_m,
+                        self._latest_odom.y_m,
+                        self._latest_odom.yaw_rad,
+                    )
+                    self._trace_sample(
+                        sample,
+                        recorded_at_s=self._latest_odom_received_at,
+                    )
+                except ValueError as exc:
+                    self._trace_error(exc)
 
         def _on_encoder_counts(self, msg) -> None:
             self._latest_encoder_counts = _encoder_state(getattr(msg, "data", None))
@@ -531,6 +629,33 @@ def main(args=None):
                 self._collision_received_at = self._now_seconds()
             else:
                 self._collision_received_at = None
+            self._trace_state(
+                "collision",
+                {
+                    "state": self._collision_state,
+                    "reason": self._collision_reason,
+                    "raw": str(raw),
+                },
+                recorded_at_s=self._now_seconds(),
+            )
+
+        def _on_motor_output(self, msg) -> None:
+            self._trace_command(
+                "motor_output",
+                float(msg.linear.x),
+                float(msg.angular.z),
+                recorded_at_s=self._now_seconds(),
+            )
+
+        def _on_controller_status(self, msg) -> None:
+            self._trace_json_state(
+                "hierarchical_controller", getattr(msg, "data", "")
+            )
+
+        def _on_adapter_status(self, msg) -> None:
+            self._trace_json_state(
+                "hierarchical_adapter", getattr(msg, "data", "")
+            )
 
         def _on_stop_state(self, msg) -> None:
             text = str(getattr(msg, "data", "")).lower()
@@ -666,7 +791,96 @@ def main(args=None):
                 angular_z = 0.0
             twist.linear.x = linear_x
             twist.angular.z = angular_z
+            self._trace_command(
+                "supervisor_request",
+                linear_x,
+                angular_z,
+                recorded_at_s=self._now_seconds(),
+            )
             self._cmd_pub.publish(twist)
+
+        def _trace_command(
+            self,
+            stream: str,
+            linear_x: float,
+            angular_z: float,
+            *,
+            recorded_at_s: float,
+        ) -> None:
+            if self._drive_trace is None:
+                return
+            try:
+                sample = self._drive_trace.metrics.record_command(
+                    stream, linear_x, angular_z
+                )
+                self._trace_sample(sample, recorded_at_s=recorded_at_s)
+            except ValueError as exc:
+                self._trace_error(exc)
+
+        def _trace_json_state(self, stream: str, raw: Any) -> None:
+            value: Any = str(raw)
+            try:
+                parsed = json.loads(str(raw))
+                if isinstance(parsed, dict):
+                    value = parsed
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            self._trace_state(
+                stream, value, recorded_at_s=self._now_seconds()
+            )
+
+        def _trace_state(
+            self,
+            stream: str,
+            value: Any,
+            *,
+            recorded_at_s: float,
+        ) -> None:
+            if self._drive_trace is None:
+                return
+            try:
+                sample = self._drive_trace.metrics.record_state(stream, value)
+                self._trace_sample(sample, recorded_at_s=recorded_at_s)
+            except ValueError as exc:
+                self._trace_error(exc)
+
+        def _trace_sample(
+            self, sample: dict[str, Any], *, recorded_at_s: float
+        ) -> None:
+            if self._drive_trace is None:
+                return
+            try:
+                self._drive_trace.record(
+                    sample,
+                    recorded_at_s=recorded_at_s,
+                    monotonic_s=time.monotonic(),
+                )
+            except (OSError, ValueError) as exc:
+                self._trace_error(exc)
+
+        def _trace_error(self, exc: BaseException) -> None:
+            if self._drive_trace_error_logged:
+                return
+            self._drive_trace_error_logged = True
+            self.get_logger().error(
+                f"bounded physical drive trace failed: {exc}"
+            )
+
+        def _flush_drive_trace(self) -> None:
+            if self._drive_trace is None:
+                return
+            try:
+                self._drive_trace.flush()
+            except OSError as exc:
+                self._trace_error(exc)
+
+        def close_drive_trace(self) -> None:
+            if self._drive_trace is None:
+                return
+            try:
+                self._drive_trace.close()
+            except OSError as exc:
+                self._trace_error(exc)
 
         def _publish_zero_status(self, reason: str, error: dict[str, Any]) -> None:
             self._publish_command(type("Zero", (), {"linear_x": 0.0, "angular_z": 0.0})())
@@ -723,5 +937,6 @@ def main(args=None):
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node.close_drive_trace()
         node.destroy_node()
         rclpy.try_shutdown()
