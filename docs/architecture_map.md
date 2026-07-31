@@ -13,7 +13,7 @@ record decisions and evidence; they are not competing architecture maps.
 |---|---|---|---|
 | Browser proposal and observation | `mission_web.py`: `LiveMissionWebAdapter`; executable `rvr_mission_web` | Mission Service Unix socket and HTTP UI | Owns proposal, authenticated approval/cancel, and no-contact observation. No ROS, `Twist`, serial, geometry, or motor surface. |
 | Persistent mission state and API boundary | `mission_service.py`: `MissionService`; `live_mission_service_node.py`: node `/live_mission_service`, executable `live_mission_service` | `~/.local/state/sphero_rvr/missions.sqlite3`, Pi-local Unix socket, `/mission_api/v2/*` status surfaces | Owns durable proposals, events, results, approval records, and restart recovery. Does not publish motion commands. |
-| One-shot physical session | `hierarchical_physical_live_controller.py`: `HierarchicalPhysicalMissionController`; `hierarchical_physical_session.py`: `SystemdHierarchicalMissionSession` | `rvr-hierarchical-mission.service` | Consumes one exact-SHA/digest-bound approval, activates the default-off graph, then relocks and cleans up. Restart never resumes. |
+| Single-approval physical session | `hierarchical_physical_live_controller.py`: `HierarchicalPhysicalMissionController`; `hierarchical_physical_session.py`: `SystemdHierarchicalMissionSession` | `rvr-hierarchical-mission.service` (`Type=simple`, `Restart=no`) | Consumes one exact-SHA/digest-bound approval, activates the default-off graph, then relocks and cleans up. Restart never resumes. |
 | Physical authority heartbeat | `hierarchical_authority_node.py`: node `hierarchical_physical_authority`, executable `hierarchical_physical_authority` | `/mission_api/v2/hierarchical/authority` | Owns the bounded authority heartbeat only. It cannot emit a goal or velocity. |
 | Live sensors and localization | `hierarchical_exploration_physical.launch.py` includes `mapping.launch.py`; RPLidar, Camera 3, `slam_toolbox`, static TF | `/scan`, `/camera_node/image_raw`, `/camera_node/camera_info`, `/map`, `/odom`, TF | Own raw sensing, occupancy, and localization evidence. Sensors do not grant motion authority. |
 | Semantic perception | `stationary_perception_node.py`: `StationaryPerceptionNode`, launched as node `hierarchical_semantic_perception`, executable `stationary_perception` | `/mission_api/v2/camera/status`, `/mission_api/v2/lidar/status`, `/mission_api/v2/localization/status`, `/mission_api/v2/map/status` | Owns deterministic detection, tracking, camera/lidar localization, and bounded evidence images. No motion publisher. |
@@ -66,11 +66,12 @@ browser proposal + authenticated approval
 | Maximum mission lease | `900 s` |
 | Active perception image retention | 96 JPEGs, each at most 512,000 bytes |
 
-All five motor-capable launch groups default false: `start_sensors`,
+All five physical launch groups default false: `start_sensors`,
 `start_motion_stack`, `start_nav2`, `start_authority`, and
-`start_semantic_adapter`. The physical systemd unit is one-shot and not enabled
-at boot. Drop-off sensing remains unavailable; physical runs require an
-attended level bounded room without stairs, ledges, or open drop-offs.
+`start_semantic_adapter`. The physical systemd unit is single-session,
+`Restart=no`, and has no `[Install]` section, so it cannot be enabled at boot.
+Drop-off sensing remains unavailable; physical runs require an attended level
+bounded room without stairs, ledges, or open drop-offs.
 
 ## Legacy and non-canonical paths
 
