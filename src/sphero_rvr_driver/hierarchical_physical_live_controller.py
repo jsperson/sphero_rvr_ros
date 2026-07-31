@@ -32,6 +32,12 @@ CANONICAL_M7_OBJECTIVE = (
 CANONICAL_OBJECT_CLASSES = ("shoe", "person")
 CANONICAL_APPROVAL_PREFIX = "APPROVE M7.6 CANONICAL MISSION "
 OPERATOR_OBJECTIVE_MAX_CHARS = 600
+REQUIRED_PHYSICAL_ROOM_CONFIRMATION = {
+    "attended": True,
+    "level_bounded": True,
+    "stairs_ledges_dropoffs_absent": True,
+    "negative_obstacle_sensing_available": False,
+}
 CONTROLLER_SOURCE = "hierarchical_controller"
 ADAPTER_SOURCE = "hierarchical_adapter"
 PREFLIGHT_MAX_AGE_S = {
@@ -248,12 +254,7 @@ class HierarchicalPhysicalMissionController:
                 "M7.6 approval does not bind the current canonical proposal"
             )
         room = dict(physical_room_confirmation or {})
-        expected_room = {
-            "attended": True,
-            "level_bounded": True,
-            "stairs_ledges_dropoffs_absent": True,
-            "negative_obstacle_sensing_available": False,
-        }
+        expected_room = dict(REQUIRED_PHYSICAL_ROOM_CONFIRMATION)
         if room != expected_room:
             raise MissionValidationError(
                 "M7.6 requires explicit attended, level, bounded, no-dropoff room confirmation"

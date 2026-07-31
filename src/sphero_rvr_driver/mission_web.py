@@ -68,6 +68,7 @@ from .hierarchical_phase4_replay import (
 from .hierarchical_physical_binding import PHYSICAL_PROPOSAL_SCHEMA
 from .hierarchical_physical_live_controller import (
     CANONICAL_APPROVAL_PREFIX,
+    REQUIRED_PHYSICAL_ROOM_CONFIRMATION,
 )
 
 WEB_API_VERSION = "rvr_mission_web.v1"
@@ -2417,7 +2418,7 @@ class LiveMissionWebAdapter:
         confirm_current_proposal: bool = False,
         physical_room_confirmation: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
-        del supplied_approval
+        del supplied_approval, physical_room_confirmation
         with self._lock:
             if self._mission_id is None:
                 raise MissionWebError("a persisted live proposal is required before approval")
@@ -2482,7 +2483,7 @@ class LiveMissionWebAdapter:
                 if proposal_schema == PHYSICAL_PROPOSAL_SCHEMA:
                     approval_kwargs[
                         "physical_room_confirmation"
-                    ] = dict(physical_room_confirmation or {})
+                    ] = dict(REQUIRED_PHYSICAL_ROOM_CONFIRMATION)
                 snapshot = self.client.approve_prompt(
                     self._mission_id,
                     approval_phrase=server_approval,
@@ -3439,15 +3440,6 @@ def handle_mission_web_request(
                 payload.get("confirm_current_proposal", False)
             )
         }
-        if "physical_room_confirmation" in payload:
-            room = payload["physical_room_confirmation"]
-            if not isinstance(room, Mapping):
-                raise MissionWebError(
-                    "physical_room_confirmation must be an object"
-                )
-            approval_arguments[
-                "physical_room_confirmation"
-            ] = dict(room)
         result = adapter.approve(
             str(payload.get("approval_phrase", "")),
             **approval_arguments,
@@ -4141,15 +4133,11 @@ _INDEX_HTML = r'''<!doctype html>
           <h2 id="approval-heading">Simulation approval</h2>
           <p class="hint" id="approval-hint">Approval is digest-bound and authorizes only the mock adapter.</p>
           <p class="hint" id="approval-state" role="status" aria-live="polite"></p>
-          <fieldset id="canonical-room-confirmation" hidden>
-            <legend>Physical room confirmation</legend>
-            <label><input id="room-attended" type="checkbox"> I am present and can cut chassis power.</label>
-            <label><input id="room-level" type="checkbox"> The rover is on a level, bounded floor area.</label>
-            <label><input id="room-no-dropoffs" type="checkbox"> There are no stairs, ledges, or drop-offs.</label>
-            <label><input id="room-no-negative-sensing" type="checkbox"> I understand the rover has no negative-obstacle sensing.</label>
+          <div id="canonical-room-confirmation" hidden>
+            <p class="hint"><strong>Approve</strong> confirms that you are present with chassis power cut reachable, the rover is on a level bounded floor, no stairs, ledges, or drop-offs are present, and you understand that negative-obstacle sensing is unavailable.</p>
             <div class="hint" id="canonical-risk-ledger"></div>
             <div class="canonical-binding-envelope" id="canonical-binding-envelope"></div>
-          </fieldset>
+          </div>
           <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
           <code class="digest" id="approval-required-phrase" hidden></code>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
@@ -4425,16 +4413,7 @@ _INDEX_HTML = r'''<!doctype html>
         || telemetryRequestInFlight
         || snapshot.mission.state !== 'PROPOSED'
         || !snapshot.approval.enabled
-        || !leaseMatchesProposal
-        || (
-          canonical
-          && ![
-            'room-attended',
-            'room-level',
-            'room-no-dropoffs',
-            'room-no-negative-sensing',
-          ].every((id) => $(id).checked)
-        );
+        || !leaseMatchesProposal;
       $('lease-duration-minutes').disabled = Boolean(missionRequestInFlight)
         || telemetryRequestInFlight
         || leaseActive
@@ -5116,7 +5095,7 @@ _INDEX_HTML = r'''<!doctype html>
       $('request-status').textContent = current && current.adapter.stationary_perception
         ? 'Starting stationary snapshots and the leased LLM observation-intent loop…'
         : current && current.adapter.hierarchical_canonical
-          ? 'Starting the fixed canonical hierarchical graph under the 900-second M7.6 lease…'
+          ? 'Starting the supervised hierarchical graph under the selected mission lease…'
         : current && current.adapter.adaptive_mission
           ? 'Activating the supervised graph and waiting for fresh camera, lidar, localization, and safety evidence…'
           : 'Confirming the exact persisted proposal…';
@@ -5125,14 +5104,6 @@ _INDEX_HTML = r'''<!doctype html>
         const body = current && !current.adapter.fixture_only
           ? {confirm_current_proposal:true}
           : {approval_phrase:$('approval-input').value};
-        if (current && current.adapter.hierarchical_canonical) {
-          body.physical_room_confirmation = {
-            attended: $('room-attended').checked,
-            level_bounded: $('room-level').checked,
-            stairs_ledges_dropoffs_absent: $('room-no-dropoffs').checked,
-            negative_obstacle_sensing_available: false,
-          };
-        }
         const snapshot = await api('/api/web/mission/approve', {method:'POST', body:JSON.stringify(body)});
         missionRequestInFlight = '';
         render(snapshot);
@@ -5278,14 +5249,6 @@ _INDEX_HTML = r'''<!doctype html>
       leaseDurationDirty = true;
       if (current) renderActionState(current);
     });
-    [
-      'room-attended',
-      'room-level',
-      'room-no-dropoffs',
-      'room-no-negative-sensing',
-    ].forEach((id) => $(id).addEventListener('change', () => {
-      if (current) renderActionState(current);
-    }));
     $('no-contact-observed').addEventListener('change', () => {
       if (current) renderActionState(current);
     });
