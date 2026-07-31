@@ -53,6 +53,7 @@ from .mission_api import MissionValidationError
 
 
 SEMANTIC_REJECTION_ROLLOVER = 3
+INITIAL_SEMANTIC_REJECTION_LIMIT = 3
 COLLISION_EVIDENCE_MAX_AGE_S = 0.300
 CAMERA_EVIDENCE_MAX_AGE_S = 3.0
 MAP_EVIDENCE_MAX_AGE_S = 3.0
@@ -174,6 +175,21 @@ def updated_semantic_rejection_count(
     ):
         return 0
     return count
+
+
+def initial_semantic_rejection_retry(
+    previous: int,
+) -> tuple[int, bool]:
+    """Bound retries for schema-valid but semantically rejected first goals.
+
+    The motor path remains at zero while an initial provider response is being
+    validated. A single inconsistent LLM response is ordinary planning input,
+    not evidence that the ROS graph needs recovery. Repeated rejection is
+    still bounded so a broken provider contract cannot loop forever.
+    """
+
+    count = max(0, int(previous)) + 1
+    return count, count < INITIAL_SEMANTIC_REJECTION_LIMIT
 
 
 def semantic_rejection_rollover_due(count: int) -> bool:
@@ -1795,6 +1811,7 @@ def main(args=None):
                     "wait_planning", "initial_provider_in_flight"
                 )
                 return
+            raw: Optional[Mapping[str, Any]] = None
             try:
                 raw = self._initial_future.result()
                 provider_elapsed_s = (
@@ -1836,10 +1853,59 @@ def main(args=None):
                 )
                 controller.start(raw, captured, now_s=now_s)
                 self._controller = controller
+                self._consecutive_semantic_rejections = 0
                 self._initial_future = None
                 self._initial_snapshot = None
                 self._initial_provider_started_at_s = None
                 self._publish_dispatch(snapshot, now_s, "initial_goal")
+            except MissionValidationError as exc:
+                captured = self._initial_snapshot
+                self._consecutive_semantic_rejections, retry = (
+                    initial_semantic_rejection_retry(
+                        self._consecutive_semantic_rejections
+                    )
+                )
+                assert self._authority is not None
+                self._journal.append(
+                    str(self._authority["mission_id"]),
+                    "provider_response_rejected",
+                    {
+                        "schema": (
+                            "sphero_rvr.semantic_provider_rejection.v1"
+                        ),
+                        "source_sha": self._source_sha,
+                        "mission_id": str(self._authority["mission_id"]),
+                        "snapshot_id": str(
+                            (captured or {}).get("snapshot_id", "")
+                        ),
+                        "decision_generation": 1,
+                        "consecutive_rejections": int(
+                            self._consecutive_semantic_rejections
+                        ),
+                        "retry": bool(retry),
+                        "reason": str(exc)[:500],
+                        "response": (
+                            json.loads(json.dumps(dict(raw)))
+                            if isinstance(raw, Mapping)
+                            else None
+                        ),
+                    },
+                    recorded_at_s=now_s,
+                )
+                self._initial_future = None
+                self._initial_snapshot = None
+                self._initial_provider_started_at_s = None
+                if retry:
+                    self._publish_status(
+                        "wait_planning",
+                        "initial_semantic_response_rejected_retry",
+                    )
+                    return
+                self._terminal = True
+                self._publish_status(
+                    "recovery_required",
+                    "initial_semantic_rejection_limit",
+                )
             except Exception as exc:
                 self._terminal = True
                 self._publish_status(

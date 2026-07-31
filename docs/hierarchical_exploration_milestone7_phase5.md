@@ -228,6 +228,18 @@ nonlinear breakaway torque from turning 10 Hz planner dithering into physical
 oscillation. A fresh exact-SHA attended run must still validate the measured
 improvement before canonical evidence is final.
 
+The first attended run of that correction failed closed before motion after a
+real provider completion: the structured response passed the provider's JSON
+schema but raised `MissionValidationError` at the stricter semantic boundary.
+The original controller incorrectly treated any rejected first semantic
+response as a ROS recovery fault. Initial semantic contract rejections now stay
+in motor-zero `wait_planning`, record the exact bounded response and validation
+reason, and request a fresh snapshot-bound decision. The retry is capped at
+three consecutive rejections; reaching that limit still enters
+`recovery_required`. Provider timeout, authority loss, safety faults, and
+non-semantic exceptions remain immediately terminal. This changes planning
+availability only and grants no additional motion or command authority.
+
 That run also exposed a terminal-policy deadlock: live camera detections were
 truthfully `bearing_only`, so they did not become mapped semantic tracks. The
 model snapshot consequently had no `evidence_ids`, while the validated

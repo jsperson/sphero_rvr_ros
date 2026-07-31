@@ -13,6 +13,7 @@ from sphero_rvr_driver.hierarchical_goal_selection import (
     build_semantic_world_snapshot,
 )
 from sphero_rvr_driver.hierarchical_mission_node import (
+    INITIAL_SEMANTIC_REJECTION_LIMIT,
     PHYSICAL_FRONTIER_MIN_CLEARANCE_M,
     adapter_recovery_reason,
     adapter_remaining_distance,
@@ -20,6 +21,7 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     camera_observation_evidence,
     collision_hold_controller_state,
     goal_dispatch_queue_key,
+    initial_semantic_rejection_retry,
     live_motion_evidence_is_fresh,
     live_semantic_track_signature,
     live_source_is_fresh,
@@ -72,6 +74,28 @@ from sphero_rvr_driver.prompt_mission_controller import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SHA = "a" * 40
+
+
+def test_initial_semantic_contract_rejection_retries_twice_then_recovers() -> None:
+    count, retry = initial_semantic_rejection_retry(0)
+    assert (count, retry) == (1, True)
+    count, retry = initial_semantic_rejection_retry(count)
+    assert (count, retry) == (2, True)
+    count, retry = initial_semantic_rejection_retry(count)
+    assert (count, retry) == (
+        INITIAL_SEMANTIC_REJECTION_LIMIT,
+        False,
+    )
+
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    assert '"provider_response_rejected"' in source
+    assert '"initial_semantic_response_rejected_retry"' in source
+    assert '"initial_semantic_rejection_limit"' in source
 
 
 def test_camera_observation_evidence_is_bounded_and_geometry_free() -> None:
