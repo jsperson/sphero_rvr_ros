@@ -709,6 +709,87 @@ def test_canonical_browser_can_start_only_no_motion_preflight_telemetry() -> Non
     )
 
 
+def test_canonical_approval_starts_telemetry_and_retries_fresh_preflight() -> None:
+    class PreflightAdapter:
+        def __init__(self) -> None:
+            self.approval_calls = 0
+
+        def snapshot(self):
+            return {
+                "adapter": {
+                    "hierarchical_canonical": True,
+                    "physical_session": {"active": False},
+                },
+                "mission": {"state": "PROPOSED"},
+                "safety": {"telemetry_fresh": False},
+                "camera_preview": {"fresh": False},
+            }
+
+        def approve(self, supplied_approval, **kwargs):
+            del supplied_approval, kwargs
+            self.approval_calls += 1
+            if self.approval_calls == 1:
+                raise MissionWebError(
+                    "M7.6 sensor preflight requires valid lidar evidence"
+                )
+            return {
+                **self.snapshot(),
+                "mission": {"state": "APPROVED"},
+            }
+
+    adapter = PreflightAdapter()
+    telemetry_control = FakeTelemetryControl()
+    response = json.loads(
+        handle_mission_web_request(
+            "POST",
+            "/api/web/mission/approve",
+            json.dumps({"confirm_current_proposal": True}),
+            adapter,
+            telemetry_control,
+        ).body
+    )
+
+    assert response["mission"]["state"] == "APPROVED"
+    assert adapter.approval_calls == 2
+    assert [request[0] for request in telemetry_control.requests] == [True]
+    assert telemetry_control.active is True
+
+
+def test_canonical_approval_failure_stops_telemetry_started_for_preflight() -> None:
+    class RejectedApprovalAdapter:
+        def snapshot(self):
+            return {
+                "adapter": {
+                    "hierarchical_canonical": True,
+                    "physical_session": {"active": False},
+                },
+                "mission": {"state": "PROPOSED"},
+                "safety": {"telemetry_fresh": False},
+                "camera_preview": {"fresh": False},
+            }
+
+        def approve(self, supplied_approval, **kwargs):
+            del supplied_approval, kwargs
+            raise MissionWebError("approval rejected")
+
+    adapter = RejectedApprovalAdapter()
+    telemetry_control = FakeTelemetryControl()
+    with pytest.raises(MissionWebError, match="approval rejected"):
+        handle_mission_web_request(
+            "POST",
+            "/api/web/mission/approve",
+            json.dumps({"confirm_current_proposal": True}),
+            adapter,
+            telemetry_control,
+        )
+
+    assert [request[0] for request in telemetry_control.requests] == [
+        True,
+        False,
+    ]
+    assert telemetry_control.active is False
+
+
 @pytest.mark.parametrize(
     ("binding", "physical_session"),
     [
@@ -1151,7 +1232,10 @@ def test_static_bundle_is_responsive_accessible_and_has_no_browser_persistence()
     assert 'id="room-no-dropoffs"' not in page
     assert 'id="room-no-negative-sensing"' not in page
     assert "body.physical_room_confirmation" not in page
-    assert "Starting the supervised hierarchical graph" in page
+    assert (
+        "Starting no-motion lidar, camera, localization, and map preflight"
+        in page
+    )
     assert "$('mission-prompt').addEventListener('input'" in page
     assert 'id="safety-corridor"' in page
     assert 'id="safety-trajectory"' in page
