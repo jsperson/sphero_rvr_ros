@@ -1,0 +1,7 @@
+Executable source SHA: 40ddb7934715b717bb483ab117ae96ae6c31ca38
+Mission: m7-canonical-efd37eb020b7440a818f9ed6769bcb5f
+Host: sphero-pi-2
+Command: ros2 run sphero_rvr_driver rvr_hierarchical_m7_canonical_validate --mission-id m7-canonical-efd37eb020b7440a818f9ed6769bcb5f --output /home/jsperson/.local/state/sphero_rvr/m7-canonical/m7-canonical-efd37eb020b7440a818f9ed6769bcb5f/report.json
+Result: exit 0 in 3.3 s
+Output: {"mission_id": "m7-canonical-efd37eb020b7440a818f9ed6769bcb5f", "output": "/home/jsperson/.local/state/sphero_rvr/m7-canonical/m7-canonical-efd37eb020b7440a818f9ed6769bcb5f/report.json", "passed": true, "report_digest": "7bdf0a7069f93f86bef0a93efbc658a12eb46a3841fcfe3fc95f5da5bd9c9621"}
+Cleanup: both hierarchical and telemetry units inactive; only /live_mission_service present; no rover serial owner; evaluator checks all true.

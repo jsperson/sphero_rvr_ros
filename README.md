@@ -22,22 +22,22 @@ already-overlapping rear obstacle return. M7.4 now also passes under its
 separate approval bound to both accepted evidence digests: live
 lidar/SLAM/camera freshness, mapped floor projection, stable-track replanning,
 pitch stability, stale-sensor zeroing, no contact, and cleanup were recorded
-while the rover moved. The M7.5 live hierarchical binding is now implemented
-as a separate default-off live M6 controller, moving-perception/WFD input,
-Nav2 semantic-goal adapter, and supervised command chain with exact-SHA/digest
+while the rover moved. The M7.5 live hierarchical binding is implemented as a
+separate default-off live M6 controller, moving-perception/WFD input, Nav2
+semantic-goal adapter, and supervised command chain with exact-SHA/digest
 authority, restart recovery, durable evidence, and a locked browser projection.
-Its exact-SHA Pi build and no-motion graph audit pass. It remains physically
-inactive pending independent review; M7.6 and the canonical mission remain
-locked on the merged M7.5 deployment. The Phase 5 candidate adds the
+Its exact-SHA Pi build and no-motion graph audit pass. Phase 5 adds the
 browser-owned semantic-only proposal, authenticated M7.6 room/risk/limit
 confirmation, a mandatory fresh no-motion lidar/camera/SLAM/localization
 preflight before approval can exist, one-shot supervised-unit activation,
 durable live checkpoints, mission-ID reopening, and an evidence-derived M7.7
 evaluator. The candidate also records the exact provider-time world/camera
 evidence, independently reproducible server-resolved goal batches, and actual
-bounded Nav2 plans. It remains default-off and does not claim a physical
-canonical run until exact-SHA Pi preflight, attended execution, and cleanup
-evaluation pass.
+bounded Nav2 plans. An attended 2026-07-31 exact-SHA canonical mission passed
+M7.6 and M7.7 with two real model calls, physical odometry, no contact, and
+generated cleanup. The full stack remains default-off; substantial rapid
+left/right turning jitter is explicitly retained as follow-up drive-quality
+work rather than represented as solved.
 
 ## Documentation map for operators and maintainers
 
@@ -80,6 +80,7 @@ evaluation pass.
 - [docs/hierarchical_exploration_milestone7_phase3.md](docs/hierarchical_exploration_milestone7_phase3.md) defines the separately approved M7.3 collision and M7.4 moving-perception gates, read-only observer/evaluator, pitch re-verification, and exact-SHA stop boundaries.
 - [docs/hierarchical_exploration_milestone7_phase4.md](docs/hierarchical_exploration_milestone7_phase4.md) records the default-off physical hierarchical binding, live-time Nav2 authority chain, exact-SHA/digest lease, restart recovery, durable/browser evidence, validation, and remaining Phase 5 risks.
 - [docs/hierarchical_exploration_milestone7_phase5.md](docs/hierarchical_exploration_milestone7_phase5.md) defines the final browser-owned canonical proposal/approval workflow, one-shot systemd activation, durable M7.7 evaluator, exact-SHA preflight, attended room gate, cleanup contract, and physical evidence status.
+- [artifacts/m7_phase5_canonical_physical/README.md](artifacts/m7_phase5_canonical_physical/README.md) records the passing attended canonical mission, two real provider calls, resolved Nav2 execution, physical odometry, authenticated no-contact observation, generated cleanup, and the unresolved turning-jitter carryover.
 - [artifacts/m7_phase4_physical_binding/README.md](artifacts/m7_phase4_physical_binding/README.md) records the exact-SHA Pi build, bounded M6/binding tests, no-motion graph and storage audit, cleanup, and disclosed cross-architecture fixture correction.
 - [artifacts/m7_phase3_attended_collision/README.md](artifacts/m7_phase3_attended_collision/README.md) records the passing exact-SHA attended M7.3 collision evidence, independent provider-in-flight veto timing, no-contact observation, restart recovery, raw-artifact checksums, disclosed capture anomalies, and final cleanup.
 - [artifacts/m7_phase3_directional_addendum/README.md](artifacts/m7_phase3_directional_addendum/README.md) records the attended paired directional-veto check: reverse-toward remains motor-zero, forward-away is permitted with positive overlapped-point exclusion, no contact occurred, and M7.4 must bind both evidence digests.

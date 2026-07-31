@@ -369,9 +369,24 @@ unbounded rosbag capture is part of this run.
 
 ## Evidence log
 
-Physical evidence will be added here only after the exact-SHA Pi deployment,
-attended mission, terminal cleanup, and evaluator all pass. Until then:
+The 2026-07-31 attended mission
+`m7-canonical-efd37eb020b7440a818f9ed6769bcb5f` passed at executable source
+`40ddb7934715b717bb483ab117ae96ae6c31ca38`. The browser-authored proposal,
+authenticated exact-SHA approval, two real Luna decisions, resolved Nav2 path,
+nonzero physical odometry, authenticated no-contact observation, authority
+relock, and generated cleanup all recompute from the durable report.
 
-- `m7_6_canonical_physical_mission`: `not_proven`
-- `m7_7_durable_physical_evidence`: `not_proven`
-- `canonical_mission_complete`: `false`
+- `m7_6_canonical_physical_mission`: `passed`
+- `m7_7_durable_physical_evidence`: `passed`
+- `canonical_mission_complete`: `true`
+- report digest:
+  `7bdf0a7069f93f86bef0a93efbc658a12eb46a3841fcfe3fc95f5da5bd9c9621`
+- evidence:
+  [M7 Phase 5 canonical physical evidence](../artifacts/m7_phase5_canonical_physical/README.md)
+
+The accepted run moved `0.137053 m` without contact and finished partial after
+two real model calls. The operator also reported substantial rapid left/right
+turning jitter. That is a drive-quality carryover: the passing gate proves the
+full physical hierarchy, safety cleanup, and evidence contract, but does not
+claim smooth or efficient navigation. A follow-up must add synchronized
+high-rate request/motor/odometry tracing before making another tuning claim.
