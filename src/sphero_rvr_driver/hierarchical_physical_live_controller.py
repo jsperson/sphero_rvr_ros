@@ -31,6 +31,7 @@ CANONICAL_M7_OBJECTIVE = (
 )
 CANONICAL_OBJECT_CLASSES = ("shoe", "person")
 CANONICAL_APPROVAL_PREFIX = "APPROVE M7.6 CANONICAL MISSION "
+OPERATOR_OBJECTIVE_MAX_CHARS = 600
 CONTROLLER_SOURCE = "hierarchical_controller"
 ADAPTER_SOURCE = "hierarchical_adapter"
 PREFLIGHT_MAX_AGE_S = {
@@ -66,6 +67,33 @@ def _finite_mission_lease(value: Any) -> float:
     return parsed
 
 
+def validate_operator_objective(prompt: Any) -> str:
+    """Accept operator intent while keeping geometry and safety server-owned."""
+
+    if not isinstance(prompt, str):
+        raise MissionValidationError(
+            "physical mission objective must be text"
+        )
+    objective = prompt.strip()
+    if not objective:
+        raise MissionValidationError(
+            "physical mission objective must not be empty"
+        )
+    if len(objective) > OPERATOR_OBJECTIVE_MAX_CHARS:
+        raise MissionValidationError(
+            "physical mission objective must be no more than "
+            f"{OPERATOR_OBJECTIVE_MAX_CHARS} characters"
+        )
+    if any(
+        ord(character) < 32 and character not in "\t\n\r"
+        for character in objective
+    ):
+        raise MissionValidationError(
+            "physical mission objective contains invalid control characters"
+        )
+    return objective
+
+
 class HierarchicalSessionLifecycle(Protocol):
     activation_capable: bool
 
@@ -84,7 +112,7 @@ class HierarchicalSessionLifecycle(Protocol):
 
 
 class HierarchicalPhysicalMissionController:
-    """Own exactly one canonical physical mission and its non-resumable lease."""
+    """Own exactly one physical semantic mission and its non-resumable lease."""
 
     def __init__(
         self,
@@ -128,11 +156,7 @@ class HierarchicalPhysicalMissionController:
         authentication_source: str = "",
     ) -> dict[str, Any]:
         del operator, authentication_source
-        objective = str(prompt).strip()
-        if objective != CANONICAL_M7_OBJECTIVE:
-            raise MissionValidationError(
-                "M7.6 accepts only the reviewed canonical semantic mission"
-            )
+        objective = validate_operator_objective(prompt)
         selected_lease_s = (
             MISSION_LEASE_MAX_S
             if mission_lease_s is None
@@ -550,6 +574,10 @@ class HierarchicalPhysicalMissionController:
             "motion_authority": active,
             "direct_ros_commands_allowed": False,
             "credentials_accepted_over_service": False,
+            "operator_objectives_enabled": True,
+            "example_objective": "Explore and map the room.",
+            # Retained for clients that still display the accepted M7
+            # evidence objective. It is an example, not an input lock.
             "canonical_objective": CANONICAL_M7_OBJECTIVE,
             "canonical_limits": HierarchicalPhysicalLimits().to_json_dict(),
             "canonical_risk_ledger": [
