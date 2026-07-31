@@ -36,6 +36,7 @@ class RVRNodeConfig:
     baud_rate: int = 115200
     cmd_vel_timeout: float = 0.5
     control_period: float = 0.05
+    safety_dispatch_timeout_s: float = 0.10
     max_linear_mps: float = 0.25
     max_angular_rad_s: float = 0.4
     max_raw_motor_duty: int = 160
@@ -73,6 +74,7 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         transport=transport,
         control_period=config.control_period,
         command_timeout=config.cmd_vel_timeout,
+        safety_dispatch_timeout_s=config.safety_dispatch_timeout_s,
         max_linear_mps=config.max_linear_mps,
         max_angular_rad_s=config.max_angular_rad_s,
         max_raw_motor_duty=config.max_raw_motor_duty,
@@ -197,6 +199,10 @@ def main(args=None):
             self.declare_parameter("baud_rate", defaults.baud_rate)
             self.declare_parameter("cmd_vel_timeout", defaults.cmd_vel_timeout)
             self.declare_parameter("control_period", defaults.control_period)
+            self.declare_parameter(
+                "safety_dispatch_timeout_s",
+                defaults.safety_dispatch_timeout_s,
+            )
             self.declare_parameter("max_linear_mps", defaults.max_linear_mps)
             self.declare_parameter("max_angular_rad_s", defaults.max_angular_rad_s)
             self.declare_parameter("max_raw_motor_duty", defaults.max_raw_motor_duty)
@@ -229,6 +235,9 @@ def main(args=None):
                 baud_rate=int(self.get_parameter("baud_rate").value),
                 cmd_vel_timeout=float(self.get_parameter("cmd_vel_timeout").value),
                 control_period=float(self.get_parameter("control_period").value),
+                safety_dispatch_timeout_s=float(
+                    self.get_parameter("safety_dispatch_timeout_s").value
+                ),
                 max_linear_mps=float(self.get_parameter("max_linear_mps").value),
                 max_angular_rad_s=float(self.get_parameter("max_angular_rad_s").value),
                 max_raw_motor_duty=int(self.get_parameter("max_raw_motor_duty").value),

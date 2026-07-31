@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,35 @@ from sphero_rvr_driver.hierarchical_goal_selection import (
     AsyncSemanticGoalController,
     ScriptedSemanticGoalProvider,
     build_semantic_world_snapshot,
+)
+from sphero_rvr_driver.hierarchical_mission_node import (
+    INITIAL_SEMANTIC_REJECTION_LIMIT,
+    PHYSICAL_FRONTIER_MIN_CLEARANCE_M,
+    adapter_recovery_reason,
+    adapter_remaining_distance,
+    bounded_camera_evidence,
+    camera_observation_evidence,
+    collision_hold_controller_state,
+    goal_dispatch_queue_key,
+    initial_semantic_rejection_retry,
+    live_motion_evidence_is_fresh,
+    live_semantic_track_signature,
+    live_source_is_fresh,
+    nav2_abort_matches_dispatch,
+    nav2_path_evidence,
+    parse_collision_evidence,
+    planning_hold_controller_state,
+    rolling_frontier_invalidation_preserves_route,
+    requested_observation_supports_finish,
+    semantic_non_motion_status,
+    semantic_rejection_rollover_due,
+    semantic_target_invalidation_reason,
+    updated_semantic_rejection_count,
+)
+from sphero_rvr_driver.hierarchical_nav2_adapter_node import (
+    controller_status_cancel_mode,
+    nav2_result_state,
+    stronger_cancel_reason,
 )
 from sphero_rvr_driver.hierarchical_physical_binding import (
     ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256,
@@ -24,6 +54,7 @@ from sphero_rvr_driver.hierarchical_physical_binding import (
     build_goal_dispatch,
     canonical_digest,
     resolve_goal_dispatch,
+    transient_authority_hold,
     validate_authority_heartbeat,
     validate_physical_proposal,
 )
@@ -45,6 +76,77 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SHA = "a" * 40
 
 
+def test_initial_semantic_contract_rejection_retries_twice_then_recovers() -> None:
+    count, retry = initial_semantic_rejection_retry(0)
+    assert (count, retry) == (1, True)
+    count, retry = initial_semantic_rejection_retry(count)
+    assert (count, retry) == (2, True)
+    count, retry = initial_semantic_rejection_retry(count)
+    assert (count, retry) == (
+        INITIAL_SEMANTIC_REJECTION_LIMIT,
+        False,
+    )
+
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    assert '"provider_response_rejected"' in source
+    assert '"initial_semantic_response_rejected_retry"' in source
+    assert '"initial_semantic_rejection_limit"' in source
+
+
+def test_camera_observation_evidence_is_bounded_and_geometry_free() -> None:
+    observations = camera_observation_evidence(
+        {
+            "detections": [
+                {
+                    "label": "shoe",
+                    "confidence": 0.82,
+                    "status": "accepted",
+                    "position_method": "bearing_only",
+                    "localization_evidence_ids": [
+                        "live-camera-00000015-shoe-01",
+                        "live-scan-00000123",
+                    ],
+                    "bbox": {"x": 1, "y": 2, "width": 3, "height": 4},
+                    "bearing": {"center_rad": 0.1},
+                }
+            ]
+        }
+    )
+
+    assert observations == (
+        {
+            "label": "shoe",
+            "confidence": 0.82,
+            "status": "accepted",
+            "position_method": "bearing_only",
+            "evidence_ids": [
+                "live-camera-00000015-shoe-01",
+                "live-scan-00000123",
+            ],
+        },
+    )
+    assert "bbox" not in observations[0]
+    assert "bearing" not in observations[0]
+    assert requested_observation_supports_finish(
+        observations,
+        ("shoe", "person"),
+    )
+    assert not requested_observation_supports_finish(
+        (
+            {
+                **observations[0],
+                "confidence": 0.69,
+            },
+        ),
+        ("shoe", "person"),
+    )
+
+
 class _UnusedPromptProvider:
     provider_id = "hierarchical-binding-test"
     model_id = "test-model"
@@ -59,7 +161,9 @@ class _UnusedPromptProvider:
         )
 
 
-def _approval(*, now_s: float = 100.0) -> dict:
+def _approval(
+    *, now_s: float = 100.0, mission_lease_s: float = 300.0
+) -> dict:
     payload = {
         "schema": APPROVAL_SCHEMA,
         "gate": "m7.6",
@@ -71,7 +175,8 @@ def _approval(*, now_s: float = 100.0) -> dict:
         "proposal_digest": "b" * 64,
         "approval_id": "m7.6-test-approval",
         "approved_at_s": now_s,
-        "expires_at_s": now_s + 300.0,
+        "expires_at_s": now_s + mission_lease_s,
+        "mission_lease_s": mission_lease_s,
         "m7_3_evidence_sha256": ACCEPTED_M7_3_EVIDENCE_SHA256,
         "directional_addendum_sha256": (
             ACCEPTED_DIRECTIONAL_ADDENDUM_SHA256
@@ -87,7 +192,7 @@ def _approval(*, now_s: float = 100.0) -> dict:
             "max_linear_mps": 0.10,
             "max_angular_rad_s": 0.4,
             "command_lease_s": 0.50,
-            "localization_max_age_s": 0.30,
+            "localization_max_age_s": 0.50,
             "mission_lease_max_s": 900.0,
         },
     }
@@ -105,6 +210,184 @@ def _owner(tmp_path: Path, *, enabled: bool = True):
         boot_nonce="test-boot",
     )
     return owner, journal
+
+
+def test_live_collision_evidence_requires_explicit_healthy_scan_and_directional_state() -> None:
+    assert parse_collision_evidence(
+        "CLEAR reason=scan scan_healthy=true scan_age=0.01"
+    ) == ("CLEAR", True)
+    assert parse_collision_evidence(
+        "SLOW reason=front_slow scan_healthy=true"
+    ) == ("SLOW", True)
+    assert parse_collision_evidence(
+        "STOPPED reason=front_stop scan_healthy=true"
+    ) == ("BLOCKED", True)
+    assert parse_collision_evidence(
+        "CLEAR reason=scan scan_healthy=false"
+    ) == ("CLEAR", False)
+    assert parse_collision_evidence("CLEAR reason=scan") == (
+        "CLEAR",
+        False,
+    )
+    assert parse_collision_evidence(
+        '{"state":"CLEAR","scan_healthy":true}'
+    ) == ("CLEAR", True)
+    assert parse_collision_evidence(
+        '{"state":"CLEAR","scan_healthy":"true"}'
+    ) == ("CLEAR", False)
+
+
+def test_live_motion_evidence_uses_unrelaxed_collision_receipt_freshness() -> None:
+    assert live_motion_evidence_is_fresh(
+        now_s=100.297610,
+        collision_received_at_s=100.0,
+        scan_healthy=True,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.3001,
+        collision_received_at_s=100.0,
+        scan_healthy=True,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.1,
+        collision_received_at_s=100.0,
+        scan_healthy=False,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.1,
+        collision_received_at_s=None,
+        scan_healthy=True,
+    )
+    assert not live_motion_evidence_is_fresh(
+        now_s=100.1,
+        collision_received_at_s=100.0,
+        scan_healthy=True,
+        max_age_s=0.5,
+    )
+
+
+def test_live_camera_and_map_require_fresh_source_and_receipt_times() -> None:
+    assert live_source_is_fresh(
+        now_s=101.0,
+        received_at_s=100.2,
+        source_timestamp_s=100.0,
+        max_age_s=1.0,
+    )
+    assert not live_source_is_fresh(
+        now_s=101.0001,
+        received_at_s=100.2,
+        source_timestamp_s=100.0,
+        max_age_s=1.0,
+    )
+    assert not live_source_is_fresh(
+        now_s=100.5,
+        received_at_s=99.0,
+        source_timestamp_s=100.4,
+        max_age_s=1.0,
+    )
+    assert not live_source_is_fresh(
+        now_s=100.5,
+        received_at_s=100.4,
+        source_timestamp_s=None,
+        max_age_s=1.0,
+    )
+
+
+def test_camera_and_nav2_path_evidence_are_bounded_and_digest_bound() -> None:
+    camera = bounded_camera_evidence(
+        {
+            "schema": "sphero_rvr.live_camera_perception.v1",
+            "frame_id": "live-camera-00000001",
+            "stamp_s": 100.0,
+            "width": 800,
+            "height": 600,
+            "calibrated": True,
+            "thumbnail_data_url": "data:image/jpeg;base64,forbidden",
+            "image_attachment": {
+                "schema": "sphero_rvr.camera_image_attachment.v1",
+                "frame_id": "live-camera-00000001",
+                "path": "/bounded/live-camera-00000001.jpg",
+                "mime_type": "image/jpeg",
+                "sha256": "c" * 64,
+                "byte_count": 42,
+                "thumbnail_data_url": "data:image/jpeg;base64,forbidden",
+            },
+            "detections": [
+                {
+                    "kind": "shoe",
+                    "label": "shoe",
+                    "confidence": 0.91,
+                    "track_id": "object-0001",
+                    "position_method": "floor_projection",
+                    "x_m": 9.9,
+                    "y_m": 8.8,
+                    "localization_evidence_ids": ["frame-1"],
+                }
+            ],
+        }
+    )
+    assert camera["frame_id"] == "live-camera-00000001"
+    assert "thumbnail_data_url" not in camera
+    assert "thumbnail_data_url" not in camera["image_attachment"]
+    assert camera["image_attachment"]["byte_count"] == 42
+    assert "x_m" not in camera["detections"][0]
+    assert camera["detections"][0]["position_method"] == (
+        "floor_projection"
+    )
+
+    def pose(index: int):
+        return SimpleNamespace(
+            header=SimpleNamespace(frame_id="map"),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(
+                    x=index / 100.0,
+                    y=index / 200.0,
+                ),
+                orientation=SimpleNamespace(
+                    x=0.0,
+                    y=0.0,
+                    z=0.0,
+                    w=1.0,
+                ),
+            ),
+        )
+
+    message = SimpleNamespace(
+        header=SimpleNamespace(
+            frame_id="map",
+            stamp=SimpleNamespace(sec=100, nanosec=500_000_000),
+        ),
+        poses=[pose(index) for index in range(600)],
+    )
+    evidence = nav2_path_evidence(
+        message,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+        dispatch_digest="b" * 64,
+        goal_batch_digest="d" * 64,
+        recorded_at_s=101.0,
+    )
+    assert evidence["original_pose_count"] == 600
+    assert evidence["sampled_pose_count"] == 512
+    assert evidence["poses"][0]["source_index"] == 0
+    assert evidence["poses"][-1]["source_index"] == 599
+    unsigned = dict(evidence)
+    supplied = unsigned.pop("path_digest")
+    assert supplied == canonical_digest(unsigned)
+    content = dict(unsigned)
+    supplied_content = content.pop("path_content_digest")
+    content.pop("recorded_at_s")
+    assert supplied_content == canonical_digest(content)
+    later_capture = nav2_path_evidence(
+        message,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+        dispatch_digest="b" * 64,
+        goal_batch_digest="d" * 64,
+        recorded_at_s=102.0,
+    )
+    assert later_capture["path_content_digest"] == supplied_content
+    assert later_capture["path_digest"] != supplied
 
 
 def _snapshot(*, localization_timestamp_s: float = 100.0) -> dict:
@@ -183,6 +466,7 @@ def _proposal(authority: dict) -> dict:
         "requested_object_classes": ["shoe", "person"],
         "source_sha": authority["source_sha"],
         "created_at_s": 99.0,
+        "mission_lease_s": authority["mission_lease_s"],
     }
     proposal = {**payload, "proposal_digest": canonical_digest(payload)}
     authority["proposal_digest"] = proposal["proposal_digest"]
@@ -218,11 +502,12 @@ def test_exact_digest_bound_authority_expires_and_relocks(
     assert heartbeat["motion_authority"] is True
     assert heartbeat["direct_twist_publisher"] is False
     assert heartbeat["restart_resume_allowed"] is False
+    assert heartbeat["mission_lease_s"] == 300.0
     assert heartbeat["limits"] == {
         "max_linear_mps": 0.10,
         "max_angular_rad_s": 0.4,
         "command_lease_s": 0.50,
-        "localization_max_age_s": 0.30,
+        "localization_max_age_s": 0.50,
         "mission_lease_max_s": 900.0,
     }
     valid, reason = validate_authority_heartbeat(
@@ -299,12 +584,29 @@ def test_bridge_heartbeat_fails_closed_on_staleness_or_sha_mismatch(
 
     assert validate_authority_heartbeat(
         heartbeat,
-        now_s=100.31,
+        now_s=100.751,
         received_at_s=100.0,
         source_sha=SHA,
         deployed_sha=SHA,
         reviewed_sha=SHA,
     ) == (False, "authority_heartbeat_stale")
+    assert validate_authority_heartbeat(
+        heartbeat,
+        now_s=100.70,
+        received_at_s=100.0,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+    ) == (True, "active")
+    assert transient_authority_hold("authority_heartbeat_stale") is True
+    for terminal_reason in (
+        "authority_missing",
+        "authority_sha_mismatch",
+        "mission_lease_expired",
+        "mission_lease_invalid",
+        "authority_schema_invalid",
+    ):
+        assert transient_authority_hold(terminal_reason) is False
     assert validate_authority_heartbeat(
         heartbeat,
         now_s=100.1,
@@ -313,6 +615,15 @@ def test_bridge_heartbeat_fails_closed_on_staleness_or_sha_mismatch(
         deployed_sha=SHA,
         reviewed_sha="d" * 40,
     ) == (False, "authority_sha_mismatch")
+    invalid_lease = {**heartbeat, "mission_lease_s": 900.001}
+    assert validate_authority_heartbeat(
+        invalid_lease,
+        now_s=100.1,
+        received_at_s=100.1,
+        source_sha=SHA,
+        deployed_sha=SHA,
+        reviewed_sha=SHA,
+    ) == (False, "mission_lease_invalid")
     journal.close()
 
 
@@ -354,6 +665,7 @@ def test_physical_proposal_is_semantic_only_and_authority_bound(
     assert validate_physical_proposal(
         proposal, authority=authority, source_sha=SHA
     )["requested_object_classes"] == ["shoe", "person"]
+    assert proposal["mission_lease_s"] == 300.0
 
     injected = dict(proposal)
     injected["x_m"] = 2.0
@@ -361,6 +673,47 @@ def test_physical_proposal_is_semantic_only_and_authority_bound(
         validate_physical_proposal(
             injected, authority=authority, source_sha=SHA
         )
+    mismatched_lease = dict(proposal)
+    mismatched_lease["mission_lease_s"] = 120.0
+    unsigned = dict(mismatched_lease)
+    unsigned.pop("proposal_digest")
+    mismatched_lease["proposal_digest"] = canonical_digest(unsigned)
+    authority["proposal_digest"] = mismatched_lease["proposal_digest"]
+    with pytest.raises(
+        MissionValidationError, match="does not bind active authority"
+    ):
+        validate_physical_proposal(
+            mismatched_lease, authority=authority, source_sha=SHA
+        )
+    journal.close()
+
+
+@pytest.mark.parametrize(
+    "mission_lease_s", [0.0, -1.0, 900.001, True]
+)
+def test_approval_rejects_invalid_selected_mission_lease(
+    tmp_path: Path, mission_lease_s: float
+) -> None:
+    owner, journal = _owner(tmp_path)
+    with pytest.raises(MissionValidationError, match="mission lease"):
+        owner.activate(
+            _approval(mission_lease_s=mission_lease_s),
+            now_s=100.0,
+        )
+    journal.close()
+
+
+def test_approval_expiry_must_exactly_match_selected_mission_lease(
+    tmp_path: Path,
+) -> None:
+    owner, journal = _owner(tmp_path)
+    approval = _approval(mission_lease_s=120.0)
+    approval["expires_at_s"] = approval["approved_at_s"] + 121.0
+    unsigned = dict(approval)
+    unsigned.pop("approval_digest")
+    approval["approval_digest"] = canonical_digest(unsigned)
+    with pytest.raises(MissionValidationError, match="exactly bind"):
+        owner.activate(approval, now_s=100.0)
     journal.close()
 
 
@@ -415,7 +768,7 @@ def test_dispatch_revalidates_current_freshness_and_frontier_identity(
     journal.close()
 
 
-def test_localization_0297610_passes_but_0301_fails_closed(
+def test_localization_0499_passes_but_0501_fails_closed(
     tmp_path: Path,
 ) -> None:
     owner, journal = _owner(tmp_path)
@@ -423,7 +776,7 @@ def test_localization_0297610_passes_but_0301_fails_closed(
     snapshot = _snapshot()
     dispatch = _dispatch(snapshot, authority)
     dispatch["goals"][0]["current_snapshot"]["localization"]["age_s"] = (
-        0.297610
+        0.499
     )
     unsigned = dict(dispatch)
     unsigned.pop("dispatch_digest")
@@ -432,11 +785,11 @@ def test_localization_0297610_passes_but_0301_fails_closed(
         dispatch, authority=authority, now_s=100.1
     ).poses
 
-    dispatch["goals"][0]["current_snapshot"]["localization"]["age_s"] = 0.301
+    dispatch["goals"][0]["current_snapshot"]["localization"]["age_s"] = 0.501
     unsigned = dict(dispatch)
     unsigned.pop("dispatch_digest")
     dispatch["dispatch_digest"] = canonical_digest(unsigned)
-    with pytest.raises(MissionValidationError, match="0.300 s"):
+    with pytest.raises(MissionValidationError, match="0.500 s"):
         resolve_goal_dispatch(
             dispatch, authority=authority, now_s=100.1
         )
@@ -464,12 +817,24 @@ def test_physical_launch_and_unit_are_default_off_and_non_bootable() -> None:
 
     assert launch.count('default_value="false"') >= 5
     assert '"use_sim_time": False' in launch
+    assert '"camera_info_url": camera_info_url' in launch
+    assert "rvr_pi_imx708_calibrated_800x600.yaml" in launch
     assert '("cmd_vel", "/nav2_cmd_vel_request")' in launch
     assert '"nav2_cmd_lease_s": 0.50' in launch
     assert "WantedBy=" not in unit
     assert "Restart=no" in unit
+
+    hierarchical_slam = (
+        REPO_ROOT / "config" / "hierarchical_slam_toolbox.yaml"
+    ).read_text()
+    assert "map_update_interval: 0.5" in hierarchical_slam
+    assert '"slam_params_file": slam_params' in launch
+    assert "hierarchical_slam_toolbox.yaml" in launch
+    assert "for critical in (\n        *nodes," in launch
     assert "RVR_HIERARCHICAL_M7_6_APPROVED" in unit
     assert "RVR_HIERARCHICAL_PROPOSAL_FILE" in unit
+    assert "RVR_HIERARCHICAL_GRAPH_AUDIT_FILE" in unit
+    assert '"graph_audit_file": graph_audit_file' in launch
     assert 'executable="hierarchical_mission_controller"' in launch
     assert 'executable="stationary_perception"' in launch
     assert "mission_lease_valid=authority_valid" in route
@@ -504,6 +869,473 @@ def test_nav2_adapter_has_no_twist_or_direct_motor_surface() -> None:
     assert "AsyncSemanticGoalController" in controller
     assert "detect_frontiers" in controller
     assert "HierarchicalBindingJournal" in controller
+
+
+def test_controller_keeps_authority_heartbeat_live_during_map_processing() -> None:
+    controller = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    authority = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_authority_node.py"
+    ).read_text()
+
+    assert "MutuallyExclusiveCallbackGroup" in controller
+    assert "callback_group=self._authority_callbacks" in controller
+    assert "MultiThreadedExecutor(num_threads=2)" in controller
+    assert "AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.75" in (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_physical_binding.py"
+    ).read_text()
+    assert "if rclpy.ok(context=self.context):" in authority
+
+
+def test_controller_ignores_placeholder_zero_until_nav2_reports_success() -> None:
+    fallback = 1.25
+    assert adapter_remaining_distance(
+        {
+            "state": "dispatching",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        },
+        fallback,
+    ) == pytest.approx(fallback)
+    assert adapter_remaining_distance(
+        {
+            "state": "navigating",
+            "goal_active": True,
+            "distance_remaining_m": 0.72,
+        },
+        fallback,
+    ) == pytest.approx(0.72)
+    assert adapter_remaining_distance(
+        {
+            "state": "wait_planning",
+            "reason": "nav2_result_status_4",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        },
+        fallback,
+    ) == pytest.approx(0.0)
+
+
+def test_controller_fails_closed_on_nav2_recovery_status() -> None:
+    assert (
+        adapter_recovery_reason(
+            {
+                "state": "recovery_required",
+                "reason": "nav2_result_status_6",
+            }
+        )
+        == "nav2_result_status_6"
+    )
+    assert (
+        adapter_recovery_reason(
+            {"state": "wait_planning", "reason": "nav2_result_status_4"}
+        )
+        == ""
+    )
+
+
+def test_planning_freshness_hold_preserves_only_an_active_nav2_goal() -> None:
+    assert planning_hold_controller_state(
+        {
+            "state": "dispatching",
+            "goal_active": False,
+        }
+    ) == "navigating"
+    assert planning_hold_controller_state(
+        {
+            "state": "navigating",
+            "goal_active": True,
+            "distance_remaining_m": 0.72,
+        }
+    ) == "navigating"
+    assert planning_hold_controller_state(
+        {
+            "state": "holding",
+            "goal_active": True,
+            "distance_remaining_m": 0.72,
+        }
+    ) == "navigating"
+    assert planning_hold_controller_state(
+        {
+            "state": "wait_planning",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        }
+    ) == "wait_planning"
+    active = {
+        "state": "navigating",
+        "goal_active": True,
+    }
+    pending = {
+        "state": "dispatching",
+        "goal_active": False,
+    }
+    idle = {
+        "state": "wait_planning",
+        "goal_active": False,
+    }
+    assert (
+        collision_hold_controller_state(
+            active,
+            collision_state="BLOCKED",
+        )
+        == "navigating"
+    )
+    assert (
+        collision_hold_controller_state(
+            pending,
+            collision_state="BLOCKED",
+        )
+        == "navigating"
+    )
+    assert (
+        collision_hold_controller_state(
+            idle,
+            collision_state="BLOCKED",
+        )
+        == "wait_planning"
+    )
+    assert (
+        collision_hold_controller_state(
+            active,
+            collision_state="CLEAR",
+        )
+        == ""
+    )
+    assert (
+        collision_hold_controller_state(
+            active,
+            collision_state="BLOCKED",
+            estop=True,
+        )
+        == ""
+    )
+    assert planning_hold_controller_state(
+        {
+            "state": "recovery_required",
+            "goal_active": True,
+        }
+    ) == "wait_planning"
+
+
+def test_dispatch_queue_key_ignores_refresh_but_tracks_semantic_change() -> None:
+    authority = _approval()
+    snapshot = _snapshot()
+    first = _dispatch(snapshot, authority)
+    refreshed = json.loads(json.dumps(first))
+    refreshed["reason"] = "navigating"
+    refreshed["goals"][0]["current_snapshot"]["map_revision"] = (
+        "map-revision-002"
+    )
+    assert goal_dispatch_queue_key(refreshed) == goal_dispatch_queue_key(first)
+
+    changed = json.loads(json.dumps(first))
+    changed["goals"][0]["decision"]["decision_generation"] = 2
+    assert goal_dispatch_queue_key(changed) != goal_dispatch_queue_key(first)
+
+
+def test_live_track_signature_ignores_rolling_frame_evidence() -> None:
+    raw = {
+        "track_id": "object-0003",
+        "kind": "object",
+        "label": "possible_shoe",
+        "x_m": 0.8,
+        "y_m": -0.2,
+        "last_seen_s": 100.0,
+        "observation_count": 4,
+        "evidence_ids": ["frame-1", "frame-2"],
+        "recognized_from_enrollment": False,
+        "enrollment_evidence_ids": [],
+    }
+    rolling = json.loads(json.dumps(raw))
+    rolling["x_m"] = 0.83
+    rolling["last_seen_s"] = 101.0
+    rolling["observation_count"] = 5
+    rolling["evidence_ids"].append("frame-3")
+    assert live_semantic_track_signature(rolling) == (
+        live_semantic_track_signature(raw)
+    )
+
+    relabeled = json.loads(json.dumps(raw))
+    relabeled["label"] = "backpack"
+    assert live_semantic_track_signature(relabeled) != (
+        live_semantic_track_signature(raw)
+    )
+
+
+def test_active_semantic_target_invalidation_is_not_frontier_only() -> None:
+    snapshot = _snapshot()
+    controller = AsyncSemanticGoalController(
+        ScriptedSemanticGoalProvider([])
+    )
+    try:
+        controller.start(_decision(snapshot), snapshot, now_s=100.1)
+        goal, captured = controller.resolved_motion_goals()[0]
+        invalidated = json.loads(json.dumps(snapshot))
+        invalidated["frontiers"] = []
+        assert semantic_target_invalidation_reason(
+            goal, captured, invalidated
+        ) == "frontier_signature_invalidated"
+    finally:
+        controller.close()
+
+
+def test_semantic_revalidation_churn_is_bounded_and_success_resets() -> None:
+    count = 0
+    for _ in range(3):
+        count = updated_semantic_rejection_count(
+            count,
+            ({"kind": "prefetch_discarded"},),
+        )
+    assert count == 3
+    assert semantic_rejection_rollover_due(count)
+    assert (
+        updated_semantic_rejection_count(
+            count,
+            ({"kind": "prefetch_revalidated"},),
+        )
+        == 0
+    )
+
+
+def test_physical_nav2_clears_only_its_declared_footprint() -> None:
+    nav2 = (
+        REPO_ROOT / "config" / "hierarchical_nav2_physical.yaml"
+    ).read_text()
+    collision = (REPO_ROOT / "config" / "collision_stop.yaml").read_text()
+
+    assert nav2.count("footprint_clearing_enabled: true") == 3
+    assert "restore_cleared_footprint: true" in nav2
+    assert nav2.count("robot_radius: 0.22") == 2
+    assert PHYSICAL_FRONTIER_MIN_CLEARANCE_M == 0.22
+    assert "hierarchical_clear_breakaway_linear_mps: 0.10" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
+    assert "hierarchical_reverse_escape_linear_mps: 0.07" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
+    assert "hierarchical_clear_breakaway_angular_rad_s: 0.35" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
+    assert (
+        "hierarchical_clear_breakaway_angular_measured_rate_rad_s: 3.2"
+        in (REPO_ROOT / "config" / "live_route_runner.yaml").read_text()
+    )
+    assert "hierarchical_clear_breakaway_angular_pulse_s: 0.05" in (
+        REPO_ROOT / "config" / "live_route_runner.yaml"
+    ).read_text()
+    assert "safety_dispatch_timeout_s: 0.20" in (
+        REPO_ROOT / "config" / "rvr.yaml"
+    ).read_text()
+    assert nav2.count("topic: /scan") == 2
+    assert "min_range_m: 0.08" in collision
+    assert "footprint_front_m: 0.22" in collision
+    assert "footprint_rear_m: 0.16" in collision
+    controller = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    assert "config=FrontierDetectionConfig(" in controller
+    assert '"nav2_failed_target"' in controller
+
+
+def test_nav2_adapter_binds_feedback_and_results_to_active_batch() -> None:
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_nav2_adapter_node.py"
+    ).read_text()
+
+    assert "digest != self._active_batch_digest" in source
+    assert source.count("recovery_required") >= 5
+    assert '"nav2_action_unavailable"' in source
+    assert '"nav2_goal_rejected"' in source
+    controller = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text()
+    assert "SEMANTIC_REJECTION_ROLLOVER = 3" in controller
+    assert '"kind": "semantic_revalidation_retry"' in controller
+    assert '"terminal": False' in controller
+    assert "_initial_pool.shutdown(wait=True" in controller
+
+
+def test_controller_replan_status_can_only_cancel_nav2() -> None:
+    base = {
+        "schema": "sphero_rvr.hierarchical_controller_status.v1",
+        "source_sha": SHA,
+        "mission_id": "m7-canonical-001",
+        "state": "wait_planning",
+        "reason": "event_triggered_replan",
+        "cancel_active_goal": True,
+    }
+    assert controller_status_cancel_mode(
+        base,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "replan"
+    stale_localization = {
+        **base,
+        "reason": "live localization exceeds the fixed 0.500 s gate",
+        "cancel_active_goal": False,
+    }
+    assert controller_status_cancel_mode(
+        stale_localization,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == ""
+
+    navigating = {**base, "state": "dispatching", "reason": "navigating"}
+    assert controller_status_cancel_mode(
+        navigating,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == ""
+
+    mismatched = {**base, "source_sha": "b" * 40}
+    assert controller_status_cancel_mode(
+        mismatched,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "veto"
+
+    recovery = {
+        **base,
+        "state": "recovery_required",
+        "reason": "semantic_revalidation_exhausted",
+    }
+    assert controller_status_cancel_mode(
+        recovery,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "veto"
+    complete = {
+        **base,
+        "state": "complete",
+        "reason": "finish",
+    }
+    assert controller_status_cancel_mode(
+        complete,
+        source_sha=SHA,
+        mission_id="m7-canonical-001",
+    ) == "complete"
+
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_nav2_adapter_node.py"
+    ).read_text()
+    assert "_cancel_for_replan" in source
+    assert "_cancel_for_completion" in source
+    assert '"controller_replan_cancelled"' in source
+    assert "CONTROLLER_STATUS_TOPIC" in source
+    assert nav2_result_state(4, "") == (
+        "wait_planning",
+        "nav2_result_status_4",
+    )
+    assert nav2_result_state(5, "controller_replan") == (
+        "wait_planning",
+        "controller_replan_cancelled",
+    )
+    assert nav2_result_state(5, "controller_complete") == (
+        "complete",
+        "controller_complete_cancelled",
+    )
+    assert nav2_result_state(6, "") == (
+        "wait_planning",
+        "nav2_result_status_6",
+    )
+    assert adapter_remaining_distance(
+        {
+            "state": "wait_planning",
+            "reason": "nav2_result_status_6",
+            "goal_active": False,
+            "distance_remaining_m": 0.0,
+        },
+        1.25,
+    ) == 0.0
+    assert adapter_recovery_reason(
+        {
+            "state": "wait_planning",
+            "reason": "nav2_result_status_6",
+        }
+    ) == ""
+    failed_batch = "f" * 64
+    aborted = {
+        "state": "wait_planning",
+        "reason": "nav2_result_status_6",
+        "goal_active": False,
+        "last_batch_digest": failed_batch,
+    }
+    assert nav2_abort_matches_dispatch(aborted, failed_batch) is True
+    assert nav2_abort_matches_dispatch(aborted, "e" * 64) is False
+    assert (
+        nav2_abort_matches_dispatch(
+            {**aborted, "goal_active": True}, failed_batch
+        )
+        is False
+    )
+    assert stronger_cancel_reason("", "controller_replan") == (
+        "controller_replan"
+    )
+    assert stronger_cancel_reason(
+        "controller_replan", "controller_complete"
+    ) == "controller_complete"
+    assert stronger_cancel_reason("controller_complete", "veto") == "veto"
+    assert stronger_cancel_reason("veto", "controller_replan") == "veto"
+    assert "_pending_batch_digest" in source
+    assert "veto_pending_acceptance" in source
+
+
+def test_rolling_frontier_churn_preserves_only_a_live_accepted_route() -> None:
+    navigating = {
+        "state": "navigating",
+        "goal_active": True,
+    }
+    assert rolling_frontier_invalidation_preserves_route(
+        "frontier_signature_invalidated", navigating
+    ) is True
+    assert rolling_frontier_invalidation_preserves_route(
+        "track_signature_changed", navigating
+    ) is False
+    assert rolling_frontier_invalidation_preserves_route(
+        "frontier_signature_invalidated",
+        {"state": "wait_planning", "goal_active": False},
+    ) is False
+
+
+def test_semantic_wait_holds_without_completing_the_mission() -> None:
+    assert semantic_non_motion_status("wait") == (
+        "wait_planning",
+        "semantic_wait",
+        False,
+    )
+    assert semantic_non_motion_status("finish") == (
+        "complete",
+        "finish",
+        True,
+    )
+    with pytest.raises(
+        MissionValidationError,
+        match="unsupported non-motion",
+    ):
+        semantic_non_motion_status("return_to_start")
 
 
 def test_browser_projection_exposes_installed_but_locked_binding(

@@ -726,6 +726,273 @@ class MissionService:
                     )
             return self.prompt_status(mission_id)
 
+    def record_hierarchical_physical_proposal(
+        self,
+        mission_id: str,
+        proposal: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist the semantic-only canonical proposal before M7.6 approval."""
+
+        from .hierarchical_physical_binding import (
+            MISSION_LEASE_MAX_S,
+            PHYSICAL_PROPOSAL_SCHEMA,
+            canonical_digest,
+        )
+
+        payload = json.loads(_json_dump(dict(proposal)))
+        supplied_digest = str(
+            payload.get("proposal_digest", "")
+        ).strip().lower()
+        unsigned = dict(payload)
+        unsigned.pop("proposal_digest", None)
+        expected_keys = {
+            "schema",
+            "mission_id",
+            "objective",
+            "objective_revision",
+            "requested_object_classes",
+            "source_sha",
+            "created_at_s",
+            "mission_lease_s",
+        }
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "planning":
+                raise MissionValidationError(
+                    "canonical hierarchical mission is not awaiting a proposal"
+                )
+            if (
+                set(unsigned) != expected_keys
+                or unsigned.get("schema") != PHYSICAL_PROPOSAL_SCHEMA
+                or str(unsigned.get("mission_id", "")).strip()
+                != row["mission_id"]
+                or str(unsigned.get("objective", "")).strip()
+                != row["prompt"]
+                or str(unsigned.get("source_sha", "")).strip()
+                != self.source_sha
+                or unsigned.get("requested_object_classes")
+                != ["shoe", "person"]
+                or unsigned.get("objective_revision") != 1
+                or isinstance(unsigned.get("mission_lease_s"), bool)
+                or not isinstance(
+                    unsigned.get("mission_lease_s"), (int, float)
+                )
+                or not math.isfinite(
+                    float(unsigned.get("mission_lease_s", 0.0))
+                )
+                or float(unsigned.get("mission_lease_s", 0.0)) <= 0.0
+                or float(unsigned.get("mission_lease_s", 0.0))
+                > MISSION_LEASE_MAX_S
+            ):
+                raise MissionValidationError(
+                    "canonical hierarchical proposal semantics or provenance are invalid"
+                )
+            if canonical_digest(unsigned) != supplied_digest:
+                raise MissionValidationError(
+                    "canonical hierarchical proposal digest is invalid"
+                )
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='proposed', "
+                    "proposal_json=?, proposal_digest=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (
+                        _json_dump(payload),
+                        supplied_digest,
+                        self._now(),
+                        mission_id,
+                    ),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "hierarchical_physical_proposal",
+                    {
+                        "proposal": payload,
+                        "semantic_only": True,
+                        "motion_authority": False,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
+    def approve_hierarchical_physical_mission(
+        self,
+        mission_id: str,
+        *,
+        approval: Mapping[str, Any],
+        preflight_evidence: Mapping[str, Any],
+        now_s: float,
+    ) -> dict[str, Any]:
+        """Validate and consume one exact M7.6 approval into durable state."""
+
+        from .hierarchical_physical_binding import (
+            HierarchicalPhysicalApproval,
+            PREFLIGHT_SCHEMA,
+            canonical_digest,
+        )
+
+        payload = json.loads(_json_dump(dict(approval)))
+        preflight = json.loads(_json_dump(dict(preflight_evidence)))
+        preflight_unsigned = dict(preflight)
+        preflight_digest = str(
+            preflight_unsigned.pop("preflight_digest", "")
+        ).strip().lower()
+        if (
+            preflight_unsigned.get("schema") != PREFLIGHT_SCHEMA
+            or canonical_digest(preflight_unsigned) != preflight_digest
+            or preflight_unsigned.get("motion_authority") is not False
+            or preflight_unsigned.get("physical_execution_enabled")
+            is not False
+        ):
+            raise MissionValidationError(
+                "M7.6 approval requires a valid server-generated no-motion sensor preflight"
+            )
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "proposed":
+                raise MissionValidationError(
+                    "only a proposed canonical hierarchical mission can be approved"
+                )
+            proposal = _json_load(row["proposal_json"], {})
+            validated = HierarchicalPhysicalApproval.validated(
+                payload,
+                now_s=float(now_s),
+                source_sha=self.source_sha,
+                deployed_sha=self.deployed_sha,
+                reviewed_sha=self.source_sha,
+            )
+            if (
+                validated.mission_id != row["mission_id"]
+                or validated.proposal_digest
+                != str(proposal.get("proposal_digest", ""))
+                or validated.mission_lease_s
+                != float(proposal.get("mission_lease_s", 0.0))
+            ):
+                raise MissionValidationError(
+                    "M7.6 approval does not bind the persisted canonical proposal"
+                )
+            with self._connection:
+                self._connection.execute(
+                    "UPDATE prompt_missions SET status='approved', "
+                    "approval_json=?, approval_expires_at_s=?, updated_at_s=? "
+                    "WHERE mission_id=?",
+                    (
+                        _json_dump(payload),
+                        validated.expires_at_s,
+                        self._now(),
+                        mission_id,
+                    ),
+                )
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "hierarchical_m7_6_approval",
+                    {
+                        "approval": payload,
+                        "authenticated": True,
+                        "preflight": preflight,
+                        "preflight_digest": preflight_digest,
+                        "restart_resume_allowed": False,
+                    },
+                )
+            return self.prompt_status(mission_id)
+
+    def record_hierarchical_checkpoint(
+        self,
+        mission_id: str,
+        checkpoint: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Append bounded controller evidence while the canonical run is live."""
+
+        payload = json.loads(_json_dump(dict(checkpoint)))
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            if row["status"] != "running":
+                raise MissionValidationError(
+                    "hierarchical checkpoints require a running canonical mission"
+                )
+            with self._connection:
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "hierarchical_checkpoint",
+                    payload,
+                )
+            return self.prompt_status(mission_id)
+
+    def record_hierarchical_no_contact_observation(
+        self,
+        mission_id: str,
+        observation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one authenticated post-run physical observation."""
+
+        from .hierarchical_physical_binding import canonical_digest
+
+        payload = json.loads(_json_dump(dict(observation)))
+        supplied_digest = str(
+            payload.get("observation_digest", "")
+        ).strip().lower()
+        unsigned = dict(payload)
+        unsigned.pop("observation_digest", None)
+        try:
+            observed_at_s = float(unsigned.get("observed_at_s"))
+        except (TypeError, ValueError):
+            observed_at_s = float("nan")
+        expected_keys = {
+            "schema",
+            "mission_id",
+            "operator",
+            "authentication_source",
+            "no_contact",
+            "observed_at_s",
+            "source_sha",
+            "deployed_sha",
+        }
+        with self._lock:
+            row = self._prompt_row(mission_id)
+            approval = _json_load(row["approval_json"], {})
+            if row["status"] != "complete":
+                raise MissionValidationError(
+                    "no-contact observation requires a completed canonical mission"
+                )
+            if (
+                set(unsigned) != expected_keys
+                or unsigned.get("schema")
+                != "sphero_rvr.hierarchical_no_contact_observation.v1"
+                or str(unsigned.get("mission_id", "")) != row["mission_id"]
+                or str(unsigned.get("operator", "")).strip()
+                != str(approval.get("operator", "")).strip()
+                or unsigned.get("authentication_source")
+                != "tailscale-serve"
+                or unsigned.get("no_contact") is not True
+                or not math.isfinite(observed_at_s)
+                or observed_at_s
+                < float(approval.get("approved_at_s", float("inf")))
+                or str(unsigned.get("source_sha", "")) != self.source_sha
+                or str(unsigned.get("deployed_sha", ""))
+                != self.deployed_sha
+                or canonical_digest(unsigned) != supplied_digest
+            ):
+                raise MissionValidationError(
+                    "canonical no-contact observation is invalid"
+                )
+            existing = self._connection.execute(
+                "SELECT COUNT(*) FROM events "
+                "WHERE mission_id=? AND kind='hierarchical_no_contact_observation'",
+                (mission_id,),
+            ).fetchone()
+            if existing is not None and int(existing[0]) > 0:
+                return self.prompt_status(mission_id)
+            with self._connection:
+                self._append_event(
+                    mission_id,
+                    row["session_id"],
+                    "hierarchical_no_contact_observation",
+                    payload,
+                )
+            return self.prompt_status(mission_id)
+
     def reject_prompt_planning(self, mission_id: str, reason: str) -> dict[str, Any]:
         with self._lock:
             row = self._prompt_row(mission_id)
@@ -2500,17 +2767,44 @@ class MissionServiceServer(socketserver.ThreadingUnixStreamServer):
         if operation == "prompt_latest":
             return self.service.latest_prompt_status(str(request.get("session_id", "")))
         if operation == "prompt_approve":
-            return self.prompt_controller.approve(
-                str(request.get("mission_id", "")),
-                supplied_approval=str(request.get("approval_phrase", "")),
-                operator=str(request.get("operator", "")),
-                authentication_source=str(
+            approve_arguments: dict[str, Any] = {
+                "supplied_approval": str(
+                    request.get("approval_phrase", "")
+                ),
+                "operator": str(request.get("operator", "")),
+                "authentication_source": str(
                     request.get("authentication_source", "")
                 ),
+            }
+            room = request.get("physical_room_confirmation")
+            if room is not None:
+                if not isinstance(room, Mapping):
+                    raise MissionValidationError(
+                        "physical room confirmation must be an object"
+                    )
+                approve_arguments["physical_room_confirmation"] = dict(room)
+            return self.prompt_controller.approve(
+                str(request.get("mission_id", "")),
+                **approve_arguments,
             )
         if operation == "prompt_cancel":
             return self.prompt_controller.cancel(
                 str(request.get("mission_id", "")),
                 reason=str(request.get("reason", "operator cancelled mission")),
+            )
+        if operation == "prompt_confirm_no_contact":
+            confirm = getattr(
+                self.prompt_controller, "confirm_no_contact", None
+            )
+            if not callable(confirm):
+                raise MissionValidationError(
+                    "this prompt controller does not accept physical observations"
+                )
+            return confirm(
+                str(request.get("mission_id", "")),
+                operator=str(request.get("operator", "")),
+                authentication_source=str(
+                    request.get("authentication_source", "")
+                ),
             )
         raise MissionValidationError(f"unsupported mission service operation: {operation}")

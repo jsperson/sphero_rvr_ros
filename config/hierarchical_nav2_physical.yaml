@@ -95,6 +95,7 @@ local_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
+        footprint_clearing_enabled: true
         observation_sources: scan
         scan:
           topic: /scan
@@ -125,9 +126,12 @@ global_costmap:
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
+        footprint_clearing_enabled: true
+        restore_cleared_footprint: true
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
+        footprint_clearing_enabled: true
         observation_sources: scan
         scan:
           topic: /scan

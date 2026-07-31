@@ -21,6 +21,16 @@ import threading
 import time
 from typing import Any, Mapping, Optional, Sequence
 
+from .camera_lidar_localization import (
+    CameraCalibration,
+    ImageAnchor,
+    LidarScan,
+    MapPose,
+    ScanReturn,
+    SensorMount,
+    localize_floor_object,
+    localize_plane_object,
+)
 from .perception_navigation import LocalizationEstimate, LocalizationState, Pose2D
 from .shoe_detector import DetectorThresholds, detect_shoes_in_rgb
 
@@ -103,6 +113,12 @@ class _Track:
     evidence_ids: list[str] = field(default_factory=list)
     recognized_from_enrollment: bool = False
     enrollment_evidence_ids: list[str] = field(default_factory=list)
+    position_method: str = "lidar_range"
+    calibration_id: str = ""
+    map_revision: str = ""
+    localization_evidence_ids: list[str] = field(default_factory=list)
+    localization_reason: str = ""
+    source_timestamps_ns: dict[str, int] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +134,14 @@ class _Track:
             "evidence_ids": list(self.evidence_ids[-12:]),
             "recognized_from_enrollment": self.recognized_from_enrollment,
             "enrollment_evidence_ids": list(self.enrollment_evidence_ids),
+            "position_method": self.position_method,
+            "calibration_id": self.calibration_id,
+            "map_revision": self.map_revision,
+            "localization_evidence_ids": list(
+                self.localization_evidence_ids
+            ),
+            "localization_reason": self.localization_reason,
+            "source_timestamps_ns": dict(self.source_timestamps_ns),
         }
 
 
@@ -189,6 +213,26 @@ class SemanticTrackStore:
                 str(item)
                 for item in detection.get("enrollment_evidence_ids", [])
             ],
+            position_method=str(
+                detection.get("position_method", "lidar_range")
+            ),
+            calibration_id=str(detection.get("calibration_id", "")),
+            map_revision=str(detection.get("map_revision", "")),
+            localization_evidence_ids=[
+                str(item)
+                for item in detection.get(
+                    "localization_evidence_ids", ()
+                )
+            ],
+            localization_reason=str(
+                detection.get("localization_reason", "")
+            ),
+            source_timestamps_ns={
+                str(name): int(value)
+                for name, value in dict(
+                    detection.get("source_timestamps_ns", {})
+                ).items()
+            },
         )
 
     @staticmethod
@@ -202,6 +246,36 @@ class SemanticTrackStore:
         track.y_m = alpha * float(detection["y_m"]) + (1.0 - alpha) * track.y_m
         track.confidence = max(track.confidence * 0.92, float(detection["confidence"]))
         track.uncertainty_m = float(detection["uncertainty_m"])
+        track.position_method = str(
+            detection.get("position_method", track.position_method)
+        )
+        track.calibration_id = str(
+            detection.get("calibration_id", track.calibration_id)
+        )
+        track.map_revision = str(
+            detection.get("map_revision", track.map_revision)
+        )
+        track.localization_evidence_ids = [
+            str(item)
+            for item in detection.get(
+                "localization_evidence_ids",
+                track.localization_evidence_ids,
+            )
+        ]
+        track.localization_reason = str(
+            detection.get(
+                "localization_reason", track.localization_reason
+            )
+        )
+        track.source_timestamps_ns = {
+            str(name): int(value)
+            for name, value in dict(
+                detection.get(
+                    "source_timestamps_ns",
+                    track.source_timestamps_ns,
+                )
+            ).items()
+        }
         track.last_seen_s = float(observed_at_s)
         track.observation_count += 1
         evidence_id = str(detection["evidence_id"])
@@ -500,6 +574,22 @@ def main(args=None):
             self.declare_parameter("stationary_session", True)
             self.declare_parameter("camera_process_period_s", 0.3)
             self.declare_parameter("face_match_threshold", 44.0)
+            self.declare_parameter("camera_x", 0.0587375)
+            self.declare_parameter("camera_y", -0.0301625)
+            self.declare_parameter("camera_z", 0.114300)
+            self.declare_parameter("camera_roll", 0.0)
+            self.declare_parameter(
+                "camera_pitch", -0.0523598775598299
+            )
+            self.declare_parameter("camera_yaw", 0.0)
+            self.declare_parameter("lidar_x", 0.004500)
+            self.declare_parameter("lidar_y", -0.011000)
+            self.declare_parameter("lidar_z", 0.190500)
+            self.declare_parameter("lidar_roll", 0.0)
+            self.declare_parameter("lidar_pitch", 0.0)
+            self.declare_parameter(
+                "lidar_yaw", 3.1239668018215028
+            )
             self._stationary_session = bool(
                 self.get_parameter("stationary_session").value
             )
@@ -515,6 +605,39 @@ def main(args=None):
             self._latest_tracks: list[dict[str, Any]] = []
             self._latest_uncertain_track = ""
             self._camera_matrix: Optional[tuple[float, ...]] = None
+            self._camera_calibration: Optional[
+                CameraCalibration
+            ] = None
+            self._camera_mount = SensorMount(
+                **{
+                    name: float(
+                        self.get_parameter(f"camera_{name}").value
+                    )
+                    for name in (
+                        "x",
+                        "y",
+                        "z",
+                        "roll",
+                        "pitch",
+                        "yaw",
+                    )
+                }
+            )
+            self._lidar_mount = SensorMount(
+                **{
+                    name: float(
+                        self.get_parameter(f"lidar_{name}").value
+                    )
+                    for name in (
+                        "x",
+                        "y",
+                        "z",
+                        "roll",
+                        "pitch",
+                        "yaw",
+                    )
+                }
+            )
             self._previous_gray: Optional[Any] = None
             self._last_camera_process_s = 0.0
             self._camera_processing = False
@@ -590,9 +713,43 @@ def main(args=None):
 
         def _on_camera_info(self, message: Any) -> None:
             values = tuple(float(value) for value in message.k)
-            if len(values) == 9 and values[0] > 0.0 and values[4] > 0.0:
+            if (
+                len(values) == 9
+                and values[0] > 0.0
+                and values[4] > 0.0
+                and int(message.width) > 0
+                and int(message.height) > 0
+                and str(message.distortion_model).strip()
+            ):
+                calibration_payload = {
+                    "width": int(message.width),
+                    "height": int(message.height),
+                    "k": list(values),
+                    "d": [float(value) for value in message.d],
+                    "distortion_model": str(
+                        message.distortion_model
+                    ),
+                }
+                calibration_id = hashlib.sha256(
+                    json.dumps(
+                        calibration_payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ).hexdigest()
                 with self._lock:
                     self._camera_matrix = values
+                    self._camera_calibration = CameraCalibration(
+                        width=int(message.width),
+                        height=int(message.height),
+                        k=values,
+                        d=tuple(float(value) for value in message.d),
+                        distortion_model=str(
+                            message.distortion_model
+                        ),
+                        calibration_id=calibration_id,
+                    )
 
         def _localization_from_tf(
             self,
@@ -616,6 +773,18 @@ def main(args=None):
                 )
                 translation = transform.transform.translation
                 rotation = transform.transform.rotation
+                transform_stamp_s = (
+                    float(transform.header.stamp.sec)
+                    + float(transform.header.stamp.nanosec)
+                    / 1_000_000_000.0
+                )
+                if (
+                    not math.isfinite(transform_stamp_s)
+                    or transform_stamp_s <= 0.0
+                ):
+                    raise ValueError(
+                        "map to base_link transform has no source timestamp"
+                    )
                 yaw = math.atan2(
                     2.0
                     * (
@@ -633,6 +802,11 @@ def main(args=None):
                     "x_m": float(translation.x),
                     "y_m": float(translation.y),
                     "yaw_deg": math.degrees(yaw),
+                    "yaw_rad": yaw,
+                    "timestamp_ns": int(
+                        round(transform_stamp_s * 1_000_000_000)
+                    ),
+                    "map_revision": str(map_id),
                 }
                 localization = LocalizationEstimate(
                     state=LocalizationState.VALID,
@@ -641,7 +815,7 @@ def main(args=None):
                         x_m=float(translation.x),
                         y_m=float(translation.y),
                         yaw_rad=yaw,
-                        stamp_s=stamp_s,
+                        stamp_s=transform_stamp_s,
                         frame_id="map",
                     ),
                     quality=max(0.0, min(1.0, float(quality))),
@@ -660,7 +834,7 @@ def main(args=None):
                         )
                     ),
                 ).to_json_dict()
-            except TransformException as exc:
+            except (TransformException, ValueError) as exc:
                 localization = LocalizationEstimate(
                     state=LocalizationState.LOST,
                     source=source,
@@ -676,7 +850,16 @@ def main(args=None):
             localization.update(
                 {
                     "map_id": str(map_id),
-                    "stamp_s": stamp_s,
+                    "stamp_s": (
+                        float(
+                            self._latest_pose.get(
+                                "timestamp_ns", 0
+                            )
+                        )
+                        / 1_000_000_000.0
+                        if localization.get("state") == "valid"
+                        else stamp_s
+                    ),
                     "stationary_session": self._stationary_session,
                     "motion_authority": False,
                     "physical_execution_enabled": False,
@@ -712,10 +895,15 @@ def main(args=None):
                 }
                 self._latest_scan = {
                     "ranges": tuple(float(value) for value in message.ranges),
+                    "timestamp_ns": int(
+                        round(stamp_s * 1_000_000_000)
+                    ),
+                    "sample_count": len(message.ranges),
                     "angle_min": float(message.angle_min),
                     "angle_increment": float(message.angle_increment),
                     "range_min": float(message.range_min),
                     "range_max": float(message.range_max),
+                    "evidence_id": scan_id,
                 }
                 self._publish(self._lidar_pub, lidar)
 
@@ -849,27 +1037,48 @@ def main(args=None):
                     )
                 self._publish(self._localization_pub, localization)
                 gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-                detections = self._detections(frame_rgb, gray, frame_id)
+                detections = self._detections(
+                    frame_rgb,
+                    gray,
+                    frame_id,
+                    timestamp_ns=int(round(stamp_s * 1_000_000_000)),
+                )
+                point_detections = [
+                    detection
+                    for detection in detections
+                    if detection.get("position_method")
+                    in {"lidar_range", "floor_projection"}
+                    and "x_m" in detection
+                    and "y_m" in detection
+                ]
                 with self._lock:
                     self._map_revision += 1
                     tracks = self._tracks.update(
-                        detections,
+                        point_detections,
                         frame_width=int(message.width),
                         observed_at_s=observed_at_s,
                     )
                     self._latest_tracks = list(tracks)
                 for detection in detections:
-                    matched = min(
-                        (
-                            track
-                            for track in tracks
-                            if track["kind"] == detection["kind"]
-                        ),
-                        key=lambda track: math.hypot(
-                            float(track["x_m"]) - float(detection["x_m"]),
-                            float(track["y_m"]) - float(detection["y_m"]),
-                        ),
-                        default=None,
+                    matched = (
+                        min(
+                            (
+                                track
+                                for track in tracks
+                                if track["kind"]
+                                == detection["kind"]
+                            ),
+                            key=lambda track: math.hypot(
+                                float(track["x_m"])
+                                - float(detection["x_m"]),
+                                float(track["y_m"])
+                                - float(detection["y_m"]),
+                            ),
+                            default=None,
+                        )
+                        if "x_m" in detection
+                        and "y_m" in detection
+                        else None
                     )
                     detection["track_id"] = (
                         "" if matched is None else str(matched["track_id"])
@@ -982,7 +1191,12 @@ def main(args=None):
             raise ValueError(f"unsupported camera encoding: {message.encoding}")
 
         def _detections(
-            self, frame_rgb: Any, gray: Any, frame_id: str
+            self,
+            frame_rgb: Any,
+            gray: Any,
+            frame_id: str,
+            *,
+            timestamp_ns: int,
         ) -> list[dict[str, Any]]:
             height, width = gray.shape[:2]
             result: list[dict[str, Any]] = []
@@ -997,8 +1211,13 @@ def main(args=None):
             )
             for index, shoe in enumerate(shoes, start=1):
                 evidence_id = f"{frame_id}-shoe-{index:02d}"
-                position = self._position_for_pixel(
-                    shoe.bbox.x + shoe.bbox.width / 2.0
+                position = self._localized_position(
+                    x=shoe.bbox.x,
+                    y=shoe.bbox.y,
+                    width=shoe.bbox.width,
+                    height=shoe.bbox.height,
+                    timestamp_ns=timestamp_ns,
+                    evidence_id=evidence_id,
                 )
                 if position is None:
                     continue
@@ -1063,7 +1282,14 @@ def main(args=None):
                 if candidates:
                     _area, (x, y, box_width, box_height) = max(candidates)
                     evidence_id = f"{frame_id}-moving-object-01"
-                    position = self._position_for_pixel(x + box_width / 2.0)
+                    position = self._localized_position(
+                        x=x,
+                        y=y,
+                        width=box_width,
+                        height=box_height,
+                        timestamp_ns=timestamp_ns,
+                        evidence_id=evidence_id,
+                    )
                     if position is not None:
                         result.append(
                             {
@@ -1094,7 +1320,14 @@ def main(args=None):
                 identity, confidence, recognized, enrollment_ids = self._enrollment.recognize(
                     gray[y : y + box_height, x : x + box_width]
                 )
-                position = self._position_for_pixel(x + box_width / 2.0)
+                position = self._localized_position(
+                    x=x,
+                    y=y,
+                    width=box_width,
+                    height=box_height,
+                    timestamp_ns=timestamp_ns,
+                    evidence_id=evidence_id,
+                )
                 if position is None:
                     continue
                 result.append(
@@ -1120,35 +1353,123 @@ def main(args=None):
                 )
             return select_trackable_detections(result)
 
-        def _position_for_pixel(
-            self, pixel_x: float
-        ) -> Optional[dict[str, float]]:
-            scan = self._latest_scan
-            matrix = self._camera_matrix
-            if scan is None or matrix is None:
+        def _localized_position(
+            self,
+            *,
+            x: float,
+            y: float,
+            width: float,
+            height: float,
+            timestamp_ns: int,
+            evidence_id: str,
+        ) -> Optional[dict[str, Any]]:
+            with self._lock:
+                scan_raw = (
+                    None
+                    if self._latest_scan is None
+                    else dict(self._latest_scan)
+                )
+                calibration = self._camera_calibration
+                pose_raw = dict(self._latest_pose)
+            if calibration is None:
                 return None
-            fx = float(matrix[0])
-            cx = float(matrix[2])
-            bearing = math.atan2(cx - float(pixel_x), fx)
-            index = round((bearing - scan["angle_min"]) / scan["angle_increment"])
-            samples = [
-                scan["ranges"][candidate]
-                for candidate in range(max(0, index - 2), min(len(scan["ranges"]), index + 3))
-                if math.isfinite(scan["ranges"][candidate])
-                and scan["range_min"] <= scan["ranges"][candidate] <= scan["range_max"]
-            ]
-            if not samples:
+            try:
+                anchor = ImageAnchor.from_bbox_bottom_center(
+                    x=float(x),
+                    y=float(y),
+                    width=float(width),
+                    height=float(height),
+                    timestamp_ns=int(timestamp_ns),
+                    evidence_ids=(str(evidence_id),),
+                )
+                pose = MapPose(
+                    timestamp_ns=int(pose_raw["timestamp_ns"]),
+                    x=float(pose_raw["x_m"]),
+                    y=float(pose_raw["y_m"]),
+                    yaw=float(pose_raw["yaw_rad"]),
+                    map_revision=str(pose_raw["map_revision"]),
+                )
+            except (KeyError, TypeError, ValueError):
                 return None
-            distance = min(samples)
-            rover_x = float(self._latest_pose["x_m"])
-            rover_y = float(self._latest_pose["y_m"])
-            rover_yaw = math.radians(float(self._latest_pose["yaw_deg"]))
-            map_bearing = rover_yaw + bearing
-            return {
-                "x_m": round(rover_x + distance * math.cos(map_bearing), 4),
-                "y_m": round(rover_y + distance * math.sin(map_bearing), 4),
-                "uncertainty_m": 0.18,
+            if scan_raw is None:
+                localized = localize_floor_object(
+                    anchor=anchor,
+                    calibration=calibration,
+                    camera=self._camera_mount,
+                    pose=pose,
+                )
+            else:
+                try:
+                    scan = LidarScan(
+                        timestamp_ns=int(scan_raw["timestamp_ns"]),
+                        angle_min_rad=float(scan_raw["angle_min"]),
+                        angle_increment_rad=float(
+                            scan_raw["angle_increment"]
+                        ),
+                        sample_count=int(scan_raw["sample_count"]),
+                        range_min_m=float(scan_raw["range_min"]),
+                        range_max_m=float(scan_raw["range_max"]),
+                        returns=tuple(
+                            ScanReturn(index=index, range_m=float(value))
+                            for index, value in enumerate(
+                                scan_raw["ranges"]
+                            )
+                            if math.isfinite(float(value))
+                            and float(scan_raw["range_min"])
+                            <= float(value)
+                            <= float(scan_raw["range_max"])
+                        ),
+                        evidence_id=str(scan_raw["evidence_id"]),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    return None
+                localized = localize_plane_object(
+                    anchor=anchor,
+                    scan=scan,
+                    calibration=calibration,
+                    camera=self._camera_mount,
+                    lidar=self._lidar_mount,
+                    pose=pose,
+                )
+                if (
+                    localized.method == "bearing_only"
+                    and localized.reason == "no_lidar_cluster"
+                ):
+                    localized = localize_floor_object(
+                        anchor=anchor,
+                        calibration=calibration,
+                        camera=self._camera_mount,
+                        pose=pose,
+                    )
+            result: dict[str, Any] = {
+                "position_method": localized.method,
+                "calibration_id": localized.calibration_id,
+                "map_revision": localized.map_revision,
+                "localization_evidence_ids": list(
+                    localized.evidence_ids
+                ),
+                "localization_reason": localized.reason,
+                "source_timestamps_ns": dict(
+                    localized.source_timestamps_ns
+                ),
+                "bearing": {
+                    "center_rad": localized.bearing.center_rad,
+                    "half_angle_rad": (
+                        localized.bearing.half_angle_rad
+                    ),
+                },
             }
+            if localized.point is not None:
+                result.update(
+                    {
+                        "x_m": float(localized.point.x),
+                        "y_m": float(localized.point.y),
+                        "uncertainty_m": float(
+                            localized.uncertainty.position_sigma_m
+                        ),
+                    }
+                )
+            return result
 
         def _semantic_map(
             self,

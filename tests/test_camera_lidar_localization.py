@@ -198,6 +198,27 @@ def test_invalid_floor_projection_is_bearing_only(
     assert result.reason == reason
 
 
+def test_floor_uncertainty_crossing_horizon_is_bearing_only(
+    fixture: dict,
+) -> None:
+    calibration, camera, _, anchor, pose, _ = _inputs(
+        fixture,
+        "calibrated_floor_geometry",
+    )
+    pitched_camera = replace(camera, pitch=-math.radians(3.0))
+
+    result = localize_floor_object(
+        anchor=replace(anchor, v=334.7),
+        calibration=calibration,
+        camera=pitched_camera,
+        pose=pose,
+    )
+
+    assert result.method == "bearing_only"
+    assert result.point is None
+    assert result.reason == "floor_intersection_invalid"
+
+
 def test_result_serialization_preserves_method_evidence_and_no_fallback_point(fixture: dict) -> None:
     report = evaluate_fixture(fixture)
     ambiguous = report["results"]["ambiguous_association"]

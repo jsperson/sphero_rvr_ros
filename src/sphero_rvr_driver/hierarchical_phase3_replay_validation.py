@@ -476,8 +476,9 @@ def evaluate_phase3_fixture(
         "short_hop_honest_wait": short_hop["arrival_state"]
         == fixture["short_hop_replay"]["expected_arrival_state"]
         and short_hop["arrival_zero_required"] is True,
-        "stable_detection_preempts_and_replans": event["preempt_reason"]
-        == "semantic_replan"
+        "stable_detection_replans_without_stopping_valid_route": (
+            event["preempt_state"] == "navigating"
+        )
         and "event_triggered_replan" in event["event_kinds"]
         and event["resume_state"] == "navigating",
         "old_inflight_result_is_discarded": any(

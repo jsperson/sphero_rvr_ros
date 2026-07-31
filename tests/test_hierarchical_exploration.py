@@ -200,6 +200,38 @@ def test_invalid_prefetch_discards_and_supervisor_veto_is_immediate() -> None:
     assert stopped.command.reason == "collision_veto"
 
 
+def test_stale_motion_evidence_holds_then_resumes_with_new_goal() -> None:
+    follower = ContinuousGoalFollowerReplay(queue_depth=2)
+    follower.start([replay_goal(1, route_length_m=1.0, ready_at_s=0.0)])
+
+    held = follower.advance(
+        now_s=0.5,
+        remaining_distance_m=0.8,
+        collision_state="BLOCKED",
+        motion_evidence_fresh=False,
+    )
+    follower.submit_prefetch(
+        replay_goal(2, route_length_m=0.7, ready_at_s=0.6)
+    )
+    resumed = follower.advance(
+        now_s=0.6,
+        remaining_distance_m=0.8,
+        motion_evidence_fresh=True,
+    )
+
+    assert held.state == "wait_planning"
+    assert held.controller_active is False
+    assert held.command.zero_required is True
+    assert held.command.reason == "motion_evidence_stale"
+    assert held.events[-1]["kind"] == "motion_evidence_stale"
+    assert resumed.state == "navigating"
+    assert resumed.controller_session == 2
+    assert resumed.controller_active is True
+    assert resumed.command.zero_required is False
+    assert resumed.events[-1]["kind"] == "planning_resume"
+    assert resumed.events[-1]["generation"] == 2
+
+
 def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> None:
     disabled = HierarchicalCommandBridge()
     disabled.accept(0.1, 0.4, received_at_s=1.0)
@@ -234,6 +266,189 @@ def test_private_command_bridge_is_default_off_bounded_and_lease_limited() -> No
     assert bounded.bridged_angular_rad_s == pytest.approx(-0.4)
     assert stale.zero_required is True
     assert stale.reason == "nav2_command_stale"
+
+    physical = HierarchicalCommandBridge(
+        HierarchicalBridgeConfig(
+            enabled=True,
+            clear_breakaway_linear_mps=0.10,
+            clear_breakaway_angular_rad_s=0.35,
+            reverse_escape_linear_mps=0.07,
+        )
+    )
+    physical.accept(0.014, 0.0, received_at_s=3.0)
+    clear = physical.evaluate(
+        now_s=3.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    slow = physical.evaluate(
+        now_s=3.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="SLOW",
+    )
+    assert clear.bridged_linear_mps == pytest.approx(0.10)
+    assert clear.reason == "clear_breakaway_floor"
+    assert slow.bridged_linear_mps == pytest.approx(-0.07)
+    assert slow.bridged_angular_rad_s == 0.0
+    assert slow.reason == "slow_reverse_escape"
+
+    physical.accept(0.071, 0.109, received_at_s=3.2)
+    pivot = physical.evaluate(
+        now_s=3.3,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="SLOW",
+    )
+    assert pivot.bridged_linear_mps == 0.0
+    assert pivot.bridged_angular_rad_s == pytest.approx(0.35)
+    assert pivot.reason == "slow_pivot_breakaway"
+
+    physical.accept(-0.04, 0.0, received_at_s=3.4)
+    reverse = physical.evaluate(
+        now_s=3.5,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="SLOW",
+    )
+    assert reverse.bridged_linear_mps == pytest.approx(-0.04)
+    assert reverse.bridged_angular_rad_s == 0.0
+    assert reverse.reason == "clear"
+
+    physical.accept(0.10, 0.1, received_at_s=3.6)
+    stopped_escape = physical.evaluate(
+        now_s=3.7,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="STOPPED",
+    )
+    assert stopped_escape.bridged_linear_mps == pytest.approx(-0.07)
+    assert stopped_escape.bridged_angular_rad_s == 0.0
+    assert stopped_escape.reason == "stopped_reverse_escape_request"
+
+    physical.accept(0.0, 0.4, received_at_s=3.8)
+    blocked_turn_escape = physical.evaluate(
+        now_s=3.9,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="SLOW",
+        collision_reason="left_trajectory_blocked",
+    )
+    assert blocked_turn_escape.bridged_linear_mps == pytest.approx(-0.07)
+    assert blocked_turn_escape.bridged_angular_rad_s == 0.0
+    assert (
+        blocked_turn_escape.reason
+        == "blocked_trajectory_reverse_escape"
+    )
+
+    physical.accept(0.0, -0.036, received_at_s=4.0)
+    turn = physical.evaluate(
+        now_s=4.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert turn.bridged_linear_mps == 0.0
+    assert turn.bridged_angular_rad_s == pytest.approx(-0.35)
+    assert turn.reason == "clear_angular_breakaway_floor"
+
+    physical.accept(0.02, 0.036, received_at_s=5.0)
+    mixed = physical.evaluate(
+        now_s=5.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert mixed.bridged_linear_mps == pytest.approx(0.10)
+    assert mixed.bridged_angular_rad_s == pytest.approx(0.036)
+    assert mixed.reason == "clear_breakaway_floor"
+
+
+def test_physical_turn_breakaway_is_rate_modulated_and_filters_reversals() -> None:
+    bridge = HierarchicalCommandBridge(
+        HierarchicalBridgeConfig(
+            enabled=True,
+            clear_breakaway_angular_rad_s=0.35,
+            clear_breakaway_angular_measured_rate_rad_s=3.2,
+            clear_breakaway_angular_pulse_s=0.05,
+        )
+    )
+
+    samples = []
+    for now_s in (1.0, 1.1, 1.2, 1.3, 1.4, 1.5):
+        bridge.accept(0.0, 0.35, received_at_s=now_s)
+        samples.append(
+            bridge.evaluate(
+                now_s=now_s,
+                goal_active=True,
+                mission_lease_valid=True,
+                motion_evidence_fresh=True,
+                collision_state="CLEAR",
+            )
+        )
+
+    assert all(
+        sample.reason == "angular_breakaway_rate_hold"
+        and sample.zero_required is True
+        and sample.bridged_angular_rad_s == 0.0
+        for sample in samples[:-1]
+    )
+    assert samples[-1].reason == "angular_breakaway_rate_pulse"
+    assert samples[-1].zero_required is False
+    assert samples[-1].bridged_angular_rad_s == pytest.approx(0.35)
+
+    # One opposite request and then another reversal cannot immediately
+    # manufacture full-torque left/right commands.
+    bridge.accept(0.0, -0.35, received_at_s=1.6)
+    opposite = bridge.evaluate(
+        now_s=1.6,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    bridge.accept(0.0, 0.35, received_at_s=1.7)
+    reversed_again = bridge.evaluate(
+        now_s=1.7,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert opposite.reason == "angular_breakaway_rate_hold"
+    assert opposite.bridged_angular_rad_s == 0.0
+    assert reversed_again.reason == "angular_breakaway_rate_hold"
+    assert reversed_again.bridged_angular_rad_s == 0.0
+
+    # Every fail-closed zero clears accumulated yaw so stale intent cannot
+    # emit a delayed pulse after authority resumes.
+    bridge.accept(0.0, 0.35, received_at_s=2.0)
+    assert bridge.evaluate(
+        now_s=2.0,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=False,
+        collision_state="CLEAR",
+    ).reason == "motion_evidence_stale"
+    bridge.accept(0.0, 0.35, received_at_s=2.1)
+    resumed = bridge.evaluate(
+        now_s=2.1,
+        goal_active=True,
+        mission_lease_valid=True,
+        motion_evidence_fresh=True,
+        collision_state="CLEAR",
+    )
+    assert resumed.reason == "angular_breakaway_rate_hold"
+    assert resumed.bridged_angular_rad_s == 0.0
 
 
 def test_hierarchical_executor_uses_existing_replay_seam_without_authority() -> None:

@@ -201,6 +201,15 @@ def _return_decision(snapshot: dict) -> dict:
     )
 
 
+def _wait_decision(snapshot: dict) -> dict:
+    return _decision(
+        snapshot,
+        "wait",
+        {},
+        rationale="Wait for a fresh server-owned planning event.",
+    )
+
+
 def _wait_for_provider(
     provider: ScriptedSemanticGoalProvider,
     calls: int,
@@ -309,6 +318,71 @@ def test_world_snapshot_is_bounded_digest_bound_and_has_no_authority() -> None:
         "live_sensors": False,
         "serial_access": False,
     }
+
+
+def test_bearing_only_camera_observation_can_truthfully_finish_partial() -> None:
+    snapshot = build_semantic_world_snapshot(
+        mission_id="phase3-camera-only",
+        objective="Explore and identify shoes, then stop safely.",
+        objective_revision=1,
+        event_generation=4,
+        requested_object_classes=("shoe",),
+        map_id="live-room",
+        map_revision=_grid().revision,
+        robot_x_m=0.0,
+        robot_y_m=0.0,
+        robot_yaw_rad=0.0,
+        localization_timestamp_s=100.0,
+        now_s=100.1,
+        frontiers=_frontiers(1),
+        tracks=(),
+        next_best_views=(),
+        origin_x_m=0.0,
+        origin_y_m=0.0,
+        observation_evidence=(
+            {
+                "label": "shoe",
+                "confidence": 0.82,
+                "status": "review",
+                "position_method": "bearing_only",
+                "evidence_ids": [
+                    "live-camera-00000015-shoe-01",
+                    "live-scan-00000123",
+                ],
+            },
+        ),
+        evaluation={
+            "motion_goal_dispatches": 3,
+            "recommend_finish": True,
+        },
+    )
+    prompt = json.loads(
+        semantic_goal_prompt(snapshot["objective"], snapshot)
+    )
+    evidence_id = "live-camera-00000015-shoe-01"
+    decision = SemanticGoalDecision.validated(
+        _decision(
+            snapshot,
+            "finish",
+            {
+                "outcome": "partial",
+                "evidence_ids": [evidence_id],
+            },
+            rationale=(
+                f"Finish partial with bearing-only evidence {evidence_id}."
+            ),
+        ),
+        snapshot=snapshot,
+        expected_generation=1,
+        provider_id="test-provider",
+        model_id="test-model",
+    )
+
+    assert snapshot["tracks"] == []
+    assert snapshot["observations"][0]["mapped"] is False
+    assert evidence_id in snapshot["evidence_ids"]
+    assert prompt["evaluation"]["recommend_finish"] is True
+    assert decision.action == "finish"
     assert prompt["world_snapshot"]["snapshot_id"] == snapshot["snapshot_id"]
     assert all(
         "approach_pose" not in frontier
@@ -324,6 +398,24 @@ def test_world_snapshot_is_bounded_digest_bound_and_has_no_authority() -> None:
         text not in prompt["rules"][-2]
         for text in ("/cmd_vel", "/cmd_vel_motor")
     )
+
+
+def test_live_wfd_frontier_oversubscription_is_deterministically_bounded() -> None:
+    base = _frontiers()
+    oversubscribed = tuple(
+        replace(
+            base[index % len(base)],
+            signature=f"live-frontier-{index:02d}",
+        )
+        for index in range(19)
+    )
+
+    snapshot = _snapshot(frontiers=oversubscribed)
+
+    assert len(snapshot["frontiers"]) == 16
+    assert [
+        frontier["signature"] for frontier in snapshot["frontiers"]
+    ] == [frontier.signature for frontier in oversubscribed[:16]]
 
 
 def test_next_best_view_is_stable_reachable_and_records_rejections() -> None:
@@ -515,6 +607,59 @@ def test_resolver_uses_server_geometry_and_revalidation_rejects_invalidation() -
     assert "motion_evidence_stale" in result.reasons
 
 
+def test_inspect_revalidation_tolerates_sensor_drift_but_rejects_move() -> None:
+    captured = _snapshot()
+    decision = SemanticGoalDecision.validated(
+        _inspect_decision(captured),
+        snapshot=captured,
+        expected_generation=1,
+        provider_id="test-provider",
+        model_id="test-model",
+    )
+    goal = DeterministicGoalResolver().resolve(
+        decision, captured, ready_at_s=1.0
+    )
+
+    rolling = json.loads(json.dumps(captured))
+    rolling["tracks"][0]["position"]["x_m"] += 0.05
+    rolling["tracks"][0]["evidence_ids"].append("camera-frame-later")
+    for viewpoint in rolling["next_best_views"][
+        rolling["tracks"][0]["track_id"]
+    ]:
+        viewpoint["x_m"] += 0.05
+    assert revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured,
+        current_snapshot=rolling,
+    ).accepted is True
+
+    moved = json.loads(json.dumps(captured))
+    moved["tracks"][0]["position"]["x_m"] += 0.101
+    for viewpoint in moved["next_best_views"][
+        moved["tracks"][0]["track_id"]
+    ]:
+        viewpoint["x_m"] += 0.101
+    result = revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured,
+        current_snapshot=moved,
+    )
+    assert result.accepted is False
+    assert "track_position_changed" in result.reasons
+
+    invalid_viewpoint = json.loads(json.dumps(captured))
+    invalid_viewpoint["next_best_views"][
+        invalid_viewpoint["tracks"][0]["track_id"]
+    ] = []
+    result = revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured,
+        current_snapshot=invalid_viewpoint,
+    )
+    assert result.accepted is False
+    assert "viewpoint_invalidated" in result.reasons
+
+
 def test_long_leg_async_prefetch_hands_off_without_zero_under_recorded_p95() -> None:
     snapshot = _snapshot()
     first_target = snapshot["frontiers"][0]["signature"]
@@ -632,7 +777,72 @@ def test_short_hop_under_recorded_p95_honestly_waits_then_resumes() -> None:
         controller.close()
 
 
-def test_stable_new_detection_preempts_and_invalidates_inflight_snapshot() -> None:
+def test_semantic_wait_holds_until_fresh_event_then_replans() -> None:
+    snapshot0 = _snapshot(event_generation=0)
+    snapshot1 = _snapshot(event_generation=1)
+    provider = ScriptedSemanticGoalProvider(
+        [_wait_decision, _frontier_decision(1)]
+    )
+    controller = AsyncSemanticGoalController(provider)
+    try:
+        controller.start(
+            _decision(
+                snapshot0,
+                "go_to_frontier",
+                {"frontier_id": snapshot0["frontiers"][0]["signature"]},
+            ),
+            snapshot0,
+        )
+        controller.tick(
+            snapshot0,
+            now_s=0.0,
+            remaining_distance_m=0.5,
+            eta_s=5.0,
+        )
+        _wait_for_provider(provider, 1)
+        waiting = controller.tick(
+            snapshot0,
+            now_s=0.1,
+            remaining_distance_m=0.49,
+            eta_s=4.9,
+        )
+
+        ready = controller.ready_non_motion_goal()
+        assert ready is not None
+        assert ready.decision.action == "wait"
+        event = next(
+            item
+            for item in waiting.events
+            if item["kind"] == "semantic_non_motion_goal_ready"
+        )
+        assert event["decision"]["action"] == "wait"
+        assert event["decision"]["arguments"] == {}
+
+        replanning = controller.handle_event(
+            SemanticReplanEvent(
+                "fresh-detection-1",
+                SemanticEventKind.NEW_DETECTION,
+                observed_at_s=2.2,
+                target_id="shoe-track-01",
+                confidence=0.9,
+                stable_observations=3,
+            ),
+            snapshot1,
+            now_s=2.2,
+        )
+        assert controller.ready_non_motion_goal() is None
+        assert replanning.provider_in_flight is True
+        assert replanning.handoff.state == "navigating"
+        assert replanning.handoff.command.zero_required is False
+        assert any(
+            item["kind"] == "prefetch_started"
+            for item in replanning.events
+        )
+    finally:
+        controller.close()
+
+
+def test_stable_new_detection_invalidates_inflight_without_stopping_route() -> None:
     snapshot0 = _snapshot(event_generation=0)
     snapshot1 = _snapshot(event_generation=1)
     release = threading.Event()
@@ -671,7 +881,7 @@ def test_stable_new_detection_preempts_and_invalidates_inflight_snapshot() -> No
             snapshot0,
             now_s=0.1,
         )
-        preempted = controller.handle_event(
+        replanning = controller.handle_event(
             SemanticReplanEvent(
                 "detection-stable",
                 SemanticEventKind.NEW_DETECTION,
@@ -700,16 +910,16 @@ def test_stable_new_detection_preempts_and_invalidates_inflight_snapshot() -> No
         )
 
         assert unstable.events[-1]["kind"] == "semantic_event_coalesced"
-        assert preempted.handoff.state == "wait_planning"
-        assert preempted.handoff.command.reason == "semantic_replan"
-        assert preempted.events[-1]["kind"] == "event_triggered_replan"
+        assert replanning.handoff.state == "navigating"
+        assert replanning.handoff.command.zero_required is False
+        assert replanning.events[-1]["kind"] == "event_triggered_replan"
         assert any(
             event["kind"] == "prefetch_discarded"
             and "event_invalidated:new_detection" in event["reason"]
             for event in discarded.events
         )
         assert resumed.handoff.state == "navigating"
-        assert resumed.handoff.events[-1]["kind"] == "planning_resume"
+        assert resumed.prefetched_generation == 3
     finally:
         release.set()
         controller.close()
@@ -752,6 +962,82 @@ def test_supervisor_veto_is_immediate_while_provider_is_blocked() -> None:
         assert vetoed.handoff.command.zero_required is True
         assert vetoed.handoff.command.reason == "collision_veto"
         assert vetoed.events[-1]["kind"] == "safety_veto_during_provider"
+
+        release.set()
+        _wait_for_provider(provider, 1)
+        discarded = controller.tick(
+            snapshot,
+            now_s=0.02,
+            remaining_distance_m=2.49,
+            eta_s=9.8,
+        )
+        assert discarded.handoff.state == "terminal_safety"
+        assert discarded.handoff.command.zero_required is True
+        assert any(
+            event["kind"] == "prefetch_discarded"
+            and event["reason"] == "follower_terminal_safety"
+            for event in discarded.events
+        )
+    finally:
+        release.set()
+        controller.close()
+
+
+def test_stale_motion_hold_accepts_late_provider_result_and_resumes() -> None:
+    snapshot = _snapshot()
+    release = threading.Event()
+    provider = ScriptedSemanticGoalProvider(
+        [_frontier_decision(1)],
+        release_event=release,
+    )
+    controller = AsyncSemanticGoalController(provider)
+    try:
+        controller.start(
+            _decision(
+                snapshot,
+                "go_to_frontier",
+                {"frontier_id": snapshot["frontiers"][0]["signature"]},
+            ),
+            snapshot,
+        )
+        controller.tick(
+            snapshot,
+            now_s=0.0,
+            remaining_distance_m=2.5,
+            eta_s=10.0,
+        )
+        _wait_for_provider(provider, 1, completed=False)
+        held = controller.tick(
+            snapshot,
+            now_s=0.01,
+            remaining_distance_m=2.49,
+            eta_s=9.9,
+            collision_state="BLOCKED",
+            motion_evidence_fresh=False,
+        )
+
+        assert held.provider_in_flight is True
+        assert held.handoff.state == "wait_planning"
+        assert held.handoff.controller_active is False
+        assert held.handoff.command.zero_required is True
+        assert held.handoff.command.reason == "motion_evidence_stale"
+
+        release.set()
+        _wait_for_provider(provider, 1)
+        resumed = controller.tick(
+            snapshot,
+            now_s=0.02,
+            remaining_distance_m=2.49,
+            eta_s=9.8,
+        )
+
+        assert resumed.handoff.state == "navigating"
+        assert resumed.handoff.controller_active is True
+        assert resumed.handoff.events[-1]["kind"] == "planning_resume"
+        assert any(
+            event["kind"] == "prefetch_revalidated"
+            for event in resumed.events
+        )
     finally:
         release.set()
         controller.close()
@@ -793,6 +1079,63 @@ def test_real_provider_result_is_not_artificially_delayed_to_p95() -> None:
         controller.close()
 
 
+def test_redundant_prefetch_does_not_redispatch_active_frontier() -> None:
+    snapshot = _snapshot()
+    provider = ScriptedSemanticGoalProvider(
+        [_frontier_decision(0), _frontier_decision(1)]
+    )
+    controller = AsyncSemanticGoalController(provider)
+    try:
+        active_frontier = snapshot["frontiers"][0]["signature"]
+        controller.start(
+            _decision(
+                snapshot,
+                "go_to_frontier",
+                {"frontier_id": active_frontier},
+            ),
+            snapshot,
+        )
+        controller.tick(
+            snapshot,
+            now_s=0.0,
+            remaining_distance_m=0.5,
+            eta_s=5.0,
+        )
+        _wait_for_provider(provider, 1)
+        redundant = controller.tick(
+            snapshot,
+            now_s=0.1,
+            remaining_distance_m=0.49,
+            eta_s=4.9,
+        )
+        assert any(
+            event["kind"] == "prefetch_redundant"
+            and event["reason"] == "same_as_active_target"
+            for event in redundant.events
+        )
+        assert redundant.prefetched_generation is None
+
+        suppressed = controller.tick(
+            snapshot,
+            now_s=1.0,
+            remaining_distance_m=0.30,
+            eta_s=3.0,
+        )
+        assert suppressed.provider_in_flight is False
+        assert provider.calls == 1
+
+        arrival = controller.tick(
+            snapshot,
+            now_s=2.0,
+            remaining_distance_m=0.04,
+            eta_s=0.4,
+        )
+        assert arrival.provider_in_flight is True
+        _wait_for_provider(provider, 2)
+    finally:
+        controller.close()
+
+
 def test_invalidated_frontier_event_preempts_and_replans_from_fresh_snapshot() -> None:
     original = _frontiers(4)
     snapshot0 = _snapshot(event_generation=0, frontiers=original)
@@ -819,6 +1162,18 @@ def test_invalidated_frontier_event_preempts_and_replans_from_fresh_snapshot() -
             ),
             snapshot1,
             now_s=1.0,
+        )
+        provider_snapshot = controller.provider_snapshot_in_flight()
+        assert provider_snapshot is not None
+        assert (
+            provider_snapshot["snapshot_id"]
+            == preempted.events[-1]["snapshot_id"]
+        )
+        assert provider_snapshot["decision_generation"] == 2
+        provider_snapshot["objective"] = "mutated evidence copy"
+        assert (
+            controller.provider_snapshot_in_flight()["objective"]
+            == snapshot1["objective"]
         )
         _wait_for_provider(provider, 1)
         resumed = controller.tick(

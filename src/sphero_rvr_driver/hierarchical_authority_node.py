@@ -116,7 +116,11 @@ def main(args=None):
 
         def relock(self, reason: str) -> None:
             self._owner.relock(reason=reason, now_s=time.time())
-            self._publish()
+            # External shutdown invalidates the ROS context before spin()
+            # returns. The journal relock above remains authoritative; publish
+            # the terminal heartbeat only while the context can accept it.
+            if rclpy.ok(context=self.context):
+                self._publish()
             self._journal.close()
 
     rclpy.init(args=args)

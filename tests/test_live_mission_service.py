@@ -319,6 +319,10 @@ def test_localization_parser_enforces_lidar_authority_and_no_motion_navigation_s
     localization = {
         "state": "valid",
         "source": "lidar_scan_match",
+        "map_id": "live-stationary-map",
+        "stationary_session": True,
+        "motion_authority": False,
+        "physical_execution_enabled": False,
         "quality": 0.9,
         "covariance_xy_m2": 0.0025,
         "covariance_yaw_rad2": 0.001,
@@ -336,6 +340,24 @@ def test_localization_parser_enforces_lidar_authority_and_no_motion_navigation_s
     assert parsed["authoritative"] is True
     assert parsed["pose"]["heading_deg"] == pytest.approx(math.degrees(0.3))
     assert parsed["odom_translation_disagreement_m"] == pytest.approx(0.01)
+    assert parsed["map_id"] == "live-stationary-map"
+    assert parsed["stationary_session"] is True
+    assert parsed["motion_authority"] is False
+    assert parsed["physical_execution_enabled"] is False
+
+    without_session_provenance = dict(localization)
+    for name in (
+        "map_id",
+        "stationary_session",
+        "motion_authority",
+        "physical_execution_enabled",
+    ):
+        without_session_provenance.pop(name)
+    normalized_without_provenance = _localization_mapping(
+        json.dumps(without_session_provenance)
+    )
+    assert "stationary_session" not in normalized_without_provenance
+    assert "motion_authority" not in normalized_without_provenance
 
     navigation = {
         "schema": "sphero_rvr.perception_navigation_result.v1",

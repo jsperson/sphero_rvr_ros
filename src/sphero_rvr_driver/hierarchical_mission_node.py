@@ -17,7 +17,11 @@ from pathlib import Path
 import time
 from typing import Any, Mapping, Optional
 
-from .hierarchical_exploration import OccupancyGrid, detect_frontiers
+from .hierarchical_exploration import (
+    FrontierDetectionConfig,
+    OccupancyGrid,
+    detect_frontiers,
+)
 from .hierarchical_goal_selection import (
     AsyncSemanticGoalController,
     CodexOAuthSemanticGoalProvider,
@@ -26,18 +30,45 @@ from .hierarchical_goal_selection import (
     SemanticTrack,
     build_semantic_world_snapshot,
     generate_next_best_views,
+    revalidate_resolved_goal,
     semantic_goal_prompt,
 )
 from .hierarchical_physical_binding import (
     AUTHORITY_HEARTBEAT_MAX_AGE_S,
     AUTHORITY_TOPIC,
+    CONTROLLER_STATUS_TOPIC,
     GOAL_DISPATCH_TOPIC,
+    LOCALIZATION_MAX_AGE_S,
     HierarchicalBindingJournal,
     build_goal_dispatch,
+    resolve_goal_dispatch,
+    transient_authority_hold,
     validate_authority_heartbeat,
     validate_physical_proposal,
 )
+from .hierarchical_m7_canonical_validation import (
+    validate_active_graph_evidence,
+)
 from .mission_api import MissionValidationError
+
+
+SEMANTIC_REJECTION_ROLLOVER = 3
+INITIAL_SEMANTIC_REJECTION_LIMIT = 3
+COLLISION_EVIDENCE_MAX_AGE_S = 0.300
+CAMERA_EVIDENCE_MAX_AGE_S = 3.0
+MAP_EVIDENCE_MAX_AGE_S = 3.0
+# Match the physical Nav2 circular footprint. The generic replay WFD default is
+# intentionally smaller, but exposing those point-clear candidates to the live
+# model creates goals that Nav2 must reject for the real 0.22 m radius rover.
+PHYSICAL_FRONTIER_MIN_CLEARANCE_M = 0.22
+TARGET_INVALIDATION_REASONS = {
+    "event_generation_changed",
+    "map_identity_changed",
+    "frontier_signature_invalidated",
+    "track_signature_changed",
+    "track_position_changed",
+    "viewpoint_invalidated",
+}
 
 
 def _json_object(value: Any, name: str) -> dict[str, Any]:
@@ -78,10 +109,643 @@ def _yaw(orientation: Any) -> float:
     )
 
 
+def live_semantic_track_signature(raw: Mapping[str, Any]) -> str:
+    """Bind stable semantic identity, not rolling frame evidence."""
+
+    identity = {
+        "track_id": str(raw.get("track_id", "")).strip(),
+        "kind": str(raw.get("kind", "object")).strip(),
+        "label": str(raw.get("label", raw.get("kind", "object"))).strip(),
+        "recognized_from_enrollment": bool(
+            raw.get("recognized_from_enrollment", False)
+        ),
+        "enrollment_evidence_ids": sorted(
+            str(item)
+            for item in raw.get("enrollment_evidence_ids", ())
+        ),
+    }
+    if not identity["track_id"] or not identity["label"]:
+        raise MissionValidationError("live semantic track identity is invalid")
+    return hashlib.sha256(
+        json.dumps(
+            identity,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def semantic_target_invalidation_reason(
+    goal: Any,
+    captured_snapshot: Mapping[str, Any],
+    current_snapshot: Mapping[str, Any],
+) -> str:
+    result = revalidate_resolved_goal(
+        goal,
+        captured_snapshot=captured_snapshot,
+        current_snapshot=current_snapshot,
+    )
+    invalidations = [
+        reason
+        for reason in result.reasons
+        if reason in TARGET_INVALIDATION_REASONS
+    ]
+    return ",".join(invalidations)
+
+
+def updated_semantic_rejection_count(
+    previous: int, events: Any
+) -> int:
+    count = max(0, int(previous))
+    normalized = [
+        event for event in events if isinstance(event, Mapping)
+    ]
+    count += sum(
+        str(event.get("kind", "")) == "prefetch_discarded"
+        for event in normalized
+    )
+    if any(
+        str(event.get("kind", ""))
+        in {
+            "prefetch_revalidated",
+            "semantic_non_motion_goal_ready",
+        }
+        for event in normalized
+    ):
+        return 0
+    return count
+
+
+def initial_semantic_rejection_retry(
+    previous: int,
+) -> tuple[int, bool]:
+    """Bound retries for schema-valid but semantically rejected first goals.
+
+    The motor path remains at zero while an initial provider response is being
+    validated. A single inconsistent LLM response is ordinary planning input,
+    not evidence that the ROS graph needs recovery. Repeated rejection is
+    still bounded so a broken provider contract cannot loop forever.
+    """
+
+    count = max(0, int(previous)) + 1
+    return count, count < INITIAL_SEMANTIC_REJECTION_LIMIT
+
+
+def semantic_rejection_rollover_due(count: int) -> bool:
+    """Bound churn accounting without turning a safe replan into a fault."""
+
+    return max(0, int(count)) >= SEMANTIC_REJECTION_ROLLOVER
+
+
+def adapter_remaining_distance(
+    status: Mapping[str, Any], fallback_remaining_m: float
+) -> float:
+    """Use Nav2 distance only when it represents feedback or success."""
+
+    fallback = max(0.0, float(fallback_remaining_m))
+    state = str(status.get("state", "")).strip()
+    reason = str(status.get("reason", "")).strip()
+    trustworthy = (
+        state == "navigating" and status.get("goal_active") is True
+    ) or (
+        state == "wait_planning"
+        and reason in {
+            "nav2_result_status_4",
+            "nav2_result_status_6",
+        }
+        and status.get("goal_active") is False
+    )
+    if not trustworthy:
+        return fallback
+    try:
+        remaining = float(status.get("distance_remaining_m"))
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(remaining) or remaining < 0.0:
+        return fallback
+    return remaining
+
+
+def adapter_recovery_reason(status: Mapping[str, Any]) -> str:
+    """Return a fail-closed Nav2 execution failure, if present."""
+
+    if str(status.get("state", "")).strip() != "recovery_required":
+        return ""
+    reason = str(status.get("reason", "")).strip()
+    return reason or "nav2_recovery_required"
+
+
+def nav2_abort_matches_dispatch(
+    status: Mapping[str, Any], expected_batch_digest: str
+) -> bool:
+    """Bind an ordinary Nav2 abort to the exact server-resolved batch."""
+
+    expected = str(expected_batch_digest).strip()
+    return (
+        bool(expected)
+        and str(status.get("state", "")).strip() == "wait_planning"
+        and str(status.get("reason", "")).strip()
+        == "nav2_result_status_6"
+        and status.get("goal_active") is False
+        and str(status.get("last_batch_digest", "")).strip() == expected
+    )
+
+
+def rolling_frontier_invalidation_preserves_route(
+    invalidation_reason: str,
+    adapter_status: Mapping[str, Any],
+) -> bool:
+    """Let Nav2 finish a safe accepted route through rolling-map churn."""
+
+    return (
+        str(invalidation_reason).strip()
+        == "frontier_signature_invalidated"
+        and str(adapter_status.get("state", "")).strip() == "navigating"
+        and adapter_status.get("goal_active") is True
+    )
+
+
+def planning_hold_controller_state(status: Mapping[str, Any]) -> str:
+    """Keep an accepted Nav2 route alive while planning evidence catches up."""
+
+    if str(status.get("state", "")).strip() == "dispatching":
+        # The action request is already digest-bound and in Nav2's async
+        # acceptance window. No command can cross the private bridge until
+        # Nav2 publishes one, so treating this short window as a pending route
+        # avoids a transient evidence gap cancelling the just-sent goal.
+        return "navigating"
+    if (
+        str(status.get("state", "")).strip()
+        not in {"locked", "recovery_required", "rejected"}
+        and status.get("goal_active") is True
+    ):
+        return "navigating"
+    return "wait_planning"
+
+
+def collision_hold_controller_state(
+    status: Mapping[str, Any],
+    *,
+    collision_state: str,
+    stop: bool = False,
+    estop: bool = False,
+    cancelled: bool = False,
+) -> str:
+    """Hold semantic state while the independent supervisor owns motor zero."""
+
+    if (
+        str(collision_state).strip().upper() != "BLOCKED"
+        or stop
+        or estop
+        or cancelled
+    ):
+        return ""
+    return planning_hold_controller_state(status)
+
+
+def semantic_non_motion_status(action: str) -> tuple[str, str, bool]:
+    """Map a validated non-motion semantic action to controller state."""
+
+    normalized = str(action).strip()
+    if normalized == "finish":
+        return "complete", "finish", True
+    if normalized == "wait":
+        return "wait_planning", "semantic_wait", False
+    raise MissionValidationError(
+        "unsupported non-motion semantic action"
+    )
+
+
+def parse_collision_evidence(value: Any) -> tuple[str, bool]:
+    """Extract the supervisor state and scan-health bit without trusting defaults."""
+
+    raw = str(value).strip()
+    state = "BLOCKED"
+    scan_healthy = False
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, Mapping):
+        state = str(parsed.get("state", "BLOCKED")).upper()
+        scan_healthy = parsed.get("scan_healthy") is True
+    elif raw:
+        tokens = raw.split()
+        state = tokens[0].upper()
+        fields = {
+            key: field
+            for token in tokens[1:]
+            for key, separator, field in (token.partition("="),)
+            if separator
+        }
+        scan_healthy = fields.get("scan_healthy", "").lower() == "true"
+    if state not in {"CLEAR", "SLOW"}:
+        state = "BLOCKED"
+    return state, scan_healthy
+
+
+def live_motion_evidence_is_fresh(
+    *,
+    now_s: float,
+    collision_received_at_s: Optional[float],
+    scan_healthy: bool,
+    max_age_s: float = COLLISION_EVIDENCE_MAX_AGE_S,
+) -> bool:
+    """Require a recent healthy collision-supervisor receipt for motion."""
+
+    if collision_received_at_s is None or scan_healthy is not True:
+        return False
+    try:
+        now = float(now_s)
+        received = float(collision_received_at_s)
+        maximum = float(max_age_s)
+    except (TypeError, ValueError):
+        return False
+    age_s = now - received
+    return (
+        math.isfinite(now)
+        and math.isfinite(received)
+        and math.isfinite(maximum)
+        and maximum == COLLISION_EVIDENCE_MAX_AGE_S
+        and 0.0 <= age_s <= maximum
+    )
+
+
+def live_source_is_fresh(
+    *,
+    now_s: float,
+    received_at_s: Optional[float],
+    source_timestamp_s: Optional[float],
+    max_age_s: float,
+) -> bool:
+    """Require both source and local receipt ages to remain in bounds."""
+
+    if received_at_s is None or source_timestamp_s is None:
+        return False
+    try:
+        now = float(now_s)
+        received = float(received_at_s)
+        source = float(source_timestamp_s)
+        maximum = float(max_age_s)
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(now)
+        and math.isfinite(received)
+        and math.isfinite(source)
+        and math.isfinite(maximum)
+        and maximum > 0.0
+        and 0.0 <= now - received <= maximum
+        and 0.0 <= now - source <= maximum
+    )
+
+
+def bounded_camera_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain bounded perception evidence without thumbnails or raw pixels."""
+
+    raw_attachment = value.get("image_attachment", {})
+    image_attachment = (
+        {
+            key: raw_attachment[key]
+            for key in {
+                "schema",
+                "frame_id",
+                "path",
+                "mime_type",
+                "sha256",
+                "byte_count",
+            }
+            if key in raw_attachment
+        }
+        if isinstance(raw_attachment, Mapping)
+        else {}
+    )
+    allowed_detection_fields = {
+        "kind",
+        "label",
+        "confidence",
+        "status",
+        "track_id",
+        "bbox",
+        "position_method",
+        "calibration_id",
+        "map_revision",
+        "localization_evidence_ids",
+        "localization_reason",
+        "source_timestamps_ns",
+        "bearing",
+    }
+    detections = []
+    raw_detections = value.get("detections", ())
+    if isinstance(raw_detections, list):
+        for raw in raw_detections[:32]:
+            if isinstance(raw, Mapping):
+                detections.append(
+                    {
+                        key: raw[key]
+                        for key in allowed_detection_fields
+                        if key in raw
+                    }
+                )
+    candidate = {
+        "schema": str(value.get("schema", "")),
+        "frame_id": str(value.get("frame_id", "")),
+        "stamp_s": value.get("stamp_s"),
+        "width": value.get("width"),
+        "height": value.get("height"),
+        "calibrated": value.get("calibrated") is True,
+        "uncertain_track_id": str(
+            value.get("uncertain_track_id", "")
+        ),
+        "detections": detections,
+        "image_attachment": image_attachment,
+    }
+    try:
+        return json.loads(
+            json.dumps(
+                candidate,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+    except (TypeError, ValueError):
+        return {}
+
+
+def camera_observation_evidence(
+    value: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Project camera detections into stable, geometry-free evidence."""
+
+    result = []
+    detections = value.get("detections", ())
+    if not isinstance(detections, list):
+        return ()
+    for raw in detections[:32]:
+        if not isinstance(raw, Mapping):
+            continue
+        label = str(raw.get("label", "")).strip()
+        status = str(raw.get("status", "")).strip()
+        position_method = str(
+            raw.get("position_method", "")
+        ).strip()
+        raw_ids = raw.get("localization_evidence_ids", ())
+        if (
+            not label
+            or not status
+            or position_method
+            not in {"bearing_only", "lidar_range", "floor_projection"}
+            or not isinstance(raw_ids, list)
+        ):
+            continue
+        evidence_ids = tuple(
+            dict.fromkeys(str(item).strip() for item in raw_ids)
+        )
+        try:
+            confidence = float(raw.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if (
+            not evidence_ids
+            or len(evidence_ids) > 8
+            or any(not item for item in evidence_ids)
+            or not math.isfinite(confidence)
+            or not 0.0 <= confidence <= 1.0
+        ):
+            continue
+        result.append(
+            {
+                "label": label,
+                "confidence": confidence,
+                "status": status,
+                "position_method": position_method,
+                "evidence_ids": list(evidence_ids),
+            }
+        )
+    return tuple(result[:16])
+
+
+def requested_observation_supports_finish(
+    observations: Any,
+    requested_object_classes: Any,
+) -> bool:
+    """Require accepted, high-confidence evidence for a requested class."""
+
+    if not isinstance(observations, (tuple, list)) or not isinstance(
+        requested_object_classes,
+        (tuple, list),
+    ):
+        return False
+    requested = {
+        str(item).strip().lower()
+        for item in requested_object_classes
+        if str(item).strip()
+    }
+    for observation in observations:
+        if not isinstance(observation, Mapping):
+            continue
+        try:
+            confidence = float(observation.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if (
+            str(observation.get("label", "")).strip().lower()
+            in requested
+            and str(observation.get("status", "")).strip().lower()
+            == "accepted"
+            and math.isfinite(confidence)
+            and confidence >= 0.70
+        ):
+            return True
+    return False
+
+
+def nav2_path_evidence(
+    message: Any,
+    *,
+    source_sha: str,
+    mission_id: str,
+    dispatch_digest: str,
+    goal_batch_digest: str,
+    recorded_at_s: Optional[float] = None,
+    maximum_poses: int = 512,
+) -> dict[str, Any]:
+    """Capture a bounded server-planned map path for durable evidence."""
+
+    if maximum_poses < 2:
+        raise MissionValidationError(
+            "Nav2 path evidence requires at least two pose slots"
+        )
+    header = getattr(message, "header", None)
+    frame_id = str(getattr(header, "frame_id", "")).strip()
+    raw_poses = tuple(getattr(message, "poses", ()))
+    if frame_id != "map" or not raw_poses:
+        raise MissionValidationError(
+            "Nav2 path evidence requires a nonempty map-frame path"
+        )
+    if len(raw_poses) <= maximum_poses:
+        indices = tuple(range(len(raw_poses)))
+    else:
+        indices = tuple(
+            sorted(
+                {
+                    round(
+                        index
+                        * (len(raw_poses) - 1)
+                        / (maximum_poses - 1)
+                    )
+                    for index in range(maximum_poses)
+                }
+            )
+        )
+    poses = []
+    for index in indices:
+        stamped = raw_poses[index]
+        pose_frame = str(
+            getattr(getattr(stamped, "header", None), "frame_id", "")
+            or frame_id
+        ).strip()
+        pose = getattr(stamped, "pose", None)
+        position = getattr(pose, "position", None)
+        orientation = getattr(pose, "orientation", None)
+        try:
+            x_m = float(position.x)
+            y_m = float(position.y)
+            yaw_rad = float(_yaw(orientation))
+        except (AttributeError, TypeError, ValueError):
+            raise MissionValidationError(
+                "Nav2 path evidence contains an invalid pose"
+            ) from None
+        if (
+            pose_frame != "map"
+            or not all(
+                math.isfinite(item)
+                for item in (x_m, y_m, yaw_rad)
+            )
+        ):
+            raise MissionValidationError(
+                "Nav2 path evidence contains non-map or nonfinite geometry"
+            )
+        poses.append(
+            {
+                "source_index": index,
+                "x_m": x_m,
+                "y_m": y_m,
+                "yaw_rad": yaw_rad,
+            }
+        )
+    stamp = getattr(header, "stamp", None)
+    try:
+        source_stamp_s = (
+            float(stamp.sec)
+            + float(stamp.nanosec) / 1_000_000_000.0
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise MissionValidationError(
+            "Nav2 path evidence requires a valid source stamp"
+        ) from None
+    if not math.isfinite(source_stamp_s) or source_stamp_s <= 0.0:
+        raise MissionValidationError(
+            "Nav2 path evidence requires a valid source stamp"
+        )
+    content = {
+        "schema": "sphero_rvr.hierarchical_nav2_path_evidence.v1",
+        "source_sha": str(source_sha).strip(),
+        "mission_id": str(mission_id).strip(),
+        "dispatch_digest": str(dispatch_digest).strip(),
+        "goal_batch_digest": str(goal_batch_digest).strip(),
+        "frame_id": frame_id,
+        "source_stamp_s": source_stamp_s,
+        "original_pose_count": len(raw_poses),
+        "sampled_pose_count": len(poses),
+        "poses": poses,
+    }
+    if (
+        len(content["source_sha"]) != 40
+        or len(content["dispatch_digest"]) != 64
+        or len(content["goal_batch_digest"]) != 64
+        or not content["mission_id"]
+    ):
+        raise MissionValidationError(
+            "Nav2 path evidence binding is invalid"
+        )
+    content_digest = hashlib.sha256(
+        json.dumps(
+            content,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    payload = {
+        **content,
+        "path_content_digest": content_digest,
+        "recorded_at_s": float(
+            time.time() if recorded_at_s is None else recorded_at_s
+        ),
+    }
+    payload["path_digest"] = hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def goal_dispatch_queue_key(dispatch: Mapping[str, Any]) -> str:
+    """Identify semantic queue changes without map-refresh churn."""
+
+    raw_goals = dispatch.get("goals")
+    if not isinstance(raw_goals, list) or not raw_goals:
+        raise MissionValidationError("goal dispatch queue is unavailable")
+    goals = []
+    for raw in raw_goals:
+        if not isinstance(raw, Mapping):
+            raise MissionValidationError("goal dispatch queue is invalid")
+        decision = raw.get("decision")
+        captured = raw.get("captured_snapshot")
+        if not isinstance(decision, Mapping) or not isinstance(
+            captured, Mapping
+        ):
+            raise MissionValidationError("goal dispatch queue is invalid")
+        goals.append(
+            {
+                "decision": dict(decision),
+                "captured_snapshot_id": str(
+                    captured.get("snapshot_id", "")
+                ).strip(),
+            }
+        )
+    stable = {
+        "mission_id": str(dispatch.get("mission_id", "")).strip(),
+        "source_sha": str(dispatch.get("source_sha", "")).strip(),
+        "approval_digest": str(
+            dispatch.get("approval_digest", "")
+        ).strip(),
+        "controller_session": int(dispatch.get("controller_session", 0)),
+        "goals": goals,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            stable,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def main(args=None):
     import rclpy
     from nav_msgs.msg import OccupancyGrid as RosOccupancyGrid
-    from rclpy.executors import ExternalShutdownException
+    from nav_msgs.msg import Path as RosPath
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from std_msgs.msg import String
@@ -95,6 +759,7 @@ def main(args=None):
                 "deployed_sha": "",
                 "reviewed_sha": "",
                 "proposal_file": "",
+                "graph_audit_file": "",
                 "journal_path": (
                     "~/.local/state/sphero_rvr/"
                     "hierarchical-physical-evidence.sqlite3"
@@ -102,16 +767,17 @@ def main(args=None):
                 "map_topic": "/map",
                 "localization_topic": "/mission_api/v2/localization/status",
                 "semantic_map_topic": "/mission_api/v2/map/status",
+                "camera_topic": "/mission_api/v2/camera/status",
+                "nav2_path_topic": "/plan",
                 "collision_topic": "/collision_stop/state",
                 "authority_topic": AUTHORITY_TOPIC,
                 "adapter_status_topic": "/mission_api/v2/hierarchical/status",
-                "controller_status_topic": (
-                    "/mission_api/v2/hierarchical/controller_status"
-                ),
+                "controller_status_topic": CONTROLLER_STATUS_TOPIC,
                 "goal_dispatch_topic": GOAL_DISPATCH_TOPIC,
                 "planning_model": "gpt-5.6-luna",
                 "planning_reasoning_effort": "low",
-                "provider_p95_s": 12.691,
+                "provider_timeout_s": 20.0,
+                "provider_p95_s": 14.34809786885,
                 "prefetch_margin_s": 1.0,
             }.items():
                 self.declare_parameter(name, default)
@@ -141,9 +807,13 @@ def main(args=None):
                 != AUTHORITY_TOPIC
                 or str(self.get_parameter("goal_dispatch_topic").value)
                 != GOAL_DISPATCH_TOPIC
+                or str(
+                    self.get_parameter("controller_status_topic").value
+                )
+                != CONTROLLER_STATUS_TOPIC
             ):
                 raise ValueError(
-                    "hierarchical authority and dispatch topics are fixed"
+                    "hierarchical authority, dispatch, and status topics are fixed"
                 )
             proposal_file = Path(
                 str(self.get_parameter("proposal_file").value)
@@ -156,6 +826,17 @@ def main(args=None):
                 proposal_file.read_text(encoding="utf-8"),
                 "hierarchical proposal",
             )
+            graph_audit_file = str(
+                self.get_parameter("graph_audit_file").value
+            ).strip()
+            if not graph_audit_file:
+                raise ValueError(
+                    "hierarchical mission controller requires an active graph audit path"
+                )
+            self._graph_audit_file = Path(
+                graph_audit_file
+            ).expanduser()
+            self._active_graph_evidence: Optional[dict[str, Any]] = None
             self._journal = HierarchicalBindingJournal(
                 str(self.get_parameter("journal_path").value)
             )
@@ -164,6 +845,9 @@ def main(args=None):
                 reasoning_effort=str(
                     self.get_parameter("planning_reasoning_effort").value
                 ),
+                timeout_s=float(
+                    self.get_parameter("provider_timeout_s").value
+                ),
             )
             self._controller: Optional[AsyncSemanticGoalController] = None
             self._initial_pool = ThreadPoolExecutor(
@@ -171,31 +855,60 @@ def main(args=None):
             )
             self._initial_future: Optional[Future[Mapping[str, Any]]] = None
             self._initial_snapshot: Optional[dict[str, Any]] = None
+            self._initial_provider_started_at_s: Optional[float] = None
             self._authority: Optional[dict[str, Any]] = None
             self._authority_received_at_s: Optional[float] = None
             self._proposal: Optional[dict[str, Any]] = None
             self._grid: Optional[OccupancyGrid] = None
+            self._map_received_at_s: Optional[float] = None
+            self._map_source_timestamp_s: Optional[float] = None
             self._localization: Optional[dict[str, Any]] = None
             self._semantic_map: dict[str, Any] = {}
+            self._camera_received_at_s: Optional[float] = None
+            self._camera_source_timestamp_s: Optional[float] = None
+            self._camera_valid = False
+            self._camera_evidence: dict[str, Any] = {}
+            self._camera_observation_history: dict[
+                tuple[str, str, str], dict[str, Any]
+            ] = {}
             self._origin: Optional[tuple[float, float]] = None
             self._collision_state = "BLOCKED"
+            self._collision_scan_healthy = False
+            self._collision_received_at_s: Optional[float] = None
             self._adapter_status: dict[str, Any] = {}
             self._event_generation = 0
             self._known_stable_tracks: set[str] = set()
             self._replan_pending = False
+            self._consecutive_semantic_rejections = 0
             self._controller_session = 1
             self._last_dispatch_digest = ""
+            self._last_dispatch_queue_key = ""
+            self._last_resolved_batch_digest = ""
+            self._last_nav2_path_content_digest = ""
+            self._dispatch_count = 0
+            self._processed_nav2_abort_batches: set[str] = set()
+            self._rejected_frontier_signatures: set[str] = set()
             self._terminal = False
+            # Map hashing and frontier extraction are intentionally
+            # server-owned and can occupy the main callback group long enough
+            # to delay authority receipt on a loaded Pi. Keep only
+            # heartbeat receipt in an independent callback group; the command
+            # bridge still enforces the bounded authority age independently.
+            self._authority_callbacks = MutuallyExclusiveCallbackGroup()
             self._status_pub = self.create_publisher(
                 String,
-                str(self.get_parameter("controller_status_topic").value),
+                CONTROLLER_STATUS_TOPIC,
                 10,
             )
             self._dispatch_pub = self.create_publisher(
                 String, GOAL_DISPATCH_TOPIC, 10
             )
             self.create_subscription(
-                String, AUTHORITY_TOPIC, self._on_authority, 10
+                String,
+                AUTHORITY_TOPIC,
+                self._on_authority,
+                10,
+                callback_group=self._authority_callbacks,
             )
             self.create_subscription(
                 RosOccupancyGrid,
@@ -213,6 +926,18 @@ def main(args=None):
                 String,
                 str(self.get_parameter("semantic_map_topic").value),
                 self._on_semantic_map,
+                10,
+            )
+            self.create_subscription(
+                String,
+                str(self.get_parameter("camera_topic").value),
+                self._on_camera,
+                10,
+            )
+            self.create_subscription(
+                RosPath,
+                str(self.get_parameter("nav2_path_topic").value),
+                self._on_nav2_path,
                 10,
             )
             self.create_subscription(
@@ -255,6 +980,8 @@ def main(args=None):
             resolution = float(message.info.resolution)
             if width <= 0 or height <= 0 or resolution <= 0.0:
                 self._grid = None
+                self._map_received_at_s = None
+                self._map_source_timestamp_s = None
                 return
             cells = tuple(
                 0 if int(value) == 0 else 100 if int(value) >= 50 else -1
@@ -284,6 +1011,10 @@ def main(args=None):
                 revision=revision,
                 cells=cells,
                 source="slam_toolbox:/map",
+            )
+            self._map_received_at_s = time.time()
+            self._map_source_timestamp_s = _stamp_s(
+                message.header.stamp
             )
 
         def _on_localization(self, message: Any) -> None:
@@ -325,15 +1056,103 @@ def main(args=None):
             except MissionValidationError:
                 self._semantic_map = {}
 
+        def _on_camera(self, message: Any) -> None:
+            try:
+                raw = _json_object(
+                    getattr(message, "data", ""), "camera"
+                )
+                camera = raw.get("camera", raw)
+                if (
+                    not isinstance(camera, Mapping)
+                    or camera.get("schema")
+                    != "sphero_rvr.live_camera_perception.v1"
+                    or camera.get("calibrated") is not True
+                    or not str(camera.get("frame_id", "")).strip()
+                ):
+                    raise MissionValidationError(
+                        "camera evidence is invalid"
+                    )
+                source_timestamp_s = float(camera["stamp_s"])
+                if (
+                    not math.isfinite(source_timestamp_s)
+                    or source_timestamp_s <= 0.0
+                ):
+                    raise MissionValidationError(
+                        "camera source timestamp is invalid"
+                    )
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                MissionValidationError,
+            ):
+                self._camera_valid = False
+                self._camera_evidence = {}
+                self._camera_received_at_s = None
+                self._camera_source_timestamp_s = None
+                return
+            self._camera_valid = True
+            self._camera_evidence = bounded_camera_evidence(camera)
+            for observation in camera_observation_evidence(
+                self._camera_evidence
+            ):
+                key = (
+                    str(observation["label"]),
+                    str(observation["status"]),
+                    str(observation["position_method"]),
+                )
+                self._camera_observation_history.setdefault(
+                    key,
+                    observation,
+                )
+            self._camera_received_at_s = time.time()
+            self._camera_source_timestamp_s = source_timestamp_s
+
+        def _on_nav2_path(self, message: Any) -> None:
+            if (
+                self._authority is None
+                or self._active_graph_evidence is None
+                or not self._last_dispatch_digest
+                or not self._last_resolved_batch_digest
+                or self._terminal
+            ):
+                return
+            try:
+                evidence = nav2_path_evidence(
+                    message,
+                    source_sha=self._source_sha,
+                    mission_id=str(
+                        self._authority["mission_id"]
+                    ),
+                    dispatch_digest=self._last_dispatch_digest,
+                    goal_batch_digest=self._last_resolved_batch_digest,
+                )
+            except MissionValidationError:
+                return
+            content_digest = str(evidence["path_content_digest"])
+            if content_digest == self._last_nav2_path_content_digest:
+                return
+            self._last_nav2_path_content_digest = content_digest
+            self._journal.append(
+                str(self._authority["mission_id"]),
+                "nav2_path",
+                evidence,
+                recorded_at_s=float(evidence["recorded_at_s"]),
+            )
+
         def _on_collision(self, message: Any) -> None:
             raw = str(getattr(message, "data", "")).strip()
-            try:
-                payload = _json_object(raw, "collision")
-                state = str(payload.get("state", "BLOCKED")).upper()
-            except MissionValidationError:
-                state = raw.split(maxsplit=1)[0].upper() if raw else "BLOCKED"
-            self._collision_state = (
-                state if state in {"CLEAR", "SLOW"} else "BLOCKED"
+            (
+                self._collision_state,
+                self._collision_scan_healthy,
+            ) = parse_collision_evidence(raw)
+            self._collision_received_at_s = time.time()
+
+        def _motion_evidence_fresh(self, now_s: float) -> bool:
+            return live_motion_evidence_is_fresh(
+                now_s=now_s,
+                collision_received_at_s=self._collision_received_at_s,
+                scan_healthy=self._collision_scan_healthy,
             )
 
         def _on_adapter_status(self, message: Any) -> None:
@@ -360,6 +1179,25 @@ def main(args=None):
                 max_age_s=AUTHORITY_HEARTBEAT_MAX_AGE_S,
             )
 
+        def _active_graph_ready(self) -> tuple[bool, str]:
+            if self._active_graph_evidence is not None:
+                return True, "active_graph_verified"
+            if not self._graph_audit_file.is_file():
+                return False, "awaiting_active_graph_audit"
+            try:
+                raw = _json_object(
+                    self._graph_audit_file.read_text(encoding="utf-8"),
+                    "active graph audit",
+                )
+                self._active_graph_evidence = (
+                    validate_active_graph_evidence(
+                        raw, source_sha=self._source_sha
+                    )
+                )
+            except (OSError, MissionValidationError):
+                return False, "active_graph_audit_invalid"
+            return True, "active_graph_verified"
+
         def _tracks(self, grid: OccupancyGrid) -> tuple[SemanticTrack, ...]:
             result = []
             for raw in self._semantic_map.get("tracks", ()):
@@ -368,23 +1206,28 @@ def main(args=None):
                 try:
                     track = SemanticTrack(
                         track_id=str(raw["track_id"]),
-                        signature=hashlib.sha256(
-                            json.dumps(
-                                {
-                                    "track_id": raw["track_id"],
-                                    "evidence_ids": raw.get("evidence_ids", []),
-                                },
-                                sort_keys=True,
-                            ).encode("utf-8")
-                        ).hexdigest(),
+                        signature=live_semantic_track_signature(raw),
                         class_name=str(raw.get("label", raw.get("kind", "object"))),
                         x_m=float(raw["x_m"]),
                         y_m=float(raw["y_m"]),
-                        position_method="floor_projection",
-                        position_sigma_m=float(raw.get("uncertainty_m", 0.05)),
+                        position_method=str(
+                            raw["position_method"]
+                        ),
+                        position_sigma_m=float(
+                            raw["uncertainty_m"]
+                        ),
                         last_seen_s=float(raw["last_seen_s"]),
                         evidence_ids=tuple(
-                            str(item) for item in raw.get("evidence_ids", ())
+                            dict.fromkeys(
+                                str(item)
+                                for item in (
+                                    *raw.get("evidence_ids", ()),
+                                    *raw.get(
+                                        "localization_evidence_ids",
+                                        (),
+                                    ),
+                                )
+                            )
                         ),
                         stable_observations=int(
                             raw.get("observation_count", 1)
@@ -401,15 +1244,43 @@ def main(args=None):
                 raise MissionValidationError(
                     "live map, localization, and proposal are required"
                 )
-            age = now_s - float(self._localization["timestamp_s"])
-            if age < 0.0 or age > 0.300:
+            if not live_source_is_fresh(
+                now_s=now_s,
+                received_at_s=self._map_received_at_s,
+                source_timestamp_s=self._map_source_timestamp_s,
+                max_age_s=MAP_EVIDENCE_MAX_AGE_S,
+            ):
                 raise MissionValidationError(
-                    "live localization exceeds the fixed 0.300 s gate"
+                    "live map exceeds the fixed 3.000 s gate"
                 )
-            frontiers = detect_frontiers(
-                self._grid,
-                robot_x_m=float(self._localization["x_m"]),
-                robot_y_m=float(self._localization["y_m"]),
+            if not self._camera_valid or not live_source_is_fresh(
+                now_s=now_s,
+                received_at_s=self._camera_received_at_s,
+                source_timestamp_s=self._camera_source_timestamp_s,
+                max_age_s=CAMERA_EVIDENCE_MAX_AGE_S,
+            ):
+                raise MissionValidationError(
+                    "live camera exceeds the fixed 3.000 s gate"
+                )
+            age = now_s - float(self._localization["timestamp_s"])
+            if age < 0.0 or age > LOCALIZATION_MAX_AGE_S:
+                raise MissionValidationError(
+                    "live localization exceeds the fixed 0.500 s gate"
+                )
+            frontiers = tuple(
+                frontier
+                for frontier in detect_frontiers(
+                    self._grid,
+                    robot_x_m=float(self._localization["x_m"]),
+                    robot_y_m=float(self._localization["y_m"]),
+                    config=FrontierDetectionConfig(
+                        minimum_clearance_m=(
+                            PHYSICAL_FRONTIER_MIN_CLEARANCE_M
+                        )
+                    ),
+                )
+                if frontier.signature
+                not in self._rejected_frontier_signatures
             )
             tracks = self._tracks(self._grid)
             if self._origin is None:
@@ -430,6 +1301,16 @@ def main(args=None):
                     )
                 except MissionValidationError:
                     continue
+            motion_evidence_fresh = self._motion_evidence_fresh(now_s)
+            observation_evidence = tuple(
+                self._camera_observation_history.values()
+            )[:16]
+            requested_evidence_observed = (
+                requested_observation_supports_finish(
+                    observation_evidence,
+                    self._proposal["requested_object_classes"],
+                )
+            )
             return build_semantic_world_snapshot(
                 mission_id=str(self._proposal["mission_id"]),
                 objective=str(self._proposal["objective"]),
@@ -455,9 +1336,37 @@ def main(args=None):
                 next_best_views=tuple(next_best_views),
                 origin_x_m=self._origin[0],
                 origin_y_m=self._origin[1],
-                collision_state=self._collision_state,
+                coverage_fraction=(
+                    sum(
+                        int(value) >= 0
+                        for value in self._grid.cells
+                    )
+                    / max(1, len(self._grid.cells))
+                ),
+                observation_evidence=observation_evidence,
+                evaluation={
+                    "motion_goal_dispatches": self._dispatch_count,
+                    "nav2_failed_targets": len(
+                        self._processed_nav2_abort_batches
+                    ),
+                    "camera_observations": len(
+                        self._camera_observation_history
+                    ),
+                    "requested_evidence_observed": (
+                        requested_evidence_observed
+                    ),
+                    "recommend_finish": (
+                        self._dispatch_count >= 1
+                        and bool(observation_evidence)
+                    ),
+                },
+                collision_state=(
+                    self._collision_state
+                    if motion_evidence_fresh
+                    else "BLOCKED"
+                ),
                 mission_lease_valid=True,
-                motion_evidence_fresh=True,
+                motion_evidence_fresh=motion_evidence_fresh,
             )
 
         def _tick(self) -> None:
@@ -466,7 +1375,23 @@ def main(args=None):
             now_s = time.time()
             authority_valid, reason = self._authority_valid(now_s)
             if not authority_valid:
-                if self._controller is not None or self._initial_future is not None:
+                if (
+                    transient_authority_hold(reason)
+                    and (
+                        self._controller is not None
+                        or self._initial_future is not None
+                    )
+                ):
+                    self._publish_status(
+                        planning_hold_controller_state(
+                            self._adapter_status
+                        ),
+                        "authority_heartbeat_hold",
+                    )
+                elif (
+                    self._controller is not None
+                    or self._initial_future is not None
+                ):
                     self._terminal = True
                     self._provider.cancel()
                     self._publish_status("recovery_required", reason)
@@ -474,6 +1399,16 @@ def main(args=None):
                     self._publish_status("locked", reason)
                 return
             assert self._authority is not None
+            graph_ready, graph_reason = self._active_graph_ready()
+            if not graph_ready:
+                if graph_reason == "active_graph_audit_invalid":
+                    self._terminal = True
+                    self._publish_status(
+                        "recovery_required", graph_reason
+                    )
+                else:
+                    self._publish_status("locked", graph_reason)
+                return
             if self._proposal is None:
                 try:
                     self._proposal = validate_physical_proposal(
@@ -487,74 +1422,297 @@ def main(args=None):
                         "recovery_required", "proposal_binding_invalid"
                     )
                     return
+            if self._controller is not None:
+                self._remember_nav2_aborted_target(now_s)
             try:
                 snapshot = self._snapshot(now_s)
             except MissionValidationError as exc:
-                self._publish_status("wait_planning", str(exc))
+                hold_state = planning_hold_controller_state(
+                    self._adapter_status
+                )
+                self._publish_status(
+                    hold_state,
+                    (
+                        f"planning_evidence_hold: {exc}"
+                        if hold_state == "navigating"
+                        else str(exc)
+                    ),
+                )
                 return
+            motion_evidence_fresh = bool(
+                snapshot.get("safety", {}).get(
+                    "motion_evidence_fresh", False
+                )
+            )
             if self._controller is None:
+                if not motion_evidence_fresh:
+                    self._publish_status(
+                        "wait_planning", "motion_evidence_stale"
+                    )
+                    return
                 self._known_stable_tracks.update(
                     self._stable_track_ids()
                 )
                 self._tick_initial(snapshot, now_s)
                 return
-            event_step = self._event_replan(snapshot, now_s)
-            if event_step is not None:
-                step, event_snapshot = event_step
-                for event in step.events:
-                    self._journal.append(
-                        str(self._authority["mission_id"]),
-                        "controller_event",
-                        dict(event),
-                        recorded_at_s=now_s,
-                    )
-                del event_snapshot
+            recovery_reason = adapter_recovery_reason(
+                self._adapter_status
+            )
+            if recovery_reason:
+                self._terminal = True
+                self._provider.cancel()
                 self._publish_status(
-                    "wait_planning", "event_triggered_replan"
+                    "recovery_required", recovery_reason
                 )
                 return
             active_goals = self._controller.resolved_motion_goals()
             fallback_remaining = (
-                0.0 if not active_goals else active_goals[0][0].route_length_m
+                0.0
+                if not active_goals
+                else active_goals[0][0].route_length_m
             )
-            raw_remaining = self._adapter_status.get(
-                "distance_remaining_m", fallback_remaining
+            remaining = adapter_remaining_distance(
+                self._adapter_status, fallback_remaining
             )
-            try:
-                remaining = float(raw_remaining)
-            except (TypeError, ValueError):
-                remaining = float(fallback_remaining)
-            if not math.isfinite(remaining):
-                remaining = float(fallback_remaining)
-            remaining = max(0.0, remaining)
+            if not motion_evidence_fresh:
+                if (
+                    planning_hold_controller_state(
+                        self._adapter_status
+                    )
+                    == "navigating"
+                ):
+                    # The independent collision supervisor already forces
+                    # motor zero while scan evidence is unhealthy. Keep the
+                    # accepted Nav2 action alive so it can continue when the
+                    # supervisor reports fresh evidence again.
+                    self._publish_status(
+                        "navigating", "motion_evidence_hold"
+                    )
+                    return
+                step = self._controller.tick(
+                    snapshot,
+                    now_s=now_s,
+                    remaining_distance_m=remaining,
+                    eta_s=remaining / 0.10,
+                    collision_state="BLOCKED",
+                    motion_evidence_fresh=False,
+                )
+                self._record_controller_events(
+                    step.events, now_s=now_s
+                )
+                self._publish_status(
+                    "wait_planning", "motion_evidence_stale"
+                )
+                return
+            safety = snapshot.get("safety", {})
+            collision_hold_state = collision_hold_controller_state(
+                self._adapter_status,
+                collision_state=self._collision_state,
+                stop=bool(safety.get("stop")),
+                estop=bool(safety.get("estop")),
+                cancelled=bool(safety.get("cancelled")),
+            )
+            if collision_hold_state:
+                # The downstream collision supervisor is already publishing
+                # zero. Preserve the semantic controller and any in-flight
+                # provider result so a transient obstacle is a safe pause,
+                # not a 10 Hz terminal-event storm. Nav2 remains responsible
+                # for progress timeout and ordinary route abort/replanning.
+                self._publish_status(
+                    collision_hold_state,
+                    "collision_supervisor_hold",
+                )
+                return
+            event_step = self._event_replan(snapshot, now_s)
+            if event_step is not None:
+                step, _event_snapshot = event_step
+                self._record_controller_events(
+                    step.events, now_s=now_s
+                )
+                for event in step.events:
+                    if str(event.get("kind", "")) == "prefetch_started":
+                        provider_snapshot = (
+                            self._controller.provider_snapshot_in_flight()
+                        )
+                        if (
+                            provider_snapshot is None
+                            or provider_snapshot.get("snapshot_id")
+                            != event.get("snapshot_id")
+                        ):
+                            self._terminal = True
+                            self._provider.cancel()
+                            self._publish_status(
+                                "recovery_required",
+                                "provider_snapshot_evidence_unavailable",
+                            )
+                            return
+                        self._record_world_snapshot(
+                            provider_snapshot,
+                            now_s=now_s,
+                            reason="event_replan_provider_call",
+                            provider_snapshot_id=str(
+                                event.get("snapshot_id", "")
+                            ),
+                        )
+                cancel_active_goal = (
+                    step.handoff.state == "wait_planning"
+                )
+                self._publish_status(
+                    (
+                        "wait_planning"
+                        if cancel_active_goal
+                        else planning_hold_controller_state(
+                            self._adapter_status
+                        )
+                    ),
+                    "event_replan_provider_in_flight",
+                    cancel_active_goal=cancel_active_goal,
+                )
+                return
             step = self._controller.tick(
                 snapshot,
                 now_s=now_s,
                 remaining_distance_m=remaining,
                 eta_s=remaining / 0.10,
                 collision_state=self._collision_state,
-                motion_evidence_fresh=True,
+                motion_evidence_fresh=motion_evidence_fresh,
             )
+            self._record_controller_events(step.events, now_s=now_s)
             for event in step.events:
-                self._journal.append(
-                    str(self._authority["mission_id"]),
-                    "controller_event",
-                    dict(event),
-                    recorded_at_s=now_s,
+                if str(event.get("kind", "")) == "prefetch_started":
+                    provider_snapshot = (
+                        self._controller.provider_snapshot_in_flight()
+                    )
+                    if (
+                        provider_snapshot is None
+                        or provider_snapshot.get("snapshot_id")
+                        != event.get("snapshot_id")
+                    ):
+                        self._terminal = True
+                        self._provider.cancel()
+                        self._publish_status(
+                            "recovery_required",
+                            "provider_snapshot_evidence_unavailable",
+                        )
+                        return
+                    self._record_world_snapshot(
+                        provider_snapshot,
+                        now_s=now_s,
+                        reason="prefetch_provider_call",
+                        provider_snapshot_id=str(
+                            event.get("snapshot_id", "")
+                        ),
+                    )
+            self._consecutive_semantic_rejections = (
+                updated_semantic_rejection_count(
+                    self._consecutive_semantic_rejections,
+                    step.events,
                 )
+            )
+            if semantic_rejection_rollover_due(
+                self._consecutive_semantic_rejections
+            ):
+                # A live SLAM frontier is expected to change while the rover
+                # is mapping and moving.  The stale model result has already
+                # been discarded fail-closed; do not also terminate a healthy
+                # accepted Nav2 route merely because three successive
+                # asynchronous responses lost their frontier binding.
+                self._record_controller_events(
+                    (
+                        {
+                            "at_s": float(now_s),
+                            "kind": "semantic_revalidation_retry",
+                            "consecutive_rejections": int(
+                                self._consecutive_semantic_rejections
+                            ),
+                            "active_route_preserved": (
+                                planning_hold_controller_state(
+                                    self._adapter_status
+                                )
+                                == "navigating"
+                            ),
+                            "terminal": False,
+                        },
+                    ),
+                    now_s=now_s,
+                )
+                self._consecutive_semantic_rejections = 0
             if any(
-                str(event.get("kind", "")) == "prefetch_revalidated"
+                str(event.get("kind", ""))
+                in {"prefetch_revalidated", "prefetch_redundant"}
                 for event in step.events
             ):
                 self._replan_pending = False
-            if self._controller.ready_non_motion_goal() is not None:
-                self._terminal = True
+            if self._replan_pending and step.provider_in_flight:
                 self._publish_status(
-                    "complete",
-                    self._controller.ready_non_motion_goal().decision.action,
+                    planning_hold_controller_state(
+                        self._adapter_status
+                    ),
+                    "event_replan_provider_in_flight",
+                )
+                return
+            ready_non_motion = self._controller.ready_non_motion_goal()
+            if ready_non_motion is not None:
+                state, reason, terminal = semantic_non_motion_status(
+                    ready_non_motion.decision.action
+                )
+                if terminal:
+                    self._terminal = True
+                self._publish_status(
+                    state,
+                    reason,
+                    cancel_active_goal=(state == "wait_planning"),
                 )
                 return
             self._publish_dispatch(snapshot, now_s, step.handoff.state)
+
+        def _remember_nav2_aborted_target(self, now_s: float) -> None:
+            """Exclude one exact Nav2-aborted frontier for this mission."""
+
+            assert self._controller is not None
+            batch_digest = str(
+                self._adapter_status.get("last_batch_digest", "")
+            ).strip()
+            if (
+                batch_digest in self._processed_nav2_abort_batches
+                or not nav2_abort_matches_dispatch(
+                    self._adapter_status,
+                    self._last_resolved_batch_digest,
+                )
+            ):
+                return
+            self._processed_nav2_abort_batches.add(batch_digest)
+            goals = self._controller.resolved_motion_goals()
+            if not goals:
+                return
+            failed_goal = goals[0][0]
+            if failed_goal.decision.action not in {
+                "go_to_frontier",
+                "search_region",
+            }:
+                return
+            self._rejected_frontier_signatures.add(
+                failed_goal.target_signature
+            )
+            assert self._authority is not None
+            self._journal.append(
+                str(self._authority["mission_id"]),
+                "nav2_failed_target",
+                {
+                    "schema": (
+                        "sphero_rvr.hierarchical_nav2_failed_target.v1"
+                    ),
+                    "source_sha": self._source_sha,
+                    "mission_id": str(self._authority["mission_id"]),
+                    "recorded_at_s": float(now_s),
+                    "batch_digest": batch_digest,
+                    "action": failed_goal.decision.action,
+                    "target_id": failed_goal.target_id,
+                    "target_signature": failed_goal.target_signature,
+                    "reason": "nav2_result_status_6",
+                },
+                recorded_at_s=now_s,
+            )
 
         def _stable_track_ids(self) -> set[str]:
             return {
@@ -582,19 +1740,23 @@ def main(args=None):
             else:
                 active = self._controller.resolved_motion_goals()
                 if active:
-                    active_goal = active[0][0]
-                    if active_goal.decision.action in {
-                        "go_to_frontier",
-                        "search_region",
-                    }:
-                        signatures = {
-                            str(item.get("signature", ""))
-                            for item in snapshot.get("frontiers", ())
-                            if isinstance(item, Mapping)
-                        }
-                        if active_goal.target_signature not in signatures:
-                            kind = SemanticEventKind.INVALID_TARGET
-                            target_id = active_goal.target_id
+                    active_goal, captured = active[0]
+                    invalidation = semantic_target_invalidation_reason(
+                        active_goal, captured, snapshot
+                    )
+                    if rolling_frontier_invalidation_preserves_route(
+                        invalidation, self._adapter_status
+                    ):
+                        # Frontier signatures describe the rolling exploration
+                        # boundary, not a physical hazard.  Once Nav2 accepted
+                        # server-owned geometry, let Nav2 and the collision
+                        # supervisor continue to own path and obstacle safety.
+                        # A changed frontier will naturally be discarded on
+                        # completion/abort or during successor revalidation.
+                        return None
+                    if invalidation:
+                        kind = SemanticEventKind.INVALID_TARGET
+                        target_id = active_goal.target_id
             if kind is None:
                 return None
             self._event_generation += 1
@@ -625,12 +1787,21 @@ def main(args=None):
             if self._initial_future is None:
                 captured = json.loads(json.dumps(dict(snapshot)))
                 self._initial_snapshot = captured
+                self._record_world_snapshot(
+                    captured,
+                    now_s=now_s,
+                    reason="initial_provider_call",
+                    provider_snapshot_id=str(
+                        captured.get("snapshot_id", "")
+                    ),
+                )
                 prompt = semantic_goal_prompt(
                     str(captured["objective"]), captured
                 )
                 self._initial_future = self._initial_pool.submit(
                     self._provider.choose, prompt, captured
                 )
+                self._initial_provider_started_at_s = now_s
                 self._publish_status(
                     "wait_planning", "initial_provider_in_flight"
                 )
@@ -640,10 +1811,37 @@ def main(args=None):
                     "wait_planning", "initial_provider_in_flight"
                 )
                 return
+            raw: Optional[Mapping[str, Any]] = None
             try:
                 raw = self._initial_future.result()
+                provider_elapsed_s = (
+                    None
+                    if self._initial_provider_started_at_s is None
+                    else max(
+                        0.0,
+                        now_s - self._initial_provider_started_at_s,
+                    )
+                )
                 captured = self._initial_snapshot
                 assert captured is not None
+                self._journal.append(
+                    str(self._authority["mission_id"]),
+                    "provider_call_completed",
+                    {
+                        "decision_generation": 1,
+                        "snapshot_id": str(
+                            captured.get("snapshot_id", "")
+                        ),
+                        "provider_elapsed_s": provider_elapsed_s,
+                        "provider_timeout_s": float(
+                            self.get_parameter(
+                                "provider_timeout_s"
+                            ).value
+                        ),
+                        "real_provider": True,
+                    },
+                    recorded_at_s=now_s,
+                )
                 controller = AsyncSemanticGoalController(
                     self._provider,
                     provider_p95_s=float(
@@ -655,9 +1853,59 @@ def main(args=None):
                 )
                 controller.start(raw, captured, now_s=now_s)
                 self._controller = controller
+                self._consecutive_semantic_rejections = 0
                 self._initial_future = None
                 self._initial_snapshot = None
+                self._initial_provider_started_at_s = None
                 self._publish_dispatch(snapshot, now_s, "initial_goal")
+            except MissionValidationError as exc:
+                captured = self._initial_snapshot
+                self._consecutive_semantic_rejections, retry = (
+                    initial_semantic_rejection_retry(
+                        self._consecutive_semantic_rejections
+                    )
+                )
+                assert self._authority is not None
+                self._journal.append(
+                    str(self._authority["mission_id"]),
+                    "provider_response_rejected",
+                    {
+                        "schema": (
+                            "sphero_rvr.semantic_provider_rejection.v1"
+                        ),
+                        "source_sha": self._source_sha,
+                        "mission_id": str(self._authority["mission_id"]),
+                        "snapshot_id": str(
+                            (captured or {}).get("snapshot_id", "")
+                        ),
+                        "decision_generation": 1,
+                        "consecutive_rejections": int(
+                            self._consecutive_semantic_rejections
+                        ),
+                        "retry": bool(retry),
+                        "reason": str(exc)[:500],
+                        "response": (
+                            json.loads(json.dumps(dict(raw)))
+                            if isinstance(raw, Mapping)
+                            else None
+                        ),
+                    },
+                    recorded_at_s=now_s,
+                )
+                self._initial_future = None
+                self._initial_snapshot = None
+                self._initial_provider_started_at_s = None
+                if retry:
+                    self._publish_status(
+                        "wait_planning",
+                        "initial_semantic_response_rejected_retry",
+                    )
+                    return
+                self._terminal = True
+                self._publish_status(
+                    "recovery_required",
+                    "initial_semantic_rejection_limit",
+                )
             except Exception as exc:
                 self._terminal = True
                 self._publish_status(
@@ -684,8 +1932,14 @@ def main(args=None):
             except MissionValidationError as exc:
                 self._publish_status("wait_planning", str(exc))
                 return
+            resolved_batch = resolve_goal_dispatch(
+                dispatch,
+                authority=self._authority,
+                now_s=now_s,
+            ).to_json_dict()
             digest = str(dispatch["dispatch_digest"])
-            if digest == self._last_dispatch_digest:
+            queue_key = goal_dispatch_queue_key(dispatch)
+            if queue_key == self._last_dispatch_queue_key:
                 return
             message = String()
             message.data = json.dumps(
@@ -694,21 +1948,98 @@ def main(args=None):
                 separators=(",", ":"),
                 allow_nan=False,
             )
-            self._dispatch_pub.publish(message)
             self._last_dispatch_digest = digest
+            self._last_dispatch_queue_key = queue_key
+            self._last_resolved_batch_digest = str(
+                resolved_batch["batch_digest"]
+            )
             self._journal.append(
                 str(self._authority["mission_id"]),
                 "goal_dispatch",
                 dispatch,
                 recorded_at_s=now_s,
             )
+            self._dispatch_count += 1
+            self._journal.append(
+                str(self._authority["mission_id"]),
+                "resolved_goal_batch",
+                resolved_batch,
+                recorded_at_s=now_s,
+            )
+            self._dispatch_pub.publish(message)
             self._publish_status("dispatching", reason)
 
-        def _publish_status(self, state: str, reason: str) -> None:
+        def _record_world_snapshot(
+            self,
+            snapshot: Mapping[str, Any],
+            *,
+            now_s: float,
+            reason: str,
+            provider_snapshot_id: str,
+        ) -> None:
+            assert self._authority is not None
+            payload = {
+                "schema": (
+                    "sphero_rvr.hierarchical_world_evidence.v1"
+                ),
+                "source_sha": self._source_sha,
+                "mission_id": str(
+                    self._authority["mission_id"]
+                ),
+                "recorded_at_s": float(now_s),
+                "reason": str(reason),
+                "provider_snapshot_id": str(provider_snapshot_id),
+                "snapshot": json.loads(
+                    json.dumps(
+                        dict(snapshot),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
+                "camera_evidence": json.loads(
+                    json.dumps(
+                        self._camera_evidence,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
+            }
+            self._journal.append(
+                str(self._authority["mission_id"]),
+                "world_snapshot",
+                payload,
+                recorded_at_s=now_s,
+            )
+
+        def _record_controller_events(
+            self, events: Any, *, now_s: float
+        ) -> None:
+            assert self._authority is not None
+            for event in events:
+                payload = dict(event)
+                if payload.get("provider_elapsed_s") is not None:
+                    payload["real_provider"] = True
+                self._journal.append(
+                    str(self._authority["mission_id"]),
+                    "controller_event",
+                    payload,
+                    recorded_at_s=now_s,
+                )
+
+        def _publish_status(
+            self,
+            state: str,
+            reason: str,
+            *,
+            cancel_active_goal: bool = False,
+        ) -> None:
             payload = {
                 "schema": "sphero_rvr.hierarchical_controller_status.v1",
                 "state": str(state),
                 "reason": str(reason),
+                "cancel_active_goal": bool(cancel_active_goal),
                 "source_sha": self._source_sha,
                 "mission_id": (
                     ""
@@ -719,6 +2050,18 @@ def main(args=None):
                 "provider_in_flight": (
                     self._initial_future is not None
                     and not self._initial_future.done()
+                ),
+                "provider_timeout_s": float(
+                    self.get_parameter("provider_timeout_s").value
+                ),
+                "provider_latency_p95_s": float(
+                    self.get_parameter("provider_p95_s").value
+                ),
+                "prefetch_margin_s": float(
+                    self.get_parameter("prefetch_margin_s").value
+                ),
+                "provider_latency_history": list(
+                    self._provider.latency_history()[-8:]
                 ),
                 "direct_twist_publisher": False,
                 "restart_resume_allowed": False,
@@ -735,16 +2078,19 @@ def main(args=None):
                 else:
                     self._provider.close()
             finally:
-                self._initial_pool.shutdown(wait=False, cancel_futures=True)
+                self._initial_pool.shutdown(wait=True, cancel_futures=True)
                 self._journal.close()
 
     rclpy.init(args=args)
     node = HierarchicalMissionNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.close()
         node.destroy_node()
         rclpy.try_shutdown()

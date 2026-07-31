@@ -29,6 +29,7 @@ def generate_launch_description():
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     camera_info_url = LaunchConfiguration("camera_info_url")
+    slam_params_file = LaunchConfiguration("slam_params_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     return LaunchDescription([
@@ -99,6 +100,14 @@ def generate_launch_description():
                 "rvr_pi_camera3_800x600.yaml"
             ),
         ),
+        DeclareLaunchArgument(
+            "slam_params_file",
+            default_value=str(slam_config),
+            description=(
+                "Installed slam_toolbox parameter file. Specialized reviewed "
+                "graphs may provide a stricter update cadence."
+            ),
+        ),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(rvr_launch)),
@@ -134,7 +143,7 @@ def generate_launch_description():
             executable="async_slam_toolbox_node",
             name="slam_toolbox",
             output="screen",
-            parameters=[str(slam_config), {"use_sim_time": use_sim_time}],
+            parameters=[slam_params_file, {"use_sim_time": use_sim_time}],
             condition=IfCondition(
                 PythonExpression(
                     [
@@ -155,7 +164,7 @@ def generate_launch_description():
                 "autostart": "true",
                 "use_lifecycle_manager": "false",
                 "use_sim_time": use_sim_time,
-                "slam_params_file": str(slam_config),
+                "slam_params_file": slam_params_file,
             }.items(),
             condition=IfCondition(
                 PythonExpression(

@@ -550,6 +550,11 @@ class HierarchicalBridgeConfig:
     command_lease_s: float = 0.25
     max_linear_mps: float = 0.10
     max_angular_rad_s: float = 0.4
+    clear_breakaway_linear_mps: float = 0.0
+    clear_breakaway_angular_rad_s: float = 0.0
+    clear_breakaway_angular_measured_rate_rad_s: float = 0.0
+    clear_breakaway_angular_pulse_s: float = 0.05
+    reverse_escape_linear_mps: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -561,6 +566,54 @@ class HierarchicalBridgeConfig:
             raise ValueError("hierarchical linear ceiling exceeds 0.10 m/s")
         if not 0.0 < self.max_angular_rad_s <= 0.4:
             raise ValueError("hierarchical angular ceiling exceeds 0.4 rad/s")
+        if (
+            not math.isfinite(self.clear_breakaway_linear_mps)
+            or not 0.0
+            <= self.clear_breakaway_linear_mps
+            <= self.max_linear_mps
+        ):
+            raise ValueError(
+                "hierarchical CLEAR breakaway speed must be between zero "
+                "and the linear ceiling"
+            )
+        if (
+            not math.isfinite(self.clear_breakaway_angular_rad_s)
+            or not 0.0
+            <= self.clear_breakaway_angular_rad_s
+            <= self.max_angular_rad_s
+        ):
+            raise ValueError(
+                "hierarchical CLEAR angular breakaway speed must be between "
+                "zero and the angular ceiling"
+            )
+        if (
+            not math.isfinite(
+                self.clear_breakaway_angular_measured_rate_rad_s
+            )
+            or self.clear_breakaway_angular_measured_rate_rad_s < 0.0
+        ):
+            raise ValueError(
+                "hierarchical measured angular breakaway rate cannot be "
+                "negative"
+            )
+        if (
+            not math.isfinite(self.clear_breakaway_angular_pulse_s)
+            or not 0.0 < self.clear_breakaway_angular_pulse_s <= 0.10
+        ):
+            raise ValueError(
+                "hierarchical angular breakaway pulse must be in "
+                "(0, 0.10] seconds"
+            )
+        if (
+            not math.isfinite(self.reverse_escape_linear_mps)
+            or not 0.0
+            <= self.reverse_escape_linear_mps
+            <= self.max_linear_mps
+        ):
+            raise ValueError(
+                "hierarchical reverse escape speed must be between zero "
+                "and the linear ceiling"
+            )
 
 
 class HierarchicalCommandBridge:
@@ -573,6 +626,72 @@ class HierarchicalCommandBridge:
         self._linear_mps = 0.0
         self._angular_rad_s = 0.0
         self._received_at_s: Optional[float] = None
+        self._turn_modulation_sign = 0
+        self._turn_modulation_budget_rad = 0.0
+        self._turn_modulation_at_s: Optional[float] = None
+
+    def _reset_turn_modulation(self) -> None:
+        self._turn_modulation_sign = 0
+        self._turn_modulation_budget_rad = 0.0
+        self._turn_modulation_at_s = None
+
+    def _zero_command(self, reason: str) -> ReplayCommand:
+        self._reset_turn_modulation()
+        return ContinuousGoalFollowerReplay._zero_command(reason)
+
+    def _rate_modulated_breakaway_turn(
+        self,
+        *,
+        desired_angular_rad_s: float,
+        breakaway_angular_rad_s: float,
+        now_s: float,
+    ) -> Optional[float]:
+        """Pulse the measured breakaway command at Nav2's requested mean rate.
+
+        The installed skid-steer needs a high instantaneous duty to turn, but
+        attended traces measured roughly 3.2 rad/s of yaw while the ROS request
+        was 0.35 rad/s. Integrating requested yaw and emitting one bounded
+        control-period pulse filters rapid sign reversals and preserves the
+        requested average rate without lowering the torque below breakaway.
+        """
+
+        measured_rate = (
+            self.config.clear_breakaway_angular_measured_rate_rad_s
+        )
+        if measured_rate <= 0.0:
+            self._reset_turn_modulation()
+            return breakaway_angular_rad_s
+        sign = 1 if desired_angular_rad_s > 0.0 else -1
+        if (
+            self._turn_modulation_sign != sign
+            or self._turn_modulation_at_s is None
+            or now_s < self._turn_modulation_at_s
+        ):
+            self._turn_modulation_sign = sign
+            self._turn_modulation_budget_rad = 0.0
+            self._turn_modulation_at_s = now_s
+            return None
+        elapsed_s = min(
+            now_s - self._turn_modulation_at_s,
+            self.config.command_lease_s,
+        )
+        self._turn_modulation_at_s = now_s
+        pulse_yaw_rad = (
+            measured_rate
+            * self.config.clear_breakaway_angular_pulse_s
+        )
+        self._turn_modulation_budget_rad = min(
+            pulse_yaw_rad,
+            self._turn_modulation_budget_rad
+            + abs(desired_angular_rad_s) * elapsed_s,
+        )
+        if self._turn_modulation_budget_rad + 1.0e-12 < pulse_yaw_rad:
+            return None
+        self._turn_modulation_budget_rad -= pulse_yaw_rad
+        return math.copysign(
+            abs(breakaway_angular_rad_s),
+            desired_angular_rad_s,
+        )
 
     def accept(
         self, linear_mps: float, angular_rad_s: float, *, received_at_s: float
@@ -591,36 +710,33 @@ class HierarchicalCommandBridge:
         mission_lease_valid: bool,
         motion_evidence_fresh: bool,
         collision_state: str,
+        collision_reason: str = "",
         stop: bool = False,
         estop: bool = False,
         cancelled: bool = False,
     ) -> ReplayCommand:
         if not self.config.enabled:
-            return ContinuousGoalFollowerReplay._zero_command(
-                "hierarchical_mode_disabled"
-            )
+            return self._zero_command("hierarchical_mode_disabled")
         if estop:
-            return ContinuousGoalFollowerReplay._zero_command("estop")
+            return self._zero_command("estop")
         if stop:
-            return ContinuousGoalFollowerReplay._zero_command("operator_stop")
+            return self._zero_command("operator_stop")
         if cancelled:
-            return ContinuousGoalFollowerReplay._zero_command("cancelled")
+            return self._zero_command("cancelled")
         if not goal_active or not mission_lease_valid:
-            return ContinuousGoalFollowerReplay._zero_command("goal_lease_inactive")
+            return self._zero_command("goal_lease_inactive")
         if not motion_evidence_fresh:
-            return ContinuousGoalFollowerReplay._zero_command(
-                "motion_evidence_stale"
-            )
-        if str(collision_state).upper() not in {"CLEAR", "SLOW"}:
-            return ContinuousGoalFollowerReplay._zero_command("collision_veto")
+            return self._zero_command("motion_evidence_stale")
+        normalized_collision_state = str(collision_state).upper()
+        normalized_collision_reason = str(collision_reason).lower().strip()
+        if normalized_collision_state not in {"CLEAR", "SLOW", "STOPPED"}:
+            return self._zero_command("collision_veto")
         if (
             self._received_at_s is None
             or now_s < self._received_at_s
             or now_s - self._received_at_s > self.config.command_lease_s
         ):
-            return ContinuousGoalFollowerReplay._zero_command(
-                "nav2_command_stale"
-            )
+            return self._zero_command("nav2_command_stale")
         linear = max(
             -self.config.max_linear_mps,
             min(self.config.max_linear_mps, self._linear_mps),
@@ -629,10 +745,131 @@ class HierarchicalCommandBridge:
             -self.config.max_angular_rad_s,
             min(self.config.max_angular_rad_s, self._angular_rad_s),
         )
+        requested_angular = angular
         reason = "clear"
-        if str(collision_state).upper() == "SLOW" and linear > 0.0:
-            linear *= 0.5
-            reason = "supervisor_slowed"
+        if normalized_collision_state == "STOPPED":
+            if (
+                self.config.reverse_escape_linear_mps <= 0.0
+                or (linear == 0.0 and angular == 0.0)
+            ):
+                return self._zero_command("collision_veto")
+            self._reset_turn_modulation()
+            # The downstream supervisor permits this only when its private
+            # latch reason is front_stop and its live rear sector plus swept
+            # reverse trajectory are clear. Every other STOPPED latch still
+            # receives motor zero.
+            return ReplayCommand(
+                requested_linear_mps=self._linear_mps,
+                requested_angular_rad_s=self._angular_rad_s,
+                bridged_linear_mps=-self.config.reverse_escape_linear_mps,
+                bridged_angular_rad_s=0.0,
+                reason="stopped_reverse_escape_request",
+                zero_required=False,
+            )
+        near_pure_turn = (
+            abs(self._linear_mps) <= 0.01
+            and abs(self._angular_rad_s) > 0.0
+        )
+        if (
+            normalized_collision_state == "CLEAR"
+            and near_pure_turn
+            and abs(angular) < self.config.clear_breakaway_angular_rad_s
+        ):
+            linear = 0.0
+            angular = math.copysign(
+                self.config.clear_breakaway_angular_rad_s,
+                angular,
+            )
+            reason = "clear_angular_breakaway_floor"
+        elif (
+            normalized_collision_state == "CLEAR"
+            and not near_pure_turn
+            and 0.0 < abs(linear) < self.config.clear_breakaway_linear_mps
+        ):
+            linear = math.copysign(
+                self.config.clear_breakaway_linear_mps,
+                linear,
+            )
+            reason = "clear_breakaway_floor"
+        elif normalized_collision_state == "SLOW" and linear > 0.0:
+            if (
+                abs(angular) > 0.0
+                and self.config.clear_breakaway_angular_rad_s > 0.0
+            ):
+                # Do not crawl a mixed arc toward a close obstacle at a
+                # drivetrain-stalling speed. Remove its approach component
+                # and pivot in Nav2's requested direction. The independent
+                # downstream supervisor still evaluates the swept footprint
+                # and can scale or veto this request.
+                linear = 0.0
+                angular = math.copysign(
+                    max(
+                        abs(angular),
+                        self.config.clear_breakaway_angular_rad_s,
+                    ),
+                    angular,
+                )
+                reason = "slow_pivot_breakaway"
+            elif self.config.reverse_escape_linear_mps > 0.0:
+                # A straight approach cannot steer around the obstacle and a
+                # twice-scaled crawl cannot break this drivetrain free.
+                # Request the user's explicit "front obstacle -> back away"
+                # behavior. The downstream supervisor evaluates the actual
+                # reverse trajectory and keeps unconditional rear veto power.
+                linear = -self.config.reverse_escape_linear_mps
+                angular = 0.0
+                reason = "slow_reverse_escape"
+            else:
+                reason = "supervisor_slow_passthrough"
+        elif (
+            normalized_collision_state == "SLOW"
+            and self.config.reverse_escape_linear_mps > 0.0
+            and normalized_collision_reason
+            in {
+                "forward_trajectory_blocked",
+                "left_trajectory_blocked",
+                "right_trajectory_blocked",
+                "front_stop_reverse_escape",
+            }
+        ):
+            # A blocked turn cannot clear its own swept footprint. Request
+            # the same rear-checked escape as a blocked forward trajectory;
+            # the downstream supervisor remains the final arbiter.
+            linear = -self.config.reverse_escape_linear_mps
+            angular = 0.0
+            reason = "blocked_trajectory_reverse_escape"
+        if (
+            linear == 0.0
+            and angular != 0.0
+            and self.config.clear_breakaway_angular_rad_s > 0.0
+            and (
+                self.config.clear_breakaway_angular_measured_rate_rad_s
+                > 0.0
+            )
+            and abs(angular)
+            >= self.config.clear_breakaway_angular_rad_s
+        ):
+            modulated = self._rate_modulated_breakaway_turn(
+                desired_angular_rad_s=requested_angular,
+                breakaway_angular_rad_s=math.copysign(
+                    self.config.clear_breakaway_angular_rad_s,
+                    angular,
+                ),
+                now_s=now_s,
+            )
+            if modulated is None:
+                return ReplayCommand(
+                    requested_linear_mps=self._linear_mps,
+                    requested_angular_rad_s=self._angular_rad_s,
+                    bridged_linear_mps=0.0,
+                    bridged_angular_rad_s=0.0,
+                    reason="angular_breakaway_rate_hold",
+                    zero_required=True,
+                )
+            angular = modulated
+            reason = "angular_breakaway_rate_pulse"
+        else:
+            self._reset_turn_modulation()
         return ReplayCommand(
             requested_linear_mps=self._linear_mps,
             requested_angular_rad_s=self._angular_rad_s,
@@ -805,15 +1042,31 @@ class ContinuousGoalFollowerReplay:
             safety_reason = "operator_stop"
         elif cancelled:
             safety_reason = "cancelled"
-        elif not motion_evidence_fresh:
-            safety_reason = "motion_evidence_stale"
-        elif str(collision_state).upper() not in {"CLEAR", "SLOW"}:
-            safety_reason = "collision_veto"
         if safety_reason:
             self.state = "terminal_safety"
             self.controller_active = False
             event = self._event(safety_reason, self.active, now_s)
             return self._step(self._zero_command(safety_reason), (event,))
+        if not motion_evidence_fresh:
+            # Fresh localization is required for motion, but a transient
+            # freshness miss is a recoverable planning hold rather than an
+            # operator/supervisor terminal.  The physical adapter cancels the
+            # active Nav2 route on this zero-motion result.  A revalidated
+            # prefetched goal may then start a new controller session once
+            # motion evidence is fresh again.
+            self.state = "wait_planning"
+            self.controller_active = False
+            event = self._event("motion_evidence_stale", self.active, now_s)
+            return self._step(
+                self._zero_command("motion_evidence_stale"), (event,)
+            )
+        if str(collision_state).upper() not in {"CLEAR", "SLOW"}:
+            self.state = "terminal_safety"
+            self.controller_active = False
+            event = self._event("collision_veto", self.active, now_s)
+            return self._step(
+                self._zero_command("collision_veto"), (event,)
+            )
 
         events: list[Mapping[str, Any]] = []
         while self._pending and self._pending[0].ready_at_s <= now_s:

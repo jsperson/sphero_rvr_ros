@@ -32,6 +32,7 @@ EXPECTED_DATA_FILES = {
         "config/mission_service.yaml",
         "config/mission-stack.env.example",
         "config/stationary_slam_toolbox.yaml",
+        "config/hierarchical_slam_toolbox.yaml",
     },
     "share/sphero_rvr_driver/scripts": {
         "scripts/install-rvr-pi",
@@ -45,6 +46,7 @@ EXPECTED_DATA_FILES = {
         "scripts/install-rvr-mission-stack-services",
     },
     "share/sphero_rvr_driver/docs": {
+        "docs/architecture_map.md",
         "docs/mapping.md",
         "docs/motion_calibration.md",
         "docs/rosbag_capture_replay.md",

@@ -110,6 +110,22 @@ def _collision_state_value(raw: Any) -> Optional[str]:
         return None
 
 
+def _collision_reason_value(raw: Any) -> str:
+    """Parse the supervisor reason without weakening its state token."""
+
+    try:
+        payload = json.loads(str(raw))
+        if isinstance(payload, dict):
+            return str(payload.get("reason", "")).strip().lower()
+    except Exception:
+        pass
+    for token in str(raw).strip().split():
+        key, separator, value = token.partition("=")
+        if separator and key.strip().lower() == "reason":
+            return value.strip().lower()
+    return ""
+
+
 def _source_sha() -> str:
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
@@ -195,6 +211,31 @@ def main(args=None):
                     max_angular_rad_s=float(
                         self.get_parameter("hierarchical_max_angular_rad_s").value
                     ),
+                    clear_breakaway_linear_mps=float(
+                        self.get_parameter(
+                            "hierarchical_clear_breakaway_linear_mps"
+                        ).value
+                    ),
+                    clear_breakaway_angular_rad_s=float(
+                        self.get_parameter(
+                            "hierarchical_clear_breakaway_angular_rad_s"
+                        ).value
+                    ),
+                    clear_breakaway_angular_measured_rate_rad_s=float(
+                        self.get_parameter(
+                            "hierarchical_clear_breakaway_angular_measured_rate_rad_s"
+                        ).value
+                    ),
+                    clear_breakaway_angular_pulse_s=float(
+                        self.get_parameter(
+                            "hierarchical_clear_breakaway_angular_pulse_s"
+                        ).value
+                    ),
+                    reverse_escape_linear_mps=float(
+                        self.get_parameter(
+                            "hierarchical_reverse_escape_linear_mps"
+                        ).value
+                    ),
                 )
             )
             self._latest_nav2_command_received_at: Optional[float] = None
@@ -209,6 +250,7 @@ def main(args=None):
             self._latest_odom_received_at: Optional[float] = None
             self._latest_encoder_counts: Optional[TrackEncoderState] = None
             self._collision_state: Optional[str] = None
+            self._collision_reason = ""
             self._collision_received_at: Optional[float] = None
             self._stop = False
             self._estop = False
@@ -267,6 +309,11 @@ def main(args=None):
                 "nav2_cmd_lease_s": 0.25,
                 "hierarchical_max_linear_mps": 0.10,
                 "hierarchical_max_angular_rad_s": 0.4,
+                "hierarchical_clear_breakaway_linear_mps": 0.0,
+                "hierarchical_clear_breakaway_angular_rad_s": 0.0,
+                "hierarchical_clear_breakaway_angular_measured_rate_rad_s": 0.0,
+                "hierarchical_clear_breakaway_angular_pulse_s": 0.05,
+                "hierarchical_reverse_escape_linear_mps": 0.0,
                 "scan_topic": "/scan",
                 "odom_topic": "/odom",
                 "encoder_counts_topic": "/encoder_counts",
@@ -477,7 +524,9 @@ def main(args=None):
             self._latest_encoder_counts = _encoder_state(getattr(msg, "data", None))
 
         def _on_collision_state(self, msg) -> None:
-            self._collision_state = _collision_state_value(getattr(msg, "data", None))
+            raw = getattr(msg, "data", None)
+            self._collision_state = _collision_state_value(raw)
+            self._collision_reason = _collision_reason_value(raw)
             if self._collision_state is not None:
                 self._collision_received_at = self._now_seconds()
             else:
@@ -560,6 +609,7 @@ def main(args=None):
                     mission_lease_valid=authority_valid,
                     motion_evidence_fresh=evidence_fresh,
                     collision_state=self._collision_state or "UNKNOWN",
+                    collision_reason=self._collision_reason,
                     stop=self._stop,
                     estop=self._estop,
                     cancelled=self._cancel,

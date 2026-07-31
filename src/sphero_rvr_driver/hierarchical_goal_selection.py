@@ -71,6 +71,8 @@ FORBIDDEN_MODEL_KEYS = {
     "ros",
     "code",
 }
+MAX_TRACK_REVALIDATION_DRIFT_M = 0.10
+MAX_VIEWPOINT_REVALIDATION_DRIFT_M = 0.10
 
 
 def _finite(value: Any, name: str) -> float:
@@ -386,6 +388,8 @@ def build_semantic_world_snapshot(
     active_goal: Optional[Mapping[str, Any]] = None,
     coverage_fraction: float = 0.0,
     remaining_route_budget_m: float = 20.0,
+    observation_evidence: Sequence[Mapping[str, Any]] = (),
+    evaluation: Optional[Mapping[str, Any]] = None,
     mission_lease_valid: bool = True,
     motion_evidence_fresh: bool = True,
     stop: bool = False,
@@ -397,8 +401,16 @@ def build_semantic_world_snapshot(
 
     if not mission_id or not objective:
         raise MissionValidationError("semantic snapshot mission and objective are required")
-    if len(frontiers) > 16 or len(tracks) > 16:
-        raise MissionValidationError("semantic snapshot candidate lists exceed bounds")
+    if len(tracks) > 16:
+        raise MissionValidationError(
+            "semantic snapshot track candidate list exceeds bounds"
+        )
+    # WFD operates on the complete server-owned map and may legitimately find
+    # more regions than the compact model contract admits. It already returns
+    # candidates in deterministic path-distance/information-gain/signature
+    # order, so retain the first bounded window before constructing the
+    # provider-visible snapshot.
+    bounded_frontiers = tuple(frontiers)[:16]
     if decision_generation < 1 or event_generation < 0:
         raise MissionValidationError("semantic snapshot generations are invalid")
     if any(not isinstance(item, str) for item in requested_object_classes):
@@ -423,11 +435,68 @@ def build_semantic_world_snapshot(
         plan.track_id: [candidate.to_json_dict() for candidate in plan.candidates]
         for plan in next_best_views
     }
+    if len(observation_evidence) > 16:
+        raise MissionValidationError(
+            "semantic snapshot observation evidence exceeds bounds"
+        )
+    bounded_observations = []
+    for raw in observation_evidence:
+        if not isinstance(raw, Mapping):
+            raise MissionValidationError(
+                "semantic snapshot observation evidence is invalid"
+            )
+        label = str(raw.get("label", "")).strip()
+        status = str(raw.get("status", "")).strip()
+        position_method = str(raw.get("position_method", "")).strip()
+        raw_evidence_ids = raw.get("evidence_ids", ())
+        if (
+            not label
+            or not status
+            or position_method
+            not in {"bearing_only", "lidar_range", "floor_projection"}
+            or not isinstance(raw_evidence_ids, Sequence)
+            or isinstance(raw_evidence_ids, (str, bytes))
+        ):
+            raise MissionValidationError(
+                "semantic snapshot observation evidence is invalid"
+            )
+        observation_ids = tuple(
+            dict.fromkeys(str(item).strip() for item in raw_evidence_ids)
+        )
+        confidence = _finite(
+            raw.get("confidence", 0.0),
+            "observation confidence",
+        )
+        if (
+            not observation_ids
+            or len(observation_ids) > 8
+            or any(not item for item in observation_ids)
+            or not 0.0 <= confidence <= 1.0
+        ):
+            raise MissionValidationError(
+                "semantic snapshot observation evidence is invalid"
+            )
+        bounded_observations.append(
+            {
+                "label": label,
+                "confidence": confidence,
+                "status": status,
+                "position_method": position_method,
+                "evidence_ids": list(observation_ids),
+                "mapped": position_method
+                in {"lidar_range", "floor_projection"},
+            }
+        )
     evidence_ids = sorted(
         {
             evidence_id
             for track in tracks
             for evidence_id in track.evidence_ids
+        }
+        | {
+            evidence_id
+            for observation in bounded_observations
+            for evidence_id in observation["evidence_ids"]
         }
     )
     payload: dict[str, Any] = {
@@ -468,9 +537,10 @@ def build_semantic_world_snapshot(
                 "reachable": True,
                 "last_validated_s": now_s,
             }
-            for candidate in tuple(frontiers)[:16]
+            for candidate in bounded_frontiers
         ],
         "tracks": [track.to_json_dict() for track in tuple(tracks)[:16]],
+        "observations": bounded_observations,
         "next_best_views": nbv_by_track,
         "active_goal": dict(active_goal or {}),
         "safety": {
@@ -496,6 +566,20 @@ def build_semantic_world_snapshot(
             "serial_access": False,
         },
     }
+    if evaluation is not None:
+        try:
+            payload["evaluation"] = json.loads(
+                json.dumps(
+                    dict(evaluation),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            )
+        except (TypeError, ValueError):
+            raise MissionValidationError(
+                "semantic snapshot evaluation is invalid"
+            )
     payload["snapshot_id"] = _digest(payload)
     return payload
 
@@ -850,6 +934,8 @@ def semantic_goal_prompt(
             "Select only stable frontier, track, region, origin, wait, or evidence IDs supplied by the snapshot.",
             "Never emit poses, routes, paths, speeds, acceleration, clearance, leases, ROS names, files, credentials, motor commands, or code.",
             "Cite the selected candidate or evidence IDs in the concise rationale.",
+            "Camera observations are evidence but are not mapped objects when mapped is false; bearing-only evidence may support a partial or blocked finish but never a mapped-object claim.",
+            "When evaluation.recommend_finish is true, prefer finish with outcome partial or blocked and cite supplied evidence IDs instead of repeatedly selecting unreachable frontiers.",
         ],
     }
     evaluation = snapshot.get("evaluation")
@@ -1112,23 +1198,65 @@ def revalidate_resolved_goal(
             reasons.append("frontier_signature_invalidated")
     elif decision.action == "inspect":
         tracks = {
-            str(item["track_id"]): str(item["signature"])
+            str(item["track_id"]): item
             for item in current_snapshot.get("tracks", ())
         }
         captured_tracks = {
-            str(item["track_id"]): str(item["signature"])
+            str(item["track_id"]): item
             for item in captured_snapshot.get("tracks", ())
         }
         track_id = decision.arguments["track_id"]
-        if track_id not in tracks or tracks[track_id] != captured_tracks.get(track_id):
+        current_track = tracks.get(track_id)
+        captured_track = captured_tracks.get(track_id)
+        if (
+            not isinstance(current_track, Mapping)
+            or not isinstance(captured_track, Mapping)
+            or str(current_track.get("signature", ""))
+            != str(captured_track.get("signature", ""))
+        ):
             reasons.append("track_signature_changed")
-        viewpoint_ids = {
-            str(item["viewpoint_id"])
-            for item in current_snapshot.get("next_best_views", {}).get(
-                track_id, ()
-            )
-        }
-        if goal.target_signature not in viewpoint_ids:
+        else:
+            try:
+                current_position = current_track["position"]
+                captured_position = captured_track["position"]
+                track_drift = math.hypot(
+                    float(current_position["x_m"])
+                    - float(captured_position["x_m"]),
+                    float(current_position["y_m"])
+                    - float(captured_position["y_m"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                track_drift = math.inf
+            if (
+                not math.isfinite(track_drift)
+                or track_drift > MAX_TRACK_REVALIDATION_DRIFT_M
+            ):
+                reasons.append("track_position_changed")
+        current_viewpoints = (
+            current_snapshot.get("next_best_views", {}).get(track_id, ())
+        )
+        viewpoint_valid = False
+        for item in current_viewpoints:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                viewpoint_drift = math.hypot(
+                    float(item["x_m"]) - float(goal.x_m),
+                    float(item["y_m"]) - float(goal.y_m),
+                )
+                clearance = float(item["clearance_m"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                math.isfinite(viewpoint_drift)
+                and viewpoint_drift
+                <= MAX_VIEWPOINT_REVALIDATION_DRIFT_M
+                and math.isfinite(clearance)
+                and clearance >= minimum_clearance_m
+            ):
+                viewpoint_valid = True
+                break
+        if not viewpoint_valid:
             reasons.append("viewpoint_invalidated")
     elif decision.action == "finish":
         available = set(
@@ -1399,6 +1527,7 @@ class AsyncSemanticGoalController:
         self._motion_goal_decisions = 0
         self._distance_m = 0.0
         self._last_remaining_m: Optional[float] = None
+        self._prefetch_suppressed_active_generation: Optional[int] = None
         self._closed = False
 
     @property
@@ -1512,10 +1641,23 @@ class AsyncSemanticGoalController:
                 self._prefetched = None
                 self._prefetched_snapshot = None
                 self._last_remaining_m = self._active.route_length_m
+                self._prefetch_suppressed_active_generation = None
+        if (
+            self._active is not None
+            and self._prefetch_suppressed_active_generation
+            == self._active.decision.decision_generation
+            and remaining_distance_m <= 0.05
+        ):
+            self._prefetch_suppressed_active_generation = None
         if (
             self._future is None
             and self._prefetched is None
             and self._ready_non_motion is None
+            and (
+                self._active is None
+                or self._prefetch_suppressed_active_generation
+                != self._active.decision.decision_generation
+            )
             and handoff.state in {"navigating", "wait_planning"}
             and eta_s <= self.prefetch_threshold_s
         ):
@@ -1583,9 +1725,26 @@ class AsyncSemanticGoalController:
             )
             self._prefetched = None
             self._prefetched_snapshot = None
-        handoff = self.follower.preempt_for_replan(
-            now_s=now_s, reason=event.kind.value
-        )
+        if (
+            self._ready_non_motion is not None
+            and self._ready_non_motion.decision.action == "wait"
+        ):
+            self._ready_non_motion = None
+        if event.kind is SemanticEventKind.INVALID_TARGET:
+            handoff = self.follower.preempt_for_replan(
+                now_s=now_s, reason=event.kind.value
+            )
+        else:
+            # A new semantic observation is a planning concern, not a
+            # motor-safety veto. Keep the accepted Nav2 action alive while a
+            # successor is computed; Nav2 and the collision supervisor still
+            # own physical obstacle safety.
+            handoff = self.follower.advance(
+                now_s=now_s,
+                remaining_distance_m=max(
+                    0.0, self._last_remaining_m or 0.0
+                ),
+            )
         records = [
             self._record(
             "event_triggered_replan",
@@ -1678,10 +1837,17 @@ class AsyncSemanticGoalController:
         captured = self._future_snapshot
         generation = self._future_generation
         invalidated_reason = self._future_invalidated_reason
+        started_at_s = self._future_started_at_s
         self._future = None
         self._future_snapshot = None
+        self._future_started_at_s = None
         self._future_invalidated_reason = ""
         self._provider_calls_completed += 1
+        provider_elapsed_s = (
+            None
+            if started_at_s is None
+            else max(0.0, now_s - float(started_at_s))
+        )
         assert captured is not None
         if invalidated_reason:
             self._provider_rejections += 1
@@ -1691,6 +1857,20 @@ class AsyncSemanticGoalController:
                     now_s,
                     generation=generation,
                     reason=f"event_invalidated:{invalidated_reason}",
+                    provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
+                )
+            ]
+        if self.follower.state == "terminal_safety":
+            self._provider_rejections += 1
+            return [
+                self._record(
+                    "prefetch_discarded",
+                    now_s,
+                    generation=generation,
+                    reason="follower_terminal_safety",
+                    provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
                 )
             ]
         try:
@@ -1722,9 +1902,31 @@ class AsyncSemanticGoalController:
                     now_s,
                     generation=generation,
                     reason=str(exc),
+                    provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
                 )
             ]
         if resolved.kind == "motion":
+            if (
+                self._active is not None
+                and resolved.target_signature
+                == self._active.target_signature
+            ):
+                self._prefetch_suppressed_active_generation = (
+                    self._active.decision.decision_generation
+                )
+                return [
+                    self._record(
+                        "prefetch_redundant",
+                        now_s,
+                        generation=generation,
+                        action=decision.action,
+                        target_id=resolved.target_id,
+                        provider_elapsed_s=provider_elapsed_s,
+                        snapshot_id=str(captured["snapshot_id"]),
+                        reason="same_as_active_target",
+                    )
+                ]
             self.follower.submit_prefetch(resolved.as_frontier_goal())
             self._prefetched = resolved
             self._prefetched_snapshot = captured
@@ -1736,6 +1938,8 @@ class AsyncSemanticGoalController:
                     generation=generation,
                     action=decision.action,
                     target_id=resolved.target_id,
+                    provider_elapsed_s=provider_elapsed_s,
+                    snapshot_id=str(captured["snapshot_id"]),
                 )
             ]
         self._ready_non_motion = resolved
@@ -1746,6 +1950,9 @@ class AsyncSemanticGoalController:
                 generation=generation,
                 action=decision.action,
                 target_id=resolved.target_id,
+                provider_elapsed_s=provider_elapsed_s,
+                snapshot_id=str(captured["snapshot_id"]),
+                decision=decision.to_json_dict(),
             )
         ]
 
@@ -1785,6 +1992,15 @@ class AsyncSemanticGoalController:
             if self._prefetched is None
             else self._prefetched.decision.decision_generation
         )
+
+    def provider_snapshot_in_flight(
+        self,
+    ) -> Optional[dict[str, Any]]:
+        """Return an evidence-only copy of the exact snapshot sent upstream."""
+
+        if self._future_snapshot is None:
+            return None
+        return json.loads(json.dumps(self._future_snapshot))
 
     def resolved_motion_goals(
         self,

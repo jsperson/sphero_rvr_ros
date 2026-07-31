@@ -15,6 +15,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 import threading
 import time
@@ -23,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from .mission_api import MissionApiVersion, MissionValidationError
 from .mission_service import MissionService
@@ -63,6 +64,10 @@ from .adaptive_mission_controller import (
 from .hierarchical_phase4_replay import (
     PHASE4_PROPOSAL_SCHEMA,
     PHASE4_RESULT_SCHEMA,
+)
+from .hierarchical_physical_binding import PHYSICAL_PROPOSAL_SCHEMA
+from .hierarchical_physical_live_controller import (
+    CANONICAL_APPROVAL_PREFIX,
 )
 
 WEB_API_VERSION = "rvr_mission_web.v1"
@@ -317,6 +322,7 @@ class MissionWebAdapter(Protocol):
         supplied_approval: str,
         *,
         confirm_current_proposal: bool = False,
+        physical_room_confirmation: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]: ...
 
     def advance(self) -> Mapping[str, Any]: ...
@@ -606,15 +612,33 @@ def _telemetry_start_permitted(snapshot: Mapping[str, Any]) -> bool:
     adapter = snapshot.get("adapter", {})
     if not isinstance(adapter, Mapping):
         return False
+    binding = adapter.get("hierarchical_physical_binding", {})
+    physical_session = adapter.get("physical_session", {})
+    canonical_locked = bool(
+        adapter.get("hierarchical_canonical", False)
+        and isinstance(binding, Mapping)
+        and binding.get("motion_authority") is False
+        and binding.get("physical_execution_enabled") is False
+        and str(binding.get("state", "")).lower() == "locked"
+        and (
+            not isinstance(physical_session, Mapping)
+            or not physical_session.get("active", False)
+        )
+    )
     return bool(
         not adapter.get("fixture_only", True)
-        and (
-            adapter.get("stationary_perception", False)
-            or adapter.get("adaptive_mission", False)
-        )
         and not adapter.get("live_execution_enabled", False)
-        and adapter.get("motion_authority") is False
-        and adapter.get("physical_execution_enabled") is False
+        and (
+            canonical_locked
+            or (
+                (
+                    adapter.get("stationary_perception", False)
+                    or adapter.get("adaptive_mission", False)
+                )
+                and adapter.get("motion_authority") is False
+                and adapter.get("physical_execution_enabled") is False
+            )
+        )
     )
 
 
@@ -2207,8 +2231,13 @@ class LiveMissionWebAdapter:
         ) if isinstance(
             service.get("hierarchical_physical_binding", {}), Mapping
         ) else {}
+        self.hierarchical_canonical_enabled = bool(
+            service.get("hierarchical_canonical_enabled", False)
+        )
         self.mode = (
-            "live/stationary-perception"
+            "live/hierarchical-canonical"
+            if self.hierarchical_canonical_enabled
+            else "live/stationary-perception"
             if self.stationary_perception_enabled
             else "live/adaptive-mission"
             if self.adaptive_mission_enabled
@@ -2273,8 +2302,15 @@ class LiveMissionWebAdapter:
                 ),
                 Mapping,
             ) else {}
+            self.hierarchical_canonical_enabled = bool(
+                self._service_snapshot.get(
+                    "hierarchical_canonical_enabled", False
+                )
+            )
             self.mode = (
-                "live/stationary-perception"
+                "live/hierarchical-canonical"
+                if self.hierarchical_canonical_enabled
+                else "live/stationary-perception"
                 if self.stationary_perception_enabled
                 else "live/adaptive-mission"
                 if self.adaptive_mission_enabled
@@ -2283,6 +2319,23 @@ class LiveMissionWebAdapter:
                 else "live/proposal-only"
             )
             return self._translate(None if mission is None else dict(mission))
+
+    def reopen(self, mission_id: str) -> Mapping[str, Any]:
+        """Select one durable mission for read-only browser reconstruction."""
+
+        identifier = str(mission_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", identifier):
+            raise MissionWebError("mission ID is invalid")
+        with self._lock:
+            try:
+                mission = dict(self.client.prompt_status(identifier))
+                self._service_snapshot = dict(
+                    self.client.service_snapshot()
+                )
+            except MissionValidationError as exc:
+                raise MissionWebError(str(exc)) from exc
+            self._mission_id = identifier
+            return self._translate(mission)
 
     def propose(
         self,
@@ -2324,6 +2377,16 @@ class LiveMissionWebAdapter:
                         "lidar, and localization evidence are fresh"
                         + (f": {detail}" if detail else "")
                     )
+                if self.hierarchical_canonical_enabled:
+                    canonical = str(
+                        self._service_snapshot.get(
+                            "canonical_objective", ""
+                        )
+                    ).strip()
+                    if str(prompt).strip() != canonical:
+                        raise MissionValidationError(
+                            "the canonical physical browser accepts only the reviewed M7.6 objective"
+                        )
                 submit_arguments: dict[str, Any] = {
                     "session_id": self.session_id,
                     "source": "web",
@@ -2362,6 +2425,7 @@ class LiveMissionWebAdapter:
         supplied_approval: str,
         *,
         confirm_current_proposal: bool = False,
+        physical_room_confirmation: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         del supplied_approval
         with self._lock:
@@ -2381,7 +2445,24 @@ class LiveMissionWebAdapter:
                 # persisted state, so a user no longer copies a hash and the
                 # unchanged-proposal binding remains server-owned and audited.
                 proposal_schema = str(proposal_payload.get("schema", ""))
-                if self.stationary_perception_enabled:
+                if proposal_schema == PHYSICAL_PROPOSAL_SCHEMA:
+                    if not self.hierarchical_canonical_enabled:
+                        raise MissionWebError(
+                            "canonical hierarchical approval is not enabled"
+                        )
+                    if not self._operator_authenticated():
+                        raise MissionWebError(
+                            "M7.6 approval requires an authenticated Tailscale request"
+                        )
+                    server_approval = (
+                        CANONICAL_APPROVAL_PREFIX
+                        + str(
+                            proposal_payload.get(
+                                "proposal_digest", ""
+                            )
+                        )
+                    )
+                elif self.stationary_perception_enabled:
                     server_approval = (
                         "APPROVE STATIONARY PERCEPTION "
                         f"{str(proposal_payload.get('proposal_digest', ''))}"
@@ -2400,11 +2481,18 @@ class LiveMissionWebAdapter:
                     server_approval = approval_phrase(
                         prompt_drive_proposal_from_json(proposal_payload)
                     )
-                approval_kwargs = (
-                    {"authentication_source": "tailscale-serve"}
-                    if proposal_schema == ADAPTIVE_MISSION_PROPOSAL_SCHEMA
-                    else {}
-                )
+                approval_kwargs: dict[str, Any] = {}
+                if proposal_schema in {
+                    ADAPTIVE_MISSION_PROPOSAL_SCHEMA,
+                    PHYSICAL_PROPOSAL_SCHEMA,
+                }:
+                    approval_kwargs[
+                        "authentication_source"
+                    ] = "tailscale-serve"
+                if proposal_schema == PHYSICAL_PROPOSAL_SCHEMA:
+                    approval_kwargs[
+                        "physical_room_confirmation"
+                    ] = dict(physical_room_confirmation or {})
                 snapshot = self.client.approve_prompt(
                     self._mission_id,
                     approval_phrase=server_approval,
@@ -2427,6 +2515,29 @@ class LiveMissionWebAdapter:
                 snapshot = self.client.cancel_prompt(
                     self._mission_id,
                     reason=f"authenticated operator {self._operator_identity()} cancelled mission",
+                )
+            except MissionValidationError as exc:
+                raise MissionWebError(str(exc)) from exc
+            return self._translate(dict(snapshot))
+
+    def confirm_no_contact(self) -> Mapping[str, Any]:
+        with self._lock:
+            if self._mission_id is None:
+                raise MissionWebError(
+                    "a completed canonical mission is required"
+                )
+            if (
+                not self.hierarchical_canonical_enabled
+                or not self._operator_authenticated()
+            ):
+                raise MissionWebError(
+                    "no-contact observation requires an authenticated canonical request"
+                )
+            try:
+                snapshot = self.client.confirm_prompt_no_contact(
+                    self._mission_id,
+                    operator=self._operator_identity(),
+                    authentication_source="tailscale-serve",
                 )
             except MissionValidationError as exc:
                 raise MissionWebError(str(exc)) from exc
@@ -2478,6 +2589,11 @@ class LiveMissionWebAdapter:
         estop_state = str(safety.get("estop_state", "UNKNOWN")).upper()
         execution_ready = bool(
             (
+                self.hierarchical_canonical_enabled
+                and self.approval_activation_enabled
+            )
+            or
+            (
                 self.stationary_perception_enabled
                 and not self.live_execution_enabled
                 and required_fresh
@@ -2518,15 +2634,30 @@ class LiveMissionWebAdapter:
             result = mission.get("result", {}) if isinstance(mission.get("result", {}), Mapping) else {}
             mission_id = str(mission.get("mission_id", ""))
             approval = mission.get("approval", {}) if isinstance(mission.get("approval", {}), Mapping) else {}
-        adaptive_mission_projection_enabled = self.adaptive_mission_enabled or any(
-            str(payload.get("schema", "")).startswith("sphero_rvr.adaptive_mission_")
-            for payload in (proposal, result)
+        adaptive_mission_projection_enabled = (
+            not self.hierarchical_canonical_enabled
+            and (
+                self.adaptive_mission_enabled
+                or any(
+                    str(payload.get("schema", "")).startswith(
+                        "sphero_rvr.adaptive_mission_"
+                    )
+                    for payload in (proposal, result)
+                )
+            )
         )
-        proposal_matches_active_controller = bool(
-            not proposal
-            or not self.adaptive_mission_enabled
-            or proposal.get("schema") == ADAPTIVE_MISSION_PROPOSAL_SCHEMA
-        )
+        if self.hierarchical_canonical_enabled:
+            proposal_matches_active_controller = bool(
+                not proposal
+                or proposal.get("schema") == PHYSICAL_PROPOSAL_SCHEMA
+            )
+        else:
+            proposal_matches_active_controller = bool(
+                not proposal
+                or not self.adaptive_mission_enabled
+                or proposal.get("schema")
+                == ADAPTIVE_MISSION_PROPOSAL_SCHEMA
+            )
 
         progress_value = 0.0
         if isinstance(route_progress, Mapping):
@@ -2540,12 +2671,19 @@ class LiveMissionWebAdapter:
             progress_value = 1.0
 
         translated_events = []
+        no_contact_observations = []
         for index, event in enumerate(events, start=1):
             if not isinstance(event, Mapping):
                 continue
             payload = event.get("payload", {})
             if not isinstance(payload, Mapping):
                 payload = {}
+            if (
+                str(event.get("kind", ""))
+                == "hierarchical_no_contact_observation"
+                and payload.get("no_contact") is True
+            ):
+                no_contact_observations.append(dict(payload))
             translated_events.append(
                 {
                     "sequence": int(event.get("event_id", index)),
@@ -2593,6 +2731,36 @@ class LiveMissionWebAdapter:
                                 "installed", False
                             )
                         ),
+                        "hierarchical_canonical": (
+                            self.hierarchical_canonical_enabled
+                        ),
+                        "canonical_objective": self._service_snapshot.get(
+                            "canonical_objective", ""
+                        ),
+                        "canonical_limits": dict(
+                            self._service_snapshot.get(
+                                "canonical_limits", {}
+                            )
+                        )
+                        if isinstance(
+                            self._service_snapshot.get(
+                                "canonical_limits", {}
+                            ),
+                            Mapping,
+                        )
+                        else {},
+                        "canonical_risk_ledger": list(
+                            self._service_snapshot.get(
+                                "canonical_risk_ledger", []
+                            )
+                        )
+                        if isinstance(
+                            self._service_snapshot.get(
+                                "canonical_risk_ledger", []
+                            ),
+                            list,
+                        )
+                        else [],
                     }
                     if self.hierarchical_physical_binding
                     else {}
@@ -2686,6 +2854,14 @@ class LiveMissionWebAdapter:
                 "adaptive_mission": adaptive_mission_projection_enabled,
                 "authenticated": bool(approval.get("authenticated", False)),
                 "authenticated_operator": str(approval.get("operator", "")),
+                "request_authenticated": (
+                    self._operator_authenticated()
+                ),
+                "request_operator": (
+                    self._operator_identity()
+                    if self._operator_authenticated()
+                    else ""
+                ),
                 "authentication_source": str(
                     approval.get("authentication_source", "")
                 ),
@@ -2703,6 +2879,14 @@ class LiveMissionWebAdapter:
                 "terminal": state in {item.value for item in TERMINAL_STATES},
                 "terminal_reason": terminal_reason,
                 "result": dict(result),
+                "no_contact_confirmed": (
+                    len(no_contact_observations) == 1
+                ),
+                "no_contact_operator": (
+                    str(no_contact_observations[0].get("operator", ""))
+                    if len(no_contact_observations) == 1
+                    else ""
+                ),
             },
             "artifacts": _terminal_artifacts(
                 result if state in {item.value for item in TERMINAL_STATES} else {},
@@ -3170,6 +3354,23 @@ def handle_mission_web_request(
             return MissionWebResponse(204, "image/x-icon", "")
         if normalized_path == "/api/web/state":
             return _json_response(200, _with_telemetry_control(adapter.snapshot(), telemetry_control))
+        if normalized_path.startswith("/api/web/missions/"):
+            identifier = unquote(
+                normalized_path.removeprefix(
+                    "/api/web/missions/"
+                )
+            )
+            reopen = getattr(adapter, "reopen", None)
+            if not callable(reopen):
+                raise MissionWebError(
+                    "this adapter cannot reopen durable missions"
+                )
+            return _json_response(
+                200,
+                _with_telemetry_control(
+                    reopen(identifier), telemetry_control
+                ),
+            )
         if normalized_path == "/api/web/scenarios":
             return _json_response(200, {"scenarios": [item.to_json_dict() for item in adapter.scenarios()]})
         if normalized_path == TERMINAL_ARTIFACT_PATH:
@@ -3238,14 +3439,35 @@ def handle_mission_web_request(
                         )
                     raise
     elif normalized_path == "/api/web/mission/approve":
+        approval_arguments: dict[str, Any] = {
+            "confirm_current_proposal": bool(
+                payload.get("confirm_current_proposal", False)
+            )
+        }
+        if "physical_room_confirmation" in payload:
+            room = payload["physical_room_confirmation"]
+            if not isinstance(room, Mapping):
+                raise MissionWebError(
+                    "physical_room_confirmation must be an object"
+                )
+            approval_arguments[
+                "physical_room_confirmation"
+            ] = dict(room)
         result = adapter.approve(
             str(payload.get("approval_phrase", "")),
-            confirm_current_proposal=bool(payload.get("confirm_current_proposal", False)),
+            **approval_arguments,
         )
     elif normalized_path == "/api/web/mission/advance":
         result = adapter.advance()
     elif normalized_path == "/api/web/mission/cancel":
         result = adapter.cancel()
+    elif normalized_path == "/api/web/mission/no-contact":
+        confirm = getattr(adapter, "confirm_no_contact", None)
+        if not callable(confirm):
+            raise MissionWebError(
+                "this mission adapter cannot record physical observations"
+            )
+        result = confirm()
     elif normalized_path == TELEMETRY_CONTROL_PATH:
         if telemetry_control is None:
             raise MissionWebError("telemetry control is not available")
@@ -3294,7 +3516,8 @@ def _is_adaptive_preapproval(snapshot: Mapping[str, Any]) -> bool:
     ):
         return False
     return bool(
-        adapter.get("adaptive_mission", False)
+        not adapter.get("hierarchical_canonical", False)
+        and adapter.get("adaptive_mission", False)
         and adapter.get("approval_activation_enabled", False)
         and str(mission.get("state", "")).upper()
         not in {"APPROVED", "QUEUED", "RUNNING"}
@@ -3750,6 +3973,10 @@ _INDEX_HTML = r'''<!doctype html>
     .danger { color:#ffd9d6; background:#3b1d25; border-color:#7e3541; }
     .hint, .empty { color:var(--muted); font-size:.83rem; }
     .digest { display:block; overflow-wrap:anywhere; padding:.6rem; border-radius:.55rem; background:#071421; color:var(--amber); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.72rem; }
+    .canonical-binding-envelope { display:grid; grid-template-columns:minmax(9rem,auto) minmax(0,1fr); gap:.35rem .65rem; margin-top:.7rem; padding:.65rem; border:1px solid var(--border); border-radius:.55rem; background:#071421; }
+    .canonical-binding-envelope strong { grid-column:1 / -1; color:var(--amber); }
+    .canonical-binding-envelope span { color:var(--muted); font-size:.72rem; }
+    .canonical-binding-envelope code { overflow-wrap:anywhere; color:var(--text); font-size:.68rem; }
     .plan-meta { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
     .meta { padding:.6rem; background:#0a1726; border-radius:.65rem; }
     .meta span { display:block; color:var(--muted); font-size:.68rem; text-transform:uppercase; }
@@ -3919,6 +4146,15 @@ _INDEX_HTML = r'''<!doctype html>
           <h2 id="approval-heading">Simulation approval</h2>
           <p class="hint" id="approval-hint">Approval is digest-bound and authorizes only the mock adapter.</p>
           <p class="hint" id="approval-state" role="status" aria-live="polite"></p>
+          <fieldset id="canonical-room-confirmation" hidden>
+            <legend>M7.6 physical room confirmation</legend>
+            <label><input id="room-attended" type="checkbox"> I am present and can cut chassis power.</label>
+            <label><input id="room-level" type="checkbox"> The rover is on a level, bounded floor area.</label>
+            <label><input id="room-no-dropoffs" type="checkbox"> There are no stairs, ledges, or drop-offs.</label>
+            <label><input id="room-no-negative-sensing" type="checkbox"> I understand the rover has no negative-obstacle sensing.</label>
+            <div class="hint" id="canonical-risk-ledger"></div>
+            <div class="canonical-binding-envelope" id="canonical-binding-envelope"></div>
+          </fieldset>
           <label class="field-label" for="approval-input" id="approval-input-label">Type the exact phrase shown with the proposal</label>
           <code class="digest" id="approval-required-phrase" hidden></code>
           <input id="approval-input" data-testid="approval-input" autocomplete="off" disabled>
@@ -3945,6 +4181,12 @@ _INDEX_HTML = r'''<!doctype html>
           <summary id="result-heading">Terminal evidence &amp; artifacts</summary>
           <div class="detail-body">
             <div id="result-view" class="empty" data-testid="result-view">No terminal evidence yet.</div>
+            <fieldset id="canonical-no-contact" hidden>
+              <legend>Attended physical observation</legend>
+              <label><input id="no-contact-observed" type="checkbox"> I observed no rover contact during this completed mission.</label>
+              <button class="primary" id="confirm-no-contact" data-testid="confirm-no-contact" type="button" disabled>Record no-contact observation</button>
+              <p class="hint" id="no-contact-state"></p>
+            </fieldset>
             <ul id="artifact-list" class="artifact-list"></ul>
           </div>
         </details>
@@ -3967,6 +4209,7 @@ _INDEX_HTML = r'''<!doctype html>
     let leaseDurationDirty = false;
     let leaseDurationHydrated = false;
     let hydratedLeaseMissionId = null;
+    let hydratedNoContactMissionId = null;
 
     async function api(path, options = {}) {
       const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
@@ -4002,6 +4245,12 @@ _INDEX_HTML = r'''<!doctype html>
       const seconds = finiteNumber(
         (
           snapshot
+          && snapshot.adapter
+          && snapshot.adapter.hierarchical_canonical
+          && snapshot.proposal
+          && snapshot.proposal.mission_lease_s
+        ) || (
+          snapshot
           && snapshot.proposal
           && snapshot.proposal.limits
           && snapshot.proposal.limits.mission_lease_s
@@ -4029,11 +4278,19 @@ _INDEX_HTML = r'''<!doctype html>
 
     function configuredLeaseMaximumSeconds(snapshot) {
       const seconds = finiteNumber(
-        snapshot
-        && snapshot.adapter
-        && (
-          snapshot.adapter.adaptive_mission_lease_max_s
-          || snapshot.adapter.adaptive_mission_lease_s
+        (
+          snapshot
+          && snapshot.adapter
+          && snapshot.adapter.hierarchical_canonical
+          && snapshot.adapter.canonical_limits
+          && snapshot.adapter.canonical_limits.mission_lease_max_s
+        ) || (
+          snapshot
+          && snapshot.adapter
+          && (
+            snapshot.adapter.adaptive_mission_lease_max_s
+            || snapshot.adapter.adaptive_mission_lease_s
+          )
         )
       );
       return seconds !== null && seconds > 0 ? seconds : 900;
@@ -4056,11 +4313,20 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     function leaseDurationMatchesProposal(snapshot) {
-      if (!snapshot || !snapshot.adapter.adaptive_mission) return true;
+      if (
+        !snapshot
+        || !(
+          snapshot.adapter.adaptive_mission
+          || snapshot.adapter.hierarchical_canonical
+        )
+      ) return true;
       const proposed = finiteNumber(
-        snapshot.proposal
-        && snapshot.proposal.limits
-        && snapshot.proposal.limits.mission_lease_s
+        snapshot.adapter.hierarchical_canonical
+          ? snapshot.proposal
+            && snapshot.proposal.mission_lease_s
+          : snapshot.proposal
+            && snapshot.proposal.limits
+            && snapshot.proposal.limits.mission_lease_s
       );
       if (proposed === null) return false;
       try {
@@ -4077,16 +4343,20 @@ _INDEX_HTML = r'''<!doctype html>
     }
 
     function shouldContinuouslyPoll(snapshot) {
+      const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
       return !snapshot.adapter.fixture_only
         && (!snapshot.mission.terminal
           || Boolean(snapshot.adapter.stationary_perception)
-          || Boolean(snapshot.adapter.adaptive_mission));
+          || (Boolean(snapshot.adapter.adaptive_mission) && !canonical));
     }
 
     function renderTelemetryControl(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
-      const controllable = !snapshot.adapter.fixture_only && (stationary || adaptiveMission);
+      const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission)
+        && !canonical;
+      const controllable = !snapshot.adapter.fixture_only
+        && (stationary || adaptiveMission || canonical);
       const panel = $('telemetry-control');
       const button = $('telemetry-toggle');
       const label = $('telemetry-status');
@@ -4132,10 +4402,14 @@ _INDEX_HTML = r'''<!doctype html>
 
     function renderActionState(snapshot) {
       const stationary = Boolean(snapshot.adapter.stationary_perception);
-      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
+      const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission)
+        && !canonical;
       const readOnly = Boolean(snapshot.adapter.read_only);
       const leaseActive = adaptiveMission
         && ['APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
+      const canonicalLeaseLocked = canonical
+        && !['READY','PROPOSED'].includes(snapshot.mission.state);
       const leaseMatchesProposal = leaseDurationMatchesProposal(snapshot);
       const proposalBusy = missionRequestInFlight === 'proposal';
       const approvalBusy = missionRequestInFlight === 'approval';
@@ -4156,10 +4430,20 @@ _INDEX_HTML = r'''<!doctype html>
         || telemetryRequestInFlight
         || snapshot.mission.state !== 'PROPOSED'
         || !snapshot.approval.enabled
-        || !leaseMatchesProposal;
+        || !leaseMatchesProposal
+        || (
+          canonical
+          && ![
+            'room-attended',
+            'room-level',
+            'room-no-dropoffs',
+            'room-no-negative-sensing',
+          ].every((id) => $(id).checked)
+        );
       $('lease-duration-minutes').disabled = Boolean(missionRequestInFlight)
         || telemetryRequestInFlight
-        || leaseActive;
+        || leaseActive
+        || canonicalLeaseLocked;
       $('lease-duration-minutes').setAttribute(
         'aria-invalid',
         leaseMatchesProposal || snapshot.mission.state !== 'PROPOSED'
@@ -4171,7 +4455,51 @@ _INDEX_HTML = r'''<!doctype html>
         || telemetryRequestInFlight
         || !['RECEIVED','PLANNING','PROPOSED','APPROVED','QUEUED','RUNNING'].includes(snapshot.mission.state);
       $('cancel').textContent = 'Cancel';
-      if (stationary) {
+      const noContactVisible = canonical
+        && snapshot.mission.state === 'COMPLETE';
+      const noContactConfirmed = Boolean(
+        snapshot.mission.no_contact_confirmed
+      );
+      $('canonical-no-contact').hidden = !noContactVisible;
+      if (
+        hydratedNoContactMissionId
+        !== snapshot.mission.mission_id
+      ) {
+        $('no-contact-observed').checked = noContactConfirmed;
+        hydratedNoContactMissionId = snapshot.mission.mission_id;
+      } else if (noContactConfirmed) {
+        $('no-contact-observed').checked = true;
+      }
+      $('no-contact-observed').disabled = noContactConfirmed
+        || Boolean(missionRequestInFlight)
+        || telemetryRequestInFlight;
+      $('confirm-no-contact').disabled = !noContactVisible
+        || noContactConfirmed
+        || !$('no-contact-observed').checked
+        || Boolean(missionRequestInFlight)
+        || telemetryRequestInFlight;
+      $('confirm-no-contact').textContent =
+        missionRequestInFlight === 'no-contact'
+          ? 'Recording…'
+          : noContactConfirmed
+            ? 'No contact recorded'
+            : 'Record no-contact observation';
+      $('no-contact-state').textContent = noContactConfirmed
+        ? `Authenticated observation recorded for ${
+            snapshot.mission.no_contact_operator || 'the approved operator'
+          }.`
+        : noContactVisible
+          ? 'M7.7 remains incomplete until this attended observation is recorded.'
+          : '';
+      if (canonical) {
+        $('approval-state').textContent = approvalBusy
+          ? 'Writing the exact proposal and M7.6 approval, then starting the fixed supervised graph.'
+          : snapshot.mission.state === 'PROPOSED' && snapshot.approval.enabled
+            ? `Review every risk and room confirmation. One authenticated click starts the digest-bound ${leaseDurationLabel(snapshot)} canonical mission lease.`
+            : snapshot.mission.state === 'PROPOSED'
+              ? 'Canonical activation is locked by the Pi configuration.'
+              : '';
+      } else if (stationary) {
         const sensor = snapshot.telemetry_control || {};
         $('approval-state').textContent = approvalBusy
           ? 'Confirming the exact persisted proposal and starting only the leased observation-intent loop.'
@@ -4226,23 +4554,66 @@ _INDEX_HTML = r'''<!doctype html>
             : '';
       }
       const proposal = snapshot.proposal;
+      const canonical = Boolean(snapshot.adapter.hierarchical_canonical);
       const missionId = snapshot.mission.mission_id || null;
-      if (proposal && missionId !== hydratedMissionId) {
+      if (
+        canonical
+        && !promptDirty
+        && snapshot.adapter.canonical_objective
+      ) {
+        $('mission-prompt').value = snapshot.adapter.canonical_objective;
+      } else if (proposal && missionId !== hydratedMissionId) {
         if (!promptDirty) $('mission-prompt').value = proposal.prompt || '';
+        if (!promptDirty && !proposal.prompt && proposal.objective) {
+          $('mission-prompt').value = proposal.objective;
+        }
         hydratedMissionId = missionId;
       }
       const live = !snapshot.adapter.fixture_only;
       const rollingReplay = Boolean(snapshot.adapter.rolling_replay);
       const phase4 = Boolean(snapshot.adapter.hierarchical_phase4);
-      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission);
+      const adaptiveMission = Boolean(snapshot.adapter.adaptive_mission)
+        && !canonical;
       const stationary = Boolean(snapshot.adapter.stationary_perception);
       const execution = live && snapshot.adapter.live_execution_enabled;
       const approvalActivation = live
         && Boolean(snapshot.adapter.approval_activation_enabled);
       const physicalAdaptiveMission = adaptiveMission && live;
       const leaseLabel = leaseDurationLabel(snapshot);
-      $('lease-duration-control').hidden = !adaptiveMission;
-      if (adaptiveMission) {
+      $('canonical-room-confirmation').hidden = !canonical;
+      const canonicalLimits = snapshot.adapter.canonical_limits || {};
+      const canonicalBinding =
+        snapshot.adapter.hierarchical_physical_binding || {};
+      const proposalDigest = snapshot.approval.proposal_digest || '';
+      const approvalOperator =
+        snapshot.approval.authenticated_operator
+        || snapshot.approval.request_operator
+        || 'Authentication required';
+      $('canonical-risk-ledger').innerHTML = canonical
+        ? `<strong>Fixed limits:</strong> ${escapeHtml(canonicalLimits.max_linear_mps)} m/s · ${escapeHtml(canonicalLimits.max_angular_rad_s)} rad/s · ${escapeHtml(canonicalLimits.command_lease_s)} s command lease · ${escapeHtml(canonicalLimits.localization_max_age_s)} s localization gate · ${escapeHtml(canonicalLimits.mission_lease_max_s)} s maximum mission lease.<br>${(snapshot.adapter.canonical_risk_ledger || []).map((item) => `• ${escapeHtml(item)}`).join('<br>')}`
+        : '';
+      $('canonical-binding-envelope').innerHTML = canonical
+        ? [
+            `<strong>Exact approval envelope</strong>`,
+            `<span>Proposal digest</span><code>${escapeHtml(proposalDigest || 'Generate and persist the proposal first')}</code>`,
+            `<span>Selected mission lease</span><code>${escapeHtml(
+              proposal && proposal.mission_lease_s
+                ? `${proposal.mission_lease_s} seconds`
+                : 'Select a lease and generate the proposal'
+            )}</code>`,
+            `<span>Authenticated operator</span><code>${escapeHtml(approvalOperator)}</code>`,
+            `<span>Source SHA</span><code>${escapeHtml(snapshot.adapter.service_source_sha || '')}</code>`,
+            `<span>Deployed SHA</span><code>${escapeHtml(snapshot.adapter.service_deployed_sha || '')}</code>`,
+            `<span>Reviewed SHA</span><code>${escapeHtml(canonicalBinding.reviewed_sha || '')}</code>`,
+            `<span>M7.3 collision evidence</span><code>${escapeHtml(canonicalBinding.m7_3_evidence_sha256 || '')}</code>`,
+            `<span>Directional-veto evidence</span><code>${escapeHtml(canonicalBinding.directional_addendum_sha256 || '')}</code>`,
+            `<span>M7.4 moving-perception evidence</span><code>${escapeHtml(canonicalBinding.m7_4_evidence_sha256 || '')}</code>`,
+            `<span>Room binding</span><code>attended · level bounded floor · no stairs/ledges/drop-offs · no negative-obstacle sensing</code>`,
+          ].join('')
+        : '';
+      const leaseSelectable = adaptiveMission || canonical;
+      $('lease-duration-control').hidden = !leaseSelectable;
+      if (leaseSelectable) {
         const maximum = configuredLeaseMaximumSeconds(snapshot);
         $('lease-duration-label').textContent =
           `Lease minutes (max ${leaseMinutesText(maximum)})`;
@@ -4254,9 +4625,11 @@ _INDEX_HTML = r'''<!doctype html>
           )
         ) {
           const selected = finiteNumber(
-            proposal
-            && proposal.limits
-            && proposal.limits.mission_lease_s
+            canonical
+              ? proposal && proposal.mission_lease_s
+              : proposal
+                && proposal.limits
+                && proposal.limits.mission_lease_s
           ) || finiteNumber(
             snapshot.adapter.adaptive_mission_lease_s
           ) || maximum;
@@ -4268,11 +4641,11 @@ _INDEX_HTML = r'''<!doctype html>
       }
       const badge = document.querySelector('[data-testid="mode-badge"]');
       badge.className = `mode-badge${live || rollingReplay ? ' live' : ''}${execution ? ' execution' : ''}`;
-      badge.textContent = stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : phase4 ? 'PHASE 4 REAL-PROVIDER EVIDENCE — READ ONLY / NO MOTION AUTHORITY' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
+      badge.textContent = canonical ? (execution ? 'M7.6 CANONICAL PHYSICAL MISSION — ACTIVE' : 'M7.6 CANONICAL PHYSICAL MISSION — APPROVAL LOCKED') : stationary ? 'LIVE STATIONARY PERCEPTION — NO MOTION AUTHORITY' : physicalAdaptiveMission ? (execution ? 'LIVE ADAPTIVE MISSION — APPROVED PHYSICAL SESSION ACTIVE' : approvalActivation ? 'LIVE ADAPTIVE MISSION — APPROVAL ACTIVATES SUPERVISED EXECUTION' : 'LIVE ADAPTIVE MISSION — PHYSICAL EXECUTION LOCKED') : adaptiveMission ? 'ADAPTIVE MISSION CLOSED LOOP — REPLAY EXECUTOR / PHYSICAL LOCKED' : phase4 ? 'PHASE 4 REAL-PROVIDER EVIDENCE — READ ONLY / NO MOTION AUTHORITY' : rollingReplay ? 'ROLLING LLM REPLAY — NO MOTION AUTHORITY' : live ? (execution ? 'LIVE — PHYSICAL EXECUTION ENABLED' : 'LIVE — PROPOSAL ONLY / EXECUTION LOCKED') : 'MOCK / REPLAY — NO LIVE EXECUTION';
       $('scenario-label').textContent = stationary ? 'Telemetry target' : physicalAdaptiveMission ? 'Pi adaptive mission controller' : adaptiveMission ? 'Controller target' : phase4 ? 'Persisted replay' : live ? 'Service target' : rollingReplay ? 'Replay demonstration' : 'Replay outcome';
-      $('approval-heading').textContent = stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : phase4 ? 'Persisted approval receipt' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
-      $('approval-hint').textContent = stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution. Authenticated objective updates reuse the same expiry.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning, cumulative travel, and authenticated objective updates only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : phase4 ? 'This mission-ID view is immutable. Create new evidence only with the no-authority Phase 4 replay CLI.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
-      $('authority-copy').textContent = stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? `The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, ${leaseLabel} lease, speed ceilings, and safety policy. Telemetry remains lease-managed until the lease ends. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.` : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : phase4 ? 'The console reopens durable recorded-map evidence by exact mission ID. Latency is measured from real provider wall time; routes, motor-zero intervals, and coverage are replay-derived. ROS, sensors, serial, and physical authority are absent.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
+      $('approval-heading').textContent = canonical ? 'M7.6 canonical physical approval' : stationary ? 'Stationary perception confirmation' : adaptiveMission ? 'Adaptive mission lease' : phase4 ? 'Persisted approval receipt' : live ? 'Run confirmation' : rollingReplay ? 'Replay confirmation' : 'Simulation approval';
+      $('approval-hint').textContent = canonical ? 'The browser binds the exact deployment, accepted M7.3/M7.4 evidence, semantic-only proposal, authenticated operator, selected mission lease, fixed room restriction, and fixed motion/freshness limits.' : stationary ? 'Starts only continuous live sensing and leased observation intent. Physical execution remains locked.' : adaptiveMission ? (physicalAdaptiveMission && !execution && approvalActivation ? `One authenticated approval starts the supervised graph, keeps telemetry on for the ${leaseLabel} lease, waits for fresh evidence, and then begins bounded model-driven execution. Authenticated objective updates reuse the same expiry.` : physicalAdaptiveMission && !execution ? 'The reviewed Pi deployment has adaptive mission physical execution locked; proposals remain non-executable.' : `One digest-bound authenticated approval covers unlimited replanning, cumulative travel, and authenticated objective updates only until the ${leaseLabel} lease ends. Every intent remains bounded.`) : phase4 ? 'This mission-ID view is immutable. Create new evidence only with the no-authority Phase 4 replay CLI.' : live ? (execution ? 'Review the current route, then click once to run it. No code or hash entry is required.' : 'Physical execution is locked by the deployed Pi configuration.') : rollingReplay ? 'Digest-bound confirmation starts only the persistent no-authority replay and real asynchronous LLM loop.' : 'Approval is digest-bound and authorizes only the mock adapter.';
+      $('authority-copy').textContent = canonical ? 'The browser owns proposal and approval only; it has no ROS command route. The Pi resolves model-selected semantic IDs through server geometry, Nav2 writes only the private request topic, live_route_runner is the sole /cmd_vel publisher, and collision_stop is the sole /cmd_vel_motor publisher.' : stationary ? 'Live lidar, camera, tracking, semantic mapping, persistence, and OAuth inference run concurrently on the Pi. The rover driver, serial transport, motion topics, motor graph, and physical authority are absent.' : physicalAdaptiveMission ? `The browser can approve or cancel but never owns motion. The Pi binds the authenticated operator, prompt, exact deployment SHA, ${leaseLabel} lease, speed ceilings, and safety policy. Telemetry remains lease-managed until the lease ends. Each LLM intent is validated and sent as one bounded /cmd_vel request above lidar collision supervision; only the supervisor may publish /cmd_vel_motor.` : adaptiveMission ? 'The real/injected LLM sees typed snapshots and can select only move_distance, turn_angle, observe, or stop. A deterministic executor submits requested movement through collision supervision; only the supervisor may own /cmd_vel_motor. This run is replay-only and has no physical authority.' : phase4 ? 'The console reopens durable recorded-map evidence by exact mission ID. Latency is measured from real provider wall time; routes, motor-zero intervals, and coverage are replay-derived. ROS, sensors, serial, and physical authority are absent.' : live ? 'The browser uses the Pi-local mission-service boundary. Planning, approval authority, and any physical execution remain on the Pi. Independent robot safety is never replaced by this page.' : rollingReplay ? 'MissionService persists this replay. The authenticated LLM may revise only typed finite leased intent; deterministic freshness and safety own immediate stop. ROS, sensors, serial, and motor authority are absent.' : 'The browser uses a typed mock/replay adapter. Planning, approval authority, and any future execution remain server-side on the Pi. Independent robot safety is never replaced by this page.';
       $('mission-state').textContent = snapshot.mission.state;
       $('terminal-reason').textContent = snapshot.mission.terminal_reason || '';
       $('mission-progress').value = Math.round(snapshot.mission.progress * 100);
@@ -4661,20 +5034,24 @@ _INDEX_HTML = r'''<!doctype html>
 
     async function propose() {
       if (missionRequestInFlight || telemetryRequestInFlight) return;
+      const canonical = Boolean(
+        current && current.adapter.hierarchical_canonical
+      );
       const activeAdaptiveLease = Boolean(
         current
         && current.adapter.adaptive_mission
+        && !canonical
         && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
       );
       const adaptiveMission = Boolean(
         current && current.adapter.adaptive_mission
-      );
+      ) && !canonical;
       const leaseActive = Boolean(
         adaptiveMission
         && ['APPROVED','QUEUED','RUNNING'].includes(current.mission.state)
       );
       let leaseSeconds = null;
-      if (adaptiveMission && !leaseActive) {
+      if ((adaptiveMission && !leaseActive) || canonical) {
         try {
           leaseSeconds = requestedLeaseSeconds(current);
         } catch (error) {
@@ -4749,6 +5126,8 @@ _INDEX_HTML = r'''<!doctype html>
       $('request-error').textContent = '';
       $('request-status').textContent = current && current.adapter.stationary_perception
         ? 'Starting stationary snapshots and the leased LLM observation-intent loop…'
+        : current && current.adapter.hierarchical_canonical
+          ? 'Starting the fixed canonical hierarchical graph under the 900-second M7.6 lease…'
         : current && current.adapter.adaptive_mission
           ? 'Activating the supervised graph and waiting for fresh camera, lidar, localization, and safety evidence…'
           : 'Confirming the exact persisted proposal…';
@@ -4757,6 +5136,14 @@ _INDEX_HTML = r'''<!doctype html>
         const body = current && !current.adapter.fixture_only
           ? {confirm_current_proposal:true}
           : {approval_phrase:$('approval-input').value};
+        if (current && current.adapter.hierarchical_canonical) {
+          body.physical_room_confirmation = {
+            attended: $('room-attended').checked,
+            level_bounded: $('room-level').checked,
+            stairs_ledges_dropoffs_absent: $('room-no-dropoffs').checked,
+            negative_obstacle_sensing_available: false,
+          };
+        }
         const snapshot = await api('/api/web/mission/approve', {method:'POST', body:JSON.stringify(body)});
         missionRequestInFlight = '';
         render(snapshot);
@@ -4792,6 +5179,36 @@ _INDEX_HTML = r'''<!doctype html>
         $('request-status').textContent = '';
         $('request-error').textContent = `Cancellation failed: ${error.message}`;
         if (current && shouldContinuouslyPoll(current)) startTimer();
+      }
+    }
+
+    async function confirmNoContact() {
+      if (
+        !current
+        || missionRequestInFlight
+        || telemetryRequestInFlight
+        || !$('no-contact-observed').checked
+      ) return;
+      missionRequestInFlight = 'no-contact';
+      $('request-error').textContent = '';
+      $('request-status').textContent =
+        'Recording the authenticated attended no-contact observation…';
+      renderActionState(current);
+      try {
+        const snapshot = await api('/api/web/mission/no-contact', {
+          method:'POST',
+          body:'{}',
+        });
+        missionRequestInFlight = '';
+        render(snapshot);
+        $('request-status').textContent =
+          'No-contact observation persisted for M7.7 evaluation.';
+      } catch (error) {
+        missionRequestInFlight = '';
+        if (current) renderActionState(current);
+        $('request-status').textContent = '';
+        $('request-error').textContent =
+          `No-contact observation failed: ${error.message}`;
       }
     }
 
@@ -4863,13 +5280,31 @@ _INDEX_HTML = r'''<!doctype html>
     $('propose').addEventListener('click', propose);
     $('approve').addEventListener('click', approve);
     $('cancel').addEventListener('click', cancelMission);
+    $('confirm-no-contact').addEventListener(
+      'click', confirmNoContact
+    );
     $('telemetry-toggle').addEventListener('click', toggleTelemetry);
     $('mission-prompt').addEventListener('input', () => { promptDirty = true; });
     $('lease-duration-minutes').addEventListener('input', () => {
       leaseDurationDirty = true;
       if (current) renderActionState(current);
     });
-    Promise.all([loadScenarios(), api('/api/web/state')]).then(([,snapshot]) => {
+    [
+      'room-attended',
+      'room-level',
+      'room-no-dropoffs',
+      'room-no-negative-sensing',
+    ].forEach((id) => $(id).addEventListener('change', () => {
+      if (current) renderActionState(current);
+    }));
+    $('no-contact-observed').addEventListener('change', () => {
+      if (current) renderActionState(current);
+    });
+    const requestedMissionId = new URLSearchParams(window.location.search).get('mission_id');
+    const initialStateRequest = requestedMissionId
+      ? api(`/api/web/missions/${encodeURIComponent(requestedMissionId)}`)
+      : api('/api/web/state');
+    Promise.all([loadScenarios(), initialStateRequest]).then(([,snapshot]) => {
       render(snapshot);
       if (shouldContinuouslyPoll(snapshot)) startTimer();
     }).catch((error) => $('request-error').textContent = error.message);

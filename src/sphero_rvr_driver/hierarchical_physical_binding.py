@@ -32,6 +32,7 @@ from .mission_api import MissionValidationError
 
 AUTHORITY_SCHEMA = "sphero_rvr.hierarchical_physical_authority.v1"
 APPROVAL_SCHEMA = "sphero_rvr.hierarchical_m7_6_approval.v1"
+PREFLIGHT_SCHEMA = "sphero_rvr.hierarchical_m7_sensor_preflight.v1"
 JOURNAL_SCHEMA = "sphero_rvr.hierarchical_physical_journal.v1"
 NAV2_BATCH_SCHEMA = "sphero_rvr.hierarchical_nav2_goal_batch.v1"
 GOAL_DISPATCH_SCHEMA = "sphero_rvr.hierarchical_goal_dispatch.v1"
@@ -39,6 +40,9 @@ PHYSICAL_PROPOSAL_SCHEMA = "sphero_rvr.hierarchical_physical_proposal.v1"
 
 AUTHORITY_TOPIC = "/mission_api/v2/hierarchical/authority"
 GOAL_DISPATCH_TOPIC = "/mission_api/v2/hierarchical/goal_dispatch"
+CONTROLLER_STATUS_TOPIC = (
+    "/mission_api/v2/hierarchical/controller_status"
+)
 NAV2_ACTION = "/navigate_through_poses"
 PRIVATE_NAV2_CMD_TOPIC = "/nav2_cmd_vel_request"
 SUPERVISOR_REQUEST_TOPIC = "/cmd_vel"
@@ -47,9 +51,20 @@ MOTOR_TOPIC = "/cmd_vel_motor"
 MAX_LINEAR_MPS = 0.10
 MAX_ANGULAR_RAD_S = 0.4
 COMMAND_LEASE_S = 0.50
-AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.30
-LOCALIZATION_MAX_AGE_S = 0.30
+# The authority process publishes at 10 Hz, but its consumers share a loaded
+# Raspberry Pi with SLAM, Nav2, camera inference, and lidar.  A 0.30 s receipt
+# deadline produced false holds while the authority owner remained healthy.
+# Keep this bounded below one second; collision/scan freshness and the command
+# lease remain the independent, tighter motor-safety deadlines.
+AUTHORITY_HEARTBEAT_MAX_AGE_S = 0.75
+LOCALIZATION_MAX_AGE_S = 0.50
 MISSION_LEASE_MAX_S = 900.0
+
+
+def transient_authority_hold(reason: str) -> bool:
+    """Only scheduling-age misses are recoverable authority holds."""
+
+    return str(reason).strip() == "authority_heartbeat_stale"
 
 ACCEPTED_M7_3_EVIDENCE_SHA256 = (
     "7e2636f100ffad724477f1e6287458d0708057c3ee93f26d5dd6f52432281f55"
@@ -83,8 +98,9 @@ def validate_physical_proposal(
 ) -> dict[str, Any]:
     """Validate the browser-authored semantic mission bound by M7.6.
 
-    The proposal contains language and requested semantic classes only. It
-    cannot carry poses, routes, velocities, safety settings, or ROS names.
+    The proposal contains language, requested semantic classes, and the
+    browser-selected server-owned mission lease. It cannot carry poses,
+    routes, velocities, model-owned safety settings, or ROS names.
     """
 
     payload = dict(raw)
@@ -99,6 +115,7 @@ def validate_physical_proposal(
         "requested_object_classes",
         "source_sha",
         "created_at_s",
+        "mission_lease_s",
     }
     if (
         set(payload) != expected_keys
@@ -139,11 +156,26 @@ def validate_physical_proposal(
             "hierarchical physical proposal semantics are invalid"
         )
     exact_source = _sha1(source_sha, "proposal runtime source SHA")
+    if isinstance(payload["mission_lease_s"], bool):
+        raise MissionValidationError(
+            "proposal mission lease must be finite"
+        )
+    mission_lease_s = _finite(
+        payload["mission_lease_s"], "proposal mission lease"
+    )
     if (
         _sha1(payload["source_sha"], "proposal source SHA") != exact_source
         or mission_id != str(authority.get("mission_id", "")).strip()
         or supplied_digest
         != str(authority.get("proposal_digest", "")).strip()
+        or mission_lease_s <= 0.0
+        or mission_lease_s > MISSION_LEASE_MAX_S
+        or isinstance(authority.get("mission_lease_s"), bool)
+        or mission_lease_s
+        != _finite(
+            authority.get("mission_lease_s"),
+            "authority mission lease",
+        )
     ):
         raise MissionValidationError(
             "hierarchical physical proposal does not bind active authority"
@@ -218,6 +250,7 @@ class HierarchicalPhysicalApproval:
     approval_digest: str
     approved_at_s: float
     expires_at_s: float
+    mission_lease_s: float
     m7_3_evidence_sha256: str
     directional_addendum_sha256: str
     m7_4_evidence_sha256: str
@@ -259,6 +292,7 @@ class HierarchicalPhysicalApproval:
             "approval_id",
             "approved_at_s",
             "expires_at_s",
+            "mission_lease_s",
             "m7_3_evidence_sha256",
             "directional_addendum_sha256",
             "m7_4_evidence_sha256",
@@ -343,14 +377,29 @@ class HierarchicalPhysicalApproval:
         limits = HierarchicalPhysicalLimits(**dict(raw_limits))
         approved_at_s = _finite(payload["approved_at_s"], "approved time")
         expires_at_s = _finite(payload["expires_at_s"], "approval expiry")
+        if isinstance(payload["mission_lease_s"], bool):
+            raise MissionValidationError(
+                "approved mission lease must be finite"
+            )
+        mission_lease_s = _finite(
+            payload["mission_lease_s"], "approved mission lease"
+        )
         now = _finite(now_s, "approval validation time")
         if (
             approved_at_s > now
             or expires_at_s <= now
-            or expires_at_s - approved_at_s > limits.mission_lease_max_s
+            or mission_lease_s <= 0.0
+            or mission_lease_s > limits.mission_lease_max_s
+            or not math.isclose(
+                expires_at_s - approved_at_s,
+                mission_lease_s,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
         ):
             raise MissionValidationError(
-                "hierarchical approval is future-dated, expired, or exceeds the mission lease"
+                "hierarchical approval is future-dated, expired, or does not "
+                "exactly bind a valid mission lease"
             )
         return cls(
             mission_id=mission_id,
@@ -363,6 +412,7 @@ class HierarchicalPhysicalApproval:
             approval_digest=supplied_digest,
             approved_at_s=approved_at_s,
             expires_at_s=expires_at_s,
+            mission_lease_s=mission_lease_s,
             m7_3_evidence_sha256=m7_3,
             directional_addendum_sha256=directional,
             m7_4_evidence_sha256=m7_4,
@@ -610,6 +660,9 @@ class HierarchicalPhysicalAuthorityOwner:
             "reviewed_sha": self.reviewed_sha,
             "issued_at_s": now,
             "expires_at_s": approval.expires_at_s if active and approval else 0.0,
+            "mission_lease_s": (
+                approval.mission_lease_s if active and approval else 0.0
+            ),
             "limits": HierarchicalPhysicalLimits().to_json_dict(),
             "topics": {
                 "nav2_action": NAV2_ACTION,
@@ -680,6 +733,11 @@ def validate_authority_heartbeat(
         received = _finite(received_at_s, "authority receipt time")
         issued = _finite(payload.get("issued_at_s"), "authority issue time")
         expires = _finite(payload.get("expires_at_s"), "authority expiry")
+        if isinstance(payload.get("mission_lease_s"), bool):
+            return False, "mission_lease_invalid"
+        mission_lease_s = _finite(
+            payload.get("mission_lease_s"), "authority mission lease"
+        )
         age_limit = _finite(max_age_s, "authority heartbeat max age")
         if (
             age_limit <= 0.0
@@ -691,6 +749,11 @@ def validate_authority_heartbeat(
             return False, "authority_heartbeat_stale"
         if expires <= now:
             return False, "mission_lease_expired"
+        if (
+            mission_lease_s <= 0.0
+            or mission_lease_s > MISSION_LEASE_MAX_S
+        ):
+            return False, "mission_lease_invalid"
         if (
             payload.get("state") != "active"
             or payload.get("active") is not True
@@ -809,7 +872,7 @@ def build_nav2_goal_batch(
             or localization_age_s > LOCALIZATION_MAX_AGE_S
         ):
             raise MissionValidationError(
-                "Nav2 batch localization exceeds the fixed 0.300 s freshness gate"
+                "Nav2 batch localization exceeds the fixed 0.500 s freshness gate"
             )
         result = revalidate_resolved_goal(
             goal,
