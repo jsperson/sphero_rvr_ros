@@ -13,6 +13,7 @@ from sphero_rvr_driver.hierarchical_goal_selection import (
     build_semantic_world_snapshot,
 )
 from sphero_rvr_driver.hierarchical_mission_node import (
+    INDEPENDENT_FINISH_GATE_BYPASS_REASONS,
     INITIAL_SEMANTIC_REJECTION_LIMIT,
     PHYSICAL_FRONTIER_MIN_CLEARANCE_M,
     adapter_recovery_reason,
@@ -32,6 +33,7 @@ from sphero_rvr_driver.hierarchical_mission_node import (
     rolling_frontier_invalidation_preserves_route,
     requested_observation_supports_finish,
     semantic_non_motion_status,
+    semantic_finish_gate,
     semantic_rejection_rollover_due,
     semantic_target_invalidation_reason,
     updated_semantic_rejection_count,
@@ -1336,6 +1338,66 @@ def test_semantic_wait_holds_without_completing_the_mission() -> None:
         match="unsupported non-motion",
     ):
         semantic_non_motion_status("return_to_start")
+
+
+def test_finish_gate_defers_only_finish_until_nav2_reports_an_outcome() -> None:
+    active = {"state": "navigating", "goal_active": True}
+    dispatching = {"state": "dispatching", "goal_active": False}
+    settled = {"state": "wait_planning", "goal_active": False}
+
+    assert semantic_finish_gate("finish", active) == (
+        "defer",
+        "active_or_unsettled_nav2_leg",
+    )
+    assert semantic_finish_gate("finish", dispatching) == (
+        "defer",
+        "active_or_unsettled_nav2_leg",
+    )
+    assert semantic_finish_gate("finish", settled) == (
+        "eligible",
+        "nav2_leg_outcome_observed",
+    )
+    assert semantic_finish_gate("wait", active) == (
+        "not_applicable",
+        "non_finish_action",
+    )
+
+
+@pytest.mark.parametrize(
+    "termination_reason",
+    sorted(INDEPENDENT_FINISH_GATE_BYPASS_REASONS),
+)
+def test_finish_gate_never_applies_to_independent_termination(
+    termination_reason: str,
+) -> None:
+    assert semantic_finish_gate(
+        "finish",
+        {"state": "navigating", "goal_active": True},
+        independent_termination_reason=termination_reason,
+    ) == (
+        "bypass",
+        f"independent_termination:{termination_reason}",
+    )
+
+
+def test_live_finish_gate_is_after_independent_holds_and_is_durable() -> None:
+    source = (
+        REPO_ROOT
+        / "src"
+        / "sphero_rvr_driver"
+        / "hierarchical_mission_node.py"
+    ).read_text(encoding="utf-8")
+    tick = source[source.index("        def _tick(self) -> None:") :]
+    gate_at = tick.index("gate, gate_reason = semantic_finish_gate(")
+
+    assert tick.index("if not authority_valid:") < gate_at
+    assert tick.index("if not motion_evidence_fresh:") < gate_at
+    assert tick.index("if collision_hold_state:") < gate_at
+    assert '"semantic_finish_deferred"' in tick
+    assert '"semantic_finish_released"' in tick
+    assert '"finish_only": True' in tick
+    deferred = tick[tick.index('if gate == "defer":') : gate_at + 6000]
+    assert "cancel_active_goal=True" not in deferred
 
 
 def test_browser_projection_exposes_installed_but_locked_binding(

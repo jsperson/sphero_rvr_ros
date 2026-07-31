@@ -210,6 +210,16 @@ def _wait_decision(snapshot: dict) -> dict:
     )
 
 
+def _finish_decision(snapshot: dict) -> dict:
+    evidence_id = snapshot["evidence_ids"][0]
+    return _decision(
+        snapshot,
+        "finish",
+        {"outcome": "partial", "evidence_ids": [evidence_id]},
+        rationale=f"Finish partial based on evidence {evidence_id}.",
+    )
+
+
 def _wait_for_provider(
     provider: ScriptedSemanticGoalProvider,
     calls: int,
@@ -980,6 +990,73 @@ def test_supervisor_veto_is_immediate_while_provider_is_blocked() -> None:
         )
     finally:
         release.set()
+        controller.close()
+
+
+@pytest.mark.parametrize(
+    ("safety", "expected_state", "expected_reason"),
+    [
+        ({"stop": True}, "terminal_safety", "operator_stop"),
+        ({"estop": True}, "terminal_safety", "estop"),
+        ({"cancelled": True}, "terminal_safety", "cancelled"),
+        (
+            {"collision_state": "BLOCKED"},
+            "terminal_safety",
+            "collision_veto",
+        ),
+        (
+            {"motion_evidence_fresh": False},
+            "wait_planning",
+            "motion_evidence_stale",
+        ),
+    ],
+)
+def test_ready_finish_never_delays_independent_zero_or_termination(
+    safety: dict,
+    expected_state: str,
+    expected_reason: str,
+) -> None:
+    snapshot = _snapshot()
+    provider = ScriptedSemanticGoalProvider([_finish_decision])
+    controller = AsyncSemanticGoalController(provider)
+    try:
+        controller.start(
+            _decision(
+                snapshot,
+                "go_to_frontier",
+                {"frontier_id": snapshot["frontiers"][0]["signature"]},
+            ),
+            snapshot,
+        )
+        controller.tick(
+            snapshot,
+            now_s=0.0,
+            remaining_distance_m=2.5,
+            eta_s=10.0,
+        )
+        _wait_for_provider(provider, 1)
+        controller.tick(
+            snapshot,
+            now_s=0.1,
+            remaining_distance_m=2.49,
+            eta_s=9.9,
+        )
+        ready = controller.ready_non_motion_goal()
+        assert ready is not None
+        assert ready.decision.action == "finish"
+
+        stopped = controller.tick(
+            snapshot,
+            now_s=0.2,
+            remaining_distance_m=2.48,
+            eta_s=9.8,
+            **safety,
+        )
+
+        assert stopped.handoff.state == expected_state
+        assert stopped.handoff.command.zero_required is True
+        assert stopped.handoff.command.reason == expected_reason
+    finally:
         controller.close()
 
 
