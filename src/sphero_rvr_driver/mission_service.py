@@ -952,9 +952,10 @@ class MissionService:
         with self._lock:
             row = self._prompt_row(mission_id)
             approval = _json_load(row["approval_json"], {})
-            if row["status"] != "complete":
+            if not _hierarchical_no_contact_observation_eligible(row):
                 raise MissionValidationError(
-                    "no-contact observation requires a completed canonical mission"
+                    "no-contact observation requires a completed or clean "
+                    "lease-expired canonical mission"
                 )
             if (
                 set(unsigned) != expected_keys
@@ -2063,6 +2064,9 @@ class MissionService:
                 "result": _json_load(row["result_json"], {}),
                 "terminal_reason": row["terminal_reason"],
                 "recovery_required": bool(row["recovery_required"]),
+                "no_contact_observation_eligible": (
+                    _hierarchical_no_contact_observation_eligible(row)
+                ),
                 "source_sha": row["source_sha"],
                 "deployed_sha": row["deployed_sha"],
                 "live_execution_enabled": self.live_execution_enabled,
@@ -2527,6 +2531,61 @@ def _json_load(value: str, default: Any) -> Any:
     if not value:
         return default
     return json.loads(value)
+
+
+def _hierarchical_no_contact_observation_eligible(
+    row: Mapping[str, Any],
+) -> bool:
+    """Allow observation only after a canonical, safely relocked terminal.
+
+    Completed canonical missions retain their existing eligibility.  A timeout
+    is eligible only when it is the exact bounded lease-expiry result and its
+    durable result proves successful cleanup, zero motion authority, no restart
+    resume, matching provenance, and a finite closed run interval.  Other
+    terminal states remain ineligible.
+    """
+
+    proposal = _json_load(str(row["proposal_json"]), {})
+    if (
+        not isinstance(proposal, Mapping)
+        or proposal.get("schema")
+        != "sphero_rvr.hierarchical_physical_proposal.v1"
+    ):
+        return False
+    status = str(row["status"])
+    if status == "complete":
+        return True
+    if status != "timeout":
+        return False
+    result = _json_load(str(row["result_json"]), {})
+    if not isinstance(result, Mapping):
+        return False
+    run_evidence = result.get("run_evidence", {})
+    if not isinstance(run_evidence, Mapping):
+        return False
+    try:
+        started_at_s = float(run_evidence.get("started_at_s"))
+        ended_at_s = float(run_evidence.get("ended_at_s"))
+    except (TypeError, ValueError):
+        return False
+    reason = "canonical M7.6 mission lease expired"
+    return bool(
+        result.get("schema")
+        == "sphero_rvr.hierarchical_canonical_result.v1"
+        and str(result.get("mission_id", "")) == str(row["mission_id"])
+        and result.get("status") == "timeout"
+        and result.get("reason") == reason
+        and str(row["terminal_reason"]) == reason
+        and result.get("cleanup_verified") is True
+        and result.get("motion_authority") is False
+        and result.get("restart_resume_allowed") is False
+        and str(result.get("source_sha", "")) == str(row["source_sha"])
+        and str(result.get("deployed_sha", ""))
+        == str(row["deployed_sha"])
+        and math.isfinite(started_at_s)
+        and math.isfinite(ended_at_s)
+        and ended_at_s >= started_at_s
+    )
 
 
 def _require_provenance(value: str, name: str) -> str:

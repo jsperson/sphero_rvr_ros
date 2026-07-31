@@ -2,11 +2,14 @@
 
 ## State
 
-The bench/replay implementation is complete. Physical deployment and attended
-motion validation are deliberately pending a separate exact-SHA authorization.
-This change reaches motor behavior indirectly by allowing an already accepted
-Nav2 leg to continue, so it must not be deployed or exercised under the Phase
-0A no-motion authority.
+The finish gate was merged and deployed at `8ff975338b87743e96d93b3e67436ac145b38565`.
+Attended physical attempt 1 ended at the bounded mission lease with clean
+relock/cleanup, no contact, and about 0.925 m maximum displacement. It did not
+meet the Phase 1 acceptance gate: its first target was 86.35 degrees to the
+right, so the run is `geometry_ineligible`, and its 226 fragmented forward
+windows contained no qualifying continuous one-second straight window. The
+operator saw similar jitter and the rover became hung on a raised chair-mat
+ridge. This yields no motor-breakaway verdict and does not route to Phase 0B.
 
 ## Selected fix
 
@@ -155,7 +158,34 @@ The exact command for post-run analysis remains:
 
 ```bash
 PYTHONPATH=src python3 -m sphero_rvr_driver.drive_trace_analysis \
+  /path/to/private-phase1-trace.previous.jsonl \
   /path/to/private-phase1-trace.jsonl \
   --context /path/to/sha-bound-phase1-context.json \
   --output /path/to/phase1-drive-analysis.json
 ```
+
+Trace paths are chronological. A single unrotated trace remains accepted; for
+rotated traces, concatenating the ordered segment bytes is the exact digest and
+event stream analyzed. Reversing the segments fails closed because the stream
+must begin with its one `trace_started` record and end with its one
+`trace_summary` record.
+
+## Safe-timeout evidence contract
+
+A bounded lease expiry is a valid evidence terminal, not a successful mission.
+The analyzer accepts it only when the mission-bound controller terminal is
+exactly `recovery_required` / `mission_lease_expired` and the SHA-bound context
+contains exactly one terminal proof: either the existing semantic completion or
+a `mission_terminal` with `status=timeout`,
+`controller_state=recovery_required`, and `reason=mission_lease_expired`.
+Other recovery terminals remain rejected.
+
+The browser's authenticated no-contact observation is likewise available after
+a clean lease-expired canonical result only when durable evidence proves all of
+the following: canonical proposal/result schemas and matching mission ID;
+matching source/deployed SHAs; the exact canonical lease-expiry reason;
+successful cleanup; motion authority false; restart/resume false; and a finite,
+closed run interval. Normal completed missions retain their prior eligibility.
+Every other timeout or terminal state remains ineligible. This observation
+contract changes neither the mission result nor any motion, authority, lease,
+STOP, ESTOP, collision, or cleanup behavior.

@@ -877,12 +877,21 @@ def test_stale_lidar_is_observed_without_outer_session_termination(
             time.sleep(0.01)
             terminal = controller.status(proposed["mission_id"])
         assert terminal["status"] == "timeout"
+        assert terminal["no_contact_observation_eligible"] is True
         evidence = terminal["result"]["run_evidence"]
         assert evidence["required_sensor_freshness_violations"] == 0
         assert (
             evidence["sensor_freshness_hold_observations"][source_name]
             >= 1
         )
+        observed = controller.confirm_no_contact(
+            proposed["mission_id"],
+            operator="scott",
+            authentication_source="tailscale-serve",
+        )
+        assert [
+            event["kind"] for event in observed["events"]
+        ].count("hierarchical_no_contact_observation") == 1
     finally:
         controller.close()
         service.close()
