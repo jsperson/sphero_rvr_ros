@@ -1,7 +1,0 @@
-#!/usr/bin/env python3
-"""Console wrapper for the replay-first shoe detector evaluator."""
-
-from sphero_rvr_driver.shoe_detector import main
-
-if __name__ == "__main__":
-    raise SystemExit(main())

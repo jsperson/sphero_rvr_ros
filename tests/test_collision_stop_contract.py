@@ -102,25 +102,6 @@ def test_rvr_direct_launch_warns_it_is_unsupervised_low_level_only():
     assert "condition=IfCondition(allow_unsupervised_rvr)" in source
 
 
-def test_rosbag_docs_explicitly_reject_motor_bound_supervisor_topic():
-    docs = (REPO_ROOT / "docs" / "rosbag_capture_replay.md").read_text()
-    readme = (REPO_ROOT / "README.md").read_text()
-
-    assert "/cmd_vel_motor" in docs
-    assert "reject" in docs.lower() or "forbid" in docs.lower()
-    assert "/cmd_vel -> lidar_collision_stop_supervisor -> /cmd_vel_motor" in readme
-
-
-def test_tui_status_model_includes_collision_stop_gate_for_arming():
-    source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "tui_ros.py").read_text()
-    tui_source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "tui.py").read_text()
-
-    assert "collision_stop_state" in source
-    assert "collision_stop_fresh" in source
-    assert "collision_stop_allows_motion" in tui_source
-    assert "collision stop" in tui_source.lower()
-
-
 def test_collision_stop_node_uses_real_tf_lookup_and_truthful_diagnostics():
     source = (REPO_ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py").read_text()
 

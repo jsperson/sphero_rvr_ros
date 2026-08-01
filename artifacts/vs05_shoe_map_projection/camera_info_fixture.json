@@ -1,8 +1,0 @@
-{
-  "width": 800,
-  "height": 600,
-  "k": [500.0, 0.0, 400.0, 0.0, 500.0, 300.0, 0.0, 0.0, 1.0],
-  "d": [0.0, 0.0, 0.0, 0.0, 0.0],
-  "distortion_model": "plumb_bob",
-  "note": "Synthetic sanitized fixture for offline VS05 schema validation; runtime must use measured /camera_node/camera_info from the robot-local calibration file."
-}
