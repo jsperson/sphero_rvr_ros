@@ -562,11 +562,12 @@ async def test_native_tank_si_pivot_uses_calibrated_track_width():
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    moving = _tank_si_drive_packets(transport, driver)
+    moving = _tank_drive_packets(transport, driver)
     assert moving
-    left, right = struct.unpack(">ff", moving[0].payload)
-    assert left == pytest.approx(-0.4 * 0.2507 / 2.0)
-    assert right == pytest.approx(0.4 * 0.2507 / 2.0)
+    left, right = struct.unpack(">bb", moving[0].payload)
+    assert left == -30
+    assert right == 30
+    assert not _tank_si_drive_packets(transport, driver)
 
 
 @pytest.mark.asyncio
@@ -675,11 +676,12 @@ async def test_driver_uses_opposing_tank_si_velocities_for_pure_turning():
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    tank_packets = _tank_si_drive_packets(transport, driver)
+    tank_packets = _tank_drive_packets(transport, driver)
     assert tank_packets
-    left, right = struct.unpack(">ff", tank_packets[0].payload)
-    assert left == pytest.approx(-0.05014)
-    assert right == pytest.approx(0.05014)
+    left, right = struct.unpack(">bb", tank_packets[0].payload)
+    assert left == -30
+    assert right == 30
+    assert not _tank_si_drive_packets(transport, driver)
     assert not _rc_drive_packets(transport, driver)
     assert all(packet.payload == RAW_OFF for packet in _raw_motor_packets(transport, driver))
 
