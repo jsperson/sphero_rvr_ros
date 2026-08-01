@@ -42,7 +42,8 @@ class RVRNodeConfig:
     max_raw_motor_duty: int = 160
     max_linear_raw_motor_duty: int = 64
     max_angular_raw_motor_duty: int = 255
-    pivot_raw_motor_duty: int = 24
+    pivot_target_rate_rad_s: float = 1.3
+    pivot_max_duty: int = 45
     velocity_control_mode: str = RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     battery_publish_period: float = 5.0
     temperature_publish_period: float = 2.0
@@ -81,7 +82,8 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         max_raw_motor_duty=config.max_raw_motor_duty,
         max_linear_raw_motor_duty=config.max_linear_raw_motor_duty,
         max_angular_raw_motor_duty=config.max_angular_raw_motor_duty,
-        pivot_raw_motor_duty=config.pivot_raw_motor_duty,
+        pivot_target_rate_rad_s=config.pivot_target_rate_rad_s,
+        pivot_max_duty=config.pivot_max_duty,
         velocity_control_mode=config.velocity_control_mode,
         wheel_track_m=config.odom_wheel_track_m,
     )
@@ -211,7 +213,8 @@ def main(args=None):
             self.declare_parameter("max_raw_motor_duty", defaults.max_raw_motor_duty)
             self.declare_parameter("max_linear_raw_motor_duty", defaults.max_linear_raw_motor_duty)
             self.declare_parameter("max_angular_raw_motor_duty", defaults.max_angular_raw_motor_duty)
-            self.declare_parameter("pivot_raw_motor_duty", defaults.pivot_raw_motor_duty)
+            self.declare_parameter("pivot_target_rate_rad_s", defaults.pivot_target_rate_rad_s)
+            self.declare_parameter("pivot_max_duty", defaults.pivot_max_duty)
             self.declare_parameter("velocity_control_mode", defaults.velocity_control_mode)
             self.declare_parameter("battery_publish_period", defaults.battery_publish_period)
             self.declare_parameter("temperature_publish_period", defaults.temperature_publish_period)
@@ -247,7 +250,8 @@ def main(args=None):
                 max_raw_motor_duty=int(self.get_parameter("max_raw_motor_duty").value),
                 max_linear_raw_motor_duty=int(self.get_parameter("max_linear_raw_motor_duty").value),
                 max_angular_raw_motor_duty=int(self.get_parameter("max_angular_raw_motor_duty").value),
-                pivot_raw_motor_duty=int(self.get_parameter("pivot_raw_motor_duty").value),
+                pivot_target_rate_rad_s=float(self.get_parameter("pivot_target_rate_rad_s").value),
+                pivot_max_duty=int(self.get_parameter("pivot_max_duty").value),
                 velocity_control_mode=str(self.get_parameter("velocity_control_mode").value),
                 battery_publish_period=float(self.get_parameter("battery_publish_period").value),
                 temperature_publish_period=float(self.get_parameter("temperature_publish_period").value),
@@ -467,6 +471,8 @@ def main(args=None):
             self._publish_odom_sample(sample)
 
         def _publish_odom_sample(self, sample: OdomSample) -> None:
+            # Feed measured yaw rate back to the driver for closed-loop pivots.
+            self._driver_thread.driver.set_measured_yaw_rate(sample.angular_rad_s)
             stamp = self.get_clock().now().to_msg()
             qz = math.sin(sample.yaw / 2.0)
             qw = math.cos(sample.yaw / 2.0)

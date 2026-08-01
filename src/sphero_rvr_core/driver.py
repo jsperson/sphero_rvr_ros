@@ -72,7 +72,10 @@ class RVRDriver:
         safe_stop_retry_delay: float = 0.02,
         safety_dispatch_timeout_s: float = 0.10,
         wheel_track_m: float = 0.2507,
-        pivot_raw_motor_duty: int = 24,
+        pivot_target_rate_rad_s: float = 1.3,
+        pivot_max_duty: int = 45,
+        pivot_min_duty: int = 20,
+        pivot_duty_gain: float = 1.5,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -102,7 +105,12 @@ class RVRDriver:
                 int(max_angular_raw_motor_duty if max_angular_raw_motor_duty is not None else self._max_raw_motor_duty),
             ),
         )
-        self._pivot_raw_motor_duty = max(0, min(127, int(pivot_raw_motor_duty)))
+        self._pivot_target_rate_rad_s = max(0.0, float(pivot_target_rate_rad_s))
+        self._pivot_max_duty = max(0, min(127, int(pivot_max_duty)))
+        self._pivot_min_duty = max(0, min(self._pivot_max_duty, int(pivot_min_duty)))
+        self._pivot_duty_gain = max(0.0, float(pivot_duty_gain))
+        self._pivot_duty_cmd = 0.0
+        self._measured_yaw_rate = 0.0
         normalized_control_mode = str(velocity_control_mode).strip().lower()
         if normalized_control_mode == self.VELOCITY_CONTROL_NATIVE_RC_SI:
             raise ValueError(
@@ -155,6 +163,10 @@ class RVRDriver:
         await self._queue.stop()
         await self._dispatcher.stop()
         self._connected = False
+
+    def set_measured_yaw_rate(self, yaw_rate_rad_s: float) -> None:
+        """Feed measured yaw rate (from odometry) for closed-loop pivot control."""
+        self._measured_yaw_rate = float(yaw_rate_rad_s)
 
     async def set_velocity(self, linear_mps: float, angular_rad_s: float) -> None:
         self._raise_if_emergency_stopped()
@@ -569,15 +581,20 @@ class RVRDriver:
                 )
                 continue
             if abs(velocity.linear_mps) < 0.005 and abs(velocity.angular_rad_s) > 0.0:
-                # Firmware tank-SI can't actuate a slow opposite-signed pivot, so
-                # pivot at a fixed raw duty. Turn breakaway is ~duty 20; the
-                # default 24 gives a steady, controllable ~1.4 rad/s (duty 30 was
-                # a violent ~3.5). Direction comes from the sign of angular.
-                duty = (
-                    self._pivot_raw_motor_duty
-                    if velocity.angular_rad_s > 0.0
-                    else -self._pivot_raw_motor_duty
+                # Closed-loop pivot. The motor cannot pivot smoothly below its
+                # breakaway (~duty 20 -> ~1.3 rad/s), and breakaway is asymmetric
+                # per direction, so we cannot hold Nav2's small commanded rate.
+                # Instead hold a fixed target pivot rate: ramp the raw duty from
+                # the measured-vs-target yaw-rate error so each direction finds
+                # the duty it needs. Direction comes from the sign of the command.
+                sign = 1.0 if velocity.angular_rad_s > 0.0 else -1.0
+                error = self._pivot_target_rate_rad_s - abs(self._measured_yaw_rate)
+                self._pivot_duty_cmd += self._pivot_duty_gain * error
+                self._pivot_duty_cmd = min(
+                    float(self._pivot_max_duty),
+                    max(float(self._pivot_min_duty), self._pivot_duty_cmd),
                 )
+                duty = int(round(sign * self._pivot_duty_cmd))
                 await self._send_from_control_loop(
                     lambda seq: self.commands.drive_tank_normalized(
                         seq,
@@ -587,6 +604,7 @@ class RVRDriver:
                     motion_generation=motion_generation,
                 )
                 continue
+            self._pivot_duty_cmd = 0.0
             half_track = self._wheel_track_m / 2.0
             left_mps = velocity.linear_mps - velocity.angular_rad_s * half_track
             right_mps = velocity.linear_mps + velocity.angular_rad_s * half_track
