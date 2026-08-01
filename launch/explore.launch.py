@@ -21,6 +21,7 @@ def generate_launch_description():
     default_rvr_params = share / "config" / "lean_rvr_tank_si.yaml"
     default_slam_params = share / "config" / "slam_toolbox.yaml"
     default_nav2_params = share / "config" / "lean_nav2.yaml"
+    default_explore_lite_params = share / "config" / "lean_explore_lite.yaml"
     standard_nav_to_pose_bt = (
         nav2_bt_share
         / "behavior_trees"
@@ -33,6 +34,7 @@ def generate_launch_description():
     rvr_params_file = LaunchConfiguration("rvr_params_file")
     slam_params_file = LaunchConfiguration("slam_params_file")
     nav2_params_file = LaunchConfiguration("nav2_params_file")
+    explore_lite_params_file = LaunchConfiguration("explore_lite_params_file")
 
     supervised = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(str(supervised_launch)),
@@ -106,6 +108,14 @@ def generate_launch_description():
             parameters=[nav2_params_file],
         ),
     ]
+    explore_lite = Node(
+        package="explore_lite",
+        executable="explore",
+        name="explore_node",
+        output="screen",
+        parameters=[explore_lite_params_file],
+        remappings=[("navigate_to_pose", "/navigate_to_pose")],
+    )
 
     return LaunchDescription(
         [
@@ -130,9 +140,14 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "nav2_params_file", default_value=str(default_nav2_params)
             ),
+            DeclareLaunchArgument(
+                "explore_lite_params_file",
+                default_value=str(default_explore_lite_params),
+            ),
             supervised,
             lidar,
             mapping,
             *nav2_nodes,
+            explore_lite,
         ]
     )

@@ -47,6 +47,7 @@ setup(
                 "config/hierarchical_navigate_through_poses.xml",
                 "config/lean_rvr_tank_si.yaml",
                 "config/lean_nav2.yaml",
+                "config/lean_explore_lite.yaml",
             ],
         ),
         (

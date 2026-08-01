@@ -163,3 +163,62 @@ ros2 service call /stop std_srvs/srv/Trigger "{}"
 
 Cut chassis power immediately for unsafe motion; do not wait for software. This
 guide does not authorize Codex or any unattended agent to run the rover.
+
+## Phase 3 attended frontier exploration
+
+`explore.launch.py` now adds the pinned upstream `explore_lite` node to the
+proven lean spine. It reads the Nav2 global costmap, whose static layer reads
+slam_toolbox `/map`, and sends ordinary `/navigate_to_pose` goals. The existing
+velocity and safety path is unchanged:
+
+```text
+explore_lite -> /navigate_to_pose -> Nav2 -> /cmd_vel
+  -> lidar_collision_stop_supervisor (sole /cmd_vel_motor publisher)
+  -> sphero_rvr_driver (native_tank_si, 0.05 m/s cap)
+```
+
+This run is attended only. Use a small, cleared, level, bounded room with no
+stairs, ledges, drop-offs, pets, or people in the rover's path. Keep one hand at
+chassis power. Before launch, import and build the pinned source dependency:
+
+```bash
+ssh sphero-pi-2
+cd /home/jsperson/ros2_ws
+source /opt/ros/jazzy/setup.bash
+vcs import --skip-existing src < src/sphero_rvr_ros/workspace.repos
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install --packages-up-to explore_lite sphero_rvr_driver
+source install/setup.bash
+
+systemctl --user stop rvr-hierarchical-mission.service rvr-telemetry.service
+sudo fuser /dev/ttyAMA0 /dev/ttyUSB0
+```
+
+`fuser` must print no owner. Then start the complete exploration graph:
+
+```bash
+ros2 launch sphero_rvr_driver explore.launch.py start_motion_stack:=true
+```
+
+Stop immediately if repeated turns stall, motion wanders instead of acquiring
+frontiers, or speed is unsafe. A stall is a turn-mapping finding to report before
+any tuning; the known roughly 20-degree left drift is only a watch-item. Cut
+chassis power for unsafe motion rather than waiting for software.
+
+When the room is covered, stop motion and save the map from a second sourced
+terminal:
+
+```bash
+ros2 service call /stop std_srvs/srv/Trigger "{}"
+ros2 run nav2_map_server map_saver_cli -f /home/jsperson/room_map
+```
+
+Finally press Ctrl-C in the launch terminal and verify both devices are released:
+
+```bash
+sudo fuser /dev/ttyAMA0 /dev/ttyUSB0
+```
+
+Acceptance is successive autonomous frontier goals, a map covering the bounded
+room, an independently responsive brake, and a clean shutdown. Do not run this
+procedure unattended.
