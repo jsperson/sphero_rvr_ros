@@ -1,6 +1,6 @@
 # Architecture Map
 
-Updated: 2026-07-31
+Updated: 2026-08-01
 
 This is the single maintained map of current module, process, topic, and
 authority ownership. Read it immediately after the canonical Obsidian status
@@ -25,8 +25,8 @@ record decisions and evidence; they are not competing architecture maps.
 | Private velocity bridge and bounded drive trace | `live_route_runner_node.py`: node/executable `live_route_runner`; `drive_trace.py`: `BoundedDriveTrace` | `/nav2_cmd_vel_request` -> `/cmd_vel`; observes `/cmd_vel_motor`, controller/adapter state, collision, odom, encoders, and authority | Sole hierarchical `/cmd_vel` publisher. Owns receipt-time lease, caps, drivetrain breakaway/escape adaptation, zero on stale/cancel/lost authority, and a private bounded JSONL trace of all three velocity seams plus physical progress. It never publishes `/cmd_vel_motor`. |
 | Independent collision and final arbitration | `collision_stop_node.py`: `LidarCollisionStopSupervisorNode`, node `lidar_collision_stop_supervisor`, executable `lidar_collision_stop_supervisor` | `/cmd_vel` + `/scan` + STOP/ESTOP -> `/cmd_vel_motor` | Sole `/cmd_vel_motor` publisher. Owns slow/stop, directional escape veto, stale-command zeroing, STOP, ESTOP, and reset rules independently of model/Nav2. |
 | Hardware transport and odometry | `rvr_node.py`: `SpheroRVRNode`, node `sphero_rvr_driver`, executable `rvr_node`; supervised launch remaps its `cmd_vel` input | `/cmd_vel_motor` -> `/dev/ttyAMA0`; publishes `/odom`, `/encoder_counts`, TF, battery and diagnostics | Sole rover UART owner and motor transport. It does not decide missions, paths, or collision policy. |
-| Optional lean single-goal navigation | `explore.launch.py`; `lean_nav2.yaml`: SmacPlanner2D + Regulated Pure Pursuit + standard plan/follow-only NavigateToPose BT | `/navigate_to_pose` -> Nav2 -> `/cmd_vel`; lidar + `slam_toolbox` supply `/scan`, `/map`, and TF | Get-Well Phase 2 diagnostic path only. Nav2 owns planning and requested `Twist`; it never publishes `/cmd_vel_motor`. No velocity smoother, deadband, bridge, adapter, mission, camera, or model node is present. |
-| Optional lean native-SI transport | `lean_rvr_native_si.yaml`, passed explicitly through `supervised_rvr.launch.py` | `/cmd_vel_motor` -> `rvr_node` with `velocity_control_mode: native_rc_si` | Reuses the same driver, UART ownership, `0.10 m/s` / `0.4 rad/s` limits, and odometry calibration without changing deployed `rvr.yaml`. Straight motion uses firmware RC-SI; turning retains the driver's bounded tank behavior. |
+| Quarantined lean single-goal navigation | `explore.launch.py`; `lean_nav2.yaml`: SmacPlanner2D + Regulated Pure Pursuit + standard plan/follow-only NavigateToPose BT | `/navigate_to_pose` -> Nav2 -> `/cmd_vel`; lidar + `slam_toolbox` supply `/scan`, `/map`, and TF | Get-Well diagnostic path only. It remains default-off and no goal is allowed until the attended tank-SI mapping gate passes. Nav2 never publishes `/cmd_vel_motor`; no smoother, bridge, adapter, mission, camera, or model node is present. |
+| Optional lean native tank-SI transport | `lean_rvr_tank_si.yaml`, passed explicitly through `supervised_rvr.launch.py`; `tank_si_mapping_validation.py` | `/cmd_vel_motor` -> `rvr_node` -> `RVRDriver.set_velocity`; exclusive attended validation uses the same driver path | Maps each bounded `Twist` to `drive_tank_si_units(linear - angular*track/2, linear + angular*track/2)` with the odometry track width. Lean linear/angular limits are `0.05 m/s` / `0.4 rad/s`; deployed `rvr.yaml` stays unchanged. RC-SI is quarantined and rejected. |
 | Durable physical evaluation | `hierarchical_physical_binding.py`: schemas/digests/journal; `hierarchical_m7_canonical_validation.py`: executable `rvr_hierarchical_m7_canonical_validate`; `drive_trace_analysis.py`: ROS-free synchronized-trace analyzer | Mission DB, binding journal, provider-time snapshots, paths, checkpoints, cleanup capture, private drive JSONL | Recomputes physical evidence and SHA-bound drive metrics; it cannot create authority or accept hand-entered pass claims. |
 
 ## Canonical physical flow
@@ -62,7 +62,8 @@ browser proposal + authenticated approval
 | Private Nav2 velocity request | `/nav2_cmd_vel_request` |
 | Supervisor request | `/cmd_vel` |
 | Final motor command | `/cmd_vel_motor` |
-| Linear/angular ceilings | `0.10 m/s` / `0.4 rad/s` |
+| Canonical hierarchical linear/angular ceilings | `0.10 m/s` / `0.4 rad/s` |
+| Quarantined lean linear/angular ceilings | `0.05 m/s` / `0.4 rad/s` |
 | Command lease | `0.50 s` |
 | Authority heartbeat maximum age | `0.75 s` |
 | Planning localization maximum age | `0.50 s` |
@@ -86,13 +87,13 @@ This path is additive and diagnostic. It does not delete or silently rewire the
 canonical hierarchical graph:
 
 ```text
-one attended /navigate_to_pose goal
+one attended /navigate_to_pose goal (only after a separate tank-SI mapping PASS)
   -> SmacPlanner2D + Regulated Pure Pursuit
   -> /cmd_vel (geometry_msgs/Twist)
   -> lidar_collision_stop_supervisor (sole /cmd_vel_motor publisher)
   -> /cmd_vel_motor
-  -> sphero_rvr_driver with lean_rvr_native_si.yaml
-  -> native RC-SI straight drive -> UART -> rover
+  -> sphero_rvr_driver with lean_rvr_tank_si.yaml
+  -> native tank-SI differential drive -> UART -> rover
 ```
 
 `explore.launch.py` includes `supervised_rvr.launch.py` with both optional
@@ -100,7 +101,10 @@ command producers disabled, includes `lidar.launch.py` once for RPLidar and the
 measured `base_link -> laser` transform, and uses `mapping.launch.py` only for
 live `slam_toolbox`. It starts no camera, mission service, hierarchical/adaptive
 controller, semantic adapter, live-route bridge, LLM, or evidence process. The
-attended procedure is `docs/lean_explore_run_guide.md`.
+mapping gate is `docs/lean_explore_run_guide.md`. The 2026-08-01 RC-SI run was
+smooth but measured roughly ten times the requested speed, so this flow is
+quarantined until the real-driver tank-SI floor check passes. Goal acceptance is
+a later, separately attended step.
 
 ## Legacy and non-canonical paths
 

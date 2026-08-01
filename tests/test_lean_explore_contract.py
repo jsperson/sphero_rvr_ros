@@ -44,14 +44,16 @@ def _remappings(call: ast.Call) -> list[tuple[str, str]]:
     return []
 
 
-def test_lean_driver_uses_native_si_without_changing_deployed_rvr_config() -> None:
+def test_lean_driver_uses_native_tank_si_without_changing_deployed_rvr_config() -> None:
     deployed = _yaml("config/rvr.yaml")["sphero_rvr_driver"]["ros__parameters"]
-    lean = _yaml("config/lean_rvr_native_si.yaml")["sphero_rvr_driver"]["ros__parameters"]
+    lean_path = REPO_ROOT / "config/lean_rvr_tank_si.yaml"
+    lean = _yaml("config/lean_rvr_tank_si.yaml")["sphero_rvr_driver"]["ros__parameters"]
 
     assert deployed["velocity_control_mode"] == "raw_motor"
-    assert lean["velocity_control_mode"] == "native_rc_si"
+    assert lean["velocity_control_mode"] == "native_tank_si"
+    assert lean["max_linear_mps"] == 0.05
+    assert "native_rc_si" not in lean_path.read_text(encoding="utf-8")
     for name, expected in {
-        "max_linear_mps": 0.10,
         "max_angular_rad_s": 0.4,
         "odom_counts_per_meter": 4337.768,
         "odom_wheel_track_m": 0.2507,
@@ -82,7 +84,7 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
     assert '"start_range_motion": "false"' in source
     assert '"start_live_route_runner": "false"' in source
     assert '"rvr_params_file": rvr_params_file' in source
-    assert "lean_rvr_native_si.yaml" in source
+    assert "lean_rvr_tank_si.yaml" in source
     assert "lidar.launch.py" in source
     assert "mapping.launch.py" in source
     assert '"start_rvr": "false"' in source
@@ -115,7 +117,7 @@ def test_lean_nav2_has_explicit_unstamped_bounded_single_goal_contracts() -> Non
     assert follow["plugin"] == (
         "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
     )
-    assert follow["desired_linear_vel"] == 0.10
+    assert follow["desired_linear_vel"] == 0.05
     assert follow["rotate_to_heading_angular_vel"] == 0.4
     assert follow["min_approach_linear_velocity"] == 0.05
     assert follow["use_regulated_linear_velocity_scaling"] is False
@@ -178,7 +180,7 @@ def test_lean_explore_surfaces_are_installed() -> None:
 
     for path in (
         "launch/explore.launch.py",
-        "config/lean_rvr_native_si.yaml",
+        "config/lean_rvr_tank_si.yaml",
         "config/lean_nav2.yaml",
         "docs/lean_explore_run_guide.md",
     ):

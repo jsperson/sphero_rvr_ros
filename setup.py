@@ -45,7 +45,7 @@ setup(
                 "config/hierarchical_nav2_physical.yaml",
                 "config/hierarchical_slam_toolbox.yaml",
                 "config/hierarchical_navigate_through_poses.xml",
-                "config/lean_rvr_native_si.yaml",
+                "config/lean_rvr_tank_si.yaml",
                 "config/lean_nav2.yaml",
             ],
         ),
@@ -233,6 +233,7 @@ setup(
             "rvr_m7_surveyed_localization = sphero_rvr_driver.m7_surveyed_localization:main",
             "rvr_m7_attended_validation = sphero_rvr_driver.m7_attended_validation:main",
             "rvr_hierarchical_m7_canonical_validate = sphero_rvr_driver.hierarchical_m7_canonical_validation:main",
+            "rvr_tank_si_mapping_validate = sphero_rvr_driver.tank_si_mapping_validation:main",
         ],
     },
 )

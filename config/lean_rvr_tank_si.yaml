@@ -6,15 +6,15 @@ sphero_rvr_driver:
     control_period: 0.05
     safety_dispatch_timeout_s: 0.20
 
-    # Get-Well Phase 2 clean path: reproduce the firmware-controlled SI
-    # straight-drive behavior proven by the attended drivetrain bench. This is
-    # intentionally separate from deployed rvr.yaml, which remains raw_motor.
-    velocity_control_mode: native_rc_si
-    max_linear_mps: 0.10
+    # Get-Well Phase 2b clean path. Every Twist is converted to left/right SI
+    # tread velocity in RVRDriver and sent with drive_tank_si_units, the command
+    # physically proven smooth at 0.05 m/s. The deployed rvr.yaml stays intact.
+    velocity_control_mode: native_tank_si
+    max_linear_mps: 0.05
     max_angular_rad_s: 0.4
 
-    # Retained because the driver still uses its bounded normalized-tank path
-    # for turns; these are ceilings, not a deadband or smoother.
+    # These raw-duty settings remain inert in native_tank_si mode and preserve
+    # the shared node schema; there is no deadband or velocity smoother.
     max_raw_motor_duty: 160
     max_linear_raw_motor_duty: 64
     max_angular_raw_motor_duty: 255
@@ -27,7 +27,7 @@ sphero_rvr_driver:
     ambient_light_publish_period: 2.0
     odom_publish_period: 0.1
 
-    # Preserve the deployed calibration and TF contract exactly.
+    # The same track width drives both tank-SI kinematics and odometry.
     odom_counts_per_meter: 4337.768
     odom_wheel_track_m: 0.2507
     odom_frame_id: odom

@@ -81,6 +81,7 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         max_linear_raw_motor_duty=config.max_linear_raw_motor_duty,
         max_angular_raw_motor_duty=config.max_angular_raw_motor_duty,
         velocity_control_mode=config.velocity_control_mode,
+        wheel_track_m=config.odom_wheel_track_m,
     )
 
 

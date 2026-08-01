@@ -1,4 +1,4 @@
-"""Minimal Get-Well explore graph with one supervised native-SI command path."""
+"""Quarantined Get-Well graph with a supervised native tank-SI path."""
 
 from pathlib import Path
 
@@ -18,7 +18,7 @@ def generate_launch_description():
     supervised_launch = share / "launch" / "supervised_rvr.launch.py"
     lidar_launch = share / "launch" / "lidar.launch.py"
     mapping_launch = share / "launch" / "mapping.launch.py"
-    default_rvr_params = share / "config" / "lean_rvr_native_si.yaml"
+    default_rvr_params = share / "config" / "lean_rvr_tank_si.yaml"
     default_slam_params = share / "config" / "slam_toolbox.yaml"
     default_nav2_params = share / "config" / "lean_nav2.yaml"
     standard_nav_to_pose_bt = (
@@ -114,7 +114,7 @@ def generate_launch_description():
                 default_value="false",
                 description=(
                     "MOTOR-CAPABLE: start the collision supervisor and RVR driver. "
-                    "Enable only for an attended level-room bringup."
+                    "Do not enable until tank-SI mapping validation has passed."
                 ),
             ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),

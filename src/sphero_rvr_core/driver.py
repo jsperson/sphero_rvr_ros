@@ -31,9 +31,13 @@ class _StaleMotionCommand(RuntimeError):
 
 class RVRDriver:
     VELOCITY_CONTROL_RAW_MOTOR = "raw_motor"
+    VELOCITY_CONTROL_NATIVE_TANK_SI = "native_tank_si"
+    # Retained only so callers receive an explicit safety error instead of an
+    # ambiguous "unknown mode" failure. The RC-SI mapping was measured at
+    # roughly 10x its requested straight-line velocity on 2026-08-01.
     VELOCITY_CONTROL_NATIVE_RC_SI = "native_rc_si"
     _VELOCITY_CONTROL_MODES = frozenset(
-        {VELOCITY_CONTROL_RAW_MOTOR, VELOCITY_CONTROL_NATIVE_RC_SI}
+        {VELOCITY_CONTROL_RAW_MOTOR, VELOCITY_CONTROL_NATIVE_TANK_SI}
     )
     _MOTOR_CAPABLE_COMMAND_IDS = frozenset(
         {
@@ -63,10 +67,11 @@ class RVRDriver:
         max_raw_motor_duty: int = 64,
         max_linear_raw_motor_duty: Optional[int] = None,
         max_angular_raw_motor_duty: Optional[int] = None,
-        velocity_control_mode: str = VELOCITY_CONTROL_NATIVE_RC_SI,
+        velocity_control_mode: str = VELOCITY_CONTROL_RAW_MOTOR,
         safe_stop_attempts: int = 2,
         safe_stop_retry_delay: float = 0.02,
         safety_dispatch_timeout_s: float = 0.10,
+        wheel_track_m: float = 0.2507,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -78,6 +83,9 @@ class RVRDriver:
         self._safety_dispatch_timeout_s = max(0.001, float(safety_dispatch_timeout_s))
         self._max_linear_mps = max_linear_mps
         self._max_angular_rad_s = max_angular_rad_s
+        self._wheel_track_m = float(wheel_track_m)
+        if not 0.0 < self._wheel_track_m < float("inf"):
+            raise ValueError("wheel_track_m must be positive and finite")
         self._max_raw_motor_duty = max(0, min(255, int(max_raw_motor_duty)))
         self._max_linear_raw_motor_duty = max(
             0,
@@ -94,6 +102,11 @@ class RVRDriver:
             ),
         )
         normalized_control_mode = str(velocity_control_mode).strip().lower()
+        if normalized_control_mode == self.VELOCITY_CONTROL_NATIVE_RC_SI:
+            raise ValueError(
+                "velocity_control_mode native_rc_si is quarantined: its "
+                "drive_rc_si_units straight-speed mapping is unsafe/miscalibrated"
+            )
         if normalized_control_mode not in self._VELOCITY_CONTROL_MODES:
             raise ValueError(
                 "velocity_control_mode must be one of: "
@@ -553,42 +566,14 @@ class RVRDriver:
                     motion_generation=motion_generation,
                 )
                 continue
-            if abs(angular_fraction) > 0.0:
-                if abs(linear_fraction) <= 0.05:
-                    # Explicit skid-steer pivot: one tread reverse, the other forward.
-                    tank = int(round(max(-1.0, min(1.0, angular_fraction)) * 127))
-                    await self._send_from_control_loop(
-                        lambda seq: self.commands.drive_tank_normalized(seq, -tank, tank),
-                        motion_generation=motion_generation,
-                    )
-                    continue
-
-                # Rolling arc turn: use native tank drive so angular commands cannot
-                # collapse into straight forward motion. For forward arcs, slow/stop
-                # the inside tread and drive the outside tread forward; for reverse
-                # arcs, mirror that into reverse. This avoids in-place scrub while
-                # still forcing differential tread speeds.
-                left = linear_fraction - angular_fraction
-                right = linear_fraction + angular_fraction
-                if linear_fraction > 0:
-                    left = max(0.0, min(1.0, left))
-                    right = max(0.0, min(1.0, right))
-                else:
-                    left = min(0.0, max(-1.0, left))
-                    right = min(0.0, max(-1.0, right))
-                left_i = int(round(left * 127))
-                right_i = int(round(right * 127))
-                await self._send_from_control_loop(
-                    lambda seq: self.commands.drive_tank_normalized(seq, left_i, right_i),
-                    motion_generation=motion_generation,
-                )
-                continue
+            half_track = self._wheel_track_m / 2.0
+            left_mps = velocity.linear_mps - velocity.angular_rad_s * half_track
+            right_mps = velocity.linear_mps + velocity.angular_rad_s * half_track
             await self._send_from_control_loop(
-                lambda seq: self.commands.drive_rc_si_units(
+                lambda seq: self.commands.drive_tank_si_units(
                     seq,
-                    yaw_angular_velocity=velocity.angular_rad_s,
-                    linear_velocity=velocity.linear_mps,
-                    flags=1,  # RC slew linear velocity for smoother straight teleop.
+                    left_velocity=left_mps,
+                    right_velocity=right_mps,
                 ),
                 motion_generation=motion_generation,
             )

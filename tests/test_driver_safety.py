@@ -64,6 +64,10 @@ def _tank_drive_packets(transport: FakeTransport, driver: RVRDriver) -> list[Pac
     return [packet for packet in _packets(transport) if packet.command_id == driver.commands.CID_DRIVE_TANK_NORMALIZED]
 
 
+def _tank_si_drive_packets(transport: FakeTransport, driver: RVRDriver) -> list[Packet]:
+    return [packet for packet in _packets(transport) if packet.command_id == driver.commands.CID_DRIVE_TANK_SI_UNITS]
+
+
 def _motion_packets(transport: FakeTransport, driver: RVRDriver) -> list[Packet]:
     motion_cids = {
         driver.commands.CID_RAW_MOTORS,
@@ -330,7 +334,12 @@ async def test_estop_rejects_motor_capable_paths_until_clear_then_only_new_motio
 @pytest.mark.asyncio
 async def test_stale_velocity_command_causes_validated_raw_motor_off_packet():
     transport = FakeTransport(auto_ack=True)
-    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=0.03)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=0.03,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+    )
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
@@ -342,20 +351,25 @@ async def test_stale_velocity_command_causes_validated_raw_motor_off_packet():
     )
     await asyncio.wait_for(driver.disconnect(), timeout=1.0)
 
-    assert _rc_drive_packets(transport, driver)
+    assert _tank_si_drive_packets(transport, driver)
     raw_motor_packets = _raw_motor_packets(transport, driver)
     assert any(packet.payload == RAW_OFF for packet in raw_motor_packets)
 
 
 @pytest.mark.asyncio
-async def test_zero_velocity_transition_uses_immediate_stop_once_without_rc_coast_command():
+async def test_zero_velocity_transition_uses_immediate_stop_once_without_tank_coast_command():
     transport = FakeTransport(auto_ack=False)
-    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=1.0,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+    )
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
     await asyncio.sleep(0.03)
-    assert _rc_drive_packets(transport, driver)
+    assert _tank_si_drive_packets(transport, driver)
     before_zero = len(transport.writes)
 
     await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.0)
@@ -504,51 +518,55 @@ async def test_clear_emergency_stop_is_software_only_until_new_velocity_arrives(
 
 
 @pytest.mark.asyncio
-async def test_driver_uses_native_rc_drive_for_velocity_control():
+async def test_driver_uses_native_tank_si_for_straight_velocity_control():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
         control_period=0.01,
         command_timeout=1.0,
-        max_linear_mps=1.0,
-        max_angular_rad_s=1.0,
+        max_linear_mps=0.05,
+        max_angular_rad_s=0.4,
         max_raw_motor_duty=64,
-        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_RC_SI,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+        wheel_track_m=0.2507,
     )
     await driver.connect()
 
-    await driver.set_velocity(linear_mps=1.0, angular_rad_s=0.0)
+    await driver.set_velocity(linear_mps=0.05, angular_rad_s=0.0)
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    rc_packets = _rc_drive_packets(transport, driver)
-    assert rc_packets
-    yaw, linear, flags = _decode_rc_payload(rc_packets[0])
-    assert yaw == pytest.approx(0.0)
-    assert linear == pytest.approx(1.0)
-    assert flags == 1
+    packets = _tank_si_drive_packets(transport, driver)
+    assert packets
+    left, right = struct.unpack(">ff", packets[0].payload)
+    assert left == pytest.approx(0.05)
+    assert right == pytest.approx(0.05)
+    assert not _rc_drive_packets(transport, driver)
 
 
 @pytest.mark.asyncio
-async def test_native_rc_pivot_respects_requested_angular_fraction():
+async def test_native_tank_si_pivot_uses_calibrated_track_width():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
         control_period=0.01,
         command_timeout=1.0,
-        max_linear_mps=1.0,
-        max_angular_rad_s=1.0,
-        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_RC_SI,
+        max_linear_mps=0.05,
+        max_angular_rad_s=0.4,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+        wheel_track_m=0.2507,
     )
     await driver.connect()
 
-    await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.5)
+    await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.4)
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    moving = _tank_drive_packets(transport, driver)
+    moving = _tank_si_drive_packets(transport, driver)
     assert moving
-    assert moving[0].payload == struct.pack(">bb", -64, 64)
+    left, right = struct.unpack(">ff", moving[0].payload)
+    assert left == pytest.approx(-0.4 * 0.2507 / 2.0)
+    assert right == pytest.approx(0.4 * 0.2507 / 2.0)
 
 
 @pytest.mark.asyncio
@@ -587,8 +605,16 @@ def test_driver_rejects_unknown_velocity_control_mode():
         RVRDriver(FakeTransport(), velocity_control_mode="magic")
 
 
+def test_driver_rejects_quarantined_native_rc_si_mode():
+    with pytest.raises(ValueError, match="native_rc_si is quarantined"):
+        RVRDriver(
+            FakeTransport(),
+            velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_RC_SI,
+        )
+
+
 @pytest.mark.asyncio
-async def test_driver_clamps_mixed_turn_velocity_before_tank_differential_arc():
+async def test_driver_clamps_twist_before_native_tank_si_differential_mapping():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
@@ -597,6 +623,8 @@ async def test_driver_clamps_mixed_turn_velocity_before_tank_differential_arc():
         max_linear_mps=0.25,
         max_angular_rad_s=0.4,
         max_raw_motor_duty=64,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+        wheel_track_m=0.2507,
     )
     await driver.connect()
 
@@ -604,9 +632,11 @@ async def test_driver_clamps_mixed_turn_velocity_before_tank_differential_arc():
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    tank_packets = _tank_drive_packets(transport, driver)
+    tank_packets = _tank_si_drive_packets(transport, driver)
     assert tank_packets
-    assert tank_packets[0].payload == bytes([0, 127])
+    left, right = struct.unpack(">ff", tank_packets[0].payload)
+    assert left == pytest.approx(0.25 - 0.4 * 0.2507 / 2.0)
+    assert right == pytest.approx(0.25 + 0.4 * 0.2507 / 2.0)
     assert not _rc_drive_packets(transport, driver)
 
 
@@ -627,7 +657,7 @@ async def test_driver_fails_non_finite_velocity_closed_to_zero():
 
 
 @pytest.mark.asyncio
-async def test_driver_uses_explicit_opposing_treads_for_near_pure_turning():
+async def test_driver_uses_opposing_tank_si_velocities_for_pure_turning():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
@@ -636,6 +666,8 @@ async def test_driver_uses_explicit_opposing_treads_for_near_pure_turning():
         max_linear_mps=0.25,
         max_angular_rad_s=0.4,
         max_raw_motor_duty=64,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+        wheel_track_m=0.2507,
     )
     await driver.connect()
 
@@ -643,15 +675,17 @@ async def test_driver_uses_explicit_opposing_treads_for_near_pure_turning():
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    tank_packets = _tank_drive_packets(transport, driver)
+    tank_packets = _tank_si_drive_packets(transport, driver)
     assert tank_packets
-    assert tank_packets[0].payload == bytes([0x81, 0x7F])
+    left, right = struct.unpack(">ff", tank_packets[0].payload)
+    assert left == pytest.approx(-0.05014)
+    assert right == pytest.approx(0.05014)
     assert not _rc_drive_packets(transport, driver)
     assert all(packet.payload == RAW_OFF for packet in _raw_motor_packets(transport, driver))
 
 
 @pytest.mark.asyncio
-async def test_mixed_turn_drive_uses_tank_differential_arc_instead_of_rc_straight():
+async def test_mixed_turn_drive_uses_tank_si_kinematics_instead_of_rc():
     transport = FakeTransport(auto_ack=False)
     driver = RVRDriver(
         transport=transport,
@@ -662,6 +696,8 @@ async def test_mixed_turn_drive_uses_tank_differential_arc_instead_of_rc_straigh
         max_raw_motor_duty=160,
         max_linear_raw_motor_duty=64,
         max_angular_raw_motor_duty=255,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+        wheel_track_m=0.2507,
     )
     await driver.connect()
 
@@ -669,16 +705,23 @@ async def test_mixed_turn_drive_uses_tank_differential_arc_instead_of_rc_straigh
     await asyncio.sleep(0.03)
     await driver.disconnect()
 
-    tank_packets = _tank_drive_packets(transport, driver)
+    tank_packets = _tank_si_drive_packets(transport, driver)
     assert tank_packets
-    assert tank_packets[0].payload == bytes([0, 127])
+    left, right = struct.unpack(">ff", tank_packets[0].payload)
+    assert left == pytest.approx(0.05 - 0.4 * 0.2507 / 2.0)
+    assert right == pytest.approx(0.05 + 0.4 * 0.2507 / 2.0)
     assert not _rc_drive_packets(transport, driver)
 
 
 @pytest.mark.asyncio
 async def test_transient_control_send_fault_attempts_safe_stop_and_loop_survives(caplog):
-    transport = FailingWriteTransport(failures=1, command_id=RVRCommands.CID_DRIVE_RC_SI_UNITS, auto_ack=True)
-    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=1.0)
+    transport = FailingWriteTransport(failures=1, command_id=RVRCommands.CID_DRIVE_TANK_SI_UNITS, auto_ack=True)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=1.0,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+    )
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
@@ -688,11 +731,11 @@ async def test_transient_control_send_fault_attempts_safe_stop_and_loop_survives
         and bool(_raw_motor_packets(transport, driver))
     )
     await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
-    await _wait_until(lambda: bool(_rc_drive_packets(transport, driver)))
+    await _wait_until(lambda: bool(_tank_si_drive_packets(transport, driver)))
     await driver.disconnect()
 
     assert _raw_motor_packets(transport, driver)
-    assert _rc_drive_packets(transport, driver)
+    assert _tank_si_drive_packets(transport, driver)
     assert not driver.get_state().fail_safe_active
     assert "RVR control loop send failed; attempting safe stop" in caplog.text
 
@@ -700,7 +743,12 @@ async def test_transient_control_send_fault_attempts_safe_stop_and_loop_survives
 @pytest.mark.asyncio
 async def test_stale_stop_transient_failure_retries_safe_stop_without_fail_safe(caplog):
     transport = FailingWriteTransport(failures=1, command_id=RVRCommands.CID_RAW_MOTORS, auto_ack=True)
-    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=0.02)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=0.02,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+    )
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
@@ -709,20 +757,25 @@ async def test_stale_stop_transient_failure_retries_safe_stop_without_fail_safe(
         and bool(_raw_motor_packets(transport, driver))
     )
     await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
-    await _wait_until(lambda: bool(_rc_drive_packets(transport, driver)))
+    await _wait_until(lambda: bool(_tank_si_drive_packets(transport, driver)))
     await driver.disconnect()
 
     state = driver.get_state()
     assert not state.fail_safe_active
     assert _raw_motor_packets(transport, driver)
-    assert _rc_drive_packets(transport, driver)
+    assert _tank_si_drive_packets(transport, driver)
     assert "RVR safe stop delivery failed; retrying" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_stale_stop_persistent_failure_enters_fail_safe_and_blocks_drive_until_recovered(caplog):
     transport = FailingWriteTransport(failures=2, command_id=RVRCommands.CID_RAW_MOTORS, auto_ack=True)
-    driver = RVRDriver(transport=transport, control_period=0.01, command_timeout=0.02)
+    driver = RVRDriver(
+        transport=transport,
+        control_period=0.01,
+        command_timeout=0.02,
+        velocity_control_mode=RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+    )
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.2, angular_rad_s=0.0)
@@ -737,9 +790,9 @@ async def test_stale_stop_persistent_failure_enters_fail_safe_and_blocks_drive_u
     await driver.clear_fail_safe_fault()
     assert not driver.get_state().fail_safe_active
     await driver.set_velocity(linear_mps=0.1, angular_rad_s=0.0)
-    await _wait_until(lambda: bool(_rc_drive_packets(transport, driver)))
+    await _wait_until(lambda: bool(_tank_si_drive_packets(transport, driver)))
     await driver.disconnect()
 
     assert _raw_motor_packets(transport, driver)
-    assert _rc_drive_packets(transport, driver)
+    assert _tank_si_drive_packets(transport, driver)
     assert "RVR fail-safe fault active" in caplog.text
