@@ -559,14 +559,17 @@ async def test_native_tank_si_pivot_uses_calibrated_track_width():
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.4)
-    await asyncio.sleep(0.03)
+    await asyncio.sleep(0.3)
     await driver.disconnect()
 
-    moving = _tank_drive_packets(transport, driver)
-    assert moving
-    left, right = struct.unpack(">bb", moving[0].payload)
-    assert left == -30
-    assert right == 30
+    tank = [struct.unpack(">bb", p.payload) for p in _tank_drive_packets(transport, driver)]
+    assert tank
+    pulses = [wheels for wheels in tank if wheels != (0, 0)]
+    stops = [wheels for wheels in tank if wheels == (0, 0)]
+    # Pulsed pivot: the reliable duty is emitted at a sub-1.0 duty cycle,
+    # interleaved with stops, so the average rate tracks the command.
+    assert pulses and stops
+    assert all(wheels == (-30, 30) for wheels in pulses)
     assert not _tank_si_drive_packets(transport, driver)
 
 
@@ -673,14 +676,15 @@ async def test_driver_uses_opposing_tank_si_velocities_for_pure_turning():
     await driver.connect()
 
     await driver.set_velocity(linear_mps=0.0, angular_rad_s=0.4)
-    await asyncio.sleep(0.03)
+    await asyncio.sleep(0.3)
     await driver.disconnect()
 
-    tank_packets = _tank_drive_packets(transport, driver)
-    assert tank_packets
-    left, right = struct.unpack(">bb", tank_packets[0].payload)
-    assert left == -30
-    assert right == 30
+    tank = [struct.unpack(">bb", p.payload) for p in _tank_drive_packets(transport, driver)]
+    assert tank
+    pulses = [wheels for wheels in tank if wheels != (0, 0)]
+    stops = [wheels for wheels in tank if wheels == (0, 0)]
+    assert pulses and stops
+    assert all(wheels == (-30, 30) for wheels in pulses)
     assert not _tank_si_drive_packets(transport, driver)
     assert not _rc_drive_packets(transport, driver)
     assert all(packet.payload == RAW_OFF for packet in _raw_motor_packets(transport, driver))
