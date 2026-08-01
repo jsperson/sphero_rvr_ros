@@ -138,6 +138,29 @@ def test_lean_nav2_has_explicit_unstamped_bounded_single_goal_contracts() -> Non
     assert "deadband" not in text.lower()
 
 
+def test_lean_nav2_terminal_contract_counts_rotation_without_a_heading_gap() -> None:
+    nav2 = _yaml("config/lean_nav2.yaml")
+    controller = nav2["controller_server"]["ros__parameters"]
+    progress = controller["progress_checker"]
+    goal = controller["goal_checker"]
+    follow = controller["FollowPath"]
+
+    assert progress == {
+        "plugin": "nav2_controller::PoseProgressChecker",
+        "required_movement_radius": 0.02,
+        "required_movement_angle": 0.10,
+        "movement_time_allowance": 15.0,
+    }
+    assert goal["xy_goal_tolerance"] == 0.10
+    assert goal["yaw_goal_tolerance"] == 0.35
+    assert follow["rotate_to_heading_min_angle"] <= goal["yaw_goal_tolerance"]
+
+    # Phase 2c changes terminal acceptance only; the validated tank-SI speed
+    # and existing angular ceiling remain fixed.
+    assert follow["desired_linear_vel"] == 0.05
+    assert follow["rotate_to_heading_angular_vel"] == 0.4
+
+
 def test_explore_graph_keeps_supervisor_as_sole_motor_command_publisher() -> None:
     """ROS-free ownership proof for every motor-capable node in explore.launch."""
 
