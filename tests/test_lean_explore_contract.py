@@ -93,6 +93,11 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
     assert '"start_slam": "true"' in source
     assert '"slam_autostart": "true"' in source
     assert "navigate_w_replanning_only_if_goal_is_updated.xml" in source
+    assert 'package="explore_lite"' in source
+    assert 'executable="explore"' in source
+    assert 'name="explore_node"' in source
+    assert 'remappings=[("navigate_to_pose", "/navigate_to_pose")]' in source
+    assert "lean_explore_lite.yaml" in source
 
     for excluded in (
         "mission_service",
@@ -101,8 +106,47 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
         "live_route_runner_node",
         "adaptive_mission",
         "camera.launch.py",
+        "codex_app_server",
+        "rolling_",
     ):
         assert excluded not in source
+
+
+def test_explore_lite_dependency_and_small_room_parameters_are_pinned() -> None:
+    repos = _yaml("workspace.repos")["repositories"]
+    dependency = repos["m_explore_ros2"]
+    params = _yaml("config/lean_explore_lite.yaml")["explore_node"][
+        "ros__parameters"
+    ]
+
+    assert dependency == {
+        "type": "git",
+        "url": "https://github.com/robo-friends/m-explore-ros2.git",
+        "version": "326cf8a0b487c34246bb8f3326afbcd69576dc60",
+    }
+    assert params == {
+        "use_sim_time": False,
+        "robot_base_frame": "base_link",
+        "return_to_init": False,
+        "costmap_topic": "/global_costmap/costmap",
+        "costmap_updates_topic": "/global_costmap/costmap_updates",
+        "visualize": True,
+        "planner_frequency": 0.1,
+        "progress_timeout": 90.0,
+        "potential_scale": 3.0,
+        "orientation_scale": 0.0,
+        "gain_scale": 1.0,
+        "transform_tolerance": 0.3,
+        "min_frontier_size": 0.3,
+    }
+
+    nav2 = _yaml("config/lean_nav2.yaml")
+    assert nav2["global_costmap"]["global_costmap"]["ros__parameters"][
+        "static_layer"
+    ]["plugin"] == "nav2_costmap_2d::StaticLayer"
+    assert "mapping.launch.py" in (
+        REPO_ROOT / "launch/explore.launch.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_lean_nav2_has_explicit_unstamped_bounded_single_goal_contracts() -> None:
@@ -205,6 +249,7 @@ def test_lean_explore_surfaces_are_installed() -> None:
         "launch/explore.launch.py",
         "config/lean_rvr_tank_si.yaml",
         "config/lean_nav2.yaml",
+        "config/lean_explore_lite.yaml",
         "docs/lean_explore_run_guide.md",
     ):
         assert f'"{path}"' in setup
@@ -212,3 +257,4 @@ def test_lean_explore_surfaces_are_installed() -> None:
     assert "<exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>" in (
         package
     )
+    assert "<exec_depend>explore_lite</exec_depend>" in package
