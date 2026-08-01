@@ -12,12 +12,15 @@
 
 ## Roles and governance
 
-- Codex is the sole committer to the repository. Push to a branch/PR; never merge
-  your own PR. Scott merges after review.
+- Codex is the sole committer to the repository. Push to a branch/PR. Do not merge
+  a PR until it has passed review; a goal that explicitly says to merge authorizes
+  merging that PR.
 - Do not edit the Obsidian vault. Report status and results in chat; the reviewer
   keeps the vault canonical.
-- Never contact, deploy to, or actuate the rover. Scott runs every physical step,
-  attended. Code and tests only.
+- Codex operates the Pi. Deploy to and actuate the rover ONLY when a goal
+  explicitly authorizes a physical test, and only attended (Scott present,
+  power-cut reachable), bounded and low-speed. Otherwise code and tests only — no
+  actuation.
 
 ## Working discipline (lean by default)
 
