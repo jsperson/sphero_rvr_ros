@@ -1,46 +1,48 @@
-# Lean Explore: One Forward Goal
+# Tank-SI Mapping Gate (Before Lean Explore)
 
-This is the Get-Well Phase 2 command path:
+`explore.launch.py` and every autonomous Nav2 goal are **quarantined** after the
+2026-08-01 speed-control incident. Do not launch the motion graph or send a goal
+until Scott has run the attended floor check below and it reports `PASS`.
+
+The corrected future command path is:
 
 ```text
-/navigate_to_pose
-  -> SmacPlanner2D
-  -> Regulated Pure Pursuit
-  -> /cmd_vel (geometry_msgs/Twist)
-  -> lidar_collision_stop_supervisor
-  -> /cmd_vel_motor
-  -> sphero_rvr_driver (native_rc_si)
-  -> /dev/ttyAMA0
+/navigate_to_pose -> Nav2 -> /cmd_vel
+  -> lidar_collision_stop_supervisor (sole /cmd_vel_motor publisher)
+  -> sphero_rvr_driver
+  -> RVRDriver.set_velocity(native_tank_si)
+  -> drive_tank_si_units(left_mps, right_mps)
 ```
 
-It deliberately omits the camera, mission service, hierarchical controller,
-semantic adapter, live-route bridge, adaptive controller, LLM, evidence
-machinery, rotation shim, DWB, deadband, and velocity smoother. The Pi has the
-Regulated Pure Pursuit plugin installed, so this path uses it directly. The
-package-supplied `navigate_w_replanning_only_if_goal_is_updated.xml` is the
-standard minimal NavigateToPose tree used for this single goal; it has no
-automatic spin or back-up recovery sequence.
+The dedicated `config/lean_rvr_tank_si.yaml` caps requested linear speed at
+`0.05 m/s` and angular speed at `0.4 rad/s`. The deployed `config/rvr.yaml` is
+unchanged. The unsafe RC-SI mode is rejected by `RVRDriver`.
 
-The driver parameters are in `config/lean_rvr_native_si.yaml`. The deployed
-`config/rvr.yaml` remains unchanged and continues to select `raw_motor` for the
-old stack. `explore.launch.py` passes the lean file explicitly through
-`supervised_rvr.launch.py`.
+## What this gate measures
 
-## Safety boundary
+`rvr_tank_si_mapping_validate` opens the normal `SerialTransport`, constructs
+the real `RVRDriver` in `native_tank_si` mode, and refreshes motion exclusively
+through `RVRDriver.set_velocity()`. It never calls a direct drive packet or raw
+motor bypass. It reads onboard left/right encoder counts and converts them with
+the same `4337.768 counts/m` calibration used by ROS odometry.
 
-Run only while Scott is present in a clear, level, bounded room with no stairs,
-ledges, drop-offs, or chair-mat ridge. Keep a second terminal ready for STOP and
-ESTOP. The collision supervisor remains the only `/cmd_vel_motor` publisher and
-retains scan freshness, collision braking, command timeout, STOP, and ESTOP.
-The driver and supervisor independently cap output at `0.10 m/s` and
-`0.4 rad/s`.
+Each bounded trial has a 0.5 s warmup, a 2.0 s measured interval, an immediate
+driver STOP, and a 0.75 s stationary check. It reports commanded versus measured
+velocity and post-STOP travel for `0.03` and `0.05 m/s`. The process has a 30 s
+overall timeout and rejects any requested speed above `0.05 m/s`.
 
-Do not send a goal when collision state is anything except `CLEAR`. A `SLOW` or
-vetoed run is safe but inconclusive for drive-quality acceptance.
+Floor acceptance requires:
 
-## Build on the Pi
+- the `0.05 m/s` measured average to be within ±20% (`0.04–0.06 m/s`);
+- post-STOP encoder travel of at most `0.01 m` for every trial;
+- final report `acceptance: PASS`.
 
-From the deployed workspace after the focused PR is available:
+A wheels-up result is only a packet/direction precheck and is never ground-speed
+acceptance.
+
+## Prepare the Pi
+
+Build the focused PR, then make the rover UART exclusively available:
 
 ```bash
 ssh sphero-pi-2
@@ -48,107 +50,66 @@ cd /home/jsperson/ros2_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install --packages-select sphero_rvr_driver
 source install/setup.bash
+
+systemctl --user stop rvr-hierarchical-mission.service rvr-telemetry.service
+sudo fuser /dev/ttyAMA0
 ```
 
-Before opening either device, verify that no older hardware graph owns it:
+`fuser` must print no owner. Do not start `explore.launch.py`, Nav2, the collision
+supervisor, or another driver beside this exclusive validation harness.
+
+## Default no-motion check
+
+This exact command prints the bounded plan and exits without opening serial:
 
 ```bash
-systemctl --user is-active rvr-hierarchical-mission.service rvr-telemetry.service
-sudo fuser /dev/ttyAMA0 /dev/ttyUSB0
+ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate
 ```
 
-Both services must be inactive and `fuser` must print no owner. Stop and resolve
-any owner; do not launch competing stacks.
+Required: `motion` is `DISABLED` and `MOTION_SKIPPED` is printed.
 
-## No-motion bringup
+## Optional wheels-up precheck
 
-The following starts the complete graph, including the motor transport, but
-sends no goal and therefore commands no wheel motion:
+With Scott present, chassis securely supported, treads clear, and a hand at
+power, run:
 
 ```bash
-ros2 launch sphero_rvr_driver explore.launch.py \
-  start_motion_stack:=true \
-  serial_port:=/dev/ttyAMA0 \
-  lidar_serial_port:=/dev/ttyUSB0
+ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate \
+  --armed --attended --surface wheels-up
 ```
 
-In a second Pi shell:
+Stop immediately for wrong direction, vibration, or unexpected speed. The
+expected final label is `BENCH_ONLY_NOT_GROUND_SPEED_ACCEPTANCE`; proceed only
+if the behavior is calm and forward.
+
+## Mandatory attended floor check
+
+Place the rover on a clear, level, bounded floor with no stairs, ledges,
+drop-offs, obstacles, or chair-mat ridge. Aim along at least 0.5 m of clear
+travel. Scott keeps one hand at chassis power and runs exactly:
 
 ```bash
-cd /home/jsperson/ros2_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-
-ros2 lifecycle get /slam_toolbox
-ros2 lifecycle get /planner_server
-ros2 lifecycle get /controller_server
-ros2 lifecycle get /behavior_server
-ros2 lifecycle get /bt_navigator
-ros2 action list -t
-ros2 topic info --verbose /cmd_vel
-ros2 topic info --verbose /cmd_vel_motor
-ros2 topic echo --once /collision_stop/state
-ros2 topic echo --once /map
-ros2 topic echo --once /odom
+ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate \
+  --armed --attended --surface floor --floor-area-clear \
+  --output /tmp/rvr-tank-si-mapping.json
 ```
 
-Required result before a physical goal:
+Cut chassis power immediately for unsafe motion; do not wait for software. The
+harness also sends STOP and disconnects on normal completion, failure, timeout,
+or Ctrl-C.
 
-- the five lifecycle nodes report `active`;
-- `/navigate_to_pose` has type `nav2_msgs/action/NavigateToPose`;
-- `/cmd_vel_motor` has exactly one publisher,
-  `/lidar_collision_stop_supervisor`, and one subscriber,
-  `/sphero_rvr_driver`;
-- `/cmd_vel` publishers are Nav2 only and its subscriber is the collision
-  supervisor;
-- collision state is `CLEAR`, and map/odometry messages are live;
-- no `live_route_runner`, hierarchical, adaptive, mission, or camera node is
-  present.
+Read the printed table-equivalent JSON for each trial's `commanded_mps`,
+`measured_mps`, `relative_error`, and `post_stop_travel_m`. A nonzero exit or any
+result other than `acceptance: PASS` fails the gate.
 
-Do not send the goal during this no-motion checkpoint. End with Ctrl-C and
-confirm the launch exits cleanly.
+## Stop after the gate
 
-## Attended one-goal run
-
-Restart the same launch with Scott present. Place the rover in the confirmed
-clear corridor, aimed away from obstacles. The exact goal below is `0.60 m`
-straight ahead with zero relative yaw, so it is inside the required
-`0.5–0.75 m` distance and `±15°` initial-bearing window. The selected standard
-tree computes the path only when the goal is issued or explicitly updated, so
-the `base_link`-relative pose is transformed once rather than becoming a moving
-target.
-
-First confirm `CLEAR` again:
+After either outcome, verify the UART is released:
 
 ```bash
-ros2 topic echo --once /collision_stop/state
+sudo fuser /dev/ttyAMA0
 ```
 
-Then Scott sends exactly one goal:
-
-```bash
-ros2 action send_goal --feedback \
-  /navigate_to_pose nav2_msgs/action/NavigateToPose \
-  "{pose: {header: {frame_id: base_link}, pose: {position: {x: 0.60, y: 0.0, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}}"
-```
-
-Keep these independent brake commands ready in the second shell:
-
-```bash
-ros2 service call /stop std_srvs/srv/Trigger "{}"
-ros2 service call /estop std_srvs/srv/Trigger "{}"
-```
-
-Use STOP or ESTOP immediately for unsafe motion; do not wait for Nav2. A brake
-intervention makes the drive-quality trial inconclusive, which is the correct
-safe result. After a normal arrival, call STOP, end the launch with Ctrl-C, and
-verify both device owners are gone:
-
-```bash
-ros2 service call /stop std_srvs/srv/Trigger "{}"
-sudo fuser /dev/ttyAMA0 /dev/ttyUSB0
-```
-
-Acceptance is visual and attended: one smooth drive to the goal, no destructive
-jitter, collision state remaining `CLEAR`, and the independent brake surface
-available. This run does not authorize unattended motion.
+Do not run `explore.launch.py` and do not send a Nav2 goal in this procedure.
+Even a mapping `PASS` only unlocks review of a separate, later attended
+forward-goal step; it does not itself authorize autonomous motion.

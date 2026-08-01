@@ -158,8 +158,10 @@ Before any armed calibration run:
 4. Never run the TUI/teleop for calibration; use the gated script.
 
 The calibration script defaults to no motion. It only moves with `--armed`, and
-defaults to the same `raw_motor` packet backend used by ROS missions. Use
-`--control-mode native_rc_si` only for an explicitly separate diagnostic.
+defaults to the same `raw_motor` packet backend used by ROS missions.
+The `native_rc_si` control mode is quarantined after its 2026-08-01 straight
+speed mapping measured roughly ten times the request. `RVRDriver` rejects it;
+use the dedicated tank-SI mapping gate in `docs/lean_explore_run_guide.md`.
 
 ## Verify no-motion telemetry
 

@@ -53,9 +53,12 @@ async def main_async() -> int:
     parser.add_argument("--max-duty", type=int, default=32, help="driver raw motor duty cap for calibration")
     parser.add_argument(
         "--control-mode",
-        choices=(RVRDriver.VELOCITY_CONTROL_RAW_MOTOR, RVRDriver.VELOCITY_CONTROL_NATIVE_RC_SI),
+        choices=(
+            RVRDriver.VELOCITY_CONTROL_RAW_MOTOR,
+            RVRDriver.VELOCITY_CONTROL_NATIVE_TANK_SI,
+        ),
         default=RVRDriver.VELOCITY_CONTROL_RAW_MOTOR,
-        help="packet backend; raw_motor is the measured ground-calibration path",
+        help="packet backend; unsafe native_rc_si is intentionally unavailable",
     )
     parser.add_argument("--command-timeout", type=float, default=0.25)
     parser.add_argument("--control-period", type=float, default=0.05)

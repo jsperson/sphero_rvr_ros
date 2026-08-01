@@ -173,12 +173,12 @@ class RVRCommands:
         linear_velocity: float,
         flags: int = 1,
     ) -> Packet:
-        """Native RVR RC drive command using SI-ish velocity inputs.
+        """Native RVR RC drive command with an unvalidated SI-like mapping.
 
-        The official SDK exposes this as drive_rc_si_units(yaw_angular_velocity,
-        linear_velocity, flags). Use it for teleop/cmd_vel instead of raw tank
-        motor duty so the firmware control loop can slew and stabilize motion.
-        Default flag=1 enables RC linear-velocity slew.
+        Do not use this command for velocity control. A 2026-08-01 attended run
+        measured roughly 0.94 m/s from a 0.10 m/s request. RVRDriver rejects
+        the corresponding control mode until that protocol mapping is fixed.
+        This low-level packet builder remains for protocol completeness only.
         """
         payload = struct.pack(">ffB", float(yaw_angular_velocity), float(linear_velocity), flags & 0xFF)
         return self._packet(DID_DRIVE, self.CID_DRIVE_RC_SI_UNITS, sequence_id, TARGET_MCU, payload)

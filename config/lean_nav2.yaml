@@ -33,7 +33,7 @@ controller_server:
       yaw_goal_tolerance: 0.10
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.10
+      desired_linear_vel: 0.05
       lookahead_dist: 0.30
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.40

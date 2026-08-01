@@ -33,6 +33,7 @@ def test_create_driver_passes_base_driver_safety_limits():
         max_linear_raw_motor_duty=21,
         max_angular_raw_motor_duty=84,
         velocity_control_mode=RVRDriver.VELOCITY_CONTROL_RAW_MOTOR,
+        odom_wheel_track_m=0.222,
         safety_dispatch_timeout_s=0.18,
     )
 
@@ -47,6 +48,7 @@ def test_create_driver_passes_base_driver_safety_limits():
     assert driver._max_linear_raw_motor_duty == 21
     assert driver._max_angular_raw_motor_duty == 84
     assert driver._velocity_control_mode == RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
+    assert driver._wheel_track_m == 0.222
     assert driver._safety_dispatch_timeout_s == 0.18
 
 def test_checked_in_rvr_yaml_preserves_floor_turn_motor_duty():
