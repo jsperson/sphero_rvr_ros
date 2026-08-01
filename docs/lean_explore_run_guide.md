@@ -117,39 +117,40 @@ procedure itself. A mapping `PASS` only unlocks the separate attended step below
 
 ## Pure-turn mapping diagnosis
 
-Turn mode reuses the same default-off harness and real
-`RVRDriver.set_velocity(0.0, angular_rate)` tank-SI path. It sweeps
-`0.2, 0.4, 0.6, 0.8, 1.0 rad/s` in one-second measured pulses; the diagnostic
-ceiling changes no deployed driver or Nav2 configuration. Each result reports
-encoder-derived yaw rate, commanded-versus-measured error, stall/sustained and
-smooth classifications, and post-STOP residual travel.
+Turn mode is wheels-up only. It reuses the same default-off harness and sweeps
+`0.2, 0.4, 0.6, 0.8, 1.0 rad/s` through two real `RVRDriver.set_velocity`
+paths: `native_tank_si` and the historically working `raw_motor` duty mapping.
+Raw turn duty scales with the requested rate and is hard-capped at 96/255.
+Every nonzero pulse is at most 0.75 seconds. Each path/rate result reports
+signed left and right encoder velocity, `counter_rotating`, `clean_pivot`, and
+post-STOP residual travel in JSON and CSV. This changes no deployed driver,
+Nav2 configuration, or speed cap.
 
-With all ROS, Nav2, driver, and hardware owners stopped, first secure the chassis
-wheels-up with both treads clear and run:
+With all ROS, Nav2, driver, and hardware owners stopped, securely suspend the
+chassis with every wheel clear. Confirm the no-motion plan first:
+
+```bash
+ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate --mode turn
+```
+
+It must print `motion: DISABLED` and `MOTION_SKIPPED`. Then, while attended with
+a hand at chassis power, run exactly:
 
 ```bash
 ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate \
-  --mode turn --armed --attended --surface wheels-up \
+  --mode turn --armed --attended --surface wheels-up --wheels-up-confirmed \
   --output /tmp/rvr-turn-wheels-up.json \
   --csv-output /tmp/rvr-turn-wheels-up.csv
 ```
 
-This is only a direction/packet precheck. Stop for wrong direction, vibration,
-or unsafe speed. Then place the rover on a clear, level floor with at least a
-one-meter clear radius, keep a hand at chassis power, and run:
-
-```bash
-ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate \
-  --mode turn --armed --attended --surface floor --floor-area-clear \
-  --output /tmp/rvr-turn-floor.json \
-  --csv-output /tmp/rvr-turn-floor.csv
-```
-
-The floor report's `first_sustained_angular_rad_s` is turn breakaway;
-`first_smooth_angular_rad_s` is the first sustained pulse with opposing track
-motion within the declared symmetry bound. A null value means the sweep did not
-find that threshold. Verify `sudo fuser /dev/ttyAMA0` prints no owner afterward.
-Do not tune Nav2, the driver, or any speed cap from inside this diagnostic run.
+Do not place the rover on the floor for this comparison; turn mode rejects
+`--surface floor`. Stop for wrong direction, vibration, or unsafe speed. The
+`TURN_RESULT` lines give the per-wheel comparison, and `TURN_SUMMARY` names the
+paths that produced at least one clean pivot. Verify `sudo fuser /dev/ttyAMA0`
+prints no owner afterward. Interpret the result narrowly: tank-SI failure with
+a clean raw-duty pivot points to signed low-speed tank-SI actuation; clean
+pivots from both paths wheels-up point to floor scrub/load. No result tunes or
+changes motion behavior.
 
 ## Phase 2c attended 0.60 m forward-goal rerun
 
