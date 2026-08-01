@@ -6,7 +6,9 @@ import pytest
 from sphero_rvr_driver.tank_si_mapping_validation import (
     TimedEncoderCounts,
     analyze_trial,
+    analyze_turn_trial,
     main,
+    summarize_turn_trials,
 )
 
 
@@ -64,11 +66,70 @@ def test_analysis_handles_signed_int32_encoder_rollover() -> None:
     assert result.stop_within_limit is True
 
 
+def _turn_result(
+    commanded: float, left_delta: int, right_delta: int
+):
+    return analyze_turn_trial(
+        commanded_angular_rad_s=commanded,
+        start=_sample(10.0, 1000, 2000),
+        end=_sample(11.0, 1000 + left_delta, 2000 + right_delta),
+        stopped=_sample(11.75, 996 + left_delta, 2004 + right_delta),
+        counts_per_meter=4337.768,
+        wheel_track_m=0.2507,
+        max_post_stop_travel_m=0.01,
+    )
+
+
+def test_turn_analysis_calculates_yaw_rate_and_sustained_symmetric_turn() -> None:
+    result = _turn_result(0.6, -326, 326)
+
+    assert result.commanded_left_mps == pytest.approx(-0.07521)
+    assert result.commanded_right_mps == pytest.approx(0.07521)
+    assert result.measured_angular_rad_s == pytest.approx(0.5995, rel=1e-3)
+    assert result.relative_error < 0.01
+    assert result.post_stop_yaw_rad == pytest.approx(0.00736, rel=1e-3)
+    assert result.post_stop_track_travel_m < 0.001
+    assert result.opposing_track_motion is True
+    assert result.sustained is True
+    assert result.stalled is False
+    assert result.smooth is True
+    assert result.stop_within_limit is True
+
+
+def test_turn_analysis_classifies_real_but_asymmetric_motion_and_stall() -> None:
+    stalled = _turn_result(0.4, -20, 20)
+    asymmetric = _turn_result(0.6, -50, 326)
+    smooth = _turn_result(0.8, -435, 435)
+    summary = summarize_turn_trials((stalled, asymmetric, smooth))
+
+    assert stalled.measured_angular_rad_s < 0.10
+    assert stalled.stalled is True
+    assert asymmetric.sustained is True
+    assert asymmetric.track_asymmetry_fraction > 0.25
+    assert asymmetric.smooth is False
+    assert summary == {
+        "first_sustained_angular_rad_s": 0.6,
+        "first_smooth_angular_rad_s": 0.8,
+        "stalled_angular_rates_rad_s": [0.4],
+    }
+
+
 def test_default_cli_is_no_motion_and_does_not_open_serial(capsys) -> None:
     assert main([]) == 0
     output = capsys.readouterr().out
     assert json.loads(output.splitlines()[0])["plan"]["motion"] == "DISABLED"
     assert "MOTION_SKIPPED" in output
+
+
+def test_default_turn_cli_is_bounded_no_motion_diagnostic(capsys) -> None:
+    assert main(["--mode", "turn"]) == 0
+    plan = json.loads(capsys.readouterr().out.splitlines()[0])["plan"]
+
+    assert plan["motion"] == "DISABLED"
+    assert plan["mode"] == "turn"
+    assert plan["angular_rates_rad_s"] == [0.2, 0.4, 0.6, 0.8, 1.0]
+    assert plan["diagnostic_max_angular_rad_s"] == 1.0
+    assert plan["measurement_s"] == 1.0
 
 
 @pytest.mark.parametrize(
@@ -78,6 +139,8 @@ def test_default_cli_is_no_motion_and_does_not_open_serial(capsys) -> None:
         ["--speeds", "0.03"],
         ["--armed"],
         ["--armed", "--attended", "--surface", "floor"],
+        ["--mode", "turn", "--angular-rates", "1.01"],
+        ["--mode", "turn", "--angular-rates", "0.6", "0.4"],
     ),
 )
 def test_cli_rejects_unbounded_or_unacknowledged_motion(argv) -> None:

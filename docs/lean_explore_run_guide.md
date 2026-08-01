@@ -115,6 +115,42 @@ sudo fuser /dev/ttyAMA0
 Do not run `explore.launch.py` and do not send a Nav2 goal as part of the mapping
 procedure itself. A mapping `PASS` only unlocks the separate attended step below.
 
+## Pure-turn mapping diagnosis
+
+Turn mode reuses the same default-off harness and real
+`RVRDriver.set_velocity(0.0, angular_rate)` tank-SI path. It sweeps
+`0.2, 0.4, 0.6, 0.8, 1.0 rad/s` in one-second measured pulses; the diagnostic
+ceiling changes no deployed driver or Nav2 configuration. Each result reports
+encoder-derived yaw rate, commanded-versus-measured error, stall/sustained and
+smooth classifications, and post-STOP residual travel.
+
+With all ROS, Nav2, driver, and hardware owners stopped, first secure the chassis
+wheels-up with both treads clear and run:
+
+```bash
+ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate \
+  --mode turn --armed --attended --surface wheels-up \
+  --output /tmp/rvr-turn-wheels-up.json \
+  --csv-output /tmp/rvr-turn-wheels-up.csv
+```
+
+This is only a direction/packet precheck. Stop for wrong direction, vibration,
+or unsafe speed. Then place the rover on a clear, level floor with at least a
+one-meter clear radius, keep a hand at chassis power, and run:
+
+```bash
+ros2 run sphero_rvr_driver rvr_tank_si_mapping_validate \
+  --mode turn --armed --attended --surface floor --floor-area-clear \
+  --output /tmp/rvr-turn-floor.json \
+  --csv-output /tmp/rvr-turn-floor.csv
+```
+
+The floor report's `first_sustained_angular_rad_s` is turn breakaway;
+`first_smooth_angular_rad_s` is the first sustained pulse with opposing track
+motion within the declared symmetry bound. A null value means the sweep did not
+find that threshold. Verify `sudo fuser /dev/ttyAMA0` prints no owner afterward.
+Do not tune Nav2, the driver, or any speed cap from inside this diagnostic run.
+
 ## Phase 2c attended 0.60 m forward-goal rerun
 
 Run this only after the Phase 2c commit is merged and deployed, with Scott
