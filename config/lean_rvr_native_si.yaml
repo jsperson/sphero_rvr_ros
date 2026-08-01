@@ -1,0 +1,39 @@
+sphero_rvr_driver:
+  ros__parameters:
+    serial_port: /dev/ttyAMA0
+    baud_rate: 115200
+    cmd_vel_timeout: 0.5
+    control_period: 0.05
+    safety_dispatch_timeout_s: 0.20
+
+    # Get-Well Phase 2 clean path: reproduce the firmware-controlled SI
+    # straight-drive behavior proven by the attended drivetrain bench. This is
+    # intentionally separate from deployed rvr.yaml, which remains raw_motor.
+    velocity_control_mode: native_rc_si
+    max_linear_mps: 0.10
+    max_angular_rad_s: 0.4
+
+    # Retained because the driver still uses its bounded normalized-tank path
+    # for turns; these are ceilings, not a deadband or smoother.
+    max_raw_motor_duty: 160
+    max_linear_raw_motor_duty: 64
+    max_angular_raw_motor_duty: 255
+
+    battery_publish_period: 5.0
+    temperature_publish_period: 2.0
+    diagnostics_publish_period: 1.0
+    diagnostics_metadata_period: 30.0
+    motor_diagnostics_poll_period: 0.5
+    ambient_light_publish_period: 2.0
+    odom_publish_period: 0.1
+
+    # Preserve the deployed calibration and TF contract exactly.
+    odom_counts_per_meter: 4337.768
+    odom_wheel_track_m: 0.2507
+    odom_frame_id: odom
+    base_frame_id: base_link
+    odom_publish_tf: true
+    odom_pose_xy_covariance: 0.05
+    odom_pose_yaw_covariance: 0.25
+    odom_twist_linear_covariance: 0.10
+    odom_twist_angular_covariance: 0.50

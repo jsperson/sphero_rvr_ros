@@ -33,6 +33,7 @@
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_loopback_sim</exec_depend>
   <exec_depend>nav2_smac_planner</exec_depend>
+  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
   <exec_depend>dwb_core</exec_depend>
   <exec_depend>rplidar_ros</exec_depend>
 

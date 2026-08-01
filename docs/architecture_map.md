@@ -25,6 +25,8 @@ record decisions and evidence; they are not competing architecture maps.
 | Private velocity bridge and bounded drive trace | `live_route_runner_node.py`: node/executable `live_route_runner`; `drive_trace.py`: `BoundedDriveTrace` | `/nav2_cmd_vel_request` -> `/cmd_vel`; observes `/cmd_vel_motor`, controller/adapter state, collision, odom, encoders, and authority | Sole hierarchical `/cmd_vel` publisher. Owns receipt-time lease, caps, drivetrain breakaway/escape adaptation, zero on stale/cancel/lost authority, and a private bounded JSONL trace of all three velocity seams plus physical progress. It never publishes `/cmd_vel_motor`. |
 | Independent collision and final arbitration | `collision_stop_node.py`: `LidarCollisionStopSupervisorNode`, node `lidar_collision_stop_supervisor`, executable `lidar_collision_stop_supervisor` | `/cmd_vel` + `/scan` + STOP/ESTOP -> `/cmd_vel_motor` | Sole `/cmd_vel_motor` publisher. Owns slow/stop, directional escape veto, stale-command zeroing, STOP, ESTOP, and reset rules independently of model/Nav2. |
 | Hardware transport and odometry | `rvr_node.py`: `SpheroRVRNode`, node `sphero_rvr_driver`, executable `rvr_node`; supervised launch remaps its `cmd_vel` input | `/cmd_vel_motor` -> `/dev/ttyAMA0`; publishes `/odom`, `/encoder_counts`, TF, battery and diagnostics | Sole rover UART owner and motor transport. It does not decide missions, paths, or collision policy. |
+| Optional lean single-goal navigation | `explore.launch.py`; `lean_nav2.yaml`: SmacPlanner2D + Regulated Pure Pursuit + standard plan/follow-only NavigateToPose BT | `/navigate_to_pose` -> Nav2 -> `/cmd_vel`; lidar + `slam_toolbox` supply `/scan`, `/map`, and TF | Get-Well Phase 2 diagnostic path only. Nav2 owns planning and requested `Twist`; it never publishes `/cmd_vel_motor`. No velocity smoother, deadband, bridge, adapter, mission, camera, or model node is present. |
+| Optional lean native-SI transport | `lean_rvr_native_si.yaml`, passed explicitly through `supervised_rvr.launch.py` | `/cmd_vel_motor` -> `rvr_node` with `velocity_control_mode: native_rc_si` | Reuses the same driver, UART ownership, `0.10 m/s` / `0.4 rad/s` limits, and odometry calibration without changing deployed `rvr.yaml`. Straight motion uses firmware RC-SI; turning retains the driver's bounded tank behavior. |
 | Durable physical evaluation | `hierarchical_physical_binding.py`: schemas/digests/journal; `hierarchical_m7_canonical_validation.py`: executable `rvr_hierarchical_m7_canonical_validate`; `drive_trace_analysis.py`: ROS-free synchronized-trace analyzer | Mission DB, binding journal, provider-time snapshots, paths, checkpoints, cleanup capture, private drive JSONL | Recomputes physical evidence and SHA-bound drive metrics; it cannot create authority or accept hand-entered pass claims. |
 
 ## Canonical physical flow
@@ -51,6 +53,8 @@ browser proposal + authenticated approval
 | Contract | Current value |
 |---|---|
 | Physical launch | `launch/hierarchical_exploration_physical.launch.py` |
+| Optional lean launch | `launch/explore.launch.py` |
+| Optional lean Nav2 action | `/navigate_to_pose` |
 | Authority topic | `/mission_api/v2/hierarchical/authority` |
 | Semantic dispatch | `/mission_api/v2/hierarchical/goal_dispatch` |
 | Controller status | `/mission_api/v2/hierarchical/controller_status` |
@@ -75,6 +79,28 @@ All five physical launch groups default false: `start_sensors`,
 `Restart=no`, and has no `[Install]` section, so it cannot be enabled at boot.
 Drop-off sensing remains unavailable; physical runs require an attended level
 bounded room without stairs, ledges, or open drop-offs.
+
+## Optional Get-Well Phase 2 flow
+
+This path is additive and diagnostic. It does not delete or silently rewire the
+canonical hierarchical graph:
+
+```text
+one attended /navigate_to_pose goal
+  -> SmacPlanner2D + Regulated Pure Pursuit
+  -> /cmd_vel (geometry_msgs/Twist)
+  -> lidar_collision_stop_supervisor (sole /cmd_vel_motor publisher)
+  -> /cmd_vel_motor
+  -> sphero_rvr_driver with lean_rvr_native_si.yaml
+  -> native RC-SI straight drive -> UART -> rover
+```
+
+`explore.launch.py` includes `supervised_rvr.launch.py` with both optional
+command producers disabled, includes `lidar.launch.py` once for RPLidar and the
+measured `base_link -> laser` transform, and uses `mapping.launch.py` only for
+live `slam_toolbox`. It starts no camera, mission service, hierarchical/adaptive
+controller, semantic adapter, live-route bridge, LLM, or evidence process. The
+attended procedure is `docs/lean_explore_run_guide.md`.
 
 ## Legacy and non-canonical paths
 

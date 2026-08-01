@@ -13,12 +13,13 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_share = Path(get_package_share_directory("sphero_rvr_driver"))
-    rvr_config = pkg_share / "config" / "rvr.yaml"
+    default_rvr_config = pkg_share / "config" / "rvr.yaml"
     collision_stop_config = pkg_share / "config" / "collision_stop.yaml"
     range_motion_config = pkg_share / "config" / "range_motion.yaml"
     live_route_config = pkg_share / "config" / "live_route_runner.yaml"
 
     serial_port = LaunchConfiguration("serial_port")
+    rvr_params_file = LaunchConfiguration("rvr_params_file")
     start_supervisor = LaunchConfiguration("start_collision_stop")
     start_range_motion = LaunchConfiguration("start_range_motion")
     start_live_route_runner = LaunchConfiguration("start_live_route_runner")
@@ -33,7 +34,7 @@ def generate_launch_description():
         executable="rvr_node",
         name="sphero_rvr_driver",
         output="screen",
-        parameters=[str(rvr_config), {"serial_port": serial_port}],
+        parameters=[rvr_params_file, {"serial_port": serial_port}],
         remappings=[
             ("cmd_vel", "/cmd_vel_motor"),
             ("stop", "/rvr_driver/stop"),
@@ -107,6 +108,14 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
+        DeclareLaunchArgument(
+            "rvr_params_file",
+            default_value=str(default_rvr_config),
+            description=(
+                "RVR driver parameter file. Motor-capable parent launches must "
+                "pass their reviewed backend explicitly."
+            ),
+        ),
         DeclareLaunchArgument(
             "start_collision_stop",
             default_value="true",

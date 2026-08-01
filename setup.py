@@ -24,6 +24,7 @@ setup(
                 "launch/hierarchical_exploration_replay.launch.py",
                 "launch/hierarchical_exploration_physical.launch.py",
                 "launch/m7_stationary_localization.launch.py",
+                "launch/explore.launch.py",
             ],
         ),
         (
@@ -44,6 +45,8 @@ setup(
                 "config/hierarchical_nav2_physical.yaml",
                 "config/hierarchical_slam_toolbox.yaml",
                 "config/hierarchical_navigate_through_poses.xml",
+                "config/lean_rvr_native_si.yaml",
+                "config/lean_nav2.yaml",
             ],
         ),
         (
@@ -111,6 +114,7 @@ setup(
                 "docs/hierarchical_exploration_milestone7_phase5.md",
                 "docs/hierarchical_exploration_milestone8_phase0.md",
                 "docs/hierarchical_exploration_milestone8_phase1.md",
+                "docs/lean_explore_run_guide.md",
             ],
         ),
         (
