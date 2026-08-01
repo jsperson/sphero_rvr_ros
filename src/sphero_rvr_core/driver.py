@@ -72,6 +72,7 @@ class RVRDriver:
         safe_stop_retry_delay: float = 0.02,
         safety_dispatch_timeout_s: float = 0.10,
         wheel_track_m: float = 0.2507,
+        pivot_raw_motor_duty: int = 30,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -101,6 +102,7 @@ class RVRDriver:
                 int(max_angular_raw_motor_duty if max_angular_raw_motor_duty is not None else self._max_raw_motor_duty),
             ),
         )
+        self._pivot_raw_motor_duty = max(0, min(127, int(pivot_raw_motor_duty)))
         normalized_control_mode = str(velocity_control_mode).strip().lower()
         if normalized_control_mode == self.VELOCITY_CONTROL_NATIVE_RC_SI:
             raise ValueError(
@@ -562,6 +564,21 @@ class RVRDriver:
                         max_speed=self._max_raw_motor_duty,
                         max_linear_speed=self._max_linear_raw_motor_duty,
                         max_angular_speed=self._max_angular_raw_motor_duty,
+                    ),
+                    motion_generation=motion_generation,
+                )
+                continue
+            if abs(velocity.linear_mps) < 0.005 and abs(velocity.angular_rad_s) > 0.0:
+                signed_duty = (
+                    self._pivot_raw_motor_duty
+                    if velocity.angular_rad_s > 0.0
+                    else -self._pivot_raw_motor_duty
+                )
+                await self._send_from_control_loop(
+                    lambda seq: self.commands.drive_tank_normalized(
+                        seq,
+                        left_velocity=-signed_duty,
+                        right_velocity=signed_duty,
                     ),
                     motion_generation=motion_generation,
                 )
