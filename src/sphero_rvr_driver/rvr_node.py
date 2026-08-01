@@ -44,6 +44,8 @@ class RVRNodeConfig:
     max_angular_raw_motor_duty: int = 255
     pivot_target_rate_rad_s: float = 1.3
     pivot_max_duty: int = 45
+    pivot_min_duty: int = 20
+    pivot_duty_gain: float = 1.5
     velocity_control_mode: str = RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     battery_publish_period: float = 5.0
     temperature_publish_period: float = 2.0
@@ -84,6 +86,8 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         max_angular_raw_motor_duty=config.max_angular_raw_motor_duty,
         pivot_target_rate_rad_s=config.pivot_target_rate_rad_s,
         pivot_max_duty=config.pivot_max_duty,
+        pivot_min_duty=config.pivot_min_duty,
+        pivot_duty_gain=config.pivot_duty_gain,
         velocity_control_mode=config.velocity_control_mode,
         wheel_track_m=config.odom_wheel_track_m,
     )
@@ -215,6 +219,8 @@ def main(args=None):
             self.declare_parameter("max_angular_raw_motor_duty", defaults.max_angular_raw_motor_duty)
             self.declare_parameter("pivot_target_rate_rad_s", defaults.pivot_target_rate_rad_s)
             self.declare_parameter("pivot_max_duty", defaults.pivot_max_duty)
+            self.declare_parameter("pivot_min_duty", defaults.pivot_min_duty)
+            self.declare_parameter("pivot_duty_gain", defaults.pivot_duty_gain)
             self.declare_parameter("velocity_control_mode", defaults.velocity_control_mode)
             self.declare_parameter("battery_publish_period", defaults.battery_publish_period)
             self.declare_parameter("temperature_publish_period", defaults.temperature_publish_period)
@@ -252,6 +258,8 @@ def main(args=None):
                 max_angular_raw_motor_duty=int(self.get_parameter("max_angular_raw_motor_duty").value),
                 pivot_target_rate_rad_s=float(self.get_parameter("pivot_target_rate_rad_s").value),
                 pivot_max_duty=int(self.get_parameter("pivot_max_duty").value),
+                pivot_min_duty=int(self.get_parameter("pivot_min_duty").value),
+                pivot_duty_gain=float(self.get_parameter("pivot_duty_gain").value),
                 velocity_control_mode=str(self.get_parameter("velocity_control_mode").value),
                 battery_publish_period=float(self.get_parameter("battery_publish_period").value),
                 temperature_publish_period=float(self.get_parameter("temperature_publish_period").value),
