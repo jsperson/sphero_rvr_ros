@@ -566,7 +566,7 @@ async def test_native_tank_si_pivot_uses_calibrated_track_width():
     assert duties
     # Closed-loop pivot with no odom feedback ramps the raw duty up from the
     # minimum; a positive angular command drives the left wheel back, right fwd.
-    assert duties[0] == (-20, 20)
+    assert duties[0] == (-23, 23)
     assert all(left < 0 < right for left, right in duties)
     assert abs(duties[-1][1]) >= abs(duties[0][1])
     assert not _tank_si_drive_packets(transport, driver)
@@ -683,7 +683,7 @@ async def test_driver_uses_opposing_tank_si_velocities_for_pure_turning():
     assert duties
     # A measured yaw rate well above target makes the error negative, so the
     # closed loop never ramps up and holds the minimum duty (opposing wheels).
-    assert all(wheels == (-20, 20) for wheels in duties)
+    assert all(wheels == (-23, 23) for wheels in duties)
     assert not _tank_si_drive_packets(transport, driver)
     assert not _rc_drive_packets(transport, driver)
     assert all(packet.payload == RAW_OFF for packet in _raw_motor_packets(transport, driver))

@@ -14,7 +14,8 @@ def test_default_node_config_uses_pi_serial_alias_and_floor_turn_motor_duty():
     assert config.max_linear_raw_motor_duty == 64
     assert config.max_angular_raw_motor_duty == 255
     assert config.pivot_target_rate_rad_s == 1.3
-    assert config.pivot_max_duty == 45
+    assert config.pivot_max_duty == 32
+    assert config.pivot_min_duty == 23
     assert config.velocity_control_mode == RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     assert config.safety_dispatch_timeout_s == 0.10
     assert config.battery_publish_period == 5.0

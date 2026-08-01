@@ -73,9 +73,9 @@ class RVRDriver:
         safety_dispatch_timeout_s: float = 0.10,
         wheel_track_m: float = 0.2507,
         pivot_target_rate_rad_s: float = 1.3,
-        pivot_max_duty: int = 45,
-        pivot_min_duty: int = 20,
-        pivot_duty_gain: float = 1.5,
+        pivot_max_duty: int = 32,
+        pivot_min_duty: int = 23,
+        pivot_duty_gain: float = 0.6,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)

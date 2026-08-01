@@ -43,9 +43,9 @@ class RVRNodeConfig:
     max_linear_raw_motor_duty: int = 64
     max_angular_raw_motor_duty: int = 255
     pivot_target_rate_rad_s: float = 1.3
-    pivot_max_duty: int = 45
-    pivot_min_duty: int = 20
-    pivot_duty_gain: float = 1.5
+    pivot_max_duty: int = 32
+    pivot_min_duty: int = 23
+    pivot_duty_gain: float = 0.6
     velocity_control_mode: str = RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     battery_publish_period: float = 5.0
     temperature_publish_period: float = 2.0
