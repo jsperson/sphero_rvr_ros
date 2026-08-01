@@ -13,8 +13,7 @@ def test_default_node_config_uses_pi_serial_alias_and_floor_turn_motor_duty():
     assert config.max_raw_motor_duty == 160
     assert config.max_linear_raw_motor_duty == 64
     assert config.max_angular_raw_motor_duty == 255
-    assert config.pivot_raw_motor_duty == 30
-    assert config.max_pivot_rate_rad_s == 3.5
+    assert config.pivot_raw_motor_duty == 24
     assert config.velocity_control_mode == RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     assert config.safety_dispatch_timeout_s == 0.10
     assert config.battery_publish_period == 5.0
@@ -35,7 +34,6 @@ def test_create_driver_passes_base_driver_safety_limits():
         max_linear_raw_motor_duty=21,
         max_angular_raw_motor_duty=84,
         pivot_raw_motor_duty=12,
-        max_pivot_rate_rad_s=2.0,
         velocity_control_mode=RVRDriver.VELOCITY_CONTROL_RAW_MOTOR,
         odom_wheel_track_m=0.222,
         safety_dispatch_timeout_s=0.18,
@@ -52,7 +50,6 @@ def test_create_driver_passes_base_driver_safety_limits():
     assert driver._max_linear_raw_motor_duty == 21
     assert driver._max_angular_raw_motor_duty == 84
     assert driver._pivot_raw_motor_duty == 12
-    assert driver._max_pivot_rate_rad_s == 2.0
     assert driver._velocity_control_mode == RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     assert driver._wheel_track_m == 0.222
     assert driver._safety_dispatch_timeout_s == 0.18

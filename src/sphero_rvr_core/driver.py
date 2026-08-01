@@ -72,8 +72,7 @@ class RVRDriver:
         safe_stop_retry_delay: float = 0.02,
         safety_dispatch_timeout_s: float = 0.10,
         wheel_track_m: float = 0.2507,
-        pivot_raw_motor_duty: int = 30,
-        max_pivot_rate_rad_s: float = 3.5,
+        pivot_raw_motor_duty: int = 24,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -104,8 +103,6 @@ class RVRDriver:
             ),
         )
         self._pivot_raw_motor_duty = max(0, min(127, int(pivot_raw_motor_duty)))
-        self._max_pivot_rate_rad_s = max(0.001, float(max_pivot_rate_rad_s))
-        self._pivot_pulse_accumulator = 0.0
         normalized_control_mode = str(velocity_control_mode).strip().lower()
         if normalized_control_mode == self.VELOCITY_CONTROL_NATIVE_RC_SI:
             raise ValueError(
@@ -572,21 +569,15 @@ class RVRDriver:
                 )
                 continue
             if abs(velocity.linear_mps) < 0.005 and abs(velocity.angular_rad_s) > 0.0:
-                # No low duty gives a slow pivot (turn breakaway is between duty
-                # 20 and 30), so pulse the one reliable duty: a sigma-delta duty
-                # cycle makes the average pivot rate track the commanded angular.
-                self._pivot_pulse_accumulator += min(
-                    1.0, abs(velocity.angular_rad_s) / self._max_pivot_rate_rad_s
+                # Firmware tank-SI can't actuate a slow opposite-signed pivot, so
+                # pivot at a fixed raw duty. Turn breakaway is ~duty 20; the
+                # default 24 gives a steady, controllable ~1.4 rad/s (duty 30 was
+                # a violent ~3.5). Direction comes from the sign of angular.
+                duty = (
+                    self._pivot_raw_motor_duty
+                    if velocity.angular_rad_s > 0.0
+                    else -self._pivot_raw_motor_duty
                 )
-                if self._pivot_pulse_accumulator >= 1.0:
-                    self._pivot_pulse_accumulator -= 1.0
-                    duty = (
-                        self._pivot_raw_motor_duty
-                        if velocity.angular_rad_s > 0.0
-                        else -self._pivot_raw_motor_duty
-                    )
-                else:
-                    duty = 0
                 await self._send_from_control_loop(
                     lambda seq: self.commands.drive_tank_normalized(
                         seq,
@@ -596,7 +587,6 @@ class RVRDriver:
                     motion_generation=motion_generation,
                 )
                 continue
-            self._pivot_pulse_accumulator = 0.0
             half_track = self._wheel_track_m / 2.0
             left_mps = velocity.linear_mps - velocity.angular_rad_s * half_track
             right_mps = velocity.linear_mps + velocity.angular_rad_s * half_track
