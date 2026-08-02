@@ -38,7 +38,6 @@ setup(
             "share/sphero_rvr_driver/scripts",
             [
                 "scripts/install-rvr-pi",
-                "scripts/rvr-console",
             ],
         ),
         (

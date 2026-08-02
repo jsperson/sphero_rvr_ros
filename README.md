@@ -1,77 +1,35 @@
 # sphero_rvr_ros
 
-Concurrency-safe Sphero RVR core driver, ROS 2 adapter, and bounded mission framework for an LLM-supervised semantic rover.
+A lean ROS 2 stack for a Sphero RVR that autonomously explores a room: a
+concurrency-safe core driver, a ROS 2 driver node, RPLIDAR + `slam_toolbox`
+mapping, Nav2 navigation with frontier exploration, and an independent
+collision/STOP/ESTOP brake that owns physical motion.
 
-The product goal is a map-driven web interface with text-based LLM interaction for room mapping, semantic object inventory, targeted search, and obstacle-avoiding navigation. The LLM selects bounded mission objectives from live evidence; deterministic ROS executors and an independent collision/STOP/ESTOP boundary retain control of physical motion. See [docs/product_direction.md](docs/product_direction.md).
+The goal is a robot that drives smoothly, maps a room, and explores it on its own
+under a safety boundary. An optional thin LLM goal-picker and camera-based object
+recognition are planned as later, additive layers on top of this spine.
 
 ## Agent cold start
 
-Canonical project status and the next action live only in the Obsidian vault at
-`Projects/Sphero RVR ROS/Current Status.md`. Repository [STATUS.md](STATUS.md)
-is only a pointer. After reading the vault status, load
-[docs/architecture_map.md](docs/architecture_map.md), the single maintained map
-of current modules, processes, topics, bounds, and authority ownership. Phase
-documents are historical design/evidence, not alternate status or seam maps.
+Canonical project status and the next action live only in the Obsidian
+vault at `Projects/Sphero RVR ROS/Current Status.md`. Repository
+[STATUS.md](STATUS.md) is only a pointer. After the vault status, read
+[docs/architecture_map.md](docs/architecture_map.md) for the current
+module, topic, and command-flow map. The README does not mirror milestone
+status or the next action; those live only in the vault status note.
 
-The repository contains replay, no-motion, and default-off physical paths for
-hierarchical semantic exploration plus their durable validation evidence. The
-README intentionally does not mirror milestone status, approval state, or the
-next action; those change frequently and belong only in the canonical vault
-status note.
+## Documentation map
 
-## Documentation map for operators and maintainers
+The kept docs cover the lean exploration spine:
 
-- [docs/architecture_map.md](docs/architecture_map.md) is the read-first, single maintained map of current module/process/topic ownership, command flow, fixed names, bounds, and legacy seams.
-- [docs/product_direction.md](docs/product_direction.md) defines the current product end state, system shape, and delivery sequence.
-- [docs/rvr_capability_matrix.md](docs/rvr_capability_matrix.md) is the full official SDK/protocol capability matrix. It is the source of truth for core API parity, ROS exposure decisions, and required validation tokens.
-- [docs/rvr_ros_exposure_policy.md](docs/rvr_ros_exposure_policy.md) explains the ROS exposure policy: full API parity belongs in `sphero_rvr_core`; ROS exposes only typed, bounded, operational surfaces.
-- [docs/rvr_api_gap_report.md](docs/rvr_api_gap_report.md) is the parity handoff: what is implemented, what remains intentionally core-only/omitted, and which commands validate the state.
-- [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) documents the current encoder-derived `/odom` and `odom -> base_link` TF design and limitations.
-- [docs/mapping.md](docs/mapping.md) covers the lidar/SLAM launch scaffold, safe defaults, TF expectations, and manual mapping workflow.
-- [docs/slam_replay.md](docs/slam_replay.md) covers the replay-first SLAM Toolbox map-save/map-reload plan, deterministic map fixture, and current localization limits.
-- [docs/shoe_detector_replay.md](docs/shoe_detector_replay.md) covers the replay-first shoe detector baseline, VS04 JSON schema, and evidence frames.
-- [docs/shoe_map_projection.md](docs/shoe_map_projection.md) covers VS05 map-frame shoe observation projection, timestamp/TF boundaries, tracking, spatial deduplication, and uncertainty limits.
-- [docs/rosbag_capture_replay.md](docs/rosbag_capture_replay.md) covers the dry-run-first rosbag2 capture/replay workflow, run manifest format, storage layout, cleanup, and motor-topic safety boundaries.
-- [docs/camera_lidar_calibration.md](docs/camera_lidar_calibration.md) is the no-hardware Pi Camera 3 / RPLIDAR calibration runbook, including measured camera intrinsics, measured TF defaults, and physical measurement steps.
-- [docs/rvr_control_interface_plan.md](docs/rvr_control_interface_plan.md) defines the safer `rvr-console` / curses TUI control interface for lidar mapping: status pane, STOP/ESTOP semantics, mapping launch states, nudge commands, dry-run mode, and validation gates.
-- [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) is the source-of-truth design for the independent lidar collision-stop supervisor and final `/cmd_vel` arbitration contract.
-- [docs/range_motion_controller.md](docs/range_motion_controller.md) documents the closed-loop lidar target-clearance motion primitive that publishes to `/cmd_vel` above the independent supervisor.
-- [docs/mission_api.md](docs/mission_api.md) documents the single canonical Mission API implementation: the generic `mission_api.v2` typed tool registry/runtime boundary for LLM-operable rover goals without arbitrary ROS/motor exposure.
-- [docs/rvr_mcp_server.md](docs/rvr_mcp_server.md) documents the local-only stdio MCP adapter over `mission_api.v2`, including threat boundaries, resources, launch config, and extension rules.
-- [docs/mission_language.md](docs/mission_language.md) documents the constrained deterministic plain-English translator that emits only validated Mission API schema or structured rejection for unsupported/unsafe requests.
-- [docs/mission_planner.md](docs/mission_planner.md) documents the ROS-free iterative LLM planner over allowlisted `mission_api.v2` rover tools, fake provider, first-party OpenAI `gpt-5.6` Responses default with bounded image observations, optional text-only OpenRouter/GLM compatibility, budgets, manifest, and the distinction from Hermes Kanban worker agents.
-- [docs/mission_observability.md](docs/mission_observability.md) documents the VS08A read-only responsive web/PWA mission observability surface over Mission API snapshots, mock/replay telemetry, event streaming, and final artifact links.
-- [docs/mission_controls.md](docs/mission_controls.md) documents the VS08B authenticated Mission API start/pause/cancel controls, physical start approval gate, audit log, and independent robot-side safety visibility.
-- [docs/mission_web.md](docs/mission_web.md) documents the first integrated map-driven mission console: prompt entry, typed proposal/rejection, digest-bound simulation approval, safety and event state, responsive SVG map, and seven mock/replay outcomes.
-- [docs/perception_navigation.md](docs/perception_navigation.md) defines the replay-first lidar-authoritative pose, quality, goal-region, short-horizon correction, tread-divergence, and fail-closed navigation contracts.
-- [docs/rolling_replay.md](docs/rolling_replay.md) documents the Milestone 1 rolling LLM replay loop, typed world/intent contracts, concurrency proof, browser evidence, and no-authority boundary.
-- [docs/semantic_map_artifacts.md](docs/semantic_map_artifacts.md) documents the VS06 final semantic map artifact generator: structured JSON, GeoJSON, annotated map image, coverage/uncertainty report, and mission summary.
-- [docs/supervised_coordinator.md](docs/supervised_coordinator.md) documents the deterministic supervised mapping/navigation coordinator contract above `range_motion`, including Mission API/read-only UI telemetry and fail-closed cancellation semantics.
-- [docs/adaptive_mission_authority.md](docs/adaptive_mission_authority.md) defines broad prompt-guided Adaptive mission route authority at moderate speed, short intent leases, and the independent collision/STOP/ESTOP boundary.
-- [docs/adaptive_mission_controller.md](docs/adaptive_mission_controller.md) documents the snapshot-bound OAuth app-server planner, conditional visual evidence, latency instrumentation, and recorded-snapshot model benchmark.
-- [docs/hierarchical_exploration.md](docs/hierarchical_exploration.md) records the Milestone 6 decision to use Nav2 beneath deterministic frontier generation and LLM semantic-goal selection while preserving the existing command and safety boundaries.
-- [docs/hierarchical_exploration_phase1.md](docs/hierarchical_exploration_phase1.md) records the Phase 1 implementation, recorded-map provenance, Jazzy replay handoff/veto evidence, Pi no-motion benchmark, and remaining latency limitations.
-- [docs/hierarchical_exploration_phase2.md](docs/hierarchical_exploration_phase2.md) records the Phase 2 camera/lidar association, floor projection, bearing-only fallback, uncertainty, and ambiguity-rejection evidence.
-- [docs/hierarchical_exploration_phase3.md](docs/hierarchical_exploration_phase3.md) records the Phase 3 semantic-goal schema, deterministic Next-Best-View resolution, async prefetch, event replanning, long-leg/short-hop evidence, and latency carryover.
-- [docs/hierarchical_exploration_phase4.md](docs/hierarchical_exploration_phase4.md) records the Phase 4 real-provider wall-latency replay, durable mission-ID evidence, read-only browser integration, long-leg handoffs, and short-hop pause characterization.
-- [docs/hierarchical_exploration_milestone7.md](docs/hierarchical_exploration_milestone7.md) defines the Milestone 7 short-hop product decision, physical ownership contract, sequential entry gates, approval boundaries, and reviewable delivery slices.
-- [docs/hierarchical_exploration_milestone7_phase1.md](docs/hierarchical_exploration_milestone7_phase1.md) records the exact-SHA Pi WFD benchmark, loopback-only ROS ownership graph, zero-command evidence, environment, and cleanup for the M7.1 no-motion gate.
-- [docs/hierarchical_exploration_milestone7_phase2.md](docs/hierarchical_exploration_milestone7_phase2.md) defines the fixed physical-survey bands, stationary camera/lidar-only capture workflow, fail-closed evidence schema, localization gates, and cleanup required for M7.2.
-- [artifacts/m7_phase2_surveyed_localization/README.md](artifacts/m7_phase2_surveyed_localization/README.md) records the passing exact-SHA M7.2 physical evidence, per-method error distributions, camera-pitch calibration finding, raw-bag checksums, ambiguity rejection, and cleanup.
-- [docs/hierarchical_exploration_milestone7_phase3.md](docs/hierarchical_exploration_milestone7_phase3.md) defines the separately approved M7.3 collision and M7.4 moving-perception gates, read-only observer/evaluator, pitch re-verification, and exact-SHA stop boundaries.
-- [docs/hierarchical_exploration_milestone7_phase4.md](docs/hierarchical_exploration_milestone7_phase4.md) records the default-off physical hierarchical binding, live-time Nav2 authority chain, exact-SHA/digest lease, restart recovery, durable/browser evidence, validation, and remaining Phase 5 risks.
-- [docs/hierarchical_exploration_milestone7_phase5.md](docs/hierarchical_exploration_milestone7_phase5.md) defines the final browser-owned canonical proposal/approval workflow, one-shot systemd activation, durable M7.7 evaluator, exact-SHA preflight, attended room gate, cleanup contract, and physical evidence status.
-- [artifacts/m7_phase5_canonical_physical/README.md](artifacts/m7_phase5_canonical_physical/README.md) records the passing attended canonical mission, two real provider calls, resolved Nav2 execution, physical odometry, authenticated no-contact observation, generated cleanup, and the unresolved turning-jitter carryover.
-- [artifacts/m7_phase4_physical_binding/README.md](artifacts/m7_phase4_physical_binding/README.md) records the exact-SHA Pi build, bounded M6/binding tests, no-motion graph and storage audit, cleanup, and disclosed cross-architecture fixture correction.
-- [artifacts/m7_phase3_attended_collision/README.md](artifacts/m7_phase3_attended_collision/README.md) records the passing exact-SHA attended M7.3 collision evidence, independent provider-in-flight veto timing, no-contact observation, restart recovery, raw-artifact checksums, disclosed capture anomalies, and final cleanup.
-- [artifacts/m7_phase3_directional_addendum/README.md](artifacts/m7_phase3_directional_addendum/README.md) records the attended paired directional-veto check: reverse-toward remains motor-zero, forward-away is permitted with positive overlapped-point exclusion, no contact occurred, and M7.4 must bind both evidence digests.
-- [artifacts/m7_phase3_moving_perception/README.md](artifacts/m7_phase3_moving_perception/README.md) records the passing M7.4 live moving-perception evidence, pitch re-verification, stale-sensor trial, raw-artifact checksums, disclosed capture attempts, and final cleanup.
-- [docs/vertical_slice_capability_matrix.md](docs/vertical_slice_capability_matrix.md) is the canonical replay-first foundation handoff for shoe-mapping VS02+ work: verified Mac/Pi SHAs, reusable bag metadata, frame IDs, CameraInfo checksums, safe replay commands, and human gates.
-- [docs/system_validation.md](docs/system_validation.md) defines the local/Pi ROS system checks, current-SHA no-motion corpus manifest, fake route/collision replay corpus, latency gate, and hardware-in-loop evidence schema.
-- [docs/motion_calibration.md](docs/motion_calibration.md) records the gated motion/odometry calibration helper and current encoder scale.
-- [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) is the Pi udev rule for the stable `/dev/rplidar` alias.
-
-Installed package data includes launch: `rvr.launch.py`, `supervised_rvr.launch.py`, `lidar.launch.py`, `mapping.launch.py`, `camera.launch.py`; config: `rvr.yaml`, `collision_stop.yaml`, `lidar.yaml`, `slam_toolbox.yaml`, `camera.yaml`, `mission_planner.yaml`; range-motion config: `range_motion.yaml`; docs including `docs/mission_api.md`, `docs/mission_language.md`, `docs/mission_planner.md`, `docs/rvr_mcp_server.md`, `docs/mission_observability.md`, `docs/mission_controls.md`, `docs/mission_web.md`, `docs/rolling_replay.md`, `docs/adaptive_mission_authority.md`, `docs/semantic_map_artifacts.md`, `docs/supervised_coordinator.md`, `docs/lidar_motion_validation.md`, `docs/perception_navigation.md`, and `docs/shoe_map_projection.md`; helper scripts: `install-rvr-pi`, `rvr-camera-node`, `rvr-console`, `rvr-slam-replay-plan`, `rvr-shoe-detector-eval`, `rvr_motion_calibration.py`; console commands include `rvr_shoe_detector_eval`, `rvr_shoe_map_project`, `rvr_semantic_map_artifacts`, `rvr_mcp_server`, `rvr_mission_web`, and `rvr_lidar_motion_validation`. The replay-only `rvr_perception_navigation_replay` command has no ROS or motor authority. The AI command layer now has an LLM planner and local-only MCP stdio adapter over allowlisted `mission_api.v2` rover tools for replay/mock supervision, not raw ROS motion.
+- [docs/architecture_map.md](docs/architecture_map.md) - module/topic/command-flow map (read first).
+- [docs/rvr_capability_matrix.md](docs/rvr_capability_matrix.md) - core SDK/protocol capability matrix and validation tokens.
+- [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) - encoder-derived `/odom` and `odom -> base_link` TF design.
+- [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) - the independent collision-stop supervisor and `/cmd_vel` arbitration contract.
+- [docs/range_motion_controller.md](docs/range_motion_controller.md) - optional closed-loop lidar target-clearance primitive above the supervisor.
+- [docs/mapping.md](docs/mapping.md) - lidar/SLAM launch scaffold and mapping workflow.
+- [docs/lean_explore_run_guide.md](docs/lean_explore_run_guide.md) - running the lean explore stack.
+- [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) - Pi udev rule for the stable `/dev/rplidar` alias.
 
 ## Current base-driver status
 
@@ -191,23 +149,19 @@ ros2 launch sphero_rvr_driver mapping.launch.py start_rvr:=true
 
 See `docs/mapping.md`, `docs/slam_replay.md`, and `docs/lidar_collision_stop_supervisor.md` before running live mapping.
 
-## Product roadmap
+## Roadmap
 
-The driver, lidar/camera calibration, collision boundary, replay SLAM, semantic artifacts, typed Mission API, and bounded LLM planner are foundations for the product rather than separate end states.
+1. **Autonomous room exploration (current).** The lean spine - driver, lidar,
+   SLAM, Nav2, frontier exploration (`explore_lite`), independent collision brake.
+   Run: `ros2 launch sphero_rvr_driver explore.launch.py start_motion_stack:=true`.
+2. **Thin LLM goal layer (later, optional).** A small node that reads the
+   map/frontiers and hands Nav2 semantic goals; deterministic frontier
+   exploration stays the fallback.
+3. **Camera-based object recognition (later, optional).** Re-added lean on top of
+   the working spine.
 
-The integrated stack now provides a durable Pi mission owner, real ChatGPT
-OAuth adaptive planning, digest-bound approval records, and authenticated
-approval-time physical activation. Boot and proposal generation keep the
-supervised hardware graph stopped. Approval starts it, waits for fresh evidence,
-and terminal handling verifies it stopped again. See `docs/pi_mission_stack.md`
-for deployment and rollback.
-
-The production sequence is: persist one reviewed mission envelope while locked;
-authenticate one operator approval; activate the supervised graph; wait for
-fresh typed perception and safety; execute and replan through bounded intents;
-then verify terminal settlement and relock.
-
-See [docs/product_direction.md](docs/product_direction.md) for the product contract. `STATUS.md` retains hardware history and the current implementation handoff.
+The larger LLM mission/web/evidence stack was removed (see git history); those
+layers will be rebuilt thin on the lean base rather than restored.
 
 ## Safe ROS operational surface notes
 
@@ -297,7 +251,7 @@ If the driver is launched for ROS graph inspection, treat it as live hardware ac
 
 ### Live hardware smoke gate
 
-Live motor-capable validation remains opt-in. Before running `rvr-console`, `ros2 launch sphero_rvr_driver rvr.launch.py`, `/stop`, `/cmd_vel`, or any command that talks to the live driver, explicitly warn:
+Live motor-capable validation remains opt-in. Before running `ros2 launch sphero_rvr_driver rvr.launch.py`, `/stop`, `/cmd_vel`, or any command that talks to the live driver, explicitly warn:
 
 ```text
 WARNING: this can start the RVR motors
@@ -319,7 +273,7 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{linear: {x: 0.1}, angul
 ros2 service call /stop std_srvs/srv/Trigger {}
 ```
 
-Anything beyond that smoke — sustained driving, mapping, TUI operation, or autonomy — needs a separate explicit scope and approval.
+Anything beyond that smoke — sustained driving, mapping, or autonomy — needs a separate explicit scope and approval.
 
 ## Recommended hardware/software
 
@@ -678,105 +632,6 @@ ros2 service call /stop std_srvs/srv/Trigger {}
 ```
 
 The driver also has a stale-command timeout, but call `/stop` afterward anyway. Belt, suspenders, and robot treads.
-
-## Terminal control app
-
-The driver package includes a small text user interface so operators do not have to remember raw ROS commands during normal bring-up and testing.
-
-Run the TUI from an already-sourced ROS shell:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source ~/ros2_ws/install/setup.bash
-ros2 run sphero_rvr_driver rvr_tui
-```
-
-Or use the startup wrapper from the repo checkout:
-
-```bash
-~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console
-```
-
-The wrapper sources ROS, sources the workspace, starts the driver launch if needed, verifies required topics/services, starts the TUI, and logs cleanup on exit. It does not call the ROS `/stop` service during shell cleanup; the TUI publishes zero `/cmd_vel` on exit, and the driver shutdown path sends the validated raw-motor-off packet.
-
-To exercise the console without ROS, lidar, UART, or RVR hardware, use dry-run mode:
-
-```bash
-~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console --dry-run
-```
-
-Dry-run mode starts the same TUI against an in-process fake client. The status pane is labeled `DRY-RUN`, simulated battery/odom/scan/service data are shown as fake/fresh, STOP/ESTOP responses are simulated, and drive keys append intended `DRY-RUN cmd_vel` commands to the TUI history instead of publishing to a live ROS `/cmd_vel` topic.
-
-TUI behavior:
-
-- Talks to the robot only through ROS 2 topics/services:
-  - publishes `/cmd_vel`
-  - calls `/stop`, `/estop`, `/clear_estop`
-  - subscribes `/battery_state`, `/diagnostics`, `/odom`, and `/scan`
-- Supports `--dry-run` from `rvr-console` for ROS-free UI testing with fake battery, odom, scan, STOP/ESTOP, and command-publish logs.
-- Does not import `RVRDriver` or open `/dev/ttyAMA0`; the ROS driver node remains the only UART owner.
-- Starts disarmed. Non-zero drive keys do nothing until the user explicitly arms the TUI.
-- Supports keyboard driving with arrow keys and/or WASD, plus space for stop.
-- Supports slash commands: `/battery`, `/status`, `/speed <mps>`, `/turn <rad_s>`, `/stop`, `/estop`, `/clear-estop`, `/arm`, `/disarm`, `/help`, and `/quit`.
-- Manages lidar/mapping launch processes from inside the TUI:
-  - `/lidar start` launches `lidar.launch.py` only; no RVR driver and no motor path.
-  - `/lidar stop` stops the TUI-owned lidar launch process.
-  - `/mapping start` launches `mapping.launch.py start_rvr:=false` for lidar + SLAM checks without the RVR driver.
-  - `/mapping stop` publishes zero velocity, disarms the TUI, and stops the TUI-owned launch process.
-  - `/mapping full` only displays `WARNING: this can start the RVR motors` and the required confirmation form.
-  - `/mapping full confirm` launches `mapping.launch.py start_rvr:=true`; this is motor-capable and leaves the TUI disarmed until `/arm confirm`.
-- Supports calibrated fixed-distance nudges for early mapping validation:
-  - `/nudge forward <distance>` and `/nudge back <distance>` warn only and do not publish motion.
-  - `/nudge forward <distance> confirm` and `/nudge back <distance> confirm` require the TUI to already be armed, cap distance at 6 inches, publish a bounded fixed-duration velocity, then always publish zero velocity and disarm.
-  - Distance accepts meters by default plus `m`, `in`, `inch`, or `inches` suffixes, for example `/nudge forward 0.02 confirm` or `/nudge back 3in confirm`.
-  - The initial calibration uses the 2026-06-24 measured `linear=0.05` for `duration=1.00` movement of about 9 inches, with `odom_counts_per_meter: 4337.768` for expected encoder-count logging.
-- Saves the current SLAM map with `/map save <name>`:
-  - map names are sanitized into safe filename stems;
-  - files are written under `~/maps/` as `<safe-name>.yaml` and `<safe-name>.pgm`;
-  - live mode runs `ros2 run nav2_map_server map_saver_cli -f ~/maps/<safe-name>`;
-  - dry-run mode logs the intended save path without running `ros2`.
-- `rvr-console --dry-run` starts the fake TUI path without sourcing ROS, launching ROS processes, opening `/dev/ttyAMA0`, or touching `/dev/rplidar`; it can exercise `/lidar ...` and `/mapping ...` state transitions safely.
-- Stops on key timeout, quit, crash, or Ctrl+C.
-- Logs startup, driver launch, topic/service verification, and cleanup details to `~/.local/state/sphero_rvr/rvr-console.log`; driver output goes to `~/.local/state/sphero_rvr/rvr-driver.log`.
-
-### TUI calibrated nudge hardware validation
-
-Do not run this validation without explicit approval after showing:
-
-```text
-WARNING: this can start the RVR motors
-```
-
-After approval, keep the RVR restrained/suspended for the first run or place it in a clear controlled area. Start with dry-run, then validate the live graph, then try the smallest nudge:
-
-```bash
-# Safe fake path first: no ROS, UART, lidar, or live /cmd_vel.
-~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console --dry-run
-# In the TUI: /mapping full confirm, /arm confirm, /nudge forward 0.02 confirm
-
-# Live motor-capable path only after approval and physical safety setup.
-~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console
-# In the TUI:
-#   /mapping full confirm
-#   /arm confirm
-#   /nudge forward 0.02 confirm
-#   /status
-```
-
-Expected result for the live tiny nudge: the TUI publishes one bounded forward command, publishes zero velocity at completion, disarms, and logs the requested distance, estimated duration, expected encoder counts, and stopped/disarmed result. If anything looks wrong, use `/stop`, then `/estop`, then power off the RVR if needed. Do not test larger nudges until the 0.02 m run has stopped cleanly and odometry is plausible.
-
-Suggested one-command install convenience:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf ~/ros2_ws/src/sphero_rvr_ros/scripts/rvr-console ~/.local/bin/rvr-console
-```
-
-Then run:
-
-```bash
-rvr-console
-```
 
 ## Development install without ROS 2
 
