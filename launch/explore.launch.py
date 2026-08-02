@@ -4,7 +4,12 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    TimerAction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -148,10 +153,24 @@ def generate_launch_description():
             lidar,
             mapping,
             *nav2_nodes,
-            # explore_lite searches for frontiers once and quits permanently if
-            # it finds none. On cold start the costmap is not yet populated with
-            # free space, so start explore only after SLAM + costmaps have warmed
-            # up. (Diagnosed 2026-08-02: without this it always quits at ~t+1s.)
-            TimerAction(period=25.0, actions=[explore_lite]),
+            # explore_lite runs its frontier search once at startup and quits if
+            # it finds none — and on cold start the costmap has no free space yet.
+            # It must SUBSCRIBE at startup (a late-started explore misses the
+            # latched costmap and hangs on "waiting for costmap"), so start it
+            # normally but kick /explore/resume once SLAM + costmaps have warmed
+            # up. (Diagnosed 2026-08-02: without the kick it quits at ~t+1s.)
+            explore_lite,
+            TimerAction(
+                period=25.0,
+                actions=[
+                    ExecuteProcess(
+                        cmd=[
+                            "ros2", "topic", "pub", "--once", "/explore/resume",
+                            "std_msgs/msg/Bool", "{data: true}",
+                        ],
+                        output="screen",
+                    )
+                ],
+            ),
         ]
     )
