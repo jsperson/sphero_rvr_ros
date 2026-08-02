@@ -109,7 +109,7 @@ scan topic: /scan
 ros2 launch sphero_rvr_driver lidar.launch.py laser_x:=0.0 laser_y:=0.0 laser_z:=0.15 laser_yaw:=0.0
 ```
 
-This launch file is lidar-only and does not talk to the RVR motors. Full mapping still needs odometry / TF integration before `slam_toolbox` should be treated as a real robot map.
+This launch file is lidar-only and does not talk to the RVR motors. Odometry / TF integration is done (encoder-derived `/odom` and `odom -> base_link`); full mapping and exploration run from `mapping.launch.py` / `explore.launch.py`.
 
 ## Mapping scaffold
 
@@ -154,6 +154,12 @@ See `docs/mapping.md`, `docs/slam_replay.md`, and `docs/lidar_collision_stop_sup
 1. **Autonomous room exploration (current).** The lean spine - driver, lidar,
    SLAM, Nav2, frontier exploration (`explore_lite`), independent collision brake.
    Run: `ros2 launch sphero_rvr_driver explore.launch.py start_motion_stack:=true`.
+   Bringup is inert; exploration is opt-in (`start_explore:=true`), so the rover
+   never moves on its own. The spine drives to goals, turns via a
+   RotationShimController, explores and recovers, and crosses gaps it approaches
+   head-on. Active robustness step: **IMU fusion** (`robot_localization` EKF over
+   wheel odom + the RVR IMU) to remove the ~20 deg wheel-only yaw drift that
+   limits precise heading (narrow-gap approaches, long straight tracking).
 2. **Thin LLM goal layer (later, optional).** A small node that reads the
    map/frontiers and hands Nav2 semantic goals; deterministic frontier
    exploration stays the fallback.
