@@ -33,6 +33,7 @@ def generate_launch_description():
     )
 
     start_motion_stack = LaunchConfiguration("start_motion_stack")
+    start_explore = LaunchConfiguration("start_explore")
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     rvr_params_file = LaunchConfiguration("rvr_params_file")
@@ -119,6 +120,7 @@ def generate_launch_description():
         output="screen",
         parameters=[explore_lite_params_file],
         remappings=[("navigate_to_pose", "/navigate_to_pose")],
+        condition=IfCondition(start_explore),
     )
 
     return LaunchDescription(
@@ -129,6 +131,17 @@ def generate_launch_description():
                 description=(
                     "MOTOR-CAPABLE: start the collision supervisor and RVR driver. "
                     "Do not enable until tank-SI mapping validation has passed."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "start_explore",
+                default_value="false",
+                description=(
+                    "Start autonomous frontier exploration (explore_lite + the "
+                    "/explore/resume kick). Default false: bringup is INERT — "
+                    "driver, lidar, SLAM, and Nav2 come up but nothing commands "
+                    "motion. Send a NavigateToPose goal to drive directionally, "
+                    "or set true to explore."
                 ),
             ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
@@ -152,23 +165,26 @@ def generate_launch_description():
             lidar,
             mapping,
             *nav2_nodes,
-            # explore_lite runs its frontier search once at startup and quits if
-            # it finds none — and on cold start the costmap has no free space yet.
-            # It must SUBSCRIBE at startup (a late-started explore misses the
-            # latched costmap and hangs on "waiting for costmap"), so start it
-            # normally but kick /explore/resume once SLAM + costmaps have warmed
-            # up. (Diagnosed 2026-08-02: without the kick it quits at ~t+1s.)
+            # Autonomous exploration is OPT-IN (start_explore, default false) so
+            # bringup is inert and the rover never moves on its own. When enabled:
+            # explore_lite must SUBSCRIBE at startup (a late-started explore misses
+            # the latched costmap and hangs on "waiting for costmap"), so it starts
+            # with the graph but only drives once /explore/resume is kicked after
+            # SLAM + costmaps warm up. (Diagnosed 2026-08-02: without the kick it
+            # quits at ~t+1s.)
             explore_lite,
             # explore_lite quits permanently on ANY empty frontier search — the
             # cold-start race AND transient mid-run empties. Re-kick
             # /explore/resume periodically (every ~15 s) so it always restarts
             # and keeps exploring. Early kicks before warmup are harmless.
+            # Gated on start_explore so an inert bringup emits no motion goals.
             ExecuteProcess(
                 cmd=[
                     "ros2", "topic", "pub", "-r", "0.0667", "/explore/resume",
                     "std_msgs/msg/Bool", "{data: true}",
                 ],
                 output="screen",
+                condition=IfCondition(start_explore),
             ),
         ]
     )
