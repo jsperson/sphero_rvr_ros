@@ -38,28 +38,36 @@ controller_server:
       xy_goal_tolerance: 0.10
       yaw_goal_tolerance: 0.35
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      # RotationShimController: rotate in place to face the path, then hand to
+      # RPP for straight driving. Matches a drivetrain that can only pivot in
+      # place or drive straight (no smooth low-speed arcs), so it avoids the
+      # turn-hunting jitter of pure path-following. RPP's own in-place rotation
+      # is disabled; the shim owns rotation.
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      angular_dist_threshold: 0.785
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 0.4
+      max_angular_accel: 0.8
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: false
       desired_linear_vel: 0.05
       lookahead_dist: 0.30
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.40
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 0.4
       transform_tolerance: 0.2
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
       approach_velocity_scaling_dist: 0.20
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
-      # The independent collision supervisor owns slow/stop arbitration. Avoid
-      # a second speed floor: the loaded rover is already smooth at 0.05 m/s.
       use_regulated_linear_velocity_scaling: false
       use_cost_regulated_linear_velocity_scaling: false
       use_fixed_curvature_lookahead: false
-      use_rotate_to_heading: true
+      use_rotate_to_heading: false
       rotate_to_heading_min_angle: 0.35
       allow_reversing: false
-      max_angular_accel: 0.8
       stateful: true
 
 local_costmap:
@@ -93,7 +101,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
-        inflation_radius: 0.30
+        inflation_radius: 0.25
 
 global_costmap:
   global_costmap:
@@ -129,7 +137,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
-        inflation_radius: 0.30
+        inflation_radius: 0.25
 
 bt_navigator:
   ros__parameters:

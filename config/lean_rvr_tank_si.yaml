@@ -13,6 +13,12 @@ sphero_rvr_driver:
     max_linear_mps: 0.05
     max_angular_rad_s: 0.4
 
+    # Pivot (in-place turn) tuning — floor above the weak-direction breakaway so
+    # short turns have force; gentle gain to avoid closed-loop oscillation.
+    pivot_min_duty: 28
+    pivot_max_duty: 45
+    pivot_duty_gain: 1.0
+
     # These raw-duty settings remain inert in native_tank_si mode and preserve
     # the shared node schema; there is no deadband or velocity smoother.
     max_raw_motor_duty: 160
