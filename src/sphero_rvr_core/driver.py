@@ -10,6 +10,7 @@ from .command_queue import CommandPriority, PriorityCommandQueue
 from .commands import RVRCommands
 from .dispatcher import Dispatcher, Subscription
 from . import responses
+from . import sensor_streaming
 from .packet import (
     DID_DRIVE,
     DID_POWER,
@@ -86,6 +87,7 @@ class RVRDriver:
         pivot_min_duty: int = 23,
         pivot_duty_gain: float = 0.6,
         heading_max_speed: int = 60,
+        imu_stream_interval_ms: Optional[int] = None,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -125,6 +127,14 @@ class RVRDriver:
         self._target_heading_deg = 0.0
         self._motor_stall_triggered = False
         self._motor_fault = False
+        # IMU sensor streaming (Stage B fusion). None disables it; the value is
+        # the stream interval in ms (clamped to the firmware minimum of 33 ms).
+        self._imu_stream_interval_ms = (
+            None if imu_stream_interval_ms is None else max(33, int(imu_stream_interval_ms))
+        )
+        self._imu_sample: Optional[sensor_streaming.ImuSample] = None
+        self._imu_callback: Optional[Callable[[sensor_streaming.ImuSample], Any]] = None
+        self._imu_streaming_active = False
         normalized_control_mode = str(velocity_control_mode).strip().lower()
         if normalized_control_mode == self.VELOCITY_CONTROL_NATIVE_RC_SI:
             raise ValueError(
@@ -168,6 +178,14 @@ class RVRDriver:
             await self.enable_motor_fault_notify(True)
         except Exception:
             LOGGER.warning("failed to enable motor stall/fault notifications", exc_info=True)
+        # IMU sensor streaming (Stage B): subscribe always (harmless with no
+        # stream running) and start streaming only when an interval is configured.
+        self.on_streaming_data_notify(self._handle_streaming_data)
+        if self._imu_stream_interval_ms is not None:
+            try:
+                await self.enable_imu_streaming(self._imu_stream_interval_ms)
+            except Exception:
+                LOGGER.warning("failed to enable IMU streaming", exc_info=True)
         if self._velocity_control_mode == self.VELOCITY_CONTROL_NATIVE_HEADING:
             # Zero the heading reference so integrated target headings start
             # aligned with odom yaw.
@@ -179,6 +197,11 @@ class RVRDriver:
         self._control_task = asyncio.create_task(self._control_loop())
 
     async def disconnect(self) -> None:
+        if self._imu_streaming_active:
+            try:
+                await self.disable_imu_streaming()
+            except Exception:
+                pass
         if self._control_task is not None:
             self._control_task.cancel()
             try:
@@ -204,6 +227,65 @@ class RVRDriver:
 
     def _handle_motor_fault(self, event: "responses.MotorFaultEvent") -> None:
         self._motor_fault = bool(getattr(event, "is_fault", False))
+
+    def _handle_streaming_data(self, event: "responses.StreamingServiceData") -> None:
+        if (event.token & 0x0F) != sensor_streaming.IMU_SLOT_TOKEN:
+            return
+        try:
+            packet = sensor_streaming.decode_streaming_packet(
+                event.token, event.sensor_data, sensor_streaming.IMU_STREAM_SERVICES
+            )
+        except (ValueError, KeyError):
+            return
+        sample = sensor_streaming.imu_sample_from_packet(packet)
+        if sample is None:
+            return
+        self._imu_sample = sample
+        callback = self._imu_callback
+        if callback is not None:
+            try:
+                callback(sample)
+            except Exception:
+                LOGGER.warning("IMU sample callback raised", exc_info=True)
+
+    def on_streaming_data_notify(
+        self,
+        callback: Callable[["responses.StreamingServiceData"], Any],
+        target: int = TARGET_MCU,
+    ) -> Subscription:
+        return self._subscribe(DID_SENSOR, 0x3D, target, callback)
+
+    def set_imu_callback(
+        self, callback: Optional[Callable[[sensor_streaming.ImuSample], Any]]
+    ) -> None:
+        """Register a callback invoked on each decoded IMU sample (for republish)."""
+        self._imu_callback = callback
+
+    def get_imu_sample(self) -> Optional[sensor_streaming.ImuSample]:
+        return self._imu_sample
+
+    async def enable_imu_streaming(self, interval_ms: int = 100) -> None:
+        """Configure and start the RVR IMU streaming set (Quaternion+Accel+Gyro).
+
+        Streams on the ST processor (target MCU), slot token 1, at ``interval_ms``
+        (clamped to the firmware 33 ms minimum). Decoded samples arrive via the
+        registered IMU callback and :meth:`get_imu_sample`.
+        """
+        interval = max(33, int(interval_ms))
+        configuration = sensor_streaming.build_slot_configuration(
+            sensor_streaming.IMU_STREAM_SERVICES
+        )
+        await self.clear_streaming_service(target=TARGET_MCU)
+        await self.configure_streaming_service(
+            sensor_streaming.IMU_SLOT_TOKEN, configuration, target=TARGET_MCU
+        )
+        await self.start_streaming_service(interval, target=TARGET_MCU)
+        self._imu_streaming_active = True
+
+    async def disable_imu_streaming(self) -> None:
+        await self.stop_streaming_service(target=TARGET_MCU)
+        await self.clear_streaming_service(target=TARGET_MCU)
+        self._imu_streaming_active = False
 
     async def set_velocity(self, linear_mps: float, angular_rad_s: float) -> None:
         self._raise_if_emergency_stopped()

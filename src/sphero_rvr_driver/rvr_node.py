@@ -66,6 +66,15 @@ class RVRNodeConfig:
     odom_pose_yaw_covariance: float = 0.25
     odom_twist_linear_covariance: float = 0.10
     odom_twist_angular_covariance: float = 0.50
+    # IMU sensor streaming (Stage B fusion). publish_imu gates the whole feature;
+    # when off the driver never starts the stream (bringup stays as before).
+    publish_imu: bool = False
+    imu_stream_interval_ms: int = 50
+    imu_publish_period: float = 0.05
+    imu_frame_id: str = "imu_link"
+    imu_orientation_covariance: float = 0.05
+    imu_angular_velocity_covariance: float = 0.02
+    imu_linear_acceleration_covariance: float = 0.20
 
 
 def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) -> RVRDriver:
@@ -92,6 +101,9 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         heading_max_speed=config.heading_max_speed,
         velocity_control_mode=config.velocity_control_mode,
         wheel_track_m=config.odom_wheel_track_m,
+        imu_stream_interval_ms=(
+            config.imu_stream_interval_ms if config.publish_imu else None
+        ),
     )
 
 
@@ -129,7 +141,7 @@ def main(args=None):
     from nav_msgs.msg import Odometry
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
-    from sensor_msgs.msg import BatteryState, Illuminance, Temperature
+    from sensor_msgs.msg import BatteryState, Illuminance, Imu, Temperature
     from std_msgs.msg import ColorRGBA, String
     from std_srvs.srv import Trigger
     from tf2_ros import TransformBroadcaster
@@ -183,6 +195,10 @@ def main(args=None):
             self._encoder_counts_pub = self.create_publisher(String, "encoder_counts", 10)
             self._tf_broadcaster = TransformBroadcaster(self)
             self._diagnostics_pub = self.create_publisher(DiagnosticArray, "diagnostics", 10)
+            self._imu_pub = None
+            self._last_published_imu = None
+            if self._config.publish_imu:
+                self._imu_pub = self.create_publisher(Imu, "imu", 10)
 
             self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
             self.create_subscription(ColorRGBA, "set_all_leds", self._on_set_all_leds, 10)
@@ -197,6 +213,8 @@ def main(args=None):
             self.create_timer(self._config.temperature_publish_period, self._poll_temperature)
             self.create_timer(self._config.ambient_light_publish_period, self._poll_ambient_light)
             self.create_timer(self._config.odom_publish_period, self._poll_odom)
+            if self._config.publish_imu:
+                self.create_timer(self._config.imu_publish_period, self._poll_imu)
             self.create_timer(self._config.diagnostics_metadata_period, self._poll_diagnostic_metadata)
             self.create_timer(
                 self._config.motor_diagnostics_poll_period,
@@ -244,6 +262,17 @@ def main(args=None):
             self.declare_parameter("odom_pose_yaw_covariance", defaults.odom_pose_yaw_covariance)
             self.declare_parameter("odom_twist_linear_covariance", defaults.odom_twist_linear_covariance)
             self.declare_parameter("odom_twist_angular_covariance", defaults.odom_twist_angular_covariance)
+            self.declare_parameter("publish_imu", defaults.publish_imu)
+            self.declare_parameter("imu_stream_interval_ms", defaults.imu_stream_interval_ms)
+            self.declare_parameter("imu_publish_period", defaults.imu_publish_period)
+            self.declare_parameter("imu_frame_id", defaults.imu_frame_id)
+            self.declare_parameter("imu_orientation_covariance", defaults.imu_orientation_covariance)
+            self.declare_parameter(
+                "imu_angular_velocity_covariance", defaults.imu_angular_velocity_covariance
+            )
+            self.declare_parameter(
+                "imu_linear_acceleration_covariance", defaults.imu_linear_acceleration_covariance
+            )
 
         def _read_config(self) -> RVRNodeConfig:
             return RVRNodeConfig(
@@ -283,6 +312,17 @@ def main(args=None):
                 odom_pose_yaw_covariance=float(self.get_parameter("odom_pose_yaw_covariance").value),
                 odom_twist_linear_covariance=float(self.get_parameter("odom_twist_linear_covariance").value),
                 odom_twist_angular_covariance=float(self.get_parameter("odom_twist_angular_covariance").value),
+                publish_imu=bool(self.get_parameter("publish_imu").value),
+                imu_stream_interval_ms=int(self.get_parameter("imu_stream_interval_ms").value),
+                imu_publish_period=float(self.get_parameter("imu_publish_period").value),
+                imu_frame_id=str(self.get_parameter("imu_frame_id").value),
+                imu_orientation_covariance=float(self.get_parameter("imu_orientation_covariance").value),
+                imu_angular_velocity_covariance=float(
+                    self.get_parameter("imu_angular_velocity_covariance").value
+                ),
+                imu_linear_acceleration_covariance=float(
+                    self.get_parameter("imu_linear_acceleration_covariance").value
+                ),
             )
 
         def destroy_node(self):
@@ -447,6 +487,38 @@ def main(args=None):
             msg.illuminance = illuminance
             msg.variance = 0.0
             self._ambient_light_pub.publish(msg)
+
+        def _poll_imu(self):
+            if self._imu_pub is None or not self._context_ok():
+                return
+            sample = self._driver_thread.driver.get_imu_sample()
+            # Publish each streamed sample at most once (identity changes only
+            # when the driver decodes a new packet) to avoid feeding the EKF
+            # duplicate measurements between stream updates.
+            if sample is None or sample is self._last_published_imu:
+                return
+            self._last_published_imu = sample
+            msg = Imu()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = self._config.imu_frame_id
+            msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w = (
+                sample.orientation
+            )
+            msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = (
+                sample.angular_velocity
+            )
+            (
+                msg.linear_acceleration.x,
+                msg.linear_acceleration.y,
+                msg.linear_acceleration.z,
+            ) = sample.linear_acceleration
+            oc = self._config.imu_orientation_covariance
+            wc = self._config.imu_angular_velocity_covariance
+            ac = self._config.imu_linear_acceleration_covariance
+            msg.orientation_covariance = [oc, 0.0, 0.0, 0.0, oc, 0.0, 0.0, 0.0, oc]
+            msg.angular_velocity_covariance = [wc, 0.0, 0.0, 0.0, wc, 0.0, 0.0, 0.0, wc]
+            msg.linear_acceleration_covariance = [ac, 0.0, 0.0, 0.0, ac, 0.0, 0.0, 0.0, ac]
+            self._imu_pub.publish(msg)
 
         def _poll_odom(self):
             if self._odom_future is not None and not self._odom_future.done():

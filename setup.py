@@ -32,6 +32,7 @@ setup(
                 "config/lean_rvr_tank_si.yaml",
                 "config/lean_nav2.yaml",
                 "config/lean_explore_lite.yaml",
+                "config/ekf.yaml",
             ],
         ),
         (

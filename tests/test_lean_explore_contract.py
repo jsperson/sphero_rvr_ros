@@ -71,7 +71,10 @@ def test_supervised_launch_accepts_and_loads_an_explicit_rvr_parameter_file() ->
     )
 
     assert 'rvr_params_file = LaunchConfiguration("rvr_params_file")' in source
-    assert 'parameters=[rvr_params_file, {"serial_port": serial_port}]' in source
+    # The driver still loads the explicit params file first (its reviewed backend);
+    # the Stage B IMU-fusion overrides are layered after it, not instead of it.
+    assert "rvr_params_file," in source
+    assert '{"serial_port": serial_port}' in source
     assert '"rvr_params_file",' in source
     assert 'default_value=str(default_rvr_config)' in source
 

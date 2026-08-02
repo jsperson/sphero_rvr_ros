@@ -139,6 +139,7 @@ The repo already contains a few core capabilities that are not public `SpheroRvr
 | `drive_to_position_si()` | drive DID `0x16`, CID `0x38`, error-only shape | Core implemented and tested | Not in official RVR async API snapshot; keep as repo extension until protocol source is confirmed. |
 | `get_encoder_counts()` | sensor DID `0x18`, CID `0x53` | Core implemented and tested | Useful odometry input, but not in official SDK snapshot. |
 | `get_magnetometer()` / `calibrate_magnetometer()` | sensor DID `0x18`, CIDs `0x52` / `0x25` | Core implemented and tested | Not in official SDK snapshot; calibration is ROS-omitted by default. |
+| `enable_imu_streaming()` / `disable_imu_streaming()` | typed wrapper over `configure_streaming_service` + `start_streaming_service` (ST processor, slot 1: Quaternion + Accelerometer + Gyroscope) | Core implemented + unit-tested (`test_sensor_streaming`); ROS-exposed as an `Imu` topic for Stage B IMU fusion | Typed decode of the otherwise-opaque streaming bytes via `sensor_streaming.py` (constants verified against the Sphero SDK). Body-frame -> REP-103 axis mapping is isolated and pending a hardware sign check. |
 
 ## Cross-cutting gaps found during inventory
 

@@ -34,6 +34,7 @@ def generate_launch_description():
 
     start_motion_stack = LaunchConfiguration("start_motion_stack")
     start_explore = LaunchConfiguration("start_explore")
+    enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     rvr_params_file = LaunchConfiguration("rvr_params_file")
@@ -47,6 +48,7 @@ def generate_launch_description():
             "start_collision_stop": "true",
             "start_range_motion": "false",
             "start_live_route_runner": "false",
+            "enable_imu_fusion": enable_imu_fusion,
             "serial_port": serial_port,
             "rvr_params_file": rvr_params_file,
         }.items(),
@@ -142,6 +144,15 @@ def generate_launch_description():
                     "driver, lidar, SLAM, and Nav2 come up but nothing commands "
                     "motion. Send a NavigateToPose goal to drive directionally, "
                     "or set true to explore."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "enable_imu_fusion",
+                default_value="false",
+                description=(
+                    "Stage B: stream the RVR IMU and fuse it with wheel odom via "
+                    "a robot_localization EKF (removes ~20 deg wheel-only yaw "
+                    "drift). The driver yields odom -> base_link to the EKF."
                 ),
             ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
