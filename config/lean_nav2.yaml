@@ -154,16 +154,27 @@ behavior_server:
     local_footprint_topic: local_costmap/published_footprint
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
-    # The selected standard NavigateToPose tree performs planning and path
-    # following only. Keep the server for the explicit Nav2 lifecycle contract
-    # without adding automatic spin/back-up recovery motion.
-    behavior_plugins: ["wait"]
+    # Recovery behaviors: when a goal fails to make progress, the recovery BT
+    # clears costmaps then tries spin / wait / backup so exploration continues
+    # instead of ending. Safe now that turning works; all recovery motion still
+    # passes through /cmd_vel -> collision supervisor -> driver.
+    behavior_plugins: ["spin", "backup", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
     wait:
       plugin: "nav2_behaviors::Wait"
     local_frame: odom
     global_frame: map
     robot_base_frame: base_link
     transform_tolerance: 0.2
+    simulate_ahead_time: 2.0
+    # Rotational limits for Spin; the driver's closed-loop pivot executes the
+    # turn, and the collision supervisor still gates it.
+    max_rotational_vel: 0.4
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 0.8
 
 lifecycle_manager_explore:
   ros__parameters:

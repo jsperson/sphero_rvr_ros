@@ -30,7 +30,7 @@ def generate_launch_description():
     standard_nav_to_pose_bt = (
         nav2_bt_share
         / "behavior_trees"
-        / "navigate_w_replanning_only_if_goal_is_updated.xml"
+        / "navigate_to_pose_w_replanning_and_recovery.xml"
     )
 
     start_motion_stack = LaunchConfiguration("start_motion_stack")
