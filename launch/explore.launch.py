@@ -8,7 +8,6 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
-    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -160,17 +159,16 @@ def generate_launch_description():
             # normally but kick /explore/resume once SLAM + costmaps have warmed
             # up. (Diagnosed 2026-08-02: without the kick it quits at ~t+1s.)
             explore_lite,
-            TimerAction(
-                period=25.0,
-                actions=[
-                    ExecuteProcess(
-                        cmd=[
-                            "ros2", "topic", "pub", "--once", "/explore/resume",
-                            "std_msgs/msg/Bool", "{data: true}",
-                        ],
-                        output="screen",
-                    )
+            # explore_lite quits permanently on ANY empty frontier search — the
+            # cold-start race AND transient mid-run empties. Re-kick
+            # /explore/resume periodically (every ~15 s) so it always restarts
+            # and keeps exploring. Early kicks before warmup are harmless.
+            ExecuteProcess(
+                cmd=[
+                    "ros2", "topic", "pub", "-r", "0.0667", "/explore/resume",
+                    "std_msgs/msg/Bool", "{data: true}",
                 ],
+                output="screen",
             ),
         ]
     )
