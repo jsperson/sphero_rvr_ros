@@ -4,7 +4,7 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -148,6 +148,10 @@ def generate_launch_description():
             lidar,
             mapping,
             *nav2_nodes,
-            explore_lite,
+            # explore_lite searches for frontiers once and quits permanently if
+            # it finds none. On cold start the costmap is not yet populated with
+            # free space, so start explore only after SLAM + costmaps have warmed
+            # up. (Diagnosed 2026-08-02: without this it always quits at ~t+1s.)
+            TimerAction(period=25.0, actions=[explore_lite]),
         ]
     )
