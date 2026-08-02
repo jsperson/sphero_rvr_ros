@@ -24,3 +24,5 @@ class RVRState:
     last_motor_payload_hex: Optional[str] = None
     last_motor_transport_write_epoch_s: Optional[float] = None
     last_motion_transport_write_epoch_s: Optional[float] = None
+    motor_stall_triggered: bool = False
+    motor_fault: bool = False

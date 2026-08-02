@@ -66,6 +66,8 @@ def diagnostic_key_values(
         "connected": str(state.connected).lower(),
         "emergency_stopped": str(state.emergency_stopped).lower(),
         "fail_safe_active": str(state.fail_safe_active).lower(),
+        "motor_stall": str(state.motor_stall_triggered).lower(),
+        "motor_fault": str(state.motor_fault).lower(),
     }
     if state.fail_safe_reason:
         values["fail_safe_reason"] = state.fail_safe_reason

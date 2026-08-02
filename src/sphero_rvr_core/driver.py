@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any, Callable, Optional
 
@@ -36,8 +37,16 @@ class RVRDriver:
     # ambiguous "unknown mode" failure. The RC-SI mapping was measured at
     # roughly 10x its requested straight-line velocity on 2026-08-01.
     VELOCITY_CONTROL_NATIVE_RC_SI = "native_rc_si"
+    # Firmware heading control: the RVR's IMU turns to and holds a commanded
+    # heading, so turning happens on the robot and we never send un-actuatable
+    # low-speed differential turn commands (the small-turn stall).
+    VELOCITY_CONTROL_NATIVE_HEADING = "native_heading"
     _VELOCITY_CONTROL_MODES = frozenset(
-        {VELOCITY_CONTROL_RAW_MOTOR, VELOCITY_CONTROL_NATIVE_TANK_SI}
+        {
+            VELOCITY_CONTROL_RAW_MOTOR,
+            VELOCITY_CONTROL_NATIVE_TANK_SI,
+            VELOCITY_CONTROL_NATIVE_HEADING,
+        }
     )
     _MOTOR_CAPABLE_COMMAND_IDS = frozenset(
         {
@@ -76,6 +85,7 @@ class RVRDriver:
         pivot_max_duty: int = 32,
         pivot_min_duty: int = 23,
         pivot_duty_gain: float = 0.6,
+        heading_max_speed: int = 60,
     ):
         self.commands = RVRCommands()
         self._dispatcher = Dispatcher(transport)
@@ -111,6 +121,10 @@ class RVRDriver:
         self._pivot_duty_gain = max(0.0, float(pivot_duty_gain))
         self._pivot_duty_cmd = 0.0
         self._measured_yaw_rate = 0.0
+        self._heading_max_speed = max(0, min(255, int(heading_max_speed)))
+        self._target_heading_deg = 0.0
+        self._motor_stall_triggered = False
+        self._motor_fault = False
         normalized_control_mode = str(velocity_control_mode).strip().lower()
         if normalized_control_mode == self.VELOCITY_CONTROL_NATIVE_RC_SI:
             raise ValueError(
@@ -145,6 +159,23 @@ class RVRDriver:
         await self._queue.start()
         await self._send(self.commands.connect, CommandPriority.HIGH)
         self._connected = True
+        # Surface firmware motor stall/fault in telemetry (we were previously
+        # blind to the small-turn stall the RVR shows on its LEDs).
+        self.on_motor_stall_notify(self._handle_motor_stall)
+        self.on_motor_fault_notify(self._handle_motor_fault)
+        try:
+            await self.enable_motor_stall_notify(True)
+            await self.enable_motor_fault_notify(True)
+        except Exception:
+            LOGGER.warning("failed to enable motor stall/fault notifications", exc_info=True)
+        if self._velocity_control_mode == self.VELOCITY_CONTROL_NATIVE_HEADING:
+            # Zero the heading reference so integrated target headings start
+            # aligned with odom yaw.
+            try:
+                await self.reset_yaw()
+            except Exception:
+                LOGGER.warning("reset_yaw failed at connect", exc_info=True)
+            self._target_heading_deg = 0.0
         self._control_task = asyncio.create_task(self._control_loop())
 
     async def disconnect(self) -> None:
@@ -167,6 +198,12 @@ class RVRDriver:
     def set_measured_yaw_rate(self, yaw_rate_rad_s: float) -> None:
         """Feed measured yaw rate (from odometry) for closed-loop pivot control."""
         self._measured_yaw_rate = float(yaw_rate_rad_s)
+
+    def _handle_motor_stall(self, event: "responses.MotorStallEvent") -> None:
+        self._motor_stall_triggered = bool(getattr(event, "is_triggered", False))
+
+    def _handle_motor_fault(self, event: "responses.MotorFaultEvent") -> None:
+        self._motor_fault = bool(getattr(event, "is_fault", False))
 
     async def set_velocity(self, linear_mps: float, angular_rad_s: float) -> None:
         self._raise_if_emergency_stopped()
@@ -530,6 +567,8 @@ class RVRDriver:
             last_motor_payload_hex=self._last_motor_payload_hex,
             last_motor_transport_write_epoch_s=self._last_motor_transport_write_epoch_s,
             last_motion_transport_write_epoch_s=self._last_motion_transport_write_epoch_s,
+            motor_stall_triggered=self._motor_stall_triggered,
+            motor_fault=self._motor_fault,
         )
 
     def _subscribe(
@@ -561,6 +600,27 @@ class RVRDriver:
             motion_generation = self._motion_generation
             linear_fraction = velocity.linear_mps / self._max_linear_mps if self._max_linear_mps else 0.0
             angular_fraction = velocity.angular_rad_s / self._max_angular_rad_s if self._max_angular_rad_s else 0.0
+            if self._velocity_control_mode == self.VELOCITY_CONTROL_NATIVE_HEADING:
+                # Firmware heading control: integrate the commanded yaw rate into
+                # an absolute target heading; the RVR's IMU turns to and holds it.
+                # ROS +angular_z is CCW; RVR heading increases CW, so negate.
+                self._target_heading_deg = (
+                    self._target_heading_deg
+                    - math.degrees(velocity.angular_rad_s) * self._control_period
+                ) % 360.0
+                if self._max_linear_mps > 0.0:
+                    speed = int(round(
+                        min(1.0, abs(velocity.linear_mps) / self._max_linear_mps)
+                        * self._heading_max_speed
+                    ))
+                else:
+                    speed = 0
+                heading = int(round(self._target_heading_deg)) % 360
+                await self._send_from_control_loop(
+                    lambda seq: self.commands.drive_with_heading(seq, speed, heading, 0),
+                    motion_generation=motion_generation,
+                )
+                continue
             if self._velocity_control_mode == self.VELOCITY_CONTROL_RAW_MOTOR:
                 # This is the physically measured ROS mission backend.  Both
                 # requested components are normalized against their configured
