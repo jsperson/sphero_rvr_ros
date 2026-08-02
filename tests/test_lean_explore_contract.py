@@ -51,7 +51,7 @@ def test_lean_driver_uses_native_tank_si_without_changing_deployed_rvr_config() 
 
     assert deployed["velocity_control_mode"] == "raw_motor"
     assert lean["velocity_control_mode"] == "native_tank_si"
-    assert lean["max_linear_mps"] == 0.05
+    assert lean["max_linear_mps"] == 0.12
     assert "native_rc_si" not in lean_path.read_text(encoding="utf-8")
     for name, expected in {
         "max_angular_rad_s": 0.4,
@@ -92,7 +92,7 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
     assert '"start_camera": "false"' in source
     assert '"start_slam": "true"' in source
     assert '"slam_autostart": "true"' in source
-    assert "navigate_w_replanning_only_if_goal_is_updated.xml" in source
+    assert "navigate_to_pose_w_replanning_and_recovery.xml" in source
     assert 'package="explore_lite"' in source
     assert 'executable="explore"' in source
     assert 'name="explore_node"' in source
@@ -134,10 +134,10 @@ def test_explore_lite_dependency_and_small_room_parameters_are_pinned() -> None:
         "planner_frequency": 0.1,
         "progress_timeout": 90.0,
         "potential_scale": 3.0,
-        "orientation_scale": 0.0,
+        "orientation_scale": 0.2,
         "gain_scale": 1.0,
         "transform_tolerance": 0.3,
-        "min_frontier_size": 0.3,
+        "min_frontier_size": 0.2,
     }
 
     nav2 = _yaml("config/lean_nav2.yaml")
@@ -159,9 +159,12 @@ def test_lean_nav2_has_explicit_unstamped_bounded_single_goal_contracts() -> Non
     assert controller["enable_stamped_cmd_vel"] is False
     assert behavior["enable_stamped_cmd_vel"] is False
     assert follow["plugin"] == (
+        "nav2_rotation_shim_controller::RotationShimController"
+    )
+    assert follow["primary_controller"] == (
         "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
     )
-    assert follow["desired_linear_vel"] == 0.05
+    assert follow["desired_linear_vel"] == 0.12
     assert follow["rotate_to_heading_angular_vel"] == 0.4
     assert follow["min_approach_linear_velocity"] == 0.05
     assert follow["use_regulated_linear_velocity_scaling"] is False
@@ -177,7 +180,6 @@ def test_lean_nav2_has_explicit_unstamped_bounded_single_goal_contracts() -> Non
 
     text = (REPO_ROOT / "config/lean_nav2.yaml").read_text(encoding="utf-8")
     assert "DWBLocalPlanner" not in text
-    assert "RotationShimController" not in text
     assert "velocity_smoother" not in text
     assert "deadband" not in text.lower()
 
@@ -199,9 +201,9 @@ def test_lean_nav2_terminal_contract_counts_rotation_without_a_heading_gap() -> 
     assert goal["yaw_goal_tolerance"] == 0.35
     assert follow["rotate_to_heading_min_angle"] <= goal["yaw_goal_tolerance"]
 
-    # Phase 2c changes terminal acceptance only; the validated tank-SI speed
-    # and existing angular ceiling remain fixed.
-    assert follow["desired_linear_vel"] == 0.05
+    # Terminal acceptance is independent of cruise speed; the angular ceiling
+    # remains fixed while linear cruise was raised to 0.12 m/s (wide-gap tuning).
+    assert follow["desired_linear_vel"] == 0.12
     assert follow["rotate_to_heading_angular_vel"] == 0.4
 
 

@@ -31,15 +31,21 @@ lidar_collision_stop_supervisor:
     payload_margin_m: 0.05
     front_stop_min_angle_deg: -30.0
     front_stop_max_angle_deg: 30.0
-    front_slow_min_angle_deg: -45.0
-    front_slow_max_angle_deg: 45.0
+    # ±35° (was ±45°) so the lateral edges of a wide-enough gap don't sit in the
+    # front-slow cone and needlessly throttle a pass the rover clearly fits.
+    front_slow_min_angle_deg: -35.0
+    front_slow_max_angle_deg: 35.0
     rear_stop_angle_width_deg: 30.0
     left_spin_min_angle_deg: 45.0
     left_spin_max_angle_deg: 135.0
     right_spin_min_angle_deg: -135.0
     right_spin_max_angle_deg: -45.0
     stop_distance_m: 0.35
-    slow_distance_m: 0.60
+    # 0.45 (was 0.60). 0.60 exceeded a 0.75 m gap's half-width (0.375 m), so the
+    # side edges kept the rover in SLOW for an entire crossing. The hard STOP at
+    # 0.35 m — the real anti-collision guard — is unchanged. At 0.12 m/s the
+    # braking distance is ~0.06 m, so 0.35 m keeps a large safety margin.
+    slow_distance_m: 0.45
     reverse_stop_distance_m: 0.25
     # Added to every footprint edge during command-trajectory projection.
     trajectory_clearance_margin_m: 0.02

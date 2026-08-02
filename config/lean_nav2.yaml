@@ -51,7 +51,7 @@ controller_server:
       max_angular_accel: 0.8
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: false
-      desired_linear_vel: 0.05
+      desired_linear_vel: 0.12
       lookahead_dist: 0.30
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.40
