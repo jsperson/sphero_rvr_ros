@@ -78,7 +78,13 @@ lidar_collision_stop_supervisor:
     requested_cmd_timeout_s: 0.25
     reset_policy: auto_after_clear
     zero_publish_period_s: 0.10
-    max_forward_mps: 0.10
+    # 0.20 (was 0.10). This is the FINAL speed gate — it clamps every motion
+    # command, so a 0.10 here silently halved the controller/driver's 0.20 cruise
+    # and held the motors near breakaway (high torque, low speed = heat). Matched
+    # to the driver's max_linear_mps and the decisive cruise so the rover actually
+    # runs at 0.20. Braking at 0.20 is ~0.07 m -> effective stop ~0.20 m (~9 cm off
+    # the nose), still safe.
+    max_forward_mps: 0.20
     max_angular_rad_s: 0.4
     allow_disable: false
     fail_on_missing_tf: true
