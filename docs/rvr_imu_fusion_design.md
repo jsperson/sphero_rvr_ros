@@ -64,19 +64,30 @@ Confirmed with live streaming:
 
 (Superseded the initial y-right assumption, which would have negated y and z.)
 
-## Validation plan (after axis verification)
+## Validation
 
-1. **Stationary sanity** (no motion): `/imu` publishes stable orientation, near-
-   zero angular velocity, ~1g on z.
-2. **Drift comparison** (attended, chassis on): drive a straight ~2 m leg and a
-   360 deg rotation. Compare fused yaw (EKF `odom -> base_link`) against wheel-
-   only yaw — the fused heading should not accumulate the ~20 deg error.
-3. **Re-test autonomous narrow-gap crossing**: the head-on approach should hold
-   alignment through the gap now that heading is accurate (Stage A open item #1).
+1. **Stationary sanity** — DONE (2026-08-03): `/imu` publishes at ~20 Hz,
+   `linear_acceleration.z ~ +9.2` (z-up), angular velocity ~0 at rest.
+2. **EKF wiring** — DONE: `enable_imu_fusion` brings up driver + EKF + IMU TF;
+   `/odometry/filtered` publishes at ~20 Hz; the EKF is sole publisher of
+   `odom -> base_link`; with `imu0_differential: true` the fused yaw starts
+   aligned with the odom frame (wheel 0.0, EKF -0.0 at rest — no offset).
+3. **Drift comparison** — TODO (attended): drive a straight ~2 m leg and a full
+   rotation with a *deterministic* drive mode (native tank-SI, not raw_motor —
+   raw_motor's pivot direction was inconsistent during testing and confounds
+   sign checks). Compare fused vs wheel-only yaw; fused should not accumulate the
+   ~20 deg error.
+4. **Re-test autonomous narrow-gap crossing** — TODO: the head-on approach should
+   hold alignment now that heading is accurate (Stage A open item #1).
 
 ## Status
 
-- Wire protocol + decode + driver + `/imu` publisher + EKF config + launch:
-  implemented, unit-tested, builds. **On `feat/stage-b-imu-fusion` (unmerged).**
-- Pending hardware: axis-sign verification, EKF noise tuning against real data,
-  then the drift + gap-crossing validation runs.
+- Wire protocol + decode + driver + `/imu` + EKF + launch: implemented,
+  unit-tested (345 pass), and **hardware-validated** — streaming, axis mapping,
+  and EKF fusion all confirmed on the RVR (2026-08-03). On
+  `feat/stage-b-imu-fusion` (unmerged).
+- Two hardware bugs found + fixed during validation: (a) streaming config must be
+  unpadded (zero-padding → firmware err 7); (b) IMU frame is ROS REP-103 already
+  (identity, not the assumed y-right); (c) EKF must fuse IMU yaw differentially.
+- Remaining before merge: the drift-comparison drive (deterministic mode) and the
+  narrow-gap re-test; optional EKF noise tuning against the drive data.
