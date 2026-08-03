@@ -55,7 +55,7 @@ lidar_collision_stop_supervisor:
     release_time_s: 0.50
     min_forward_scale: 0.0
     requested_cmd_timeout_s: 0.25
-    reset_policy: manual
+    reset_policy: auto_after_clear
     zero_publish_period_s: 0.10
     max_forward_mps: 0.10
     max_angular_rad_s: 0.4

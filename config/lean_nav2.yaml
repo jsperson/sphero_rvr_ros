@@ -52,10 +52,10 @@ controller_server:
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: false
       desired_linear_vel: 0.20
-      lookahead_dist: 0.30
+      lookahead_dist: 0.18
       min_lookahead_dist: 0.15
-      max_lookahead_dist: 0.40
-      lookahead_time: 1.5
+      max_lookahead_dist: 0.28
+      lookahead_time: 1.0
       transform_tolerance: 0.2
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.12
