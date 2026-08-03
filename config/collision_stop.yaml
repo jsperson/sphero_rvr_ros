@@ -26,8 +26,8 @@ lidar_collision_stop_supervisor:
     sector_unknown_policy: blocked
     footprint_front_m: 0.22
     footprint_rear_m: 0.16
-    footprint_left_m: 0.14
-    footprint_right_m: 0.14
+    footprint_left_m: 0.10
+    footprint_right_m: 0.10
     payload_margin_m: 0.05
     front_stop_min_angle_deg: -30.0
     front_stop_max_angle_deg: 30.0
