@@ -31,7 +31,9 @@ from nav2_msgs.action import FollowPath
 import tf2_ros
 
 from sphero_rvr_core.decisive_control import (
+    BackOffConfig,
     DecisiveControlConfig,
+    ProgressGuard,
     compute_drive_command,
     heading_error_to_point,
     select_target_point,
@@ -51,6 +53,13 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("max_arc_angular_rad_s", 0.8)
         self.declare_parameter("pivot_rate_rad_s", 0.9)
         self.declare_parameter("goal_tolerance_m", 0.10)
+        # Back-off reflex: reverse straight out of a boxed-in stall (no grind).
+        self.declare_parameter("stall_time_s", 2.0)
+        self.declare_parameter("progress_epsilon_m", 0.03)
+        self.declare_parameter("back_off_speed_mps", 0.10)
+        self.declare_parameter("back_off_distance_m", 0.12)
+        self.declare_parameter("back_off_timeout_s", 3.0)
+        self.declare_parameter("max_back_offs", 3)
 
         self._frequency = float(self.get_parameter("control_frequency").value)
         self._lookahead = float(self.get_parameter("lookahead_m").value)
@@ -63,6 +72,14 @@ class DecisiveControllerNode(Node):
             max_arc_angular_rad_s=float(self.get_parameter("max_arc_angular_rad_s").value),
             pivot_rate_rad_s=float(self.get_parameter("pivot_rate_rad_s").value),
             goal_tolerance_m=float(self.get_parameter("goal_tolerance_m").value),
+        )
+        self._back_off_config = BackOffConfig(
+            stall_time_s=float(self.get_parameter("stall_time_s").value),
+            progress_epsilon_m=float(self.get_parameter("progress_epsilon_m").value),
+            back_off_speed_mps=float(self.get_parameter("back_off_speed_mps").value),
+            back_off_distance_m=float(self.get_parameter("back_off_distance_m").value),
+            back_off_timeout_s=float(self.get_parameter("back_off_timeout_s").value),
+            max_back_offs=int(self.get_parameter("max_back_offs").value),
         )
 
         self._cmd_pub = self.create_publisher(Twist, "cmd_vel", 10)
@@ -110,6 +127,7 @@ class DecisiveControllerNode(Node):
         # thread (MultiThreadedExecutor).
         period = 1.0 / self._frequency if self._frequency > 0 else 0.1
         feedback = FollowPath.Feedback()
+        guard = ProgressGuard(self._back_off_config)
         try:
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
@@ -133,6 +151,32 @@ class DecisiveControllerNode(Node):
 
                 if command.mode == "arrived":
                     break
+
+                # Back-off reflex: if we are trying to translate but not actually
+                # moving (boxed in against an obstacle), reverse straight out —
+                # both tracks roll back together, above breakaway, so it does not
+                # grind. Pivots are excluded (position is not expected to change).
+                # After a few fruitless back-offs, abort so the planner re-routes.
+                translating = command.mode in ("straight", "arc")
+                guard_result = guard.step(robot_x, robot_y, time.monotonic(), translating)
+                if guard_result.action == "abort":
+                    self.get_logger().warn(
+                        "decisive_controller: boxed in — backing off did not clear "
+                        "it; aborting so the planner can re-route"
+                    )
+                    self._stop()
+                    goal_handle.abort()
+                    return result
+                if guard_result.action == "reverse":
+                    twist = Twist()
+                    twist.linear.x = -abs(guard_result.reverse_speed_mps)
+                    twist.angular.z = 0.0
+                    self._cmd_pub.publish(twist)
+                    feedback.distance_to_goal = float(distance_to_goal)
+                    feedback.speed = float(twist.linear.x)
+                    goal_handle.publish_feedback(feedback)
+                    time.sleep(period)
+                    continue
 
                 twist = Twist()
                 twist.linear.x = command.linear_mps

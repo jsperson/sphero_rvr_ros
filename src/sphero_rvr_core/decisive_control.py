@@ -113,3 +113,101 @@ def compute_drive_command(
 
     # Large heading change: pivot in place, decisively (above breakaway).
     return DriveCommand(0.0, math.copysign(config.pivot_rate_rad_s, error), "pivot")
+
+
+@dataclass(frozen=True)
+class BackOffConfig:
+    """Tunables for the back-off reflex (getting un-stuck without grinding)."""
+
+    # No forward progress for this long (while we EXPECT to be translating) means
+    # we are boxed in against an obstacle.
+    stall_time_s: float = 2.0
+    # Movement below this over the stall window does not count as progress.
+    progress_epsilon_m: float = 0.03
+    # Straight reverse speed to open room — both tracks roll back together, above
+    # breakaway, so it does NOT grind (unlike an in-place pivot to wriggle out).
+    back_off_speed_mps: float = 0.10
+    # How far to reverse before handing back to normal control.
+    back_off_distance_m: float = 0.12
+    # If a back-off cannot make this distance in this long (rear likely blocked by
+    # the supervisor), give up and abort so the planner re-routes.
+    back_off_timeout_s: float = 3.0
+    # After this many fruitless back-offs, abort the goal (let Nav2 replan /
+    # explore pick another frontier) instead of shuffling in place forever.
+    max_back_offs: int = 3
+
+
+@dataclass(frozen=True)
+class GuardResult:
+    # "drive"   -> let the controller publish its normal command
+    # "reverse" -> publish a straight reverse at reverse_speed_mps (skip normal)
+    # "abort"   -> give up this goal so the planner re-routes
+    action: str
+    reverse_speed_mps: float = 0.0
+
+
+class ProgressGuard:
+    """Stateful (but ROS-free) back-off reflex, stepped once per control cycle.
+
+    Feed it the robot position each cycle plus whether the controller currently
+    expects to be translating (straight/arc, not pivoting or arrived). It watches
+    for "commanding motion but not moving" — boxed in against an obstacle — and
+    responds by backing straight out (no grind), then handing control back. If
+    backing out does not help after a few tries, it says to abort so the higher
+    layer re-plans. One instance per goal.
+    """
+
+    def __init__(self, config: BackOffConfig):
+        self._config = config
+        self._ref = None          # (x, y) of the last observed forward progress
+        self._ref_t = None        # timestamp of that progress
+        self._backing_off = False
+        self._bo_ref = None       # (x, y) where the current back-off began
+        self._bo_t = None         # timestamp the current back-off began
+        self._back_off_count = 0
+
+    def _mark_progress(self, x: float, y: float, now: float) -> None:
+        self._ref = (x, y)
+        self._ref_t = now
+
+    def step(self, x: float, y: float, now: float, translating: bool) -> GuardResult:
+        cfg = self._config
+
+        if self._backing_off:
+            backed = math.hypot(x - self._bo_ref[0], y - self._bo_ref[1])
+            if backed >= cfg.back_off_distance_m:
+                # Opened enough room — resume normal control with a fresh clock.
+                self._backing_off = False
+                self._mark_progress(x, y, now)
+                return GuardResult("drive")
+            if now - self._bo_t >= cfg.back_off_timeout_s:
+                # Could not back up (rear blocked) — let the planner handle it.
+                return GuardResult("abort")
+            return GuardResult("reverse", cfg.back_off_speed_mps)
+
+        if not translating:
+            # Pivoting or arrived: position is not expected to change, so do not
+            # accrue stall time. Re-arm the progress clock on the next drive cycle.
+            self._ref = None
+            self._ref_t = None
+            return GuardResult("drive")
+
+        if self._ref is None:
+            self._mark_progress(x, y, now)
+            return GuardResult("drive")
+
+        moved = math.hypot(x - self._ref[0], y - self._ref[1])
+        if moved >= cfg.progress_epsilon_m:
+            self._mark_progress(x, y, now)
+            return GuardResult("drive")
+
+        if now - self._ref_t >= cfg.stall_time_s:
+            self._back_off_count += 1
+            if self._back_off_count > cfg.max_back_offs:
+                return GuardResult("abort")
+            self._backing_off = True
+            self._bo_ref = (x, y)
+            self._bo_t = now
+            return GuardResult("reverse", cfg.back_off_speed_mps)
+
+        return GuardResult("drive")

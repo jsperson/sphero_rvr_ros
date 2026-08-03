@@ -5,13 +5,25 @@ import math
 import pytest
 
 from sphero_rvr_core.decisive_control import (
+    BackOffConfig,
     DecisiveControlConfig,
+    ProgressGuard,
     compute_drive_command,
     heading_error_to_point,
     select_target_point,
 )
 
 CFG = DecisiveControlConfig()
+
+# Small, easy-to-reason-about back-off config for the ProgressGuard tests.
+BO = BackOffConfig(
+    stall_time_s=1.0,
+    progress_epsilon_m=0.03,
+    back_off_speed_mps=0.10,
+    back_off_distance_m=0.10,
+    back_off_timeout_s=2.0,
+    max_back_offs=2,
+)
 
 
 def test_aligned_drives_straight_without_turning():
@@ -102,3 +114,71 @@ def test_heading_error_to_point_geometry():
     err0, d0 = heading_error_to_point(2.0, 3.0, math.atan2(1.0, 1.0), 3.0, 4.0)
     assert err0 == pytest.approx(0.0, abs=1e-9)
     assert d0 == pytest.approx(math.hypot(1.0, 1.0))
+
+
+# --- ProgressGuard: the back-off reflex (reverse out of a boxed-in stall) ---
+
+
+def test_guard_moving_forward_never_backs_off():
+    guard = ProgressGuard(BO)
+    x = 0.0
+    for i in range(10):
+        x += 0.05  # advancing > epsilon each cycle
+        assert guard.step(x, 0.0, i * 0.5, translating=True).action == "drive"
+
+
+def test_guard_stall_while_translating_triggers_reverse():
+    guard = ProgressGuard(BO)
+    assert guard.step(0.0, 0.0, 0.0, translating=True).action == "drive"  # arms clock
+    assert guard.step(0.0, 0.0, 0.5, translating=True).action == "drive"  # < stall_time
+    result = guard.step(0.0, 0.0, 1.0, translating=True)  # stalled >= 1.0 s
+    assert result.action == "reverse"
+    assert result.reverse_speed_mps == BO.back_off_speed_mps
+
+
+def test_guard_pivot_does_not_accrue_stall():
+    # Not translating (pivoting): position never changes, but that is expected —
+    # it must never be mistaken for a boxed-in stall.
+    guard = ProgressGuard(BO)
+    for i in range(10):
+        assert guard.step(0.0, 0.0, i * 0.5, translating=False).action == "drive"
+
+
+def test_guard_back_off_completes_then_resumes():
+    guard = ProgressGuard(BO)
+    guard.step(0.0, 0.0, 0.0, translating=True)
+    guard.step(0.0, 0.0, 0.5, translating=True)
+    assert guard.step(0.0, 0.0, 1.0, translating=True).action == "reverse"  # enter back-off
+    # Reversing, but not yet the full distance -> keep reversing.
+    assert guard.step(-0.05, 0.0, 1.2, translating=True).action == "reverse"
+    # Reached back_off_distance (0.10 m) -> resume normal control.
+    assert guard.step(-0.10, 0.0, 1.5, translating=True).action == "drive"
+
+
+def test_guard_back_off_timeout_aborts_when_cannot_reverse():
+    # Rear blocked: robot cannot actually back up, so the back-off times out.
+    guard = ProgressGuard(BO)
+    guard.step(0.0, 0.0, 0.0, translating=True)
+    guard.step(0.0, 0.0, 0.5, translating=True)
+    assert guard.step(0.0, 0.0, 1.0, translating=True).action == "reverse"  # bo starts at t=1.0
+    assert guard.step(0.0, 0.0, 2.0, translating=True).action == "reverse"  # 1.0 s < timeout
+    assert guard.step(0.0, 0.0, 3.0, translating=True).action == "abort"    # 2.0 s >= timeout
+
+
+def test_guard_aborts_after_max_back_offs():
+    cfg = BackOffConfig(
+        stall_time_s=1.0,
+        progress_epsilon_m=0.03,
+        back_off_speed_mps=0.10,
+        back_off_distance_m=0.10,
+        back_off_timeout_s=2.0,
+        max_back_offs=1,
+    )
+    guard = ProgressGuard(cfg)
+    guard.step(0.0, 0.0, 0.0, translating=True)
+    guard.step(0.0, 0.0, 0.5, translating=True)
+    assert guard.step(0.0, 0.0, 1.0, translating=True).action == "reverse"  # back-off #1
+    assert guard.step(-0.10, 0.0, 1.5, translating=True).action == "drive"  # completed, resume
+    guard.step(-0.10, 0.0, 2.0, translating=True)  # < stall_time from resume
+    # Second stall would be back-off #2 > max_back_offs (1) -> abort instead.
+    assert guard.step(-0.10, 0.0, 2.5, translating=True).action == "abort"

@@ -24,11 +24,19 @@ lidar_collision_stop_supervisor:
     min_range_m: 0.08
     max_range_m: 6.0
     sector_unknown_policy: blocked
-    footprint_front_m: 0.22
+    # TRUE nose geometry: base_link sits at the robot center (lidar mounted at
+    # x=0.0045), and the RVR is ~0.216 m long, so the physical front is ~0.108 m
+    # forward. Was 0.22 — a ~2x conservative placeholder that doubled the front
+    # standoff. 0.11 = true nose + ~2 mm. This is the SAFETY floor: do not go
+    # below the real nose or the rover measures clearance from inside its body.
+    # Actual standoff comes from payload_margin + braking below.
+    footprint_front_m: 0.11
     footprint_rear_m: 0.16
     footprint_left_m: 0.10
     footprint_right_m: 0.10
-    payload_margin_m: 0.05
+    # No payload overhangs the front bumper, so keep this small — it only pads
+    # the physical footprint. Was 0.05; trimmed to tone down the stop bubble.
+    payload_margin_m: 0.02
     front_stop_min_angle_deg: -30.0
     front_stop_max_angle_deg: 30.0
     # ±35° (was ±45°) so the lateral edges of a wide-enough gap don't sit in the
@@ -40,20 +48,33 @@ lidar_collision_stop_supervisor:
     left_spin_max_angle_deg: 135.0
     right_spin_min_angle_deg: -135.0
     right_spin_max_angle_deg: -45.0
-    stop_distance_m: 0.35
-    # 0.45 (was 0.60). 0.60 exceeded a 0.75 m gap's half-width (0.375 m), so the
-    # side edges kept the rover in SLOW for an entire crossing. The hard STOP at
-    # 0.35 m — the real anti-collision guard — is unchanged. At 0.12 m/s the
-    # braking distance is ~0.06 m, so 0.35 m keeps a large safety margin.
-    slow_distance_m: 0.45
+    # Non-binding floor now. Effective hard-stop = max(stop_distance,
+    # footprint_front + payload_margin + braking) = max(0.12, 0.11 + 0.02 +
+    # 0.045) = ~0.175 m from base_link = ~0.067 m (~6.7 cm) off the physical
+    # nose. The physics term (footprint + braking) governs; stop_distance only
+    # floors it. Toned 0.35 -> 0.12 so it no longer inflates the stop.
+    stop_distance_m: 0.12
+    # 0.20 (was 0.45). Small SLOW band just above the ~0.175 m stop — a brief
+    # ease-off, then the hard stop. Must stay > stop_distance_m.
+    slow_distance_m: 0.20
     reverse_stop_distance_m: 0.25
     # Added to every footprint edge during command-trajectory projection.
     trajectory_clearance_margin_m: 0.02
-    measured_stop_time_s: 0.50
+    # 0.25 (was 0.50). 0.50 s to stop from a <=0.10 m/s crawl was very
+    # conservative and inflated the dynamic braking bubble; the tank drive halts
+    # far faster than that. Halving it pulls the effective stop distance in.
+    measured_stop_time_s: 0.25
     braking_distance_margin_m: 0.02
-    release_distance_m: 0.45
+    # 0.30 (was 0.45). Hysteresis above the ~0.175 m stop so it doesn't chatter,
+    # but low enough that a short back-off re-opens clearance and lets it resume
+    # — 0.45 would have forced ~0.28 m of backing before the latch cleared.
+    release_distance_m: 0.30
     release_time_s: 0.50
-    min_forward_scale: 0.0
+    # 0.70 (was 0.0). 0.0 let the SLOW zone scale speed straight down through the
+    # sub-breakaway range, where the tank motors grind instead of rolling. Floor
+    # the scale so in the SLOW band the rover slows only to ~0.7x, then the hard
+    # STOP cuts it to zero cleanly — slow-then-stop, never creep-and-grind.
+    min_forward_scale: 0.70
     requested_cmd_timeout_s: 0.25
     reset_policy: auto_after_clear
     zero_publish_period_s: 0.10

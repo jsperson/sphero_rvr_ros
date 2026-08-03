@@ -24,14 +24,20 @@ Only ever turn for a reason, and prefer the motion that keeps the motors rolling
   above breakaway, so it does not grind.
 - **Pivot in place** only for a large heading change, and do it **decisively**
   (a rate above breakaway) — never a slow creep.
+- **Back off, don't grind out.** If it is trying to translate but stops making
+  forward progress (boxed in against an obstacle), reverse **straight** out —
+  both tracks roll back together, above breakaway, so it does not grind — instead
+  of wriggling free with a slow in-place pivot (which does). After a few fruitless
+  back-offs it aborts the goal so Nav2 re-plans / explore picks another frontier.
 - Stop when within tolerance of the path end.
 
 ## Pieces
 
 - `sphero_rvr_core/decisive_control.py` — pure, ROS-free decision core:
   `select_target_point` (lookahead on the path), `heading_error_to_point`,
-  `compute_drive_command` (the straight/arc/pivot decision). Unit-tested
-  (`tests/test_decisive_control.py`).
+  `compute_drive_command` (the straight/arc/pivot decision), and `ProgressGuard`
+  (the back-off reflex: watches for translate-but-not-moving and returns
+  drive/reverse/abort). Unit-tested (`tests/test_decisive_control.py`).
 - `sphero_rvr_driver/decisive_controller_node.py` — a Nav2 `FollowPath` action
   server wrapping the core. Publishes `/cmd_vel` (through the collision-stop
   supervisor like every motion source). Not lifecycle-managed.
@@ -55,9 +61,16 @@ drops `controller_server` from the lifecycle manager.
 motor breakaway on purpose — the controller must never command a below-breakaway
 speed.
 
+Back-off reflex: `stall_time_s` 2.0 (no-progress window while translating),
+`progress_epsilon_m` 0.03 (movement that counts as progress), `back_off_speed_mps`
+0.10 (straight reverse — the supervisor caps forward/reverse at 0.10 anyway),
+`back_off_distance_m` 0.12 (how far to reverse), `back_off_timeout_s` 3.0 (rear
+blocked → abort), `max_back_offs` 3 (then abort so the planner re-routes).
+
 ## Status / validation
 
-Built, unit-tested (357 suite pass), and build- + launch-validated on the Pi.
+Built and unit-tested (364 suite pass, incl. the `ProgressGuard` back-off cases).
 **UNTESTED on hardware.** One clean run validates it. Watch specifically for
-grinding: if it only ever drives / arcs / does rare decisive pivots and still
-grinds, that is the drivetrain's answer, not the controller's.
+grinding: if it only ever drives / arcs / does rare decisive pivots / backs
+straight off when boxed in and still grinds, that is the drivetrain's answer, not
+the controller's.
