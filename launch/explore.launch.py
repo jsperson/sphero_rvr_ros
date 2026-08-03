@@ -11,8 +11,9 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -31,6 +32,10 @@ def generate_launch_description():
         / "behavior_trees"
         / "navigate_to_pose_w_replanning_and_recovery.xml"
     )
+    # Decisive mode drops controller_server (and with it Nav2's local costmap),
+    # so the stock BT's local-costmap clears break bt_navigator bringup. Use a
+    # variant whose costmap clears target the global costmap instead.
+    decisive_nav_to_pose_bt = share / "behavior_trees" / "navigate_to_pose_decisive.xml"
 
     start_motion_stack = LaunchConfiguration("start_motion_stack")
     start_explore = LaunchConfiguration("start_explore")
@@ -74,6 +79,23 @@ def generate_launch_description():
         }.items(),
     )
 
+    # Pick the navigate-to-pose BT by mode: decisive mode uses the global-costmap
+    # variant (no local costmap exists), RPP mode uses the stock tree.
+    nav_to_pose_bt_xml = ParameterValue(
+        PythonExpression(
+            [
+                "'",
+                str(decisive_nav_to_pose_bt),
+                "' if '",
+                use_decisive_controller,
+                "' == 'true' else '",
+                str(standard_nav_to_pose_bt),
+                "'",
+            ]
+        ),
+        value_type=str,
+    )
+
     nav2_nodes = [
         Node(
             package="nav2_planner",
@@ -110,7 +132,7 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 nav2_params_file,
-                {"default_nav_to_pose_bt_xml": str(standard_nav_to_pose_bt)},
+                {"default_nav_to_pose_bt_xml": nav_to_pose_bt_xml},
             ],
         ),
         Node(

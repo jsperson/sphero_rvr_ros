@@ -36,6 +36,12 @@ setup(
             ],
         ),
         (
+            "share/sphero_rvr_driver/behavior_trees",
+            [
+                "behavior_trees/navigate_to_pose_decisive.xml",
+            ],
+        ),
+        (
             "share/sphero_rvr_driver/scripts",
             [
                 "scripts/install-rvr-pi",
