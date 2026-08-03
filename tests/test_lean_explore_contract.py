@@ -51,7 +51,7 @@ def test_lean_driver_uses_native_tank_si_without_changing_deployed_rvr_config() 
 
     assert deployed["velocity_control_mode"] == "raw_motor"
     assert lean["velocity_control_mode"] == "native_tank_si"
-    assert lean["max_linear_mps"] == 0.12
+    assert lean["max_linear_mps"] == 0.20
     assert "native_rc_si" not in lean_path.read_text(encoding="utf-8")
     for name, expected in {
         "max_angular_rad_s": 0.4,
@@ -167,9 +167,9 @@ def test_lean_nav2_has_explicit_unstamped_bounded_single_goal_contracts() -> Non
     assert follow["primary_controller"] == (
         "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
     )
-    assert follow["desired_linear_vel"] == 0.12
+    assert follow["desired_linear_vel"] == 0.20
     assert follow["rotate_to_heading_angular_vel"] == 0.4
-    assert follow["min_approach_linear_velocity"] == 0.05
+    assert follow["min_approach_linear_velocity"] == 0.12
     assert follow["use_regulated_linear_velocity_scaling"] is False
     assert follow["use_cost_regulated_linear_velocity_scaling"] is False
     assert follow["allow_reversing"] is False
@@ -206,7 +206,7 @@ def test_lean_nav2_terminal_contract_counts_rotation_without_a_heading_gap() -> 
 
     # Terminal acceptance is independent of cruise speed; the angular ceiling
     # remains fixed while linear cruise was raised to 0.12 m/s (wide-gap tuning).
-    assert follow["desired_linear_vel"] == 0.12
+    assert follow["desired_linear_vel"] == 0.20
     assert follow["rotate_to_heading_angular_vel"] == 0.4
 
 

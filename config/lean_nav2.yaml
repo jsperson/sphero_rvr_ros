@@ -45,21 +45,21 @@ controller_server:
       # is disabled; the shim owns rotation.
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      angular_dist_threshold: 0.785
+      angular_dist_threshold: 1.0
       forward_sampling_distance: 0.5
       rotate_to_heading_angular_vel: 0.4
       max_angular_accel: 0.8
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: false
-      desired_linear_vel: 0.12
+      desired_linear_vel: 0.20
       lookahead_dist: 0.30
       min_lookahead_dist: 0.15
       max_lookahead_dist: 0.40
       lookahead_time: 1.5
       transform_tolerance: 0.2
       use_velocity_scaled_lookahead_dist: true
-      min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.20
+      min_approach_linear_velocity: 0.12
+      approach_velocity_scaling_dist: 0.05
       # Off: the independent lidar collision-stop supervisor is the sole side/
       # front safety (it owns /cmd_vel_motor and measures real clearances). RPP's
       # internal check was second-guessing and aborting near walls it wasn't going

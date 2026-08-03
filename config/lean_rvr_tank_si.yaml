@@ -10,7 +10,7 @@ sphero_rvr_driver:
     # tread velocity in RVRDriver and sent with drive_tank_si_units, the command
     # physically proven smooth at 0.05 m/s. The deployed rvr.yaml stays intact.
     velocity_control_mode: native_tank_si
-    max_linear_mps: 0.12
+    max_linear_mps: 0.20
     max_angular_rad_s: 0.4
 
     # Pivot (in-place turn) tuning — floor above the weak-direction breakaway so
