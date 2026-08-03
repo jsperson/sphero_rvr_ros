@@ -237,15 +237,17 @@ def imu_sample_from_packet(packet: StreamingPacket) -> Optional[ImuSample]:
     Returns ``None`` if the packet lacks the Quaternion/Accelerometer/Gyroscope
     services. Requires the services decoded by :data:`IMU_STREAM_SERVICES`.
 
-    Axis mapping: the RVR IMU body frame is x-forward, y-RIGHT, z-up (a
-    left-handed frame) — converted to ROS REP-103 (x-fwd, y-left, z-up) by a
-    y-axis reflection. Proper vectors (accelerometer) negate Y; pseudovectors
-    (gyroscope angular rate) negate X and Z; the orientation quaternion's vector
-    part follows the pseudovector rule. Verified on hardware 2026-08-03: at rest
-    accel Z reads +1g (z-up, not negated), and a wheel-odometry-CCW pivot (ROS
-    +yaw) produced a NEGATIVE raw gyro Z — so gyro Z is negated to make ROS
-    +yaw = CCW. (A prior identity guess had the yaw sense inverted; caught by a
-    spin test where the fused yaw ran opposite to wheel odometry.)
+    Axis mapping: IDENTITY (only the quaternion is reordered from RVR (W,X,Y,Z)
+    to ROS (x,y,z,w)). Verified on hardware 2026-08-03 against wheel odometry
+    (the established ROS convention): at rest accel Z = +1g (z-up), and a
+    wheel-CCW spin (ROS +yaw) gave a POSITIVE raw gyro Z — so angular_velocity.z
+    is +raw. The RVR IMU frame is x-forward, y-left, z-up = ROS REP-103.
+
+    NOTE: the earlier "fused yaw runs backwards" symptom was NOT an axis-sign
+    bug — it was the EKF fusing the RVR *absolute-orientation quaternion*
+    differentially, which chokes on quaternion wrapping during a fast multi-turn
+    spin. The fix was to fuse the gyro yaw-RATE only (see config/ekf.yaml); the
+    gyro sign is identity, confirmed by the vyaw-only EKF tracking wheel odom.
     """
     quat = packet.services.get("Quaternion")
     gyro = packet.services.get("Gyroscope")
@@ -253,24 +255,23 @@ def imu_sample_from_packet(packet: StreamingPacket) -> Optional[ImuSample]:
     if quat is None or gyro is None or accel is None:
         return None
 
-    # y-axis reflection (RVR x-fwd/y-right/z-up -> ROS x-fwd/y-left/z-up).
-    # Quaternion reordered (W,X,Y,Z)->(x,y,z,w); vector part negates X and Z.
+    # Identity mapping; only reorder the quaternion (W,X,Y,Z) -> (x,y,z,w).
     orientation = (
-        -quat["X"],
+        quat["X"],
         quat["Y"],
-        -quat["Z"],
+        quat["Z"],
         quat["W"],
     )
-    # Gyroscope deg/s -> rad/s; pseudovector negates X and Z.
+    # Gyroscope deg/s -> rad/s.
     angular_velocity = (
-        -gyro["X"] * _DEG_TO_RAD,
+        gyro["X"] * _DEG_TO_RAD,
         gyro["Y"] * _DEG_TO_RAD,
-        -gyro["Z"] * _DEG_TO_RAD,
+        gyro["Z"] * _DEG_TO_RAD,
     )
-    # Accelerometer g -> m/s^2; proper vector negates Y.
+    # Accelerometer g -> m/s^2.
     linear_acceleration = (
         accel["X"] * _STANDARD_GRAVITY,
-        -accel["Y"] * _STANDARD_GRAVITY,
+        accel["Y"] * _STANDARD_GRAVITY,
         accel["Z"] * _STANDARD_GRAVITY,
     )
     return ImuSample(

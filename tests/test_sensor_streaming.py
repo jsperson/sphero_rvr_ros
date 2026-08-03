@@ -81,9 +81,9 @@ def test_imu_sample_converts_units_and_axes():
     assert sample is not None
     # orientation reordered RVR (W,X,Y,Z) -> ROS (x,y,z,w); w kept.
     assert sample.orientation[3] == pytest.approx(1.0, abs=1e-6)
-    # gyro deg/s -> rad/s; Z negated (y-reflection): RVR +Z rate -> ROS -Z.
-    assert sample.angular_velocity[2] == pytest.approx(-90.0 * math.pi / 180.0, abs=1e-3)
-    # accel g -> m/s^2; Z is NOT negated (z-up reads +1g at rest); only Y flips.
+    # gyro deg/s -> rad/s, identity (RVR frame == ROS REP-103; +Z rate = CCW).
+    assert sample.angular_velocity[2] == pytest.approx(90.0 * math.pi / 180.0, abs=1e-3)
+    # accel g -> m/s^2, identity (z-up reads +1g at rest).
     assert sample.linear_acceleration[2] == pytest.approx(9.80665, abs=1e-2)
 
 
