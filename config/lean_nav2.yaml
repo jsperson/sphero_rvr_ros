@@ -60,7 +60,13 @@ controller_server:
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
       approach_velocity_scaling_dist: 0.20
-      use_collision_detection: true
+      # Off: the independent lidar collision-stop supervisor is the sole side/
+      # front safety (it owns /cmd_vel_motor and measures real clearances). RPP's
+      # internal check was second-guessing and aborting near walls it wasn't going
+      # to hit ("failed to make progress" with the brake CLEAR), stalling the rover
+      # short of gaps it fits. Let RPP just drive the path; the supervisor stops
+      # only on a genuine imminent hit.
+      use_collision_detection: false
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: false
       use_cost_regulated_linear_velocity_scaling: false
