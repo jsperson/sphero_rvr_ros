@@ -73,6 +73,7 @@ setup(
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
             "range_motion_controller = sphero_rvr_driver.range_motion_node:main",
             "live_route_runner = sphero_rvr_driver.live_route_runner_node:main",
+            "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
         ],
     },
 )

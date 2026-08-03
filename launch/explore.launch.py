@@ -9,7 +9,7 @@ from launch.actions import (
     ExecuteProcess,
     IncludeLaunchDescription,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -35,6 +35,7 @@ def generate_launch_description():
     start_motion_stack = LaunchConfiguration("start_motion_stack")
     start_explore = LaunchConfiguration("start_explore")
     enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
+    use_decisive_controller = LaunchConfiguration("use_decisive_controller")
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     rvr_params_file = LaunchConfiguration("rvr_params_file")
@@ -81,6 +82,7 @@ def generate_launch_description():
             output="screen",
             parameters=[nav2_params_file],
         ),
+        # Default controller: Nav2's RPP/RotationShim FollowPath.
         Node(
             package="nav2_controller",
             executable="controller_server",
@@ -88,6 +90,18 @@ def generate_launch_description():
             output="screen",
             parameters=[nav2_params_file],
             remappings=[("cmd_vel", "/cmd_vel")],
+            condition=UnlessCondition(use_decisive_controller),
+        ),
+        # Opt-in replacement: our decisive FollowPath controller (drive straight
+        # when aligned, arc while moving, pivot only when large) — same follow_path
+        # action, not lifecycle-managed. Run instead of controller_server, not both.
+        Node(
+            package="sphero_rvr_driver",
+            executable="decisive_controller",
+            name="decisive_controller",
+            output="screen",
+            remappings=[("cmd_vel", "/cmd_vel")],
+            condition=IfCondition(use_decisive_controller),
         ),
         Node(
             package="nav2_bt_navigator",
@@ -107,12 +121,27 @@ def generate_launch_description():
             parameters=[nav2_params_file],
             remappings=[("cmd_vel", "/cmd_vel")],
         ),
+        # Lifecycle manager. Default manages controller_server too; in decisive
+        # mode it must NOT (the decisive controller is a plain node), so it manages
+        # only planner/behavior/bt.
         Node(
             package="nav2_lifecycle_manager",
             executable="lifecycle_manager",
             name="lifecycle_manager_explore",
             output="screen",
             parameters=[nav2_params_file],
+            condition=UnlessCondition(use_decisive_controller),
+        ),
+        Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="lifecycle_manager_explore",
+            output="screen",
+            parameters=[
+                nav2_params_file,
+                {"node_names": ["planner_server", "behavior_server", "bt_navigator"]},
+            ],
+            condition=IfCondition(use_decisive_controller),
         ),
     ]
     explore_lite = Node(
@@ -153,6 +182,16 @@ def generate_launch_description():
                     "Stage B: stream the RVR IMU and fuse it with wheel odom via "
                     "a robot_localization EKF (removes ~20 deg wheel-only yaw "
                     "drift). The driver yields odom -> base_link to the EKF."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "use_decisive_controller",
+                default_value="false",
+                description=(
+                    "Replace the RPP/RotationShim FollowPath controller with the "
+                    "decisive controller (drive straight when aligned, arc while "
+                    "moving, pivot only for large turns — no slow in-place pivots "
+                    "to grind the motors). UNTESTED on hardware; RPP is the default."
                 ),
             ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
