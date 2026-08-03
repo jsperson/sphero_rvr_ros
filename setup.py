@@ -50,6 +50,7 @@ setup(
                 "docs/mapping.md",
                 "docs/lidar_collision_stop_supervisor.md",
                 "docs/range_motion_controller.md",
+                "docs/decisive_controller.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
