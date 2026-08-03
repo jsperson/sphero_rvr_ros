@@ -19,6 +19,7 @@ supervisor exactly like every other motion source. Enable it in place of
 """
 
 import math
+import threading
 import time
 
 import rclpy
@@ -82,6 +83,19 @@ class DecisiveControllerNode(Node):
             max_back_offs=int(self.get_parameter("max_back_offs").value),
         )
 
+        # Goal preemption + a progress guard that PERSISTS across replans.
+        # bt_navigator resends a fresh follow_path goal ~1 Hz as it replans; only
+        # the newest may drive (older execute loops must bail, or they fight over
+        # cmd_vel and stutter the motion). And the back-off reflex must track the
+        # real robot over time, so the guard lives on the node and is only reset
+        # when the goal ENDPOINT actually moves (a new destination), not on every
+        # same-destination replan.
+        self._active_goal_handle = None
+        self._goal_lock = threading.Lock()
+        self._guard = ProgressGuard(self._back_off_config)
+        self._guard_goal = None  # (x, y) endpoint the guard is currently tracking
+        self._goal_change_eps_m = 0.15
+
         self._cmd_pub = self.create_publisher(Twist, "cmd_vel", 10)
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -127,12 +141,35 @@ class DecisiveControllerNode(Node):
         # thread (MultiThreadedExecutor).
         period = 1.0 / self._frequency if self._frequency > 0 else 0.1
         feedback = FollowPath.Feedback()
-        guard = ProgressGuard(self._back_off_config)
+
+        # Become the active goal (preempting any older execute loop) and reset the
+        # shared progress guard only for a genuinely new destination — a
+        # same-destination replan keeps the guard so it tracks the real robot.
+        with self._goal_lock:
+            self._active_goal_handle = goal_handle
+            if (
+                self._guard_goal is None
+                or math.hypot(
+                    goal_x - self._guard_goal[0], goal_y - self._guard_goal[1]
+                )
+                > self._goal_change_eps_m
+            ):
+                self._guard = ProgressGuard(self._back_off_config)
+                self._guard_goal = (goal_x, goal_y)
+            guard = self._guard
+
         try:
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
                     self._stop()
                     goal_handle.canceled()
+                    return result
+                # Superseded by a newer follow_path goal (bt_navigator replan)?
+                # Bail without touching cmd_vel so only the newest loop drives —
+                # concurrent loops were stuttering the motion and false-tripping
+                # the back-off reflex.
+                if self._active_goal_handle is not goal_handle:
+                    goal_handle.abort()
                     return result
 
                 pose = self._robot_pose_in(frame)
@@ -150,6 +187,8 @@ class DecisiveControllerNode(Node):
                 command = compute_drive_command(heading_error, distance_to_goal, self._config)
 
                 if command.mode == "arrived":
+                    with self._goal_lock:
+                        self._guard_goal = None  # fresh guard for the next journey
                     break
 
                 # Back-off reflex: if we are trying to translate but not actually
@@ -189,7 +228,13 @@ class DecisiveControllerNode(Node):
 
                 time.sleep(period)
         finally:
-            self._stop()
+            # Only the still-active goal halts the robot on exit. A superseded
+            # goal must NOT publish a stop — the newer goal already owns cmd_vel,
+            # and a stop here would punch a gap in its command stream.
+            with self._goal_lock:
+                if self._active_goal_handle is goal_handle:
+                    self._active_goal_handle = None
+                    self._stop()
 
         goal_handle.succeed()
         return result
