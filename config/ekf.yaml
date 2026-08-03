@@ -9,7 +9,13 @@
 # (the launch enforces this via enable_imu_fusion).
 ekf_filter_node:
   ros__parameters:
-    frequency: 30.0
+    # 15 Hz (was 30). Not a CPU limit (Pi 5 sits ~60% idle) — the IMU is streamed
+    # off the RVR over serial in jittery bursts, and a 30 Hz deadline (33 ms) was
+    # too tight to ride out that jitter, so the EKF stuttered and left GAPS in the
+    # odom->base_link TF it publishes. Those gaps made the costmap drop laser scans
+    # ("timestamp earlier than transform cache") -> thin map -> explore quit early.
+    # 15 Hz (66 ms) gives 2x the slack for steady TF; ample for a 0.20 m/s rover.
+    frequency: 15.0
     sensor_timeout: 0.2
     two_d_mode: true          # planar robot: zero z/roll/pitch and their rates
     publish_tf: true
