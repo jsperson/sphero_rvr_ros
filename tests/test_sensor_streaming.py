@@ -18,10 +18,10 @@ def _pack32(value: float, minimum: float, maximum: float) -> bytes:
 def test_build_slot_configuration_packs_id_and_data_size_in_order():
     config = ss.build_slot_configuration(ss.IMU_STREAM_SERVICES)
     # Quaternion 0x0000 sz2, Accelerometer 0x0002 sz2, Gyroscope 0x0004 sz2.
-    assert config[:9] == bytes([0x00, 0x00, 0x02, 0x00, 0x02, 0x02, 0x00, 0x04, 0x02])
-    # Zero-padded to the fixed 15-byte payload.
-    assert len(config) == ss.STREAMING_CONFIG_LENGTH
-    assert config[9:] == bytes(6)
+    # NOT padded: exactly 3 bytes/service (padding would parse as a phantom
+    # service and the firmware rejects it with bad-data-value).
+    assert config == bytes([0x00, 0x00, 0x02, 0x00, 0x02, 0x02, 0x00, 0x04, 0x02])
+    assert len(config) == 9
 
 
 def test_build_slot_configuration_rejects_overlong_service_list():

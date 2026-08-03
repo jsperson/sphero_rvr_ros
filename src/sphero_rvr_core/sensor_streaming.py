@@ -12,8 +12,9 @@ Protocol constants are transcribed from the Sphero public SDK
 ``sensor_stream_service.py``, ``sensor_stream_slot.py``):
 
 * Config packing (per slot): for each enabled service, ``uint16`` big-endian
-  service id + ``uint8`` data-size value, concatenated, then zero-padded to the
-  fixed 15-byte configuration payload.
+  service id + ``uint8`` data-size value, concatenated. NOT padded — the firmware
+  parses a packed list of 3-byte entries, so trailing zeros read as a phantom
+  service and get rejected (hardware-confirmed: padding -> bad-data-value err 7).
 * Data sizes: ``eight_bit=0``, ``sixteen_bit=1``, ``thirty_two_bit=2``;
   ``byte_count = 2 ** value`` (1/2/4).
 * Streamed value denormalization: ``value = min + (raw / uint_max) * (max-min)``,
@@ -168,10 +169,14 @@ class ImuSample:
 
 
 def build_slot_configuration(services: Sequence[StreamService]) -> bytes:
-    """Build the fixed 15-byte configuration payload for one slot.
+    """Build the variable-length configuration payload for one slot.
 
-    Each service contributes ``uint16`` big-endian id + ``uint8`` data size.
-    The result is zero-padded to :data:`STREAMING_CONFIG_LENGTH`.
+    Each service contributes exactly ``uint16`` big-endian id + ``uint8`` data
+    size (3 bytes). The payload is NOT zero-padded: the RVR firmware parses the
+    config as a packed list of 3-byte service entries, so trailing zero bytes
+    would be read as a phantom service (id 0x0000 = Quaternion at data-size 0)
+    and rejected with a bad-data-value error. Max :data:`STREAMING_CONFIG_LENGTH`
+    bytes (5 services).
     """
     data = bytearray()
     for service in services:
@@ -183,7 +188,6 @@ def build_slot_configuration(services: Sequence[StreamService]) -> bytes:
                 STREAMING_CONFIG_LENGTH, len(services)
             )
         )
-    data += bytes(STREAMING_CONFIG_LENGTH - len(data))
     return bytes(data)
 
 

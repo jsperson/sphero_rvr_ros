@@ -107,7 +107,7 @@ def test_set_all_leds_accepts_official_mask_and_variable_brightness_vector():
     ("call", "match"),
     [
         (lambda c: c.echo(1, bytes(range(15))), "exactly 16 bytes"),
-        (lambda c: c.configure_streaming_service(1, 0, bytes(range(14))), "exactly 15 bytes"),
+        (lambda c: c.configure_streaming_service(1, 0, bytes(range(16))), "1 to 15 bytes"),
         (lambda c: c.set_active_color_palette(1, bytes(range(47))), "exactly 48 bytes"),
         (lambda c: c.set_all_leds(1, led_group=1, led_brightness_values=b""), "1 to 32 bytes"),
         (lambda c: c.set_all_leds(1, led_group=1, led_brightness_values=bytes(range(33))), "1 to 32 bytes"),

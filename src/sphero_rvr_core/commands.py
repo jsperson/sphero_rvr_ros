@@ -413,7 +413,11 @@ class RVRCommands:
         return self._packet(DID_SENSOR, self.CID_GET_CURRENT_DETECTED_COLOR, sequence_id, TARGET_BT, request_response=True)
 
     def configure_streaming_service(self, sequence_id: int, token: int, configuration: bytes, target: int = TARGET_BT) -> Packet:
-        configuration_payload = self._require_length(configuration, 15, "streaming configuration")
+        # Variable length: the firmware parses a packed list of 3-byte service
+        # entries (id:uint16 + data_size:uint8), max 5 services. It must NOT be
+        # zero-padded to 15 — trailing zeros parse as a phantom service and are
+        # rejected (bad-data-value). 15 bytes is the ceiling, not a fixed size.
+        configuration_payload = self._require_length_range(configuration, 1, 15, "streaming configuration")
         return self._packet(
             DID_SENSOR,
             self.CID_CONFIGURE_STREAMING_SERVICE,
