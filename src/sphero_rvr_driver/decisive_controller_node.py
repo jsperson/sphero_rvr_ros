@@ -19,6 +19,7 @@ supervisor exactly like every other motion source. Enable it in place of
 """
 
 import math
+import time
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -104,7 +105,11 @@ class DecisiveControllerNode(Node):
             return result
 
         goal_x, goal_y = points[-1]
-        rate = self.create_rate(self._frequency)
+        # Plain sleep rather than rclpy Rate: Rate.sleep() inside an action execute
+        # callback can deadlock; TF stays fresh via the listener's own executor
+        # thread (MultiThreadedExecutor).
+        period = 1.0 / self._frequency if self._frequency > 0 else 0.1
+        feedback = FollowPath.Feedback()
         try:
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
@@ -115,7 +120,7 @@ class DecisiveControllerNode(Node):
                 pose = self._robot_pose_in(frame)
                 if pose is None:
                     self._stop()
-                    rate.sleep()
+                    time.sleep(period)
                     continue
                 robot_x, robot_y, robot_yaw = pose
 
@@ -133,7 +138,12 @@ class DecisiveControllerNode(Node):
                 twist.linear.x = command.linear_mps
                 twist.angular.z = command.angular_rad_s
                 self._cmd_pub.publish(twist)
-                rate.sleep()
+
+                feedback.distance_to_goal = float(distance_to_goal)
+                feedback.speed = float(command.linear_mps)
+                goal_handle.publish_feedback(feedback)
+
+                time.sleep(period)
         finally:
             self._stop()
 
