@@ -198,7 +198,7 @@ def test_lean_nav2_terminal_contract_counts_rotation_without_a_heading_gap() -> 
         "plugin": "nav2_controller::PoseProgressChecker",
         "required_movement_radius": 0.02,
         "required_movement_angle": 0.10,
-        "movement_time_allowance": 15.0,
+        "movement_time_allowance": 30.0,
     }
     assert goal["xy_goal_tolerance"] == 0.10
     assert goal["yaw_goal_tolerance"] == 0.35

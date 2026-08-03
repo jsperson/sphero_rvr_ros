@@ -28,7 +28,7 @@ controller_server:
       plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.02
       required_movement_angle: 0.10
-      movement_time_allowance: 15.0
+      movement_time_allowance: 30.0
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
@@ -83,7 +83,7 @@ local_costmap:
       width: 2
       height: 2
       resolution: 0.05
-      robot_radius: 0.15
+      robot_radius: 0.14
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -101,7 +101,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
-        inflation_radius: 0.25
+        inflation_radius: 0.16
 
 global_costmap:
   global_costmap:
@@ -114,7 +114,7 @@ global_costmap:
       initial_transform_timeout: 15.0
       resolution: 0.05
       track_unknown_space: true
-      robot_radius: 0.15
+      robot_radius: 0.14
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -137,7 +137,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
-        inflation_radius: 0.25
+        inflation_radius: 0.16
 
 bt_navigator:
   ros__parameters:
