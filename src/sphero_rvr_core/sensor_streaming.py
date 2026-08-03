@@ -237,11 +237,15 @@ def imu_sample_from_packet(packet: StreamingPacket) -> Optional[ImuSample]:
     Returns ``None`` if the packet lacks the Quaternion/Accelerometer/Gyroscope
     services. Requires the services decoded by :data:`IMU_STREAM_SERVICES`.
 
-    Axis mapping: the RVR IMU body frame is x-forward, y-left, z-up — already
-    ROS REP-103 — so the mapping is IDENTITY (only the quaternion is reordered
-    from RVR (W,X,Y,Z) to ROS (x,y,z,w)). Verified on hardware 2026-08-03: at
-    rest accel Z reads +1g (z-up), and a commanded CCW/left pivot produces a
-    positive gyro Z and a positive quaternion Z (right-handed, yaw+ = CCW).
+    Axis mapping: the RVR IMU body frame is x-forward, y-RIGHT, z-up (a
+    left-handed frame) — converted to ROS REP-103 (x-fwd, y-left, z-up) by a
+    y-axis reflection. Proper vectors (accelerometer) negate Y; pseudovectors
+    (gyroscope angular rate) negate X and Z; the orientation quaternion's vector
+    part follows the pseudovector rule. Verified on hardware 2026-08-03: at rest
+    accel Z reads +1g (z-up, not negated), and a wheel-odometry-CCW pivot (ROS
+    +yaw) produced a NEGATIVE raw gyro Z — so gyro Z is negated to make ROS
+    +yaw = CCW. (A prior identity guess had the yaw sense inverted; caught by a
+    spin test where the fused yaw ran opposite to wheel odometry.)
     """
     quat = packet.services.get("Quaternion")
     gyro = packet.services.get("Gyroscope")
@@ -249,24 +253,24 @@ def imu_sample_from_packet(packet: StreamingPacket) -> Optional[ImuSample]:
     if quat is None or gyro is None or accel is None:
         return None
 
-    # RVR IMU frame == ROS REP-103 (x-fwd, y-left, z-up): identity mapping, only
-    # reorder the quaternion from RVR (W,X,Y,Z) to ROS (x,y,z,w).
+    # y-axis reflection (RVR x-fwd/y-right/z-up -> ROS x-fwd/y-left/z-up).
+    # Quaternion reordered (W,X,Y,Z)->(x,y,z,w); vector part negates X and Z.
     orientation = (
-        quat["X"],
+        -quat["X"],
         quat["Y"],
-        quat["Z"],
+        -quat["Z"],
         quat["W"],
     )
-    # Gyroscope deg/s -> rad/s.
+    # Gyroscope deg/s -> rad/s; pseudovector negates X and Z.
     angular_velocity = (
-        gyro["X"] * _DEG_TO_RAD,
+        -gyro["X"] * _DEG_TO_RAD,
         gyro["Y"] * _DEG_TO_RAD,
-        gyro["Z"] * _DEG_TO_RAD,
+        -gyro["Z"] * _DEG_TO_RAD,
     )
-    # Accelerometer g -> m/s^2.
+    # Accelerometer g -> m/s^2; proper vector negates Y.
     linear_acceleration = (
         accel["X"] * _STANDARD_GRAVITY,
-        accel["Y"] * _STANDARD_GRAVITY,
+        -accel["Y"] * _STANDARD_GRAVITY,
         accel["Z"] * _STANDARD_GRAVITY,
     )
     return ImuSample(

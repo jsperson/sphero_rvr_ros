@@ -34,21 +34,21 @@ ekf_filter_node:
     odom0_relative: false
     odom0_queue_size: 10
 
-    # RVR IMU -> owns absolute yaw and yaw rate (the drift fix). Accelerations
-    # are left out: they are noisy and unnecessary for planar heading fusion.
+    # RVR IMU -> owns the YAW RATE (vyaw), which is the drift fix: wheel odom
+    # yaw drifts from wheel slip during turns; the gyro measures true rotation.
+    # We fuse ONLY vyaw (not absolute yaw): the RVR's absolute-yaw quaternion is
+    # referenced to the board's power-on heading (not the odom frame) and its
+    # sign convention is finicky, so integrating the (sign-verified) gyro rate is
+    # both robust and avoids a constant frame offset. Accelerations left out
+    # (noisy, unnecessary for planar heading). Order: x y z r p yaw vx vy vz
+    # vr vp vyaw ax ay az.
     imu0: /imu
     imu0_config: [false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false,
                   false, false, true,
                   false, false, false]
-    # Differential: fuse the CHANGE in IMU yaw, not its absolute value. The RVR
-    # IMU yaw is referenced to the board's power-on heading, not the odom frame,
-    # so fusing it absolutely injects a constant offset (observed: EKF yaw -66
-    # deg while wheel odom yaw was 0 at rest). Differential uses the IMU's
-    # (drift-corrected) yaw changes to correct wheel-odom yaw drift without the
-    # frame offset. yaw-rate (vyaw) is a velocity, unaffected by this flag.
-    imu0_differential: true
+    imu0_differential: false
     imu0_relative: false
     imu0_queue_size: 10
     imu0_remove_gravitational_acceleration: true
