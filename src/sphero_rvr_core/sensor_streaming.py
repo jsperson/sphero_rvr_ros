@@ -237,12 +237,11 @@ def imu_sample_from_packet(packet: StreamingPacket) -> Optional[ImuSample]:
     Returns ``None`` if the packet lacks the Quaternion/Accelerometer/Gyroscope
     services. Requires the services decoded by :data:`IMU_STREAM_SERVICES`.
 
-    Axis mapping (RVR body frame -> ROS REP-103 x-forward/y-left/z-up): the RVR
-    reports body axes as x-forward, y-right, z-up, so ROS y and the roll/pitch/
-    yaw-rate signs about x/z are negated to convert to y-left. This mapping is
-    the single hardware-dependent assumption in this module — VERIFY the signs
-    against a physical rotation (e.g. a +z/CCW yaw must produce +angular_velocity.z
-    and a +yaw quaternion) before trusting the EKF, and correct here if needed.
+    Axis mapping: the RVR IMU body frame is x-forward, y-left, z-up — already
+    ROS REP-103 — so the mapping is IDENTITY (only the quaternion is reordered
+    from RVR (W,X,Y,Z) to ROS (x,y,z,w)). Verified on hardware 2026-08-03: at
+    rest accel Z reads +1g (z-up), and a commanded CCW/left pivot produces a
+    positive gyro Z and a positive quaternion Z (right-handed, yaw+ = CCW).
     """
     quat = packet.services.get("Quaternion")
     gyro = packet.services.get("Gyroscope")
@@ -250,25 +249,25 @@ def imu_sample_from_packet(packet: StreamingPacket) -> Optional[ImuSample]:
     if quat is None or gyro is None or accel is None:
         return None
 
-    # Quaternion: RVR reports (W, X, Y, Z) in a y-right frame. Negate y/z of the
-    # vector part to re-express the same rotation in ROS y-left, z-up.
+    # RVR IMU frame == ROS REP-103 (x-fwd, y-left, z-up): identity mapping, only
+    # reorder the quaternion from RVR (W,X,Y,Z) to ROS (x,y,z,w).
     orientation = (
         quat["X"],
-        -quat["Y"],
-        -quat["Z"],
+        quat["Y"],
+        quat["Z"],
         quat["W"],
     )
-    # Gyroscope deg/s -> rad/s, y-right -> y-left (negate y and z rate).
+    # Gyroscope deg/s -> rad/s.
     angular_velocity = (
         gyro["X"] * _DEG_TO_RAD,
-        -gyro["Y"] * _DEG_TO_RAD,
-        -gyro["Z"] * _DEG_TO_RAD,
+        gyro["Y"] * _DEG_TO_RAD,
+        gyro["Z"] * _DEG_TO_RAD,
     )
-    # Accelerometer g -> m/s^2, y-right -> y-left (negate y and z).
+    # Accelerometer g -> m/s^2.
     linear_acceleration = (
         accel["X"] * _STANDARD_GRAVITY,
-        -accel["Y"] * _STANDARD_GRAVITY,
-        -accel["Z"] * _STANDARD_GRAVITY,
+        accel["Y"] * _STANDARD_GRAVITY,
+        accel["Z"] * _STANDARD_GRAVITY,
     )
     return ImuSample(
         orientation=orientation,

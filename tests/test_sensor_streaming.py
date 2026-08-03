@@ -79,12 +79,12 @@ def test_imu_sample_converts_units_and_axes():
     packet = ss.decode_streaming_packet(0x01, quat + accel + gyro, ss.IMU_STREAM_SERVICES)
     sample = ss.imu_sample_from_packet(packet)
     assert sample is not None
-    # orientation returned as ROS (x, y, z, w); identity keeps w=1.
+    # orientation reordered RVR (W,X,Y,Z) -> ROS (x,y,z,w); identity keeps w=1.
     assert sample.orientation[3] == pytest.approx(1.0, abs=1e-6)
-    # gyro deg/s -> rad/s (z negated for y-right -> y-left).
-    assert sample.angular_velocity[2] == pytest.approx(-90.0 * math.pi / 180.0, abs=1e-3)
-    # accel g -> m/s^2 (z negated).
-    assert sample.linear_acceleration[2] == pytest.approx(-9.80665, abs=1e-2)
+    # gyro deg/s -> rad/s, identity axes (RVR frame == ROS REP-103).
+    assert sample.angular_velocity[2] == pytest.approx(90.0 * math.pi / 180.0, abs=1e-3)
+    # accel g -> m/s^2, identity (z-up reads +1g at rest).
+    assert sample.linear_acceleration[2] == pytest.approx(9.80665, abs=1e-2)
 
 
 def test_imu_sample_none_when_services_missing():

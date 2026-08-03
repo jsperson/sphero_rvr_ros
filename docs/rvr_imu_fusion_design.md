@@ -49,24 +49,20 @@ ros2 launch sphero_rvr_driver explore.launch.py \
 Requires the `robot_localization` package (added to `package.xml`; on the Pi:
 `sudo apt install ros-jazzy-robot-localization`).
 
-## The one hardware-dependent assumption: axis mapping
+## Axis mapping (verified on hardware 2026-08-03)
 
-Everything above the axis mapping is specified by the SDK and unit-tested. The
-RVR-body-frame -> ROS REP-103 (x-forward, y-left, z-up) conversion in
-`sensor_streaming.imu_sample_from_packet` assumes the RVR reports body axes as
-x-forward, **y-right**, z-up, so y and the z-rotation sign are negated. **This
-must be verified on hardware before trusting the EKF:**
+The RVR IMU body frame is **x-forward, y-left, z-up — already ROS REP-103**, so
+`sensor_streaming.imu_sample_from_packet` uses an **identity** mapping (the only
+transform is reordering the quaternion from RVR `(W,X,Y,Z)` to ROS `(x,y,z,w)`).
+Confirmed with live streaming:
 
-1. Bring up with `publish_imu:=true` (no motion needed — chassis can stay put on
-   a table; the RVR board must be powered).
-2. `ros2 topic echo /imu`. Checks:
-   - **Gravity**: at rest, `linear_acceleration.z ~ +9.8` (z-up). If it reads
-     ~-9.8, flip the z sign.
-   - **Yaw rate**: rotate the robot CCW (viewed from above = +z). Expect
-     `angular_velocity.z > 0`. If negative, flip the z gyro/quaternion sign.
-   - **Orientation**: rotate +90 deg CCW; the quaternion yaw should increase.
-3. If any check fails, correct the signs in `imu_sample_from_packet` (isolated,
-   one-line changes) and re-verify.
+- **Gravity**: at rest, raw accel Z = **+0.94 g** → `linear_acceleration.z ~ +9.2`
+  (z-up). No z negation.
+- **Yaw rate / orientation**: a commanded CCW/left pivot produced raw gyro
+  Z = **+172 deg/s** and quaternion Z **+0.54** → right-handed, yaw+ = CCW =
+  ROS +z. No negation.
+
+(Superseded the initial y-right assumption, which would have negated y and z.)
 
 ## Validation plan (after axis verification)
 
