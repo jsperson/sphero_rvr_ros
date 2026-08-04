@@ -1,0 +1,16 @@
+coverage_explorer:
+  ros__parameters:
+    # Coverage + frontier mission: drive until every reachable free cell has been
+    # both seen (no frontiers) AND approached within coverage_radius_m.
+    coverage_radius_m: 0.75
+    # Skip target clusters smaller than this (sensor/edge noise).
+    min_cluster_cells: 5
+    # Also pursue frontiers (discover new space), not just cover known space.
+    include_frontiers: true
+    # A map cell is free when 0 <= value <= this (0 = strict trinary SLAM map).
+    free_threshold: 0
+    map_topic: /map
+    base_frame: base_link
+    cycle_period_s: 1.0
+    # On an unreachable/aborted goal, blacklist a disk of this radius around it.
+    blacklist_radius_m: 0.3

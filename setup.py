@@ -32,6 +32,7 @@ setup(
                 "config/lean_rvr_tank_si.yaml",
                 "config/lean_nav2.yaml",
                 "config/lean_explore_lite.yaml",
+                "config/coverage_explorer.yaml",
                 "config/ekf.yaml",
             ],
         ),
@@ -57,6 +58,7 @@ setup(
                 "docs/lidar_collision_stop_supervisor.md",
                 "docs/range_motion_controller.md",
                 "docs/decisive_controller.md",
+                "docs/coverage_explorer.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
@@ -81,6 +83,7 @@ setup(
             "range_motion_controller = sphero_rvr_driver.range_motion_node:main",
             "live_route_runner = sphero_rvr_driver.live_route_runner_node:main",
             "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
+            "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",
         ],
     },
 )

@@ -27,6 +27,7 @@ def generate_launch_description():
     default_slam_params = share / "config" / "slam_toolbox.yaml"
     default_nav2_params = share / "config" / "lean_nav2.yaml"
     default_explore_lite_params = share / "config" / "lean_explore_lite.yaml"
+    default_coverage_params = share / "config" / "coverage_explorer.yaml"
     standard_nav_to_pose_bt = (
         nav2_bt_share
         / "behavior_trees"
@@ -41,12 +42,23 @@ def generate_launch_description():
     start_explore = LaunchConfiguration("start_explore")
     enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
     use_decisive_controller = LaunchConfiguration("use_decisive_controller")
+    use_coverage_explorer = LaunchConfiguration("use_coverage_explorer")
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     rvr_params_file = LaunchConfiguration("rvr_params_file")
     slam_params_file = LaunchConfiguration("slam_params_file")
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     explore_lite_params_file = LaunchConfiguration("explore_lite_params_file")
+    coverage_params_file = LaunchConfiguration("coverage_params_file")
+
+    # start_explore picks ONE explorer: coverage+frontier (use_coverage_explorer)
+    # or explore_lite's frontier-only (default). Both drive via NavigateToPose.
+    explore_lite_active = PythonExpression(
+        ["'", start_explore, "' == 'true' and '", use_coverage_explorer, "' == 'false'"]
+    )
+    coverage_active = PythonExpression(
+        ["'", start_explore, "' == 'true' and '", use_coverage_explorer, "' == 'true'"]
+    )
 
     supervised = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(str(supervised_launch)),
@@ -173,7 +185,19 @@ def generate_launch_description():
         output="screen",
         parameters=[explore_lite_params_file],
         remappings=[("navigate_to_pose", "/navigate_to_pose")],
-        condition=IfCondition(start_explore),
+        condition=IfCondition(explore_lite_active),
+    )
+    # Coverage + frontier explorer: drives until every reachable free cell is both
+    # seen AND approached within its coverage radius. Runs INSTEAD of explore_lite
+    # (does not need the /explore/resume kick — it never quits on empty).
+    coverage_explorer = Node(
+        package="sphero_rvr_driver",
+        executable="coverage_explorer",
+        name="coverage_explorer",
+        output="screen",
+        parameters=[coverage_params_file],
+        remappings=[("navigate_to_pose", "/navigate_to_pose")],
+        condition=IfCondition(coverage_active),
     )
 
     return LaunchDescription(
@@ -216,6 +240,16 @@ def generate_launch_description():
                     "to grind the motors). UNTESTED on hardware; RPP is the default."
                 ),
             ),
+            DeclareLaunchArgument(
+                "use_coverage_explorer",
+                default_value="false",
+                description=(
+                    "With start_explore, run the coverage+frontier explorer instead "
+                    "of explore_lite: drives until every reachable free cell is both "
+                    "SEEN and APPROACHED within coverage_radius_m (0.75 m). Default "
+                    "false = explore_lite (frontier/see-only)."
+                ),
+            ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
             DeclareLaunchArgument(
                 "lidar_serial_port", default_value="/dev/ttyUSB0"
@@ -233,6 +267,10 @@ def generate_launch_description():
                 "explore_lite_params_file",
                 default_value=str(default_explore_lite_params),
             ),
+            DeclareLaunchArgument(
+                "coverage_params_file",
+                default_value=str(default_coverage_params),
+            ),
             supervised,
             lidar,
             mapping,
@@ -245,18 +283,19 @@ def generate_launch_description():
             # SLAM + costmaps warm up. (Diagnosed 2026-08-02: without the kick it
             # quits at ~t+1s.)
             explore_lite,
+            coverage_explorer,
             # explore_lite quits permanently on ANY empty frontier search — the
             # cold-start race AND transient mid-run empties. Re-kick
             # /explore/resume periodically (every ~15 s) so it always restarts
-            # and keeps exploring. Early kicks before warmup are harmless.
-            # Gated on start_explore so an inert bringup emits no motion goals.
+            # and keeps exploring. Early kicks before warmup are harmless. Only
+            # explore_lite needs this (coverage_explorer never quits on empty).
             ExecuteProcess(
                 cmd=[
                     "ros2", "topic", "pub", "-r", "0.0667", "/explore/resume",
                     "std_msgs/msg/Bool", "{data: true}",
                 ],
                 output="screen",
-                condition=IfCondition(start_explore),
+                condition=IfCondition(explore_lite_active),
             ),
         ]
     )
