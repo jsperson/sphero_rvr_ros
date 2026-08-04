@@ -119,6 +119,12 @@ global_costmap:
       use_sim_time: false
       update_frequency: 2.0
       publish_frequency: 1.0
+      # Re-send the FULL costmap every cycle (default false = full grid sent once
+      # at activation, then only incremental updates). explore_lite reads this
+      # topic for frontiers; relying on the single latched full + updates is a
+      # fragile path (a late/again-subscribing client, or missed updates, sees a
+      # stale/empty costmap -> "No frontiers found"). Cheap on a small map/idle Pi.
+      always_send_full_costmap: true
       global_frame: map
       robot_base_frame: base_link
       initial_transform_timeout: 15.0
