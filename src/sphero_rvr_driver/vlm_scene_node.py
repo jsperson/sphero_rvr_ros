@@ -127,14 +127,22 @@ class VlmSceneNode(Node):
                 }
             ],
         }
-        r = requests.post(
-            f"{self._base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=self._timeout,
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+        # The model occasionally returns a garbage chat-template token instead of a
+        # real answer; retry a couple of times before giving up.
+        last = ""
+        for _ in range(3):
+            r = requests.post(
+                f"{self._base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=self._timeout,
+            )
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"].strip()
+            if len(content) >= 15 and "<|" not in content:
+                return content
+            last = content
+        raise RuntimeError(f"VLM returned no usable text after retries (last: {last!r})")
 
 
 def main(args=None):
