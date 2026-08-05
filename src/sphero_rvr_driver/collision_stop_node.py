@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanInput, Transform2D, TwistCommand
+from sphero_rvr_core.low_obstacle_brake import forward_speed_scale, nearest_forward_obstacle
 
 
 @dataclass(frozen=True)
@@ -168,7 +169,8 @@ def main(args=None):
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from rclpy.time import Time
-    from sensor_msgs.msg import LaserScan
+    from sensor_msgs.msg import LaserScan, PointCloud2
+    import sensor_msgs_py.point_cloud2 as pc2
     from std_msgs.msg import String
     from std_srvs.srv import Trigger
     from tf2_ros import Buffer, TransformListener
@@ -191,6 +193,23 @@ def main(args=None):
             self._tf_listener = TransformListener(self._tf_buffer, self)
             self._last_event = "STARTUP_WAITING_FOR_SCAN"
 
+            # Camera low-obstacle brake (additive; can only slow/stop forward motion,
+            # never speeds it up, never touches reverse/rotation, and only acts on a
+            # fresh cloud so a dead camera leaves the lidar behaviour unchanged).
+            self._cam_enable = bool(self.get_parameter("camera_brake_enable").value)
+            self._cam_half_angle = math.radians(float(self.get_parameter("camera_half_angle_deg").value))
+            self._cam_stop_m = float(self.get_parameter("camera_stop_distance_m").value)
+            self._cam_slow_m = float(self.get_parameter("camera_slow_distance_m").value)
+            self._cam_min_r = float(self.get_parameter("camera_min_range_m").value)
+            self._cam_max_r = float(self.get_parameter("camera_max_range_m").value)
+            self._cam_min_scale = float(self.get_parameter("camera_min_forward_scale").value)
+            self._cam_max_age = float(self.get_parameter("camera_max_age_s").value)
+            self._cam_lock = threading.Lock()
+            self._cam_points: list = []
+            self._cam_stamp: Optional[float] = None
+            self._cam_nearest: Optional[float] = None
+            self._cam_scale: float = 1.0
+
             requested_cmd_topic = str(self.get_parameter("requested_cmd_topic").value)
             motor_cmd_topic = str(self.get_parameter("motor_cmd_topic").value)
             scan_topic = str(self.get_parameter("scan_topic").value)
@@ -207,6 +226,12 @@ def main(args=None):
                 LaserScan,
                 scan_topic,
                 self._on_scan,
+                qos_profile_sensor_data,
+            )
+            self.create_subscription(
+                PointCloud2,
+                str(self.get_parameter("camera_obstacle_topic").value),
+                self._on_camera_cloud,
                 qos_profile_sensor_data,
             )
 
@@ -293,6 +318,16 @@ def main(args=None):
                 "fail_on_missing_tf": defaults.fail_on_missing_tf,
                 "tf_timeout_s": defaults.tf_timeout_s,
                 "requested_cmd_timeout_s": defaults.requested_cmd_timeout_s,
+                # Camera low-obstacle brake (node-level, additive to the lidar core).
+                "camera_brake_enable": True,
+                "camera_obstacle_topic": "/camera/low_obstacles",
+                "camera_stop_distance_m": 0.50,  # >= camera near-vision limit (~0.45 m)
+                "camera_slow_distance_m": 0.70,
+                "camera_half_angle_deg": 25.0,
+                "camera_min_range_m": 0.40,  # below this the monocular detector is unreliable
+                "camera_max_range_m": 1.20,
+                "camera_min_forward_scale": 0.60,  # slow-band floor; avoid sub-breakaway creep
+                "camera_max_age_s": 0.6,  # stale cloud -> no camera limit (lidar-only)
             }.items():
                 self.declare_parameter(name, value)
 
@@ -390,6 +425,33 @@ def main(args=None):
                 )
                 self._publish_decision(decision)
 
+        def _on_camera_cloud(self, msg):
+            try:
+                pts = [
+                    (float(p[0]), float(p[1]))
+                    for p in pc2.read_points(msg, field_names=("x", "y"), skip_nans=True)
+                ]
+            except Exception:
+                pts = []
+            with self._cam_lock:
+                self._cam_points = pts
+                self._cam_stamp = self._now_seconds()
+
+        def _apply_camera_brake(self, linear_x, now):
+            """Additive forward limit from a FRESH camera low-obstacle cloud. Returns
+            (limited_linear_x, nearest_m, scale). Only reduces positive forward speed;
+            reverse/zero and a stale/absent cloud pass through unchanged (lidar-only)."""
+            if not self._cam_enable or linear_x <= 0.0:
+                return linear_x, None, 1.0
+            with self._cam_lock:
+                pts = self._cam_points
+                stamp = self._cam_stamp
+            if stamp is None or (now - stamp) > self._cam_max_age:
+                return linear_x, None, 1.0
+            nearest = nearest_forward_obstacle(pts, self._cam_half_angle, self._cam_min_r, self._cam_max_r)
+            scale = forward_speed_scale(nearest, self._cam_stop_m, self._cam_slow_m, self._cam_min_scale)
+            return linear_x * scale, nearest, scale
+
         def _on_timer(self):
             with self._state_lock:
                 decision = self._supervisor.tick(now=self._now_seconds())
@@ -438,7 +500,11 @@ def main(args=None):
             if not self._context_ok():
                 return
             msg = Twist()
-            msg.linear.x = decision.output.linear_x
+            cam_linear, cam_nearest, cam_scale = self._apply_camera_brake(
+                decision.output.linear_x, self._now_seconds()
+            )
+            self._cam_nearest, self._cam_scale = cam_nearest, cam_scale
+            msg.linear.x = cam_linear
             msg.angular.z = decision.output.angular_z
             self._cmd_pub.publish(msg)
 
@@ -466,10 +532,14 @@ def main(args=None):
                 f"trajectory_collision_time_s={None if decision.trajectory is None else decision.trajectory.collision_time_s} "
                 f"trajectory_moving_away_point_count={0 if decision.trajectory is None else decision.trajectory.moving_away_point_count} "
                 f"requested=({decision.requested.linear_x:.3f},{decision.requested.angular_z:.3f}) "
-                f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f})"
+                f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f}) "
+                f"cam_nearest={_fmt_optional(cam_nearest)} cam_scale={cam_scale:.2f} "
+                f"cam_output_linear={msg.linear.x:.3f}"
             )
             self._state_pub.publish(state)
             event_text = f"{decision.state.value} {decision.reason}"
+            if self._cam_enable and cam_scale < 1.0:
+                event_text += f" +CAMERA_LOW_OBSTACLE_{'STOP' if cam_scale == 0.0 else 'SLOW'}@{cam_nearest:.2f}m"
             if event_text != self._last_event:
                 event = String()
                 event.data = event_text

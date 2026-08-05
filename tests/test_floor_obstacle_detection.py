@@ -5,6 +5,7 @@ import numpy as np
 from sphero_rvr_core.floor_obstacle_detection import (
     adaptive_threshold,
     detect_floor_boundary,
+    detect_obstacle_spans,
     floor_reference,
 )
 
@@ -62,6 +63,26 @@ def test_adaptive_color_thresh_none_still_detects_obstacle():
     img[10:] = 50   # floor (uniform -> adaptive thr hits lower bound, well below 150)
     res = detect_floor_boundary(img, color_thresh=None, min_run=4)
     assert all(r == 9 for r in res)
+
+
+def test_spans_short_object_reports_contact_and_top():
+    img = np.full((20, 10, 3), 50, np.uint8)
+    img[12:16, 3:7] = 200  # a short object on open floor (rows 12..15)
+    spans = detect_obstacle_spans(img, min_run=4)
+    assert spans[4] == (15, 12)  # contact at base, top at object's top
+    assert spans[0] is None
+
+
+def test_spans_tall_object_runs_to_image_top():
+    img = np.full((20, 10, 3), 50, np.uint8)
+    img[0:16, 3:7] = 200  # tall object filling up to the top
+    spans = detect_obstacle_spans(img, min_run=4)
+    assert spans[4][0] == 15 and spans[4][1] == 0  # tall -> top at row 0
+
+
+def test_spans_clear_floor_is_none():
+    img = np.full((20, 10, 3), 50, np.uint8)
+    assert all(s is None for s in detect_obstacle_spans(img))
 
 
 def test_min_rise_tolerates_specks_in_obstacle():

@@ -12,6 +12,8 @@ robust path — see docs/camera_low_obstacle_design.md). Decision core is pure/t
 (`sphero_rvr_core/floor_obstacle_detection.py`, `ground_projection.py`).
 """
 
+import math
+
 import cv2
 import rclpy
 from rclpy.node import Node
@@ -19,8 +21,8 @@ from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 import sensor_msgs_py.point_cloud2 as pc2
 from std_msgs.msg import Header
 
-from sphero_rvr_core.floor_obstacle_detection import detect_floor_boundary
-from sphero_rvr_core.ground_projection import pixel_to_ground
+from sphero_rvr_core.floor_obstacle_detection import detect_obstacle_spans
+from sphero_rvr_core.ground_projection import object_height_m, pixel_to_ground
 from sphero_rvr_core.image_decode import imgmsg_to_array
 
 
@@ -39,6 +41,7 @@ class LowObstacleNode(Node):
         self.declare_parameter("floor_band_frac", 0.12)
         self.declare_parameter("min_range_m", 0.05)
         self.declare_parameter("max_range_m", 2.0)
+        self.declare_parameter("max_obstacle_height_m", 0.20)  # keep only sub-lidar-plane obstacles
         self.declare_parameter("process_every_n", 6)  # 30 Hz camera -> ~5 Hz
 
         self._base_frame = str(self.get_parameter("base_frame").value)
@@ -51,6 +54,7 @@ class LowObstacleNode(Node):
         self._band = float(self.get_parameter("floor_band_frac").value)
         self._min_r = float(self.get_parameter("min_range_m").value)
         self._max_r = float(self.get_parameter("max_range_m").value)
+        self._max_h = float(self.get_parameter("max_obstacle_height_m").value)
         self._every_n = max(1, int(self.get_parameter("process_every_n").value))
 
         self._K = None  # (fx, fy, cx, cy) at full camera resolution
@@ -75,22 +79,29 @@ class LowObstacleNode(Node):
         small = cv2.resize(img, (self._proc_w, max(1, int(h0 * s))))
         fx, fy, cx, cy = (v * s for v in self._K)
 
-        contacts = detect_floor_boundary(
+        spans = detect_obstacle_spans(
             small,
             floor_band_frac=self._band,
             color_thresh=None if self._adaptive else self._color_thresh,
             min_run=self._min_run,
         )
         points = []
-        for u, v in enumerate(contacts):
-            if v is None:
+        for u, span in enumerate(spans):
+            if span is None:
                 continue
-            g = pixel_to_ground(u, v, fx, fy, cx, cy, self._cam_h, self._tilt)
+            contact, top = span
+            g = pixel_to_ground(u, contact, fx, fy, cx, cy, self._cam_h, self._tilt)
             if g is None:
                 continue
             fwd, left = g
-            if self._min_r <= fwd <= self._max_r:
-                points.append((float(fwd), float(left), 0.0))
+            if not (self._min_r <= fwd <= self._max_r):
+                continue
+            rng = math.hypot(fwd, left)
+            # keep only obstacles below the lidar plane; taller ones are the lidar's
+            # job (and dropping them keeps the camera brake from fighting gap crossing).
+            if object_height_m(contact - top, rng, fy) > self._max_h:
+                continue
+            points.append((float(fwd), float(left), 0.0))
 
         header = Header()
         header.stamp = msg.header.stamp

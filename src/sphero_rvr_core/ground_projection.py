@@ -59,6 +59,16 @@ def pixel_to_ground(
     return (t * dx, t * dy)
 
 
+def object_height_m(pixel_rise: float, range_m: float, fy: float) -> float:
+    """Approximate physical height of a roughly-vertical object at horizontal
+    distance `range_m` that subtends `pixel_rise` rows, given focal length `fy`:
+    height ~= pixel_rise * range / fy. Used to keep only *low* obstacles (below the
+    2D-lidar plane) from the monocular detector."""
+    if fy <= 0.0:
+        return float("inf")
+    return abs(pixel_rise) * range_m / fy
+
+
 def ground_to_cell(
     x_forward: float,
     y_left: float,

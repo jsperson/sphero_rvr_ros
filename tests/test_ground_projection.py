@@ -48,3 +48,13 @@ def test_ground_to_cell_with_robot_pose():
     # Robot at (2,0) facing +y (yaw 90deg): a point 1 m forward is at world (2,1).
     cell = ground_to_cell(1.0, 0.0, origin_x=0.0, origin_y=0.0, res=0.5, robot_x=2.0, robot_y=0.0, robot_yaw=math.pi / 2)
     assert cell == (4, 2)  # world (2.0, 1.0) / 0.5
+
+
+def test_object_height_scales_with_range_and_pixels():
+    from sphero_rvr_core.ground_projection import object_height_m
+    # 34 px rise at 0.54 m with fy=170 -> ~0.108 m
+    assert abs(object_height_m(34, 0.54, 170.0) - 0.108) < 0.01
+    # tall/near-zero fy guards
+    assert object_height_m(10, 1.0, 0.0) == float("inf")
+    # farther object, same pixels -> taller
+    assert object_height_m(30, 2.0, 170.0) > object_height_m(30, 1.0, 170.0)

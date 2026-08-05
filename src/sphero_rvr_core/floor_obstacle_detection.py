@@ -70,3 +70,49 @@ def detect_floor_boundary(
                 result[x] = y
                 break
     return result
+
+
+def detect_obstacle_spans(
+    img,
+    floor_band_frac=0.12,
+    sample_center_frac=0.6,
+    color_thresh=40.0,
+    min_run=4,
+    max_gap=2,
+):
+    """Per column: `(contact_row, top_row)` for the lowest obstacle -- its floor
+    contact and the top of its non-floor run (scanning up, tolerating gaps of up to
+    `max_gap` floor-coloured pixels) -- or None if the column is clear floor.
+
+    The run-top lets a caller estimate the obstacle's height (pixel-rise x range /
+    fy) and keep only *low* obstacles the 2D lidar misses. An isolated low object on
+    open floor has floor above it, so its run ends at the object's top; an object
+    against a wall runs up into the wall (reads tall -> dropped, since the lidar
+    already sees the wall). Returns a list length W.
+    """
+    h, w = img.shape[:2]
+    ref = floor_reference(img, floor_band_frac, sample_center_frac)
+    dist = np.linalg.norm(img.astype(np.float32) - ref, axis=2)
+    thr = adaptive_threshold(dist, floor_band_frac) if color_thresh is None else float(color_thresh)
+    over = dist > thr
+    result = [None] * w
+    for x in range(w):
+        col = over[:, x]
+        contact = None
+        for y in range(h - 1, min_run - 2, -1):
+            if col[y] and bool(np.all(col[y - min_run + 1 : y + 1])):
+                contact = y
+                break
+        if contact is None:
+            continue
+        top, gap, y = contact, 0, contact - 1
+        while y >= 0:
+            if col[y]:
+                top, gap = y, 0
+            else:
+                gap += 1
+                if gap > max_gap:
+                    break
+            y -= 1
+        result[x] = (contact, top)
+    return result

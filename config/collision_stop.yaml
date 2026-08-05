@@ -88,3 +88,20 @@ lidar_collision_stop_supervisor:
     max_angular_rad_s: 0.4
     allow_disable: false
     fail_on_missing_tf: true
+    # --- Camera low-obstacle brake (additive to the lidar core) ---
+    # Stops forward motion for LOW obstacles the 2D lidar misses (chair legs, a
+    # shoe, a floor cable), from the height-gated /camera/low_obstacles cloud. It
+    # can ONLY slow/stop forward motion (never reverse/turn), and only acts on a
+    # fresh cloud, so a camera that is off or dead leaves lidar behaviour unchanged.
+    camera_brake_enable: true
+    camera_obstacle_topic: /camera/low_obstacles
+    # Stop while the obstacle is still reliably visible: the up-tilted low camera
+    # cannot see the floor closer than ~0.45 m, so stop at 0.50 (not the lidar's
+    # 0.12) or a low obstacle would slip into the blind zone before the stop.
+    camera_stop_distance_m: 0.50
+    camera_slow_distance_m: 0.70
+    camera_half_angle_deg: 25.0
+    camera_min_range_m: 0.40
+    camera_max_range_m: 1.20
+    camera_min_forward_scale: 0.60
+    camera_max_age_s: 0.6
