@@ -3,6 +3,7 @@
 from sphero_rvr_core.coverage_exploration import (
     CoverageConfig,
     cell_center_world,
+    compute_navigable,
     is_frontier,
     select_next_goal,
     stamp_coverage,
@@ -144,3 +145,32 @@ def test_prefers_coverage_and_frontier_together():
     cfg = CoverageConfig(min_cluster_cells=1, include_frontiers=True)
     goal = select_next_goal(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
     assert goal == (1, 0)  # nearest uncovered comes before the far frontier
+
+
+# --- navigability: don't target/route through cells too close to obstacles ---
+
+
+def test_compute_navigable_erodes_near_walls():
+    occ, w, h = build([".....", ".....", "..#..", ".....", "....."])
+    nav = compute_navigable(occ, w, h, inscribed_cells=1, occupied_threshold=50, free_threshold=0)
+    at = lambda x, y: nav[y * w + x]
+    assert at(2, 2) == 0  # the obstacle cell
+    assert at(1, 2) == 0 and at(3, 2) == 0 and at(2, 1) == 0 and at(2, 3) == 0  # 4-neighbors within inscribed
+    assert at(0, 0) == 1 and at(2, 0) == 1  # cells >1 from the obstacle are navigable
+
+
+def test_narrow_passage_blocks_but_wide_passage_allows():
+    # Left region (robot) connected to an uncovered right region only via an opening
+    # at x=3. Require 1-cell clearance (inscribed_radius_m 1.0 at res 1.0).
+    cfg = CoverageConfig(min_cluster_cells=1, include_frontiers=False, inscribed_radius_m=1.0)
+    # left + wall column covered; right region (x>=4) uncovered
+    covered_left = cover_cells([(x, y) for y in range(5) for x in range(7) if x < 4])
+
+    # Narrow: single opening cell (3,2), flanked above/below by walls -> not navigable.
+    narrow, w, h = build(["...#...", "...#...", ".......", "...#...", "...#..."])
+    assert select_next_goal(narrow, w, h, 0.0, 0.0, 1.0, 1, 2, covered_left, set(), cfg) is None
+
+    # Wide: opening spans y=1..3, so (3,2) is >1 from any wall -> navigable -> right reachable.
+    wide, w2, h2 = build(["...#...", ".......", ".......", ".......", "...#..."])
+    goal = select_next_goal(wide, w2, h2, 0.0, 0.0, 1.0, 1, 2, covered_left, set(), cfg)
+    assert goal is not None and goal[0] >= 4  # an uncovered cell in the right region

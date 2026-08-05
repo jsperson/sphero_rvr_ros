@@ -14,6 +14,7 @@ does. Run it INSTEAD of explore_lite. Decision logic lives in the pure, tested
 
 import math
 import threading
+import time
 
 import rclpy
 from rclpy.action import ActionClient
@@ -44,18 +45,28 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("min_cluster_cells", 5)
         self.declare_parameter("include_frontiers", True)
         self.declare_parameter("free_threshold", 0)
+        self.declare_parameter("inscribed_radius_m", 0.14)
+        self.declare_parameter("occupied_threshold", 50)
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("cycle_period_s", 1.0)
         self.declare_parameter("blacklist_radius_m", 0.3)
         self.declare_parameter("complete_after_empty_cycles", 8)
+        # Goal-progress watchdog: if a goal makes < this much progress in this many
+        # seconds, cancel + blacklist it instead of letting bt_navigator churn.
+        self.declare_parameter("goal_progress_timeout_s", 6.0)
+        self.declare_parameter("goal_progress_epsilon_m", 0.10)
 
         self._config = CoverageConfig(
             coverage_radius_m=float(self.get_parameter("coverage_radius_m").value),
             min_cluster_cells=int(self.get_parameter("min_cluster_cells").value),
             include_frontiers=bool(self.get_parameter("include_frontiers").value),
             free_threshold=int(self.get_parameter("free_threshold").value),
+            inscribed_radius_m=float(self.get_parameter("inscribed_radius_m").value),
+            occupied_threshold=int(self.get_parameter("occupied_threshold").value),
         )
+        self._goal_progress_timeout_s = float(self.get_parameter("goal_progress_timeout_s").value)
+        self._goal_progress_epsilon_m = float(self.get_parameter("goal_progress_epsilon_m").value)
         self._base_frame = str(self.get_parameter("base_frame").value)
         self._blacklist_radius_m = float(self.get_parameter("blacklist_radius_m").value)
         map_topic = str(self.get_parameter("map_topic").value)
@@ -67,6 +78,8 @@ class CoverageExplorerNode(Node):
         self._active_goal_cell = None
         self._active_goal_handle = None
         self._goal_inflight = False
+        self._goal_start_pose = None   # (wx, wy) when the active goal was sent
+        self._goal_start_time = None   # time.monotonic() when the active goal was sent
         self._mission_done = False
         self._consecutive_empty = 0
         self._ever_had_target = False
@@ -125,8 +138,20 @@ class CoverageExplorerNode(Node):
             inflight = self._goal_inflight
         if active_cell is not None:
             if self._still_target(m, w, h, ox, oy, res, active_cell):
-                return  # let it keep driving
-            self._cancel_active()
+                # Watchdog: navigable selection should keep goals plannable, but if
+                # one still makes no progress (planner churning "no valid path"),
+                # cancel + blacklist it rather than let bt_navigator grind on it.
+                if self._goal_stalled(wx, wy):
+                    self.get_logger().warn(
+                        f"coverage goal {active_cell} made no progress in "
+                        f"{self._goal_progress_timeout_s:.0f}s — blacklisting"
+                    )
+                    self._cancel_active()
+                    self._blacklist_cell(active_cell)
+                else:
+                    return  # valid target, making progress -> keep driving
+            else:
+                self._cancel_active()
         if inflight:
             return
 
@@ -146,7 +171,23 @@ class CoverageExplorerNode(Node):
             return
         self._consecutive_empty = 0
         self._ever_had_target = True
+        self._goal_start_pose = (wx, wy)
+        self._goal_start_time = time.monotonic()
         self._send_goal(goal_cell, frame, ox, oy, res)
+
+    def _goal_stalled(self, wx, wy):
+        """True if the active goal has made < epsilon progress for > timeout. The
+        progress reference resets whenever the rover advances, so this fires only on
+        a sustained no-progress stretch (planner churning), not a slow-but-moving
+        drive."""
+        if self._goal_start_pose is None or self._goal_start_time is None:
+            return False
+        moved = math.hypot(wx - self._goal_start_pose[0], wy - self._goal_start_pose[1])
+        if moved >= self._goal_progress_epsilon_m:
+            self._goal_start_pose = (wx, wy)
+            self._goal_start_time = time.monotonic()
+            return False
+        return (time.monotonic() - self._goal_start_time) >= self._goal_progress_timeout_s
 
     def _still_target(self, m, w, h, ox, oy, res, cell):
         gx, gy = cell

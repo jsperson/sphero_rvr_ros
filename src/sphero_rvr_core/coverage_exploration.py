@@ -35,6 +35,14 @@ class CoverageConfig:
     include_frontiers: bool = True
     # A cell counts as free when 0 <= value <= this (0 = strict trinary map).
     free_threshold: int = 0
+    # NAVIGABILITY: only target/traverse free cells at least this far from an
+    # obstacle (the planner's inscribed radius). Cells closer than this become
+    # lethal on the global costmap, so targeting them (or routing a target behind a
+    # passage narrower than 2x this) yields "no valid path" churn. Matching the
+    # planner's robot_radius makes coverage's reachability agree with the planner.
+    inscribed_radius_m: float = 0.14
+    # A map cell counts as an obstacle for the navigability check when value >= this.
+    occupied_threshold: int = 50
 
 
 def world_grid(wx: float, wy: float, res: float) -> Tuple[int, int]:
@@ -85,6 +93,40 @@ def cell_world_grid(cx: int, cy: int, origin_x: float, origin_y: float, res: flo
     return world_grid(wx, wy, res)
 
 
+def compute_navigable(occ, w: int, h: int, inscribed_cells: int, occupied_threshold: int, free_threshold: int):
+    """Bytearray mask (1=navigable) of free cells at least `inscribed_cells` from
+    any obstacle — a stand-in for where the planner won't hit lethal cost. Both
+    coverage targets and reachability flood are restricted to these, so coverage's
+    idea of "reachable" matches the planner's (no targets behind too-narrow
+    passages, no targets in soon-to-be-lethal near-wall cells)."""
+    nav = bytearray(w * h)
+    r = inscribed_cells
+    r2 = r * r
+    for cy in range(h):
+        for cx in range(w):
+            idx = cy * w + cx
+            if not (0 <= occ[idx] <= free_threshold):
+                continue  # not free
+            blocked = False
+            for dy in range(-r, r + 1):
+                if blocked:
+                    break
+                ny = cy + dy
+                if ny < 0 or ny >= h:
+                    continue
+                base = ny * w
+                for dx in range(-r, r + 1):
+                    if dx * dx + dy * dy > r2:
+                        continue
+                    nx = cx + dx
+                    if 0 <= nx < w and occ[base + nx] >= occupied_threshold:
+                        blocked = True
+                        break
+            if not blocked:
+                nav[idx] = 1
+    return nav
+
+
 def select_next_goal(
     occ,
     w: int,
@@ -112,9 +154,14 @@ def select_next_goal(
     if not (0 <= robot_cx < w and 0 <= robot_cy < h):
         return None
 
+    inscribed_cells = max(0, int(round(config.inscribed_radius_m / res)))
+    navigable = compute_navigable(
+        occ, w, h, inscribed_cells, config.occupied_threshold, config.free_threshold
+    )
+
     def is_target(cx: int, cy: int) -> bool:
         idx = cy * w + cx
-        if not _is_free(occ, idx, config.free_threshold):
+        if not navigable[idx]:
             return False
         wg = cell_world_grid(cx, cy, origin_x, origin_y, res)
         if wg in blacklist:
@@ -139,8 +186,12 @@ def select_next_goal(
                     stack.append((nx, ny))
         return size
 
-    # BFS over free space from the robot; the first target (nearest) whose cluster
-    # is big enough wins.
+    # BFS over NAVIGABLE space from the robot; the first target (nearest) whose
+    # cluster is big enough wins. Flooding over navigable-only cells makes
+    # reachability match the planner: targets behind passages narrower than the
+    # robot are never reached, so they are never selected -> no "no valid path"
+    # churn. The robot's own start cell is always enqueued (it may sit just inside
+    # the inscribed margin), but expansion only follows navigable cells.
     visited = bytearray(w * h)
     start = robot_cy * w + robot_cx
     visited[start] = 1
@@ -153,7 +204,7 @@ def select_next_goal(
                 return (cx, cy)
         for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
             nidx = ny * w + nx
-            if 0 <= nx < w and 0 <= ny < h and not visited[nidx] and _is_free(occ, nidx, config.free_threshold):
+            if 0 <= nx < w and 0 <= ny < h and not visited[nidx] and navigable[nidx]:
                 visited[nidx] = 1
                 dq.append((nx, ny))
     return None
