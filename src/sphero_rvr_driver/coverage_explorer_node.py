@@ -48,6 +48,7 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("cycle_period_s", 1.0)
         self.declare_parameter("blacklist_radius_m", 0.3)
+        self.declare_parameter("complete_after_empty_cycles", 8)
 
         self._config = CoverageConfig(
             coverage_radius_m=float(self.get_parameter("coverage_radius_m").value),
@@ -67,6 +68,9 @@ class CoverageExplorerNode(Node):
         self._active_goal_handle = None
         self._goal_inflight = False
         self._mission_done = False
+        self._consecutive_empty = 0
+        self._ever_had_target = False
+        self._complete_after_empty = int(self.get_parameter("complete_after_empty_cycles").value)
 
         cbg = ReentrantCallbackGroup()
         map_qos = QoSProfile(depth=1)
@@ -130,12 +134,18 @@ class CoverageExplorerNode(Node):
             m.data, w, h, ox, oy, res, rcx, rcy, self._covered, self._blacklist, self._config
         )
         if goal_cell is None:
-            self._mission_done = True
-            self.get_logger().info(
-                f"coverage+frontier mission COMPLETE — {len(self._covered)} cells covered; "
-                "all reachable free space seen and within coverage radius"
-            )
+            # Debounce: don't latch "complete" on a transient/startup empty. Only
+            # finish after N consecutive empties AND once it has actually explored.
+            self._consecutive_empty += 1
+            if self._ever_had_target and self._consecutive_empty >= self._complete_after_empty:
+                self._mission_done = True
+                self.get_logger().info(
+                    f"coverage+frontier mission COMPLETE — {len(self._covered)} cells covered; "
+                    "all reachable free space seen and within coverage radius"
+                )
             return
+        self._consecutive_empty = 0
+        self._ever_had_target = True
         self._send_goal(goal_cell, frame, ox, oy, res)
 
     def _still_target(self, m, w, h, ox, oy, res, cell):
