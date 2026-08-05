@@ -24,24 +24,49 @@ def floor_reference(img, floor_band_frac=0.12, sample_center_frac=0.6):
     return np.median(patch, axis=0)
 
 
-def detect_floor_boundary(img, floor_band_frac=0.12, sample_center_frac=0.6, color_thresh=40.0, min_run=4):
+def adaptive_threshold(dist, floor_band_frac, percentile=95.0, k=2.0, bounds=(25.0, 60.0)):
+    """A colour-distance threshold derived from the floor band's own distribution:
+    `k` * the `percentile`-th distance among (assumed-floor) band pixels, clamped to
+    `bounds`. Tracks lighting/carpet variation so a fixed number isn't needed."""
+    h = dist.shape[0]
+    band = max(1, int(h * floor_band_frac))
+    return float(np.clip(k * np.percentile(dist[h - band : h, :], percentile), bounds[0], bounds[1]))
+
+
+def detect_floor_boundary(
+    img,
+    floor_band_frac=0.12,
+    sample_center_frac=0.6,
+    color_thresh=40.0,
+    min_run=4,
+    min_rise=None,
+    rise_frac=0.7,
+):
     """For each image column, the pixel ROW of the lowest stable non-floor pixel
     (an obstacle's ground contact), or None if the column is clear floor.
 
-    `img`: (H, W, C) uint8. `min_run`: how many consecutive non-floor pixels above
-    the contact are required (rejects single-pixel noise). Returns a list length W.
+    `img`: (H, W, C) uint8. `color_thresh`: fixed colour-distance threshold, or None
+    to derive one adaptively from the floor band (robust to lighting). `min_run`:
+    consecutive non-floor pixels required above a contact (rejects single-pixel
+    noise). `min_rise`: if set, instead require >= `rise_frac` of the `min_rise`-pixel
+    window above the contact to be non-floor -- tolerates small floor-coloured specks
+    on a real object (e.g. laces) while still rejecting thin seams/reflections; a
+    thin-but-tall obstacle (chair leg) still passes. Returns a list length W.
     """
     h, w = img.shape[:2]
     ref = floor_reference(img, floor_band_frac, sample_center_frac)
     dist = np.linalg.norm(img.astype(np.float32) - ref, axis=2)  # (H, W)
-    over = dist > color_thresh  # non-floor mask
+    thr = adaptive_threshold(dist, floor_band_frac) if color_thresh is None else float(color_thresh)
+    over = dist > thr  # non-floor mask
+    win = int(min_rise) if min_rise else int(min_run)
+    need = float(rise_frac) if min_rise else 1.0  # 1.0 => strict consecutive run
     result = [None] * w
     for x in range(w):
         col = over[:, x]
-        # Scan up from the bottom; the contact is the lowest row that begins a run
-        # of >= min_run non-floor pixels (going upward).
-        for y in range(h - 1, min_run - 2, -1):
-            if col[y] and bool(np.all(col[y - min_run + 1 : y + 1])):
+        # Scan up from the bottom; the contact is the lowest row whose window above
+        # is (mostly) non-floor.
+        for y in range(h - 1, win - 2, -1):
+            if col[y] and float(np.mean(col[y - win + 1 : y + 1])) >= need:
                 result[x] = y
                 break
     return result

@@ -34,6 +34,7 @@ class LowObstacleNode(Node):
         self.declare_parameter("camera_tilt_down_rad", -0.0524)  # calibrated 3 deg UP
         self.declare_parameter("proc_width", 200)
         self.declare_parameter("color_thresh", 40.0)
+        self.declare_parameter("adaptive_thresh", True)  # derive threshold from the floor band
         self.declare_parameter("min_run", 4)
         self.declare_parameter("floor_band_frac", 0.12)
         self.declare_parameter("min_range_m", 0.05)
@@ -45,6 +46,7 @@ class LowObstacleNode(Node):
         self._tilt = float(self.get_parameter("camera_tilt_down_rad").value)
         self._proc_w = int(self.get_parameter("proc_width").value)
         self._color_thresh = float(self.get_parameter("color_thresh").value)
+        self._adaptive = bool(self.get_parameter("adaptive_thresh").value)
         self._min_run = int(self.get_parameter("min_run").value)
         self._band = float(self.get_parameter("floor_band_frac").value)
         self._min_r = float(self.get_parameter("min_range_m").value)
@@ -74,7 +76,10 @@ class LowObstacleNode(Node):
         fx, fy, cx, cy = (v * s for v in self._K)
 
         contacts = detect_floor_boundary(
-            small, floor_band_frac=self._band, color_thresh=self._color_thresh, min_run=self._min_run
+            small,
+            floor_band_frac=self._band,
+            color_thresh=None if self._adaptive else self._color_thresh,
+            min_run=self._min_run,
         )
         points = []
         for u, v in enumerate(contacts):
