@@ -1,9 +1,18 @@
 # Stage C — camera layer for low obstacles (design)
 
-**Status: DESIGN + libcamera fix-plan (2026-08-04). Not implemented — camera is
-blocked at libcamera, and a real perception pipeline can't be validated without
-chassis motion. This is the plan to execute with the chassis, after unblocking the
-camera.**
+**Status: camera UNBLOCKED 2026-08-05 — `/camera_node/image_raw` streams (800x600
+rgb8) + calibrated `camera_info`. Perception pipeline still to build. This doc is
+the plan for that.**
+
+## Camera is working (how)
+Runs via a hand-built PiSP libcamera pinned at `~/.local/rpi-libcamera` (libpisp
+1.5.0, matches the kernel) + a source `camera_ros` linked to it. Launch:
+`ros2 launch sphero_rvr_driver camera.launch.py`. The apt libcameras do NOT work
+(system 0.2.0 = vc4-only; ros-jazzy 0.7.1 = libpisp 1.3.0 mismatch → "cannot acquire
+CFE"). The launch + config were culled and recovered from git 2026-08-05; the pinned
+libcamera + source camera_ros live outside the repo (`~/.local`, `~/ros2_ws/src`) —
+DO NOT delete. (See memory `camera-pinned-libcamera`.) libcamera was NOT the design
+problem after all — the sensor-choice discussion below still stands.
 
 ## Problem
 The 2D RPLIDAR sits at ~0.19 m. It is blind to anything below its plane — table/
