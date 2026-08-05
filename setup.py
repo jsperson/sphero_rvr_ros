@@ -87,6 +87,7 @@ setup(
             "live_route_runner = sphero_rvr_driver.live_route_runner_node:main",
             "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",
+            "vlm_scene = sphero_rvr_driver.vlm_scene_node:main",
         ],
     },
 )
