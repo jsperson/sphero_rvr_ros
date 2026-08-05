@@ -14,7 +14,6 @@ robust path — see docs/camera_low_obstacle_design.md). Decision core is pure/t
 
 import cv2
 import rclpy
-from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 import sensor_msgs_py.point_cloud2 as pc2
@@ -22,6 +21,7 @@ from std_msgs.msg import Header
 
 from sphero_rvr_core.floor_obstacle_detection import detect_floor_boundary
 from sphero_rvr_core.ground_projection import pixel_to_ground
+from sphero_rvr_core.image_decode import imgmsg_to_array
 
 
 class LowObstacleNode(Node):
@@ -51,7 +51,6 @@ class LowObstacleNode(Node):
         self._max_r = float(self.get_parameter("max_range_m").value)
         self._every_n = max(1, int(self.get_parameter("process_every_n").value))
 
-        self._bridge = CvBridge()
         self._K = None  # (fx, fy, cx, cy) at full camera resolution
         self._count = 0
         self.create_subscription(CameraInfo, str(self.get_parameter("camera_info_topic").value), self._on_info, 1)
@@ -68,7 +67,7 @@ class LowObstacleNode(Node):
         self._count += 1
         if self._count % self._every_n != 0 or self._K is None:
             return
-        img = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+        img = imgmsg_to_array(msg, order="rgb")  # honor step; cv_bridge ignores it -> shear
         h0, w0 = img.shape[:2]
         s = self._proc_w / w0
         small = cv2.resize(img, (self._proc_w, max(1, int(h0 * s))))

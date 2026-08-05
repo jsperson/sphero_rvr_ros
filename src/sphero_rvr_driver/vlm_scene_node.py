@@ -16,13 +16,14 @@ import os
 import cv2
 import requests
 import rclpy
-from cv_bridge import CvBridge
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+
+from sphero_rvr_core.image_decode import imgmsg_to_array
 
 DEFAULT_PROMPT = (
     "You are the vision system of a small ground robot exploring an indoor space. "
@@ -57,7 +58,6 @@ class VlmSceneNode(Node):
         self._prompt = str(self.get_parameter("prompt").value)
         self._key = self._read_key(str(self.get_parameter("api_key_file").value))
 
-        self._bridge = CvBridge()
         self._latest = None
         cbg = ReentrantCallbackGroup()
         self.create_subscription(
@@ -104,7 +104,7 @@ class VlmSceneNode(Node):
         return response
 
     def _encode_jpeg(self, msg):
-        img = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        img = imgmsg_to_array(msg, order="bgr")  # honor step; cv_bridge ignores it -> shear
         h, w = img.shape[:2]
         if w > self._max_width:
             img = cv2.resize(img, (self._max_width, int(h * self._max_width / w)))

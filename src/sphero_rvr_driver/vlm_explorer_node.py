@@ -16,7 +16,6 @@ import os
 
 import cv2
 import rclpy
-from cv_bridge import CvBridge
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -29,6 +28,7 @@ from std_msgs.msg import String
 import math
 import tf2_ros
 
+from sphero_rvr_core.image_decode import imgmsg_to_array
 from sphero_rvr_core.vlm_client import direction_to_goal, extract_json, query_vlm
 
 PROMPT = (
@@ -67,7 +67,6 @@ class VlmExplorerNode(Node):
         self._timeout = float(self.get_parameter("request_timeout_s").value)
         self._key = self._read_key(str(self.get_parameter("api_key_file").value))
 
-        self._bridge = CvBridge()
         self._latest = None
         self._deciding = False
         self._active_goal = None
@@ -105,7 +104,7 @@ class VlmExplorerNode(Node):
             self._deciding = False
 
     def _decide_and_go(self):
-        img = self._bridge.imgmsg_to_cv2(self._latest, desired_encoding="bgr8")
+        img = imgmsg_to_array(self._latest, order="bgr")  # honor step; cv_bridge ignores it -> shear
         h, w = img.shape[:2]
         if w > self._max_width:
             img = cv2.resize(img, (self._max_width, int(h * self._max_width / w)))
