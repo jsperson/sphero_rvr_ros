@@ -81,6 +81,24 @@ class CostmapAnalyzer(Node):
         print(f"  FRONTIER cells (free next to unknown) = {frontier}   <-- the #1b answer")
         print(f"  robot cell ({rx},{ry}) value = {rv}   (0=free  -1=unknown  >=100=lethal  1-99=inflation)")
 
+        # Local ASCII window around the robot: is it boxed by inflation, is the
+        # rear open? '.' free  ':' inflation  '#' lethal  '?' unknown  'R' robot.
+        # +x is to the right (robot forward with identity odom), +y is up.
+        rad = 20
+        print(f"=== local costmap around robot (R), +x=right, +y=up, {rad*2+1} cells ~{(rad*2+1)*res:.1f} m ===")
+        print("    . free   : inflation   # lethal   ? unknown")
+        for yy in range(ry + rad, ry - rad - 1, -1):
+            line = []
+            for xx in range(rx - rad, rx + rad + 1):
+                if not (0 <= xx < w and 0 <= yy < h):
+                    line.append(" ")
+                elif xx == rx and yy == ry:
+                    line.append("R")
+                else:
+                    vv = at(xx, yy)
+                    line.append("." if vv == 0 else (":" if 0 < vv < 100 else ("#" if vv >= 100 else "?")))
+            print("    " + "".join(line))
+
 
 def main():
     rclpy.init()
