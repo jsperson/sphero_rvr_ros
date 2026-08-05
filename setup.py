@@ -18,6 +18,7 @@ setup(
                 "launch/lidar.launch.py",
                 "launch/mapping.launch.py",
                 "launch/explore.launch.py",
+                "launch/camera.launch.py",
             ],
         ),
         (
@@ -33,6 +34,7 @@ setup(
                 "config/lean_nav2.yaml",
                 "config/lean_explore_lite.yaml",
                 "config/coverage_explorer.yaml",
+                "config/camera.yaml",
                 "config/ekf.yaml",
             ],
         ),
