@@ -13,3 +13,4 @@ artifacts/**/*.ppm
 artifacts/vs04_remote_frames/
 artifacts/vs04_remote_frames_png/
 artifacts/vs04_shoe_detector_eval/
+.playwright-mcp/

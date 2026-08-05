@@ -19,8 +19,9 @@ import requests
 def query_vlm(base_url, api_key, model, prompt, jpeg_bytes, max_tokens=300, timeout=30.0, retries=3, json_mode=False):
     """Return the text reply for an image+prompt, retrying past empty/garbage
     (`<|...|>` template) responses. `json_mode=True` sets response_format json_object
-    so the model emits a JSON object instead of a reasoning monologue (essential for
-    syn:large:vision, which otherwise ignores 'JSON only' and gets truncated)."""
+    so the reply ends in a JSON object (essential for syn:large:vision, which reasons
+    first and otherwise never reaches the JSON). It still reasons, so give it token
+    headroom (~1500) — too small a max_tokens truncates before the closing brace."""
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")
     payload = {
         "model": model,

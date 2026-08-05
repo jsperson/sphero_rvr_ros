@@ -110,9 +110,11 @@ class VlmExplorerNode(Node):
         if w > self._max_width:
             img = cv2.resize(img, (self._max_width, int(h * self._max_width / w)))
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_q])
+        # syn:large:vision reasons before emitting the JSON; 300 tokens truncates
+        # it mid-monologue (no closing brace -> parse fail). 1500 lets it finish.
         text = query_vlm(
             self._base_url, self._key, self._model, PROMPT, buf.tobytes(),
-            max_tokens=300, timeout=self._timeout, json_mode=True,
+            max_tokens=1500, timeout=self._timeout, json_mode=True,
         )
         d = extract_json(text)
         turn = max(-60, min(60, int(d.get("turn_deg", 0))))
