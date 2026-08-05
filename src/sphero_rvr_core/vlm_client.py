@@ -16,9 +16,11 @@ import re
 import requests
 
 
-def query_vlm(base_url, api_key, model, prompt, jpeg_bytes, max_tokens=300, timeout=30.0, retries=3):
+def query_vlm(base_url, api_key, model, prompt, jpeg_bytes, max_tokens=300, timeout=30.0, retries=3, json_mode=False):
     """Return the text reply for an image+prompt, retrying past empty/garbage
-    (`<|...|>` template) responses."""
+    (`<|...|>` template) responses. `json_mode=True` sets response_format json_object
+    so the model emits a JSON object instead of a reasoning monologue (essential for
+    syn:large:vision, which otherwise ignores 'JSON only' and gets truncated)."""
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")
     payload = {
         "model": model,
@@ -33,6 +35,8 @@ def query_vlm(base_url, api_key, model, prompt, jpeg_bytes, max_tokens=300, time
             }
         ],
     }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     last = ""
     for _ in range(retries):
         r = requests.post(
