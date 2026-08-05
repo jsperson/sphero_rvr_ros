@@ -7,9 +7,14 @@ coverage_explorer:
     min_cluster_cells: 5
     # Also pursue frontiers (discover new space), not just cover known space.
     include_frontiers: true
-    # A map cell is free when 0 <= value <= this (0 = strict trinary SLAM map).
+    # A cell is free when 0 <= value <= this. On the global costmap, 0 = free,
+    # 1-99 = inflation (near walls, NOT a safe goal), 100 = lethal, <0 = unknown.
     free_threshold: 0
-    map_topic: /map
+    # Select targets from the global COSTMAP, not raw /map: its free cells exclude
+    # inflation, so targets are actually navigable and flood-reachability matches
+    # what the planner can reach — no more "no valid path" abort/blacklist churn.
+    # Near-wall cells still get covered en route (within coverage_radius_m).
+    map_topic: /global_costmap/costmap
     base_frame: base_link
     cycle_period_s: 1.0
     # On an unreachable/aborted goal, blacklist a disk of this radius around it.
