@@ -61,8 +61,8 @@ class LowObstacleNode(Node):
 
     def _on_info(self, msg):
         k = msg.k
-        if k and k[0] > 0:
-            self._K = (k[0], k[4], k[2], k[5])  # fx, fy, cx, cy
+        if len(k) >= 6 and k[0] > 0:
+            self._K = (float(k[0]), float(k[4]), float(k[2]), float(k[5]))  # fx, fy, cx, cy
 
     def _on_image(self, msg):
         self._count += 1
