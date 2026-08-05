@@ -99,7 +99,7 @@ local_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         footprint_clearing_enabled: true
-        observation_sources: scan
+        observation_sources: scan camera_low
         scan:
           topic: /scan
           data_type: "LaserScan"
@@ -108,6 +108,22 @@ local_costmap:
           max_obstacle_height: 0.5
           raytrace_max_range: 6.0
           obstacle_max_range: 6.0
+        # Monocular low-obstacle cloud (sub-lidar-plane things: chair legs, cables).
+        # Height-gated + in base_link at z=0, so include z~0 via a small negative
+        # min height. Ranges match the detector's reliable band (~0.45-1.5 m).
+        # Marking + raytrace clearing so the planner routes AROUND low obstacles and
+        # stale marks clear as the camera re-observes clear floor.
+        camera_low:
+          topic: /camera/low_obstacles
+          data_type: "PointCloud2"
+          clearing: true
+          marking: true
+          min_obstacle_height: -0.05
+          max_obstacle_height: 0.30
+          obstacle_max_range: 1.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 2.0
+          raytrace_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
@@ -144,7 +160,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         footprint_clearing_enabled: true
-        observation_sources: scan
+        observation_sources: scan camera_low
         scan:
           topic: /scan
           data_type: "LaserScan"
@@ -153,6 +169,21 @@ global_costmap:
           max_obstacle_height: 0.5
           raytrace_max_range: 6.0
           obstacle_max_range: 6.0
+        # Low-obstacle cloud on the GLOBAL costmap too: the planner (and the
+        # decisive controller, which follows the global path and has no local
+        # costmap) routes around low obstacles. Static low obstacles stay marked
+        # (correct); the height gate + raytrace clearing limit stale/false marks.
+        camera_low:
+          topic: /camera/low_obstacles
+          data_type: "PointCloud2"
+          clearing: true
+          marking: true
+          min_obstacle_height: -0.05
+          max_obstacle_height: 0.30
+          obstacle_max_range: 1.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 2.0
+          raytrace_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
