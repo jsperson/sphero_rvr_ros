@@ -39,7 +39,8 @@ class VlmSceneNode(Node):
         super().__init__("vlm_scene")
         self.declare_parameter("api_key_file", os.path.expanduser("~/.config/synthetic/api_key"))
         self.declare_parameter("base_url", "https://api.synthetic.new/v1")
-        self.declare_parameter("model", "hf:meta-llama/Llama-4-Scout-17B-16E-Instruct")
+        # Synthetic vision aliases: syn:large:vision (more capable) / syn:small:vision.
+        self.declare_parameter("model", "syn:large:vision")
         self.declare_parameter("image_topic", "/camera_node/image_raw")
         self.declare_parameter("max_width", 640)
         self.declare_parameter("jpeg_quality", 80)
