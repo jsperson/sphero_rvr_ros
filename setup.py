@@ -89,6 +89,7 @@ setup(
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",
             "vlm_scene = sphero_rvr_driver.vlm_scene_node:main",
             "low_obstacle = sphero_rvr_driver.low_obstacle_node:main",
+            "vlm_explorer = sphero_rvr_driver.vlm_explorer_node:main",
         ],
     },
 )
