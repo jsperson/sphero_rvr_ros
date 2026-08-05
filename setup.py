@@ -59,6 +59,7 @@ setup(
                 "docs/range_motion_controller.md",
                 "docs/decisive_controller.md",
                 "docs/coverage_explorer.md",
+                "docs/camera_low_obstacle_design.md",
             ],
         ),
         ("share/sphero_rvr_driver/docs/udev", ["docs/udev/99-rplidar.rules"]),
