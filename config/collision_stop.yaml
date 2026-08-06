@@ -100,7 +100,12 @@ lidar_collision_stop_supervisor:
     # 0.12) or a low obstacle would slip into the blind zone before the stop.
     camera_stop_distance_m: 0.50
     camera_slow_distance_m: 0.70
-    camera_half_angle_deg: 25.0
+    # Fallback cone (used only when camera_swept_path is false). 21 deg, not 25:
+    # the lens only reaches 21 deg to the RIGHT (38 deg left, measured), so a
+    # symmetric 25 deg cone claims ground the camera cannot see. A safety check
+    # must not assert coverage it lacks. The swept-path check has no such issue --
+    # it can only ever match points the camera actually reported.
+    camera_half_angle_deg: 21.0
     camera_min_range_m: 0.40
     camera_max_range_m: 1.20
     camera_min_forward_scale: 0.60

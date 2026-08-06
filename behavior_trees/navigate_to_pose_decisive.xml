@@ -45,13 +45,21 @@
         </Fallback>
         <ReactiveFallback name="RecoveryFallback">
           <GoalUpdated/>
+          <!-- Order matters. Observed 2026-08-06: wedged on a chair leg, Spin was
+               tried first, the collision checker aborted it ("Collision Ahead -
+               Exiting Spin"), Wait did nothing, and the goal failed before BackUp
+               was ever reached. Backing up is both the most likely to succeed (the
+               rover just came from there) and the only action that creates room for
+               the others, so it now runs first among the motion recoveries. Spin
+               follows once there is space; Wait is last, since waiting does not
+               help a stuck robot. -->
           <RoundRobin name="RecoveryActions">
             <Sequence name="ClearingActions">
               <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
             </Sequence>
+            <BackUp backup_dist="0.30" backup_speed="0.15" error_code_id="{backup_code_id}"/>
             <Spin spin_dist="1.57" error_code_id="{spin_error_code}"/>
             <Wait wait_duration="5.0"/>
-            <BackUp backup_dist="0.30" backup_speed="0.15" error_code_id="{backup_code_id}"/>
           </RoundRobin>
         </ReactiveFallback>
       </Sequence>
