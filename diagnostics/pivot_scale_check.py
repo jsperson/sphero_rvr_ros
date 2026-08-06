@@ -73,12 +73,16 @@ def unwrap(a):
 
 
 def pivot(rate):
+    """Accumulate BOTH signals continuously. Start-vs-end yaw aliases the moment the
+    rover turns more than 180 deg (it wraps), which is exactly the regime under test,
+    so odom yaw is summed per sample with each step unwrapped."""
     spin(SETTLE_S)
     if st["yaw"] is None:
         print("  no /odom -- is the chassis powered and rvr_node up?")
         return None
-    y0 = st["yaw"]
+    odom_angle = 0.0
     gyro_angle = 0.0
+    prev_yaw = st["yaw"]
     t0 = time.monotonic()
     last = t0
     while rclpy.ok() and time.monotonic() - t0 < DURATION_S:
@@ -87,14 +91,15 @@ def pivot(rate):
         pub.publish(tw)
         rclpy.spin_once(n, timeout_sec=0.02)
         now = time.monotonic()
-        gyro_angle += st["gyro_z"] * (now - last)   # integrate the gyro = truth
+        gyro_angle += st["gyro_z"] * (now - last)      # integrate gyro rate
+        odom_angle += unwrap(st["yaw"] - prev_yaw)     # sum unwrapped odom steps
+        prev_yaw = st["yaw"]
         last = now
         time.sleep(0.02)
-    for _ in range(10):                              # stop
+    for _ in range(10):                                 # stop
         pub.publish(Twist())
         time.sleep(0.05)
     spin(1.5)
-    odom_angle = unwrap(st["yaw"] - y0)
     return math.degrees(odom_angle), math.degrees(gyro_angle)
 
 
@@ -108,8 +113,9 @@ for rate in COMMANDED_RATES:
     odom_d, gyro_d = res
     expect = math.degrees(rate * DURATION_S)
     rows.append((rate, expect, odom_d, gyro_d))
-    print("%-10.2f %-12.1f %-12.1f %-12.1f %.2fx"
-          % (rate, expect, odom_d, gyro_d, abs(gyro_d) / expect if expect else 0))
+    print("%-10.2f %-12.1f %-12.1f %-12.1f %.2fx   (true rate %.2f rad/s)"
+          % (rate, expect, odom_d, gyro_d, abs(gyro_d) / expect if expect else 0,
+             math.radians(abs(gyro_d)) / DURATION_S))
     pub.publish(Twist())
 
 print()
