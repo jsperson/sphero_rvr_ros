@@ -58,3 +58,32 @@ def test_object_height_scales_with_range_and_pixels():
     assert object_height_m(10, 1.0, 0.0) == float("inf")
     # farther object, same pixels -> taller
     assert object_height_m(30, 2.0, 170.0) > object_height_m(30, 1.0, 170.0)
+
+
+def test_clear_ray_point_centre_is_straight_ahead():
+    from sphero_rvr_core.ground_projection import clear_ray_point
+    fwd, left = clear_ray_point(u=100.0, cx=100.0, fx=170.0, range_m=1.8)
+    assert fwd == pytest.approx(1.8) and left == pytest.approx(0.0)
+
+
+def test_clear_ray_point_right_column_is_negative_left():
+    from sphero_rvr_core.ground_projection import clear_ray_point
+    _, left = clear_ray_point(u=150.0, cx=100.0, fx=170.0, range_m=1.8)
+    assert left < 0  # right of centre -> -y, matching pixel_to_ground's convention
+
+
+def test_clear_ray_point_preserves_range():
+    from sphero_rvr_core.ground_projection import clear_ray_point
+    fwd, left = clear_ray_point(u=40.0, cx=100.0, fx=170.0, range_m=1.8)
+    assert math.hypot(fwd, left) == pytest.approx(1.8)
+
+
+def test_clear_ray_bearing_matches_pixel_to_ground():
+    """A clear ray and a real ground hit on the same column share a bearing."""
+    from sphero_rvr_core.ground_projection import clear_ray_point, pixel_to_ground
+    fx = fy = 170.0
+    cx, cy, u = 100.0, 75.0, 140.0
+    g = pixel_to_ground(u, 130.0, fx, fy, cx, cy, 0.1143, -0.0524)
+    assert g is not None
+    c = clear_ray_point(u, cx, fx, 1.8)
+    assert math.atan2(g[1], g[0]) == pytest.approx(math.atan2(c[1], c[0]), abs=0.02)

@@ -22,7 +22,7 @@ import sensor_msgs_py.point_cloud2 as pc2
 from std_msgs.msg import Header
 
 from sphero_rvr_core.floor_obstacle_detection import detect_obstacle_spans
-from sphero_rvr_core.ground_projection import object_height_m, pixel_to_ground
+from sphero_rvr_core.ground_projection import clear_ray_point, object_height_m, pixel_to_ground
 from sphero_rvr_core.image_decode import imgmsg_to_array
 
 
@@ -42,6 +42,11 @@ class LowObstacleNode(Node):
         self.declare_parameter("min_range_m", 0.05)
         self.declare_parameter("max_range_m", 2.0)
         self.declare_parameter("max_obstacle_height_m", 0.20)  # keep only sub-lidar-plane obstacles
+        # Clear-ray endpoints on obstacle-free bearings. MUST exceed the costmap's
+        # obstacle_max_range (1.5 in lean_nav2.yaml) so they clear stale marks
+        # without being marked themselves, and stay under raytrace_max_range (2.0).
+        self.declare_parameter("emit_clear_rays", True)
+        self.declare_parameter("clear_range_m", 1.8)
         self.declare_parameter("process_every_n", 6)  # 30 Hz camera -> ~5 Hz
 
         self._base_frame = str(self.get_parameter("base_frame").value)
@@ -55,6 +60,8 @@ class LowObstacleNode(Node):
         self._min_r = float(self.get_parameter("min_range_m").value)
         self._max_r = float(self.get_parameter("max_range_m").value)
         self._max_h = float(self.get_parameter("max_obstacle_height_m").value)
+        self._emit_clear = bool(self.get_parameter("emit_clear_rays").value)
+        self._clear_range = float(self.get_parameter("clear_range_m").value)
         self._every_n = max(1, int(self.get_parameter("process_every_n").value))
 
         self._K = None  # (fx, fy, cx, cy) at full camera resolution
@@ -87,21 +94,33 @@ class LowObstacleNode(Node):
         )
         points = []
         for u, span in enumerate(spans):
-            if span is None:
-                continue
-            contact, top = span
-            g = pixel_to_ground(u, contact, fx, fy, cx, cy, self._cam_h, self._tilt)
-            if g is None:
-                continue
-            fwd, left = g
-            if not (self._min_r <= fwd <= self._max_r):
-                continue
-            rng = math.hypot(fwd, left)
-            # keep only obstacles below the lidar plane; taller ones are the lidar's
-            # job (and dropping them keeps the camera brake from fighting gap crossing).
-            if object_height_m(contact - top, rng, fy) > self._max_h:
-                continue
-            points.append((float(fwd), float(left), 0.0))
+            # `clear_ok` = nothing on this bearing blocks a raytrace out to
+            # clear_range, so it is safe to publish a "floor is clear this far"
+            # endpoint. Without those, a bearing whose obstacle went away publishes
+            # nothing, no ray ever crosses its cell, and the stale costmap mark
+            # persists forever (proven on the bench).
+            clear_ok = True
+            if span is not None:
+                contact, top = span
+                g = pixel_to_ground(u, contact, fx, fy, cx, cy, self._cam_h, self._tilt)
+                if g is not None:
+                    fwd, left = g
+                    rng = math.hypot(fwd, left)
+                    # Keep only obstacles below the lidar plane; taller ones are the
+                    # lidar's job (and dropping them keeps the camera brake from
+                    # fighting gap crossing).
+                    is_low = object_height_m(contact - top, rng, fy) <= self._max_h
+                    if is_low and self._min_r <= fwd <= self._max_r:
+                        points.append((float(fwd), float(left), 0.0))  # MARK
+                        clear_ok = False
+                    elif rng < self._clear_range:
+                        # A wall/tall object (or a too-near hit) sits on this bearing:
+                        # never raytrace through it, or the camera would erase the
+                        # lidar's marks for it.
+                        clear_ok = False
+            if clear_ok and self._emit_clear:
+                cfwd, cleft = clear_ray_point(u, cx, fx, self._clear_range)
+                points.append((float(cfwd), float(cleft), 0.0))  # CLEAR-ONLY endpoint
 
         header = Header()
         header.stamp = msg.header.stamp

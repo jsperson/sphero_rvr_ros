@@ -69,6 +69,20 @@ def object_height_m(pixel_rise: float, range_m: float, fy: float) -> float:
     return abs(pixel_rise) * range_m / fy
 
 
+def clear_ray_point(u: float, cx: float, fx: float, range_m: float) -> Tuple[float, float]:
+    """A ground point `range_m` away on image column `u`'s bearing, as (forward, left)
+    in the robot frame.
+
+    Used to emit "the floor is clear this far out" endpoints on bearings with no
+    obstacle. Nav2 raytraces sensor->point and clears everything in between, which is
+    the ONLY way a stale camera mark gets removed (a bearing that publishes nothing
+    is never raytraced, so its mark persists forever). Keep `range_m` greater than
+    the costmap's `obstacle_max_range` so these endpoints clear without being marked.
+    """
+    theta = math.atan2(u - cx, fx)  # +u is right of centre -> +theta -> -left
+    return (range_m * math.cos(theta), -range_m * math.sin(theta))
+
+
 def ground_to_cell(
     x_forward: float,
     y_left: float,
