@@ -76,5 +76,25 @@ hardware, it belongs here.
 
 - `range_motion_node.py`, `live_route_runner_node.py` — disabled, slated for
   removal (needs a `supervised_rvr.launch.py` edit).
-- `diagnostics/` — bench tools that run with no chassis: `frontier_diag.launch.py`,
-  `costmap_analyze.py`, `plannability_check.py`, `lowobs_costmap_check.py`.
+## Diagnostics
+
+`diagnostics/` holds the tools that produced the validation evidence. Prefer running
+one of these over hand-reasoning — on 2026-08-06 three confident hypotheses were
+refuted by measurement, and one would have injected an error into a correct calibration.
+
+| Tool | Chassis? | What it answers |
+|---|---|---|
+| `frontier_diag.launch.py` | no | Bench stack: lidar → SLAM → global costmap with a fake static odom TF |
+| `costmap_analyze.py` | no | Cell histogram + frontier count + ASCII view around the robot |
+| `plannability_check.py` | no | Are selected coverage targets actually plannable? |
+| `lowobs_costmap_check.py` | no | Do low obstacles MARK the costmap and does the planner route around? (synthetic cloud, works in the dark) |
+| `camera_calibration_check.py` | no | Is the camera's horizontal calibration right? (blue-tape landmark vs lidar) — **run after any mount change** |
+| `swept_brake_ab.py` | no (driver off) | Does the swept-path brake catch what the cone misses? Regression test for the chair-leg fix |
+| `pivot_scale_check.py` | **yes** | Commanded vs odom vs gyro rotation — accumulates per sample, since start-vs-end yaw aliases past ±180° |
+| `pivot_duty_measure.py` | **yes** | Steady-state pivot rate for the current duty settings |
+
+Two traps these encode, both of which produced false results first:
+1. **Raw `/scan` angles are not base_link bearings** — the lidar is mounted backwards
+   (yaw ≈ 179°). Rotate, or the rear reads as the front.
+2. **A parameter sweep that changes nothing may mean the code path is dead**, not that
+   the parameter is irrelevant — that is how the unreachable pivot controller was found.
