@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanInput, Transform2D, TwistCommand
-from sphero_rvr_core.low_obstacle_brake import forward_speed_scale, nearest_forward_obstacle
+from sphero_rvr_core.low_obstacle_brake import (
+    forward_speed_scale,
+    nearest_forward_obstacle,
+    swept_path_obstacle,
+)
 
 
 @dataclass(frozen=True)
@@ -204,6 +208,8 @@ def main(args=None):
             self._cam_max_r = float(self.get_parameter("camera_max_range_m").value)
             self._cam_min_scale = float(self.get_parameter("camera_min_forward_scale").value)
             self._cam_max_age = float(self.get_parameter("camera_max_age_s").value)
+            self._cam_swept = bool(self.get_parameter("camera_swept_path").value)
+            self._cam_half_width = float(self.get_parameter("camera_half_width_m").value)
             self._cam_lock = threading.Lock()
             self._cam_points: list = []
             self._cam_stamp: Optional[float] = None
@@ -328,6 +334,10 @@ def main(args=None):
                 "camera_max_range_m": 1.20,
                 "camera_min_forward_scale": 0.60,  # slow-band floor; avoid sub-breakaway creep
                 "camera_max_age_s": 0.6,  # stale cloud -> no camera limit (lidar-only)
+                # Swept-path check: use the arc actually commanded instead of a fixed
+                # cone. half_width is the robot half-width plus a little margin.
+                "camera_swept_path": True,
+                "camera_half_width_m": 0.16,
             }.items():
                 self.declare_parameter(name, value)
 
@@ -437,10 +447,16 @@ def main(args=None):
                 self._cam_points = pts
                 self._cam_stamp = self._now_seconds()
 
-        def _apply_camera_brake(self, linear_x, now):
+        def _apply_camera_brake(self, linear_x, angular_z, now):
             """Additive forward limit from a FRESH camera low-obstacle cloud. Returns
             (limited_linear_x, nearest_m, scale). Only reduces positive forward speed;
-            reverse/zero and a stale/absent cloud pass through unchanged (lidar-only)."""
+            reverse/zero and a stale/absent cloud pass through unchanged (lidar-only).
+
+            Checks the arc the rover is actually about to drive, not a fixed cone
+            ahead: turning, a differential drive pivots about a centre off to one
+            side, so the flank leads and sweeps ground the nose never covers. A
+            straight-ahead cone reports CLEAR while the flank hits a chair leg.
+            """
             if not self._cam_enable or linear_x <= 0.0:
                 return linear_x, None, 1.0
             with self._cam_lock:
@@ -448,7 +464,15 @@ def main(args=None):
                 stamp = self._cam_stamp
             if stamp is None or (now - stamp) > self._cam_max_age:
                 return linear_x, None, 1.0
-            nearest = nearest_forward_obstacle(pts, self._cam_half_angle, self._cam_min_r, self._cam_max_r)
+            if self._cam_swept:
+                nearest = swept_path_obstacle(
+                    pts, linear_x, angular_z, self._cam_half_width,
+                    self._cam_min_r, self._cam_max_r,
+                )
+            else:
+                nearest = nearest_forward_obstacle(
+                    pts, self._cam_half_angle, self._cam_min_r, self._cam_max_r
+                )
             scale = forward_speed_scale(nearest, self._cam_stop_m, self._cam_slow_m, self._cam_min_scale)
             return linear_x * scale, nearest, scale
 
@@ -501,7 +525,7 @@ def main(args=None):
                 return
             msg = Twist()
             cam_linear, cam_nearest, cam_scale = self._apply_camera_brake(
-                decision.output.linear_x, self._now_seconds()
+                decision.output.linear_x, decision.output.angular_z, self._now_seconds()
             )
             self._cam_nearest, self._cam_scale = cam_nearest, cam_scale
             msg.linear.x = cam_linear

@@ -105,3 +105,10 @@ lidar_collision_stop_supervisor:
     camera_max_range_m: 1.20
     camera_min_forward_scale: 0.60
     camera_max_age_s: 0.6
+    # Check the ARC actually commanded, not a fixed cone ahead. A differential
+    # drive turning left pivots about a centre to its left, so the RIGHT flank
+    # leads and sweeps ground the nose never covers -- a straight-ahead cone reads
+    # CLEAR while the flank hits a chair leg (observed 2026-08-06). half_width is
+    # the robot half-width plus a small margin.
+    camera_swept_path: true
+    camera_half_width_m: 0.16

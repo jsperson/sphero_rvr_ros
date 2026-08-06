@@ -34,6 +34,53 @@ def nearest_forward_obstacle(points_xy, half_angle_rad, min_range_m=0.0, max_ran
     return best
 
 
+def swept_path_obstacle(points_xy, linear_mps, angular_rad_s, half_width_m,
+                        min_range_m=0.0, max_range_m=float("inf")):
+    """Nearest obstacle on the arc the rover is ACTUALLY about to drive, or None.
+
+    A fixed forward cone is wrong whenever the rover is turning: a differential
+    drive pivots about a centre off to one side, so the *flank* leads the turn and
+    sweeps ground the nose never covers. That is how a chair leg gets hit during a
+    left turn while a straight-ahead cone reports "clear".
+
+    Travelling straight (|w| tiny) the swept region is the corridor
+    |y| <= half_width, x > 0. Turning, the rover follows a circle of radius
+    R = v / w centred at (0, R) in the base frame; a point threatens the robot when
+    its distance from that centre falls within [|R| - half_width, |R| + half_width].
+    Returns the straight-line range to the nearest such point (comparable to the
+    cone version, so the existing stop/slow distances still apply).
+    """
+    best = None
+    turning = abs(angular_rad_s) > 1e-3 and abs(linear_mps) > 1e-3
+    if turning:
+        radius = linear_mps / angular_rad_s          # +ve => centre to the left
+        cx, cy = 0.0, radius
+        inner, outer = abs(radius) - half_width_m, abs(radius) + half_width_m
+    for x, y in points_xy:
+        rng = math.hypot(x, y)
+        if rng < min_range_m or rng > max_range_m:
+            continue
+        if turning:
+            d = math.hypot(x - cx, y - cy)
+            if not (inner <= d <= outer):
+                continue
+            # only count what is ahead along the turn, not behind the robot
+            if linear_mps > 0.0 and x <= 0.0:
+                continue
+            if linear_mps < 0.0 and x >= 0.0:
+                continue
+        else:
+            if abs(y) > half_width_m:
+                continue
+            if linear_mps >= 0.0 and x <= 0.0:
+                continue
+            if linear_mps < 0.0 and x >= 0.0:
+                continue
+        if best is None or rng < best:
+            best = rng
+    return best
+
+
 def forward_speed_scale(nearest_m, stop_distance_m, slow_distance_m, min_forward_scale=0.0):
     """Forward-speed scale in [0, 1] for a camera obstacle at `nearest_m`:
     1.0 if clear (None) or beyond slow_distance; 0.0 at/inside stop_distance; a
