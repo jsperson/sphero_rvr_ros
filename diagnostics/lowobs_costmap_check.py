@@ -224,37 +224,63 @@ def main():
         )
 
     # ---- Phase A: baseline, no cloud ------------------------------------
+    # Find a heading whose corridor is genuinely FREE at baseline. Testing into
+    # already-occupied space produces a meaningless "lethal" reading (the first
+    # run of this script did exactly that and looked like a false PASS).
     print("\n=== PHASE A: BASELINE (no camera cloud) ===")
     chosen = None
-    for fwd, left in GOAL_CANDIDATES:
-        goal = to_map(fwd, left)
+    for rel_deg in [0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180]:
+        a = math.radians(rel_deg)
+        dist = 1.20
+        ray_free = True
+        for s in [i * 0.10 for i in range(1, int(dist / 0.10) + 1)]:
+            v = n.worst_cell_near(*to_map(s * math.cos(a), s * math.sin(a)), radius_m=0.10)
+            if v is None or v != 0:
+                ray_free = False
+                break
+        if not ray_free:
+            print(f"  heading {rel_deg:+4d} deg: corridor not clear, skipping")
+            continue
+        goal = to_map(dist * math.cos(a), dist * math.sin(a))
         p = n.plan((rx, ry), goal)
-        if p:
-            ln, dev = path_stats(p, (rx, ry), goal)
-            print(f"  goal fwd={fwd:.2f} left={left:+.2f} -> path OK "
-                  f"({len(p)} poses, len {ln:.2f} m, max deviation {dev:.3f} m)")
-            chosen = (fwd, left, goal, ln, dev)
-            break
-        print(f"  goal fwd={fwd:.2f} left={left:+.2f} -> NO PATH (blocked/unknown), trying next")
+        if not p:
+            print(f"  heading {rel_deg:+4d} deg: corridor clear but NO PATH, skipping")
+            continue
+        ln, dev = path_stats(p, (rx, ry), goal)
+        print(f"  heading {rel_deg:+4d} deg: CLEAR + path OK "
+              f"({len(p)} poses, len {ln:.2f} m, max deviation {dev:.3f} m)")
+        chosen = (a, dist, goal, ln, dev)
+        break
     if chosen is None:
-        print("  !! no reachable goal on a clear costmap; can't run the route-around test.")
-        print("     (The bench view may be walled in. Re-run facing open floor.)")
+        print("  !! no clear corridor in any direction; can't run the route-around test.")
+        print("     (The bench is boxed in. Re-run with open floor around the rover.)")
         return
-    fwd, left, goal, base_len, base_dev = chosen
-    obst_bl = (fwd / 2.0, left / 2.0)                 # halfway = squarely in the way
+    a, dist, goal, base_len, base_dev = chosen
+    obst_bl = ((dist / 2.0) * math.cos(a), (dist / 2.0) * math.sin(a))
     obst_map = to_map(*obst_bl)
+    base_cell = n.worst_cell_near(*obst_map)
     print(f"  obstacle will go at base_link fwd={obst_bl[0]:.2f} left={obst_bl[1]:+.2f} "
           f"-> map ({obst_map[0]:.2f}, {obst_map[1]:.2f})")
-    print(f"  cell there now: {describe(n.worst_cell_near(*obst_map))}")
+    print(f"  baseline cell there: {describe(base_cell)}")
+    if base_cell != 0:
+        print("  !! baseline cell is not free -- aborting; the test would be meaningless.")
+        return
 
     # ---- Phase B: publish the synthetic cloud ---------------------------
     print("\n=== PHASE B: MARKED (synthetic /camera/low_obstacles published) ===")
     n._obstacle_bl = obst_bl
     n._publish_cloud = True
-    n.spin(8.0)                                        # let the costmap fold it in
-    n.wait_for_fresh_grid()
-    marked = n.worst_cell_near(*obst_map)
-    print(f"  cell at obstacle: {describe(marked)}")
+    # Sample repeatedly: the lidar raytraces THROUGH a sub-plane obstacle, so it can
+    # clear what the camera marks. A mark that flickers (or never lands) is the real
+    # failure mode here, and a single reading would hide it.
+    samples = []
+    for _ in range(6):
+        n.wait_for_fresh_grid(settle_s=1.5)
+        samples.append(n.worst_cell_near(*obst_map))
+    print(f"  cell samples while publishing: {[describe(s) for s in samples]}")
+    lethal_count = sum(1 for s in samples if s is not None and s >= 100)
+    print(f"  lethal in {lethal_count}/{len(samples)} samples")
+    marked = max((s for s in samples if s is not None), default=None)
     p2 = n.plan((rx, ry), goal)
     if p2:
         ln2, dev2 = path_stats(p2, (rx, ry), goal)
@@ -273,9 +299,14 @@ def main():
 
     # ---- Verdict ---------------------------------------------------------
     print("\n=== VERDICT ===")
-    marked_ok = marked is not None and marked >= 100
-    print(f"  [{'PASS' if marked_ok else 'FAIL'}] camera cloud MARKS the global costmap "
-          f"(lethal at the obstacle: {describe(marked)})")
+    marked_ok = lethal_count >= len(samples) - 1        # allow one transient miss
+    flaky = 0 < lethal_count < len(samples) - 1
+    verdict = "PASS" if marked_ok else ("FLAKY" if flaky else "FAIL")
+    print(f"  [{verdict}] camera cloud MARKS the global costmap and the mark PERSISTS "
+          f"(lethal in {lethal_count}/{len(samples)} samples; baseline was free)")
+    if flaky:
+        print("        -> the mark appears then disappears: the lidar is raytracing")
+        print("           through the (sub-plane) obstacle and clearing the camera's marks.")
     if ln2 is None:
         print("  [PASS] planner REACTS: it refused the straight route once marked")
     elif dev2 is not None and base_dev is not None:
