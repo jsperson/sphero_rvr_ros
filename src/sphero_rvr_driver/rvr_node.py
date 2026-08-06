@@ -46,6 +46,7 @@ class RVRNodeConfig:
     pivot_max_duty: int = 32
     pivot_min_duty: int = 23
     pivot_duty_gain: float = 0.6
+    closed_loop_pivot: bool = True
     heading_max_speed: int = 60
     velocity_control_mode: str = RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     battery_publish_period: float = 5.0
@@ -98,6 +99,7 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         pivot_max_duty=config.pivot_max_duty,
         pivot_min_duty=config.pivot_min_duty,
         pivot_duty_gain=config.pivot_duty_gain,
+        closed_loop_pivot=config.closed_loop_pivot,
         heading_max_speed=config.heading_max_speed,
         velocity_control_mode=config.velocity_control_mode,
         wheel_track_m=config.odom_wheel_track_m,
@@ -241,6 +243,7 @@ def main(args=None):
             self.declare_parameter("pivot_max_duty", defaults.pivot_max_duty)
             self.declare_parameter("pivot_min_duty", defaults.pivot_min_duty)
             self.declare_parameter("pivot_duty_gain", defaults.pivot_duty_gain)
+            self.declare_parameter("closed_loop_pivot", defaults.closed_loop_pivot)
             self.declare_parameter("heading_max_speed", defaults.heading_max_speed)
             self.declare_parameter("velocity_control_mode", defaults.velocity_control_mode)
             self.declare_parameter("battery_publish_period", defaults.battery_publish_period)
@@ -292,6 +295,7 @@ def main(args=None):
                 pivot_max_duty=int(self.get_parameter("pivot_max_duty").value),
                 pivot_min_duty=int(self.get_parameter("pivot_min_duty").value),
                 pivot_duty_gain=float(self.get_parameter("pivot_duty_gain").value),
+                closed_loop_pivot=bool(self.get_parameter("closed_loop_pivot").value),
                 heading_max_speed=int(self.get_parameter("heading_max_speed").value),
                 velocity_control_mode=str(self.get_parameter("velocity_control_mode").value),
                 battery_publish_period=float(self.get_parameter("battery_publish_period").value),

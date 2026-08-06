@@ -86,6 +86,7 @@ class RVRDriver:
         pivot_max_duty: int = 32,
         pivot_min_duty: int = 23,
         pivot_duty_gain: float = 0.6,
+        closed_loop_pivot: bool = True,
         heading_max_speed: int = 60,
         imu_stream_interval_ms: Optional[int] = None,
     ):
@@ -121,6 +122,7 @@ class RVRDriver:
         self._pivot_max_duty = max(0, min(127, int(pivot_max_duty)))
         self._pivot_min_duty = max(0, min(self._pivot_max_duty, int(pivot_min_duty)))
         self._pivot_duty_gain = max(0.0, float(pivot_duty_gain))
+        self._closed_loop_pivot = bool(closed_loop_pivot)
         self._pivot_duty_cmd = 0.0
         self._measured_yaw_rate = 0.0
         self._heading_max_speed = max(0, min(255, int(heading_max_speed)))
@@ -703,6 +705,39 @@ class RVRDriver:
                     motion_generation=motion_generation,
                 )
                 continue
+            if (
+                self._closed_loop_pivot
+                and abs(velocity.linear_mps) < 0.005
+                and abs(velocity.angular_rad_s) > 0.0
+            ):
+                # IN-PLACE PIVOT -- handled here, ABOVE the raw-motor branch.
+                #
+                # This check used to sit *below* raw-motor, which always fires and
+                # `continue`s in the deployed config (velocity_control_mode:
+                # raw_motor), so the closed-loop pivot below was unreachable dead
+                # code. Open-loop raw duty cannot pivot this drivetrain at a chosen
+                # rate: measured on carpet, angular duty <=128 does not move at all,
+                # 140-160 breaks away then bogs (steady 0.09-0.87 rad/s vs peaks of
+                # 0.86-2.28), and 180+ is already 3.6-6.7 rad/s. There is no stable
+                # open-loop set point in that gap, which is exactly what this
+                # feedback loop exists to solve.
+                sign = 1.0 if velocity.angular_rad_s > 0.0 else -1.0
+                error = self._pivot_target_rate_rad_s - abs(self._measured_yaw_rate)
+                self._pivot_duty_cmd += self._pivot_duty_gain * error
+                self._pivot_duty_cmd = min(
+                    float(self._pivot_max_duty),
+                    max(float(self._pivot_min_duty), self._pivot_duty_cmd),
+                )
+                duty = int(round(sign * self._pivot_duty_cmd))
+                await self._send_from_control_loop(
+                    lambda seq: self.commands.drive_tank_normalized(
+                        seq,
+                        left_velocity=-duty,
+                        right_velocity=duty,
+                    ),
+                    motion_generation=motion_generation,
+                )
+                continue
             if self._velocity_control_mode == self.VELOCITY_CONTROL_RAW_MOTOR:
                 # This is the physically measured ROS mission backend.  Both
                 # requested components are normalized against their configured
@@ -718,30 +753,6 @@ class RVRDriver:
                         max_speed=self._max_raw_motor_duty,
                         max_linear_speed=self._max_linear_raw_motor_duty,
                         max_angular_speed=self._max_angular_raw_motor_duty,
-                    ),
-                    motion_generation=motion_generation,
-                )
-                continue
-            if abs(velocity.linear_mps) < 0.005 and abs(velocity.angular_rad_s) > 0.0:
-                # Closed-loop pivot. The motor cannot pivot smoothly below its
-                # breakaway (~duty 20 -> ~1.3 rad/s), and breakaway is asymmetric
-                # per direction, so we cannot hold Nav2's small commanded rate.
-                # Instead hold a fixed target pivot rate: ramp the raw duty from
-                # the measured-vs-target yaw-rate error so each direction finds
-                # the duty it needs. Direction comes from the sign of the command.
-                sign = 1.0 if velocity.angular_rad_s > 0.0 else -1.0
-                error = self._pivot_target_rate_rad_s - abs(self._measured_yaw_rate)
-                self._pivot_duty_cmd += self._pivot_duty_gain * error
-                self._pivot_duty_cmd = min(
-                    float(self._pivot_max_duty),
-                    max(float(self._pivot_min_duty), self._pivot_duty_cmd),
-                )
-                duty = int(round(sign * self._pivot_duty_cmd))
-                await self._send_from_control_loop(
-                    lambda seq: self.commands.drive_tank_normalized(
-                        seq,
-                        left_velocity=-duty,
-                        right_velocity=duty,
                     ),
                     motion_generation=motion_generation,
                 )
