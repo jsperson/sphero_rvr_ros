@@ -47,6 +47,12 @@ class LowObstacleNode(Node):
         # without being marked themselves, and stay under raytrace_max_range (2.0).
         self.declare_parameter("emit_clear_rays", True)
         self.declare_parameter("clear_range_m", 1.8)
+        # FAIL-SAFE: in a dark room the detector finds no floor boundary anywhere and
+        # would call every bearing "clear", emitting clear rays that raytrace through
+        # the costmap and erase REAL lidar obstacle marks. Below this mean brightness
+        # we cannot distinguish "nothing there" from "cannot see", so we publish an
+        # empty cloud: no marks, no clearing, costmap keeps what it had.
+        self.declare_parameter("min_scene_brightness", 20.0)
         self.declare_parameter("process_every_n", 6)  # 30 Hz camera -> ~5 Hz
 
         self._base_frame = str(self.get_parameter("base_frame").value)
@@ -62,6 +68,8 @@ class LowObstacleNode(Node):
         self._max_h = float(self.get_parameter("max_obstacle_height_m").value)
         self._emit_clear = bool(self.get_parameter("emit_clear_rays").value)
         self._clear_range = float(self.get_parameter("clear_range_m").value)
+        self._min_brightness = float(self.get_parameter("min_scene_brightness").value)
+        self._too_dark = False
         self._every_n = max(1, int(self.get_parameter("process_every_n").value))
 
         self._K = None  # (fx, fy, cx, cy) at full camera resolution
@@ -85,6 +93,24 @@ class LowObstacleNode(Node):
         s = self._proc_w / w0
         small = cv2.resize(img, (self._proc_w, max(1, int(h0 * s))))
         fx, fy, cx, cy = (v * s for v in self._K)
+
+        # Too dark to tell "clear floor" from "blind"? Publish nothing at all.
+        brightness = float(small.mean())
+        if brightness < self._min_brightness:
+            if not self._too_dark:
+                self.get_logger().warn(
+                    f"scene too dark (brightness {brightness:.1f} < {self._min_brightness}); "
+                    "publishing no marks and no clear rays until light returns"
+                )
+                self._too_dark = True
+            header = Header()
+            header.stamp = msg.header.stamp
+            header.frame_id = self._base_frame
+            self._pub.publish(pc2.create_cloud_xyz32(header, []))
+            return
+        if self._too_dark:
+            self.get_logger().info(f"scene bright enough again ({brightness:.1f}); resuming detection")
+            self._too_dark = False
 
         spans = detect_obstacle_spans(
             small,
