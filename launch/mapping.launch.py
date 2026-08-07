@@ -25,7 +25,6 @@ def generate_launch_description():
     start_camera = LaunchConfiguration("start_camera")
     start_slam = LaunchConfiguration("start_slam")
     slam_autostart = LaunchConfiguration("slam_autostart")
-    start_live_route_runner = LaunchConfiguration("start_live_route_runner")
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     camera_info_url = LaunchConfiguration("camera_info_url")
@@ -76,14 +75,6 @@ def generate_launch_description():
                 "missions enable this; the TUI retains explicit lifecycle control."
             ),
         ),
-        DeclareLaunchArgument(
-            "start_live_route_runner",
-            default_value="false",
-            description=(
-                "Start the typed live-route executor above the collision-supervised "
-                "motion boundary. Effective only when start_rvr is true."
-            ),
-        ),
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
         DeclareLaunchArgument(
             "lidar_serial_port",
@@ -113,7 +104,6 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(str(rvr_launch)),
             launch_arguments={
                 "start_collision_stop": start_collision_stop,
-                "start_live_route_runner": start_live_route_runner,
                 "serial_port": serial_port,
             }.items(),
             condition=IfCondition(start_rvr),

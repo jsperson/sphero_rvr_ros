@@ -84,8 +84,6 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
 
     ast.parse(source)
     assert "supervised_rvr.launch.py" in source
-    assert '"start_range_motion": "false"' in source
-    assert '"start_live_route_runner": "false"' in source
     assert '"rvr_params_file": rvr_params_file' in source
     assert "lean_rvr_tank_si.yaml" in source
     assert "lidar.launch.py" in source

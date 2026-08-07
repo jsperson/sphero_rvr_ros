@@ -15,15 +15,11 @@ def generate_launch_description():
     pkg_share = Path(get_package_share_directory("sphero_rvr_driver"))
     default_rvr_config = pkg_share / "config" / "rvr.yaml"
     collision_stop_config = pkg_share / "config" / "collision_stop.yaml"
-    range_motion_config = pkg_share / "config" / "range_motion.yaml"
-    live_route_config = pkg_share / "config" / "live_route_runner.yaml"
     ekf_config = pkg_share / "config" / "ekf.yaml"
 
     serial_port = LaunchConfiguration("serial_port")
     rvr_params_file = LaunchConfiguration("rvr_params_file")
     start_supervisor = LaunchConfiguration("start_collision_stop")
-    start_range_motion = LaunchConfiguration("start_range_motion")
-    start_live_route_runner = LaunchConfiguration("start_live_route_runner")
     front_slow_min_angle_deg = LaunchConfiguration("front_slow_min_angle_deg")
     front_slow_max_angle_deg = LaunchConfiguration("front_slow_max_angle_deg")
     trajectory_clearance_margin_m = LaunchConfiguration(
@@ -96,37 +92,6 @@ def generate_launch_description():
         ],
         condition=IfCondition(start_supervisor),
     )
-    range_motion_node = Node(
-        package="sphero_rvr_driver",
-        executable="range_motion_controller",
-        name="range_motion_controller",
-        output="screen",
-        parameters=[str(range_motion_config)],
-        remappings=[
-            ("cmd_vel", "/cmd_vel"),
-            ("scan", "/scan"),
-            ("odom", "/odom"),
-        ],
-        condition=IfCondition(
-            PythonExpression(["'", start_supervisor, "' == 'true' and '", start_range_motion, "' == 'true'"])
-        ),
-    )
-    live_route_runner_node = Node(
-        package="sphero_rvr_driver",
-        executable="live_route_runner",
-        name="live_route_runner",
-        output="screen",
-        parameters=[str(live_route_config)],
-        remappings=[
-            ("cmd_vel", "/cmd_vel"),
-            ("scan", "/scan"),
-            ("odom", "/odom"),
-            ("encoder_counts", "/encoder_counts"),
-        ],
-        condition=IfCondition(
-            PythonExpression(["'", start_supervisor, "' == 'true' and '", start_live_route_runner, "' == 'true'"])
-        ),
-    )
 
     # Stage B: EKF fusing wheel odom (forward velocity) + RVR IMU (yaw + yaw
     # rate). Sole publisher of odom -> base_link when fusion is enabled.
@@ -177,16 +142,6 @@ def generate_launch_description():
             description="Must remain true for motor-capable launches; false starts no driver and is test/development-only.",
         ),
         DeclareLaunchArgument(
-            "start_range_motion",
-            default_value="false",
-            description="Start the optional closed-loop lidar range-motion controller above /cmd_vel.",
-        ),
-        DeclareLaunchArgument(
-            "start_live_route_runner",
-            default_value="false",
-            description="Start the optional Mission API v2 live route runner above /cmd_vel.",
-        ),
-        DeclareLaunchArgument(
             "front_slow_min_angle_deg",
             default_value="-45.0",
             description=(
@@ -211,8 +166,6 @@ def generate_launch_description():
             ),
         ),
         rvr_node,
-        range_motion_node,
-        live_route_runner_node,
         collision_stop_node,
         ekf_node,
         imu_static_tf,

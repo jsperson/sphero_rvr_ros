@@ -72,10 +72,15 @@ hardware, it belongs here.
 5. **Bringup is inert.** Launching brings up sensing/planning with nothing
    commanding motion; exploration is opt-in.
 
-## Deferred / disabled
+## Retired
 
-- `range_motion_node.py`, `live_route_runner_node.py` — disabled, slated for
-  removal (needs a `supervised_rvr.launch.py` edit).
+- `range_motion` and `live_route_runner` were **deleted 2026-08-07** (~3,500 lines
+  including tests, configs and launch plumbing). They had been default-off for weeks
+  and were 27% of all source. Dead-but-plausible code is this project's demonstrated
+  failure mode -- the closed-loop pivot controller sat unreachable below a branch that
+  always fired and cost a full debugging session -- so retired code gets removed, not
+  disabled.
+
 ## Diagnostics
 
 `diagnostics/` holds the tools that produced the validation evidence. Prefer running

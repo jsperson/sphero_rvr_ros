@@ -64,8 +64,6 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(str(supervised_launch)),
         launch_arguments={
             "start_collision_stop": "true",
-            "start_range_motion": "false",
-            "start_live_route_runner": "false",
             "enable_imu_fusion": enable_imu_fusion,
             "serial_port": serial_port,
             "rvr_params_file": rvr_params_file,

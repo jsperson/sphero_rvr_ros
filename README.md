@@ -26,7 +26,6 @@ The kept docs cover the lean exploration spine:
 - [docs/rvr_capability_matrix.md](docs/rvr_capability_matrix.md) - core SDK/protocol capability matrix and validation tokens.
 - [docs/rvr_odometry_tf_design.md](docs/rvr_odometry_tf_design.md) - encoder-derived `/odom` and `odom -> base_link` TF design.
 - [docs/lidar_collision_stop_supervisor.md](docs/lidar_collision_stop_supervisor.md) - the independent collision-stop supervisor and `/cmd_vel` arbitration contract.
-- [docs/range_motion_controller.md](docs/range_motion_controller.md) - optional closed-loop lidar target-clearance primitive above the supervisor.
 - [docs/mapping.md](docs/mapping.md) - lidar/SLAM launch scaffold and mapping workflow.
 - [docs/lean_explore_run_guide.md](docs/lean_explore_run_guide.md) - running the lean explore stack.
 - [docs/udev/99-rplidar.rules](docs/udev/99-rplidar.rules) - Pi udev rule for the stable `/dev/rplidar` alias.
@@ -134,12 +133,12 @@ Full live mapping is motor-capable and now uses the lidar collision-stop supervi
 The optional closed-loop range-motion node sits above that gate when launched:
 
 ```text
-range_motion_controller -> /cmd_vel -> lidar_collision_stop_supervisor -> /cmd_vel_motor -> sphero_rvr_driver
+controller -> /cmd_vel -> lidar_collision_stop_supervisor -> /cmd_vel_motor -> sphero_rvr_driver
 ```
 
 It stops on measured lidar/odom progress toward caller-provided target clearances such as 4 inches (`0.1016 m`); it does not convert commanded velocity times duration into distance and has no baked-in 12-inch movement cap.
 
-The deterministic supervised coordinator sits one level above `range_motion` for Mission API/read-only UI work. It sequences bounded segments, reports explicit fail-closed telemetry, and preserves the safety path `range_motion -> /cmd_vel -> collision_stop -> /cmd_vel_motor` without allowing direct motor publication.
+The safety path is `controller -> /cmd_vel -> collision_stop -> /cmd_vel_motor`; no node may publish motor commands directly.
 
 Ordinary publishers keep targeting `/cmd_vel`; the live driver is remapped away from public `/cmd_vel` to `/cmd_vel_motor` in `supervised_rvr.launch.py`, and the supervisor owns public `/stop`, `/estop`, and `/clear_estop`.
 

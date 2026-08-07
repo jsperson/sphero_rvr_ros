@@ -26,8 +26,6 @@ setup(
             [
                 "config/rvr.yaml",
                 "config/collision_stop.yaml",
-                "config/range_motion.yaml",
-                "config/live_route_runner.yaml",
                 "config/lidar.yaml",
                 "config/slam_toolbox.yaml",
                 "config/lean_rvr_tank_si.yaml",
@@ -58,7 +56,6 @@ setup(
                 "docs/lean_explore_run_guide.md",
                 "docs/mapping.md",
                 "docs/lidar_collision_stop_supervisor.md",
-                "docs/range_motion_controller.md",
                 "docs/decisive_controller.md",
                 "docs/coverage_explorer.md",
                 "docs/camera_low_obstacle_design.md",
@@ -83,8 +80,6 @@ setup(
         "console_scripts": [
             "rvr_node = sphero_rvr_driver.rvr_node:main",
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
-            "range_motion_controller = sphero_rvr_driver.range_motion_node:main",
-            "live_route_runner = sphero_rvr_driver.live_route_runner_node:main",
             "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",
             "vlm_scene = sphero_rvr_driver.vlm_scene_node:main",
