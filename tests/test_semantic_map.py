@@ -119,3 +119,47 @@ def test_object_dict_round_trip():
     o = SemanticObject("cup", 1.0, 2.0, 0.9, 3.0)
     back = SemanticObject.from_dict(o.to_dict())
     assert back.label == "cup" and back.x == pytest.approx(1.0)
+
+
+# --- label drift (observed live 2026-08-07: 7 entries for ~3 real objects) ---
+
+def test_drifting_labels_for_the_same_object_merge():
+    m = SemanticMap(merge_radius_m=0.6)
+    m.observe("closed window blinds", 1.50, -0.07, 0.9, 1.0)
+    m.observe("window with closed dark blinds", 1.50, -0.07, 0.88, 2.0)
+    assert len(m) == 1 and m.objects()[0].count == 2
+
+
+def test_adjective_drift_merges_when_close():
+    m = SemanticMap(merge_radius_m=0.6)
+    m.observe("dark tabletop", 0.86, 0.26, 0.45, 1.0)
+    m.observe("dark tabletop or counter", 0.78, 0.18, 0.45, 2.0)
+    assert len(m) == 1
+
+
+def test_different_objects_do_not_merge_even_when_adjacent():
+    m = SemanticMap(merge_radius_m=1.0)
+    m.observe("pink storage bin", 0.5, 0.0, 0.9, 1.0)
+    m.observe("window blinds", 0.6, 0.0, 0.9, 2.0)
+    assert len(m) == 2  # no shared meaningful token
+
+
+def test_shared_word_still_needs_proximity():
+    m = SemanticMap(merge_radius_m=0.3)
+    m.observe("office chair", 0.0, 0.0, 0.9, 1.0)
+    m.observe("chair by the door", 5.0, 0.0, 0.9, 2.0)
+    assert len(m) == 2  # same token, far apart -> distinct objects
+
+
+def test_stopwords_alone_never_match():
+    m = SemanticMap(merge_radius_m=1.0)
+    m.observe("dark object", 0.0, 0.0, 0.9, 1.0)
+    m.observe("dark thing", 0.1, 0.0, 0.9, 2.0)
+    assert len(m) == 2  # only stopwords in common
+
+
+def test_plural_singular_drift_merges():
+    m = SemanticMap(merge_radius_m=0.6)
+    m.observe("cardboard boxes", 1.0, 0.0, 0.8, 1.0)
+    m.observe("cardboard box", 1.05, 0.0, 0.8, 2.0)
+    assert len(m) == 1

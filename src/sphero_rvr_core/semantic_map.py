@@ -19,6 +19,30 @@ import json
 import math
 
 
+# Words that carry no identity — a VLM sprinkles these differently every call
+# ("closed window blinds" vs "window with closed dark blinds"), so they must not be
+# what decides whether two sightings are the same object.
+_LABEL_STOPWORDS = frozenset(
+    """a an the of with and or on in at to for its his her their this that these those
+    is are was were be been being small large big little tall short wide narrow
+    dark light bright dim pale deep open closed empty full new old plain
+    left right front back near far upper lower top bottom side corner
+    coloured colored color colour looking looks maybe possibly probably some
+    piece object thing item unknown partial visible partially""".split()
+)
+
+
+def _label_tokens(label):
+    """Meaningful lowercase word-stems in a label, for identity comparison."""
+    out = set()
+    for raw in str(label).lower().replace("/", " ").replace("-", " ").split():
+        word = "".join(c for c in raw if c.isalnum())
+        if len(word) < 3 or word in _LABEL_STOPWORDS:
+            continue
+        out.add(word[:-1] if word.endswith("s") and len(word) > 4 else word)
+    return out
+
+
 class SemanticObject:
     """One remembered thing: a label, a map position, and its observation history."""
 
@@ -91,9 +115,19 @@ class SemanticMap:
         return obj
 
     def _nearest_same_label(self, label, x, y, within):
+        """Nearest object whose label refers to the same thing, within `within`.
+
+        Matching is on meaningful-token overlap, not string equality: a VLM renames
+        the same object every call. One live run produced "closed window blinds" and
+        "window with closed dark blinds" at IDENTICAL coordinates as two entries, plus
+        "window with frame"/"bright window" and "dark tabletop"/"dark tabletop or
+        counter" — 7 entries for ~3 real objects. Proximity still gates the merge, so
+        sharing a word is not enough on its own.
+        """
+        want = _label_tokens(label)
         best, best_d = None, within
         for o in self._objects:
-            if o.label != str(label):
+            if not (want & _label_tokens(o.label)):
                 continue
             d = o.distance_to(x, y)
             if d <= best_d:
