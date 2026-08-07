@@ -208,3 +208,35 @@ def select_next_goal(
                 visited[nidx] = 1
                 dq.append((nx, ny))
     return None
+
+
+# Nav2 publishes its costmap as an OccupancyGrid scaled 0..100 (-1 unknown), where
+# 100 is lethal and 99 is the inscribed ring — a robot centre in either means the
+# footprint is in collision.
+INSCRIBED_COST = 99
+
+
+def robot_start_blocked(costmap_data, width, height, origin_x, origin_y, resolution,
+                        robot_x, robot_y, threshold=INSCRIBED_COST):
+    """True if the robot's OWN cell is at/above inscribed cost in the costmap.
+
+    When it is, the planner treats the START pose as in collision and returns "no
+    valid path" for *every* goal, and Nav2's motion recoveries are all
+    collision-blocked — so an explorer will churn goals and blacklist the whole map
+    while going nowhere. Observed 2026-08-07: starting with 0.26 m rear clearance,
+    below `robot_radius + inflation_radius` (0.14 + 0.16 = 0.30 m), produced exactly
+    that and burned a four-minute run.
+
+    Returns None when the robot is outside the costmap or the cell is unknown, so a
+    caller can distinguish "definitely wedged" from "cannot tell".
+    """
+    if resolution <= 0.0 or width <= 0 or height <= 0:
+        return None
+    cx = int((robot_x - origin_x) / resolution)
+    cy = int((robot_y - origin_y) / resolution)
+    if not (0 <= cx < width and 0 <= cy < height):
+        return None
+    value = costmap_data[cy * width + cx]
+    if value < 0:
+        return None
+    return value >= threshold

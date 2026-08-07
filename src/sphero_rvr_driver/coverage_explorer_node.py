@@ -32,6 +32,7 @@ from sphero_rvr_core.coverage_exploration import (
     cell_center_world,
     cell_world_grid,
     is_frontier,
+    robot_start_blocked,
     select_next_goal,
     stamp_coverage,
     world_grid,
@@ -56,6 +57,14 @@ class CoverageExplorerNode(Node):
         # seconds, cancel + blacklist it instead of letting bt_navigator churn.
         self.declare_parameter("goal_progress_timeout_s", 6.0)
         self.declare_parameter("goal_progress_epsilon_m", 0.10)
+        # Start-pose guard. If the robot's OWN costmap cell is at/above inscribed
+        # cost, the planner treats the start as in collision and EVERY goal returns
+        # "no valid path" while Nav2's motion recoveries are all collision-blocked.
+        # Without this the explorer churns goals and blacklists the whole map while
+        # going nowhere (observed 2026-08-07: 0.26 m rear clearance, below
+        # robot_radius + inflation_radius = 0.30 m, burned a four-minute run).
+        self.declare_parameter("blocked_start_check", True)
+        self.declare_parameter("costmap_topic", "/global_costmap/costmap")
 
         self._config = CoverageConfig(
             coverage_radius_m=float(self.get_parameter("coverage_radius_m").value),
@@ -72,6 +81,8 @@ class CoverageExplorerNode(Node):
         map_topic = str(self.get_parameter("map_topic").value)
 
         self._map = None
+        self._costmap = None
+        self._blocked_logged = False
         self._covered = set()      # world-grid coords the rover has driven within radius of
         self._blacklist = set()    # world-grid coords of unreachable goals
         self._lock = threading.Lock()
@@ -90,6 +101,12 @@ class CoverageExplorerNode(Node):
         map_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
         map_qos.reliability = QoSReliabilityPolicy.RELIABLE
         self.create_subscription(OccupancyGrid, map_topic, self._on_map, map_qos, callback_group=cbg)
+        self._blocked_start_check = bool(self.get_parameter("blocked_start_check").value)
+        if self._blocked_start_check:
+            self.create_subscription(
+                OccupancyGrid, str(self.get_parameter("costmap_topic").value),
+                self._on_costmap, map_qos, callback_group=cbg,
+            )
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._nav = ActionClient(self, NavigateToPose, "navigate_to_pose", callback_group=cbg)
@@ -100,6 +117,22 @@ class CoverageExplorerNode(Node):
 
     def _on_map(self, msg):
         self._map = msg
+
+    def _on_costmap(self, msg):
+        self._costmap = msg
+
+    def _start_is_blocked(self, wx, wy):
+        """True only when the costmap positively says the robot's own cell is at or
+        above inscribed cost. Unknown / no costmap / out of bounds -> False, so a
+        missing costmap never silently halts exploration."""
+        cm = self._costmap
+        if not self._blocked_start_check or cm is None:
+            return False
+        return robot_start_blocked(
+            cm.data, cm.info.width, cm.info.height,
+            cm.info.origin.position.x, cm.info.origin.position.y,
+            cm.info.resolution, wx, wy,
+        ) is True
 
     def _robot_world(self, frame):
         try:
@@ -126,6 +159,23 @@ class CoverageExplorerNode(Node):
 
         # Cover the swath along the actual path (stamp every cycle at live pose).
         stamp_coverage(self._covered, wx, wy, res, self._config.coverage_radius_m)
+
+        # Guard: if we are wedged inside inflation, issuing goals is futile and
+        # actively harmful (it blacklists the map). Say so and wait to be moved.
+        if self._start_is_blocked(wx, wy):
+            if not self._blocked_logged:
+                self.get_logger().error(
+                    "START POSE BLOCKED: the robot's own costmap cell is at/above "
+                    "inscribed cost, so the planner cannot plan ANY goal and Nav2's "
+                    "recoveries are collision-blocked. Move the rover to open floor "
+                    "(needs > robot_radius + inflation_radius clearance, ~0.30 m "
+                    "minimum; aim for 0.5 m). Not issuing goals."
+                )
+                self._blocked_logged = True
+            return
+        if self._blocked_logged:
+            self.get_logger().info("start pose clear again — resuming exploration")
+            self._blocked_logged = False
 
         rcx = int((wx - ox) / res)
         rcy = int((wy - oy) / res)

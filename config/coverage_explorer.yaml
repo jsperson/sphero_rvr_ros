@@ -34,3 +34,12 @@ coverage_explorer:
     cycle_period_s: 1.0
     # On an unreachable/aborted goal, blacklist a disk of this radius around it.
     blacklist_radius_m: 0.3
+    # Refuse to issue goals when the robot's OWN costmap cell is at/above inscribed
+    # cost. In that state the planner treats the start as in collision, EVERY goal
+    # returns "no valid path", and Nav2's motion recoveries are all collision-blocked
+    # -- the explorer would otherwise churn and blacklist the whole map while going
+    # nowhere (2026-08-07: 0.26 m rear clearance vs the 0.30 m robot_radius +
+    # inflation_radius envelope burned a four-minute run). Fails OPEN: an unknown
+    # cell or a missing costmap never halts exploration.
+    blocked_start_check: true
+    costmap_topic: /global_costmap/costmap

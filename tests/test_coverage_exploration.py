@@ -174,3 +174,53 @@ def test_narrow_passage_blocks_but_wide_passage_allows():
     wide, w2, h2 = build(["...#...", ".......", ".......", ".......", "...#..."])
     goal = select_next_goal(wide, w2, h2, 0.0, 0.0, 1.0, 1, 2, covered_left, set(), cfg)
     assert goal is not None and goal[0] >= 4  # an uncovered cell in the right region
+
+
+# --- start-pose blocked check (the 2026-08-07 invalid-run guard) ---
+
+def _flat_costmap(w, h, fill=0):
+    return [fill] * (w * h)
+
+
+def test_start_blocked_when_robot_cell_is_lethal():
+    from sphero_rvr_core.coverage_exploration import robot_start_blocked
+    data = _flat_costmap(10, 10)
+    data[5 * 10 + 5] = 100
+    assert robot_start_blocked(data, 10, 10, 0.0, 0.0, 0.1, 0.55, 0.55) is True
+
+
+def test_start_blocked_at_inscribed_ring():
+    from sphero_rvr_core.coverage_exploration import robot_start_blocked
+    data = _flat_costmap(10, 10)
+    data[5 * 10 + 5] = 99  # inscribed: footprint is in collision
+    assert robot_start_blocked(data, 10, 10, 0.0, 0.0, 0.1, 0.55, 0.55) is True
+
+
+def test_start_clear_on_free_cell():
+    from sphero_rvr_core.coverage_exploration import robot_start_blocked
+    data = _flat_costmap(10, 10)
+    assert robot_start_blocked(data, 10, 10, 0.0, 0.0, 0.1, 0.55, 0.55) is False
+
+
+def test_start_mild_inflation_is_not_blocked():
+    from sphero_rvr_core.coverage_exploration import robot_start_blocked
+    data = _flat_costmap(10, 10)
+    data[5 * 10 + 5] = 60  # inflated but the footprint still fits
+    assert robot_start_blocked(data, 10, 10, 0.0, 0.0, 0.1, 0.55, 0.55) is False
+
+
+def test_start_unknown_cell_is_inconclusive():
+    from sphero_rvr_core.coverage_exploration import robot_start_blocked
+    data = _flat_costmap(10, 10, -1)
+    assert robot_start_blocked(data, 10, 10, 0.0, 0.0, 0.1, 0.55, 0.55) is None
+
+
+def test_start_outside_costmap_is_inconclusive():
+    from sphero_rvr_core.coverage_exploration import robot_start_blocked
+    data = _flat_costmap(10, 10)
+    assert robot_start_blocked(data, 10, 10, 0.0, 0.0, 0.1, 99.0, 99.0) is None
+
+
+def test_start_blocked_handles_degenerate_costmap():
+    from sphero_rvr_core.coverage_exploration import robot_start_blocked
+    assert robot_start_blocked([], 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0) is None
