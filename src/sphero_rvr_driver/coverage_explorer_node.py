@@ -85,6 +85,7 @@ class CoverageExplorerNode(Node):
         self._blocked_logged = False
         self._covered = set()      # world-grid coords the rover has driven within radius of
         self._blacklist = set()    # world-grid coords of unreachable goals
+        self._suppress_blacklist = False  # set when WE cancel on purpose
         self._lock = threading.Lock()
         self._active_goal_cell = None
         self._active_goal_handle = None
@@ -196,12 +197,15 @@ class CoverageExplorerNode(Node):
                         f"coverage goal {active_cell} made no progress in "
                         f"{self._goal_progress_timeout_s:.0f}s — blacklisting"
                     )
-                    self._cancel_active()
+                    self._cancel_active(voluntary=True)
                     self._blacklist_cell(active_cell)
                 else:
                     return  # valid target, making progress -> keep driving
             else:
-                self._cancel_active()
+                # Target was covered en route (or its unknown resolved) -- that is
+                # SUCCESS, not unreachability. Cancel without blacklisting, or every
+                # win would poison a blacklist disc around itself.
+                self._cancel_active(voluntary=True)
         if inflight:
             return
 
@@ -296,15 +300,27 @@ class CoverageExplorerNode(Node):
             cell = self._active_goal_cell
             self._active_goal_handle = None
             self._active_goal_cell = None
-        # Unreachable/failed goal -> blacklist so we don't retry it forever.
-        if status in (GoalStatus.STATUS_ABORTED, GoalStatus.STATUS_CANCELED):
+        with self._lock:
+            suppress = self._suppress_blacklist
+            self._suppress_blacklist = False
+        # Only a genuine ABORT means unreachable. A CANCEL that we initiated is
+        # either success (covered en route) or already blacklisted by the watchdog;
+        # blacklisting it again poisons map we actually covered and can drive a
+        # premature "mission COMPLETE".
+        if status == GoalStatus.STATUS_ABORTED or (
+            status == GoalStatus.STATUS_CANCELED and not suppress
+        ):
             self._blacklist_cell(cell)
 
-    def _cancel_active(self):
+    def _cancel_active(self, voluntary=False):
+        """Cancel the in-flight goal. `voluntary=True` means WE decided to drop it
+        (target already covered, or the watchdog is about to blacklist it
+        explicitly), so the CANCELED result must not be treated as unreachable."""
         with self._lock:
             handle = self._active_goal_handle
             self._active_goal_handle = None
             self._active_goal_cell = None
+            self._suppress_blacklist = voluntary
         if handle is not None:
             handle.cancel_goal_async()
 
