@@ -55,20 +55,44 @@ def query_vlm(base_url, api_key, model, prompt, jpeg_bytes, max_tokens=300, time
 
 
 def extract_json(text):
-    """Parse the first {...} JSON object found in `text` (models wrap JSON in prose
-    or code fences). Raises ValueError if none parses."""
-    for match in re.finditer(r"\{.*?\}", text, re.DOTALL):
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
+    """Parse the first COMPLETE JSON object in `text` (models wrap JSON in prose or
+    code fences). Raises ValueError if none parses.
+
+    Scans for balanced braces rather than regex-matching. A non-greedy
+    ``\\{.*?\\}`` returns an INNER object when the JSON is nested: for
+    ``{"objects": [{"label": ...}]}`` the outer span is unbalanced and fails to
+    parse, so the first thing that *does* parse is an inner element and a caller
+    doing ``.get("objects")`` silently gets nothing. That made the semantic map
+    report "0 objects" against a reply listing three (2026-08-07). Flat schemas
+    like vlm_explorer's were unaffected, which is why it went unnoticed.
+    """
+    for start in range(len(text)):
+        if text[start] != "{":
             continue
-    # Fall back to the greediest span (nested braces).
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except json.JSONDecodeError:
-            pass
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except json.JSONDecodeError:
+                        break  # not valid JSON -> try the next opening brace
     raise ValueError(f"no JSON object in VLM reply: {text!r}")
 
 

@@ -45,3 +45,43 @@ def test_direction_to_goal_respects_robot_heading():
     # Robot facing +y (yaw 90deg), go straight -> point at (0, d).
     gx, gy, _ = direction_to_goal(0.0, 0.0, math.pi / 2, turn_deg=0, distance_m=2.0)
     assert gx == pytest.approx(0.0, abs=1e-9) and gy == pytest.approx(2.0)
+
+
+# --- nested-JSON regression (semantic map reported "0 objects" 2026-08-07) ---
+
+def test_extract_nested_object_returns_the_OUTER_object():
+    """The bug: a non-greedy regex returned an inner element, so .get('objects')
+    silently yielded nothing against a reply that listed three."""
+    text = ('{"objects": [{"label": "window", "u": 0.17, "distance_m": 1.6, "confidence": 0.9}, '
+            '{"label": "pink bin", "u": 0.91, "distance_m": 0.8, "confidence": 0.75}]}')
+    got = extract_json(text)
+    assert "objects" in got
+    assert [o["label"] for o in got["objects"]] == ["window", "pink bin"]
+
+
+def test_extract_nested_object_wrapped_in_prose():
+    text = 'Sure, here you go:\n{"objects": [{"label": "door", "u": 0.5}]}\nHope that helps!'
+    assert extract_json(text)["objects"][0]["label"] == "door"
+
+
+def test_extract_deeply_nested_object():
+    text = '{"a": {"b": {"c": [1, 2, {"d": "e"}]}}, "f": 1}'
+    assert extract_json(text)["f"] == 1
+
+
+def test_extract_ignores_braces_inside_strings():
+    text = '{"reason": "use {} braces } carefully", "go": true}'
+    got = extract_json(text)
+    assert got["go"] is True and got["reason"] == "use {} braces } carefully"
+
+
+def test_extract_skips_a_malformed_leading_object():
+    text = '{not json at all} then {"turn_deg": 5, "go": false}'
+    got = extract_json(text)
+    assert got["turn_deg"] == 5
+
+
+def test_extract_still_handles_the_flat_explorer_schema():
+    text = '```json\n{"turn_deg": -20, "go": true, "reason": "doorway left"}\n```'
+    got = extract_json(text)
+    assert got["turn_deg"] == -20 and got["go"] is True
