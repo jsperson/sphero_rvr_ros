@@ -42,6 +42,11 @@ class LowObstacleNode(Node):
         self.declare_parameter("min_range_m", 0.05)
         self.declare_parameter("max_range_m", 2.0)
         self.declare_parameter("max_obstacle_height_m", 0.20)  # keep only sub-lidar-plane obstacles
+        # Below this the rover drives over it, so it is not an obstacle. A ROBOT
+        # property, not a tuning knob for any particular floor: measured clearance is
+        # 0.025 m, set to 0.020 for margin. It also rejects the short non-floor runs
+        # that shadows, carpet seams and texture edges produce.
+        self.declare_parameter("min_obstacle_height_m", 0.020)
         # Clear-ray endpoints on obstacle-free bearings. MUST exceed the costmap's
         # obstacle_max_range (1.5 in lean_nav2.yaml) so they clear stale marks
         # without being marked themselves, and stay under raytrace_max_range (2.0).
@@ -66,6 +71,7 @@ class LowObstacleNode(Node):
         self._min_r = float(self.get_parameter("min_range_m").value)
         self._max_r = float(self.get_parameter("max_range_m").value)
         self._max_h = float(self.get_parameter("max_obstacle_height_m").value)
+        self._min_h = float(self.get_parameter("min_obstacle_height_m").value)
         self._emit_clear = bool(self.get_parameter("emit_clear_rays").value)
         self._clear_range = float(self.get_parameter("clear_range_m").value)
         self._min_brightness = float(self.get_parameter("min_scene_brightness").value)
@@ -135,7 +141,8 @@ class LowObstacleNode(Node):
                     # Keep only obstacles below the lidar plane; taller ones are the
                     # lidar's job (and dropping them keeps the camera brake from
                     # fighting gap crossing).
-                    is_low = object_height_m(contact - top, rng, fy) <= self._max_h
+                    est_h = object_height_m(contact - top, rng, fy)
+                    is_low = self._min_h <= est_h <= self._max_h
                     if is_low and self._min_r <= fwd <= self._max_r:
                         points.append((float(fwd), float(left), 0.0))  # MARK
                         clear_ok = False
