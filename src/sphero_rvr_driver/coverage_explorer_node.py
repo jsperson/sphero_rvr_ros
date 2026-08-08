@@ -51,7 +51,21 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("cycle_period_s", 1.0)
-        self.declare_parameter("blacklist_radius_m", 0.3)
+        # Blacklisting stops a failed goal being retried forever -- but it WAS
+        # forever, and wide. Two properties made that wrong in general, not just
+        # here: a planner failure is usually transient (it depends on where the robot
+        # currently is and how good the map is right now), and the disc written off
+        # was far larger than the thing that actually failed. Observed consequence:
+        # 2390 cells blacklisted = 73% of all free space, and the mission ended with
+        # 108 frontier cells still unexplored in an area that was reachable.
+        #
+        # Radius is derived from the ROBOT, not the room: a goal that failed says
+        # nothing about ground more than roughly one footprint away, so ~robot_radius
+        # (0.14) plus a small margin. TTL says how long a failure stays believable
+        # before the area is worth retrying; it is a parameter because the right
+        # value depends on platform speed, not on any particular space.
+        self.declare_parameter("blacklist_radius_m", 0.2)
+        self.declare_parameter("blacklist_ttl_s", 45.0)
         self.declare_parameter("complete_after_empty_cycles", 8)
         # Goal-progress watchdog: if a goal makes < this much progress in this many
         # seconds, cancel + blacklist it instead of letting bt_navigator churn.
@@ -79,6 +93,7 @@ class CoverageExplorerNode(Node):
         self._goal_progress_epsilon_m = float(self.get_parameter("goal_progress_epsilon_m").value)
         self._base_frame = str(self.get_parameter("base_frame").value)
         self._blacklist_radius_m = float(self.get_parameter("blacklist_radius_m").value)
+        self._blacklist_ttl_s = float(self.get_parameter("blacklist_ttl_s").value)
         map_topic = str(self.get_parameter("map_topic").value)
 
         self._map = None
@@ -86,7 +101,7 @@ class CoverageExplorerNode(Node):
         self._blocked_logged = False
         self._blocked_until = 0.0  # monotonic; blocked state flickers, so hold it
         self._covered = set()      # world-grid coords the rover has driven within radius of
-        self._blacklist = set()    # world-grid coords of unreachable goals
+        self._blacklist = {}       # world-grid coord -> monotonic expiry time
         self._suppress_blacklist = False  # set when WE cancel on purpose
         self._lock = threading.Lock()
         self._active_goal_cell = None
@@ -151,6 +166,7 @@ class CoverageExplorerNode(Node):
         m = self._map
         if m is None:
             return
+        self._prune_blacklist()
         frame = m.header.frame_id or "map"
         rp = self._robot_world(frame)
         if rp is None:
@@ -221,7 +237,7 @@ class CoverageExplorerNode(Node):
             return
 
         goal_cell = select_next_goal(
-            m.data, w, h, ox, oy, res, rcx, rcy, self._covered, self._blacklist, self._config
+            m.data, w, h, ox, oy, res, rcx, rcy, self._covered, set(self._blacklist), self._config
         )
         if goal_cell is None:
             # Debounce: don't latch "complete" on a transient/startup empty. Only
@@ -349,6 +365,12 @@ class CoverageExplorerNode(Node):
         if handle is not None:
             handle.cancel_goal_async()
 
+    def _prune_blacklist(self):
+        """Drop expired entries so a temporarily unreachable area gets retried."""
+        now = time.monotonic()
+        for coord in [c for c, exp in self._blacklist.items() if exp <= now]:
+            del self._blacklist[coord]
+
     def _blacklist_cell(self, cell):
         if cell is None or self._map is None:
             return
@@ -357,10 +379,11 @@ class CoverageExplorerNode(Node):
         ox, oy = info.origin.position.x, info.origin.position.y
         gx, gy = cell
         wx, wy = cell_center_world(gx, gy, ox, oy, res)
+        expiry = time.monotonic() + self._blacklist_ttl_s
         r = int(math.ceil(self._blacklist_radius_m / res))
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
-                self._blacklist.add(world_grid(wx + dx * res, wy + dy * res, res))
+                self._blacklist[world_grid(wx + dx * res, wy + dy * res, res)] = expiry
 
 
 def main(args=None):
