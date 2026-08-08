@@ -33,7 +33,14 @@ coverage_explorer:
     base_frame: base_link
     cycle_period_s: 1.0
     # On an unreachable/aborted goal, blacklist a disk of this radius around it.
-    blacklist_radius_m: 0.3
+    # Derived from the ROBOT, not the room: a failed goal says nothing about ground
+    # more than ~one footprint away, so ~robot_radius (0.14) plus a small margin.
+    # Was 0.3 (169 cells) -- one failure poisoned far more map than it justified.
+    blacklist_radius_m: 0.2
+    # A planner failure is transient (depends on where the robot is and how good the
+    # map is right now), so blacklisting must not be permanent or a reachable area
+    # gets written off for the whole mission.
+    blacklist_ttl_s: 45.0
     # Refuse to issue goals when the robot's OWN costmap cell is at/above inscribed
     # cost. In that state the planner treats the start as in collision, EVERY goal
     # returns "no valid path", and Nav2's motion recoveries are all collision-blocked
