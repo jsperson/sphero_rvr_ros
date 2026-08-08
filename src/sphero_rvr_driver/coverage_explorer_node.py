@@ -65,6 +65,7 @@ class CoverageExplorerNode(Node):
         # robot_radius + inflation_radius = 0.30 m, burned a four-minute run).
         self.declare_parameter("blocked_start_check", True)
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
+        self.declare_parameter("blocked_hold_s", 5.0)
 
         self._config = CoverageConfig(
             coverage_radius_m=float(self.get_parameter("coverage_radius_m").value),
@@ -83,6 +84,7 @@ class CoverageExplorerNode(Node):
         self._map = None
         self._costmap = None
         self._blocked_logged = False
+        self._blocked_until = 0.0  # monotonic; blocked state flickers, so hold it
         self._covered = set()      # world-grid coords the rover has driven within radius of
         self._blacklist = set()    # world-grid coords of unreachable goals
         self._suppress_blacklist = False  # set when WE cancel on purpose
@@ -103,6 +105,7 @@ class CoverageExplorerNode(Node):
         map_qos.reliability = QoSReliabilityPolicy.RELIABLE
         self.create_subscription(OccupancyGrid, map_topic, self._on_map, map_qos, callback_group=cbg)
         self._blocked_start_check = bool(self.get_parameter("blocked_start_check").value)
+        self._blocked_hold_s = float(self.get_parameter("blocked_hold_s").value)
         if self._blocked_start_check:
             self.create_subscription(
                 OccupancyGrid, str(self.get_parameter("costmap_topic").value),
@@ -164,6 +167,11 @@ class CoverageExplorerNode(Node):
         # Guard: if we are wedged inside inflation, issuing goals is futile and
         # actively harmful (it blacklists the map). Say so and wait to be moved.
         if self._start_is_blocked(wx, wy):
+            # The cell value flickers around the inscribed threshold, so hold the
+            # blocked state briefly. Otherwise a single "clear" tick lets the
+            # completion path run while the rover is in fact wedged.
+            self._blocked_until = time.monotonic() + self._blocked_hold_s
+            self._consecutive_empty = 0
             if not self._blocked_logged:
                 self.get_logger().error(
                     "START POSE BLOCKED: the robot's own costmap cell is at/above "
@@ -173,6 +181,9 @@ class CoverageExplorerNode(Node):
                     "minimum; aim for 0.5 m). Not issuing goals."
                 )
                 self._blocked_logged = True
+            return
+        if time.monotonic() < self._blocked_until:
+            self._consecutive_empty = 0   # still within the hold: cannot be "done"
             return
         if self._blocked_logged:
             self.get_logger().info("start pose clear again — resuming exploration")
@@ -218,10 +229,24 @@ class CoverageExplorerNode(Node):
             self._consecutive_empty += 1
             if self._ever_had_target and self._consecutive_empty >= self._complete_after_empty:
                 self._mission_done = True
-                self.get_logger().info(
-                    f"coverage+frontier mission COMPLETE — {len(self._covered)} cells covered; "
-                    "all reachable free space seen and within coverage radius"
-                )
+                blacklisted = len(self._blacklist)
+                if blacklisted:
+                    # Running out of candidates because they were all marked
+                    # unreachable is NOT the same as having covered everything.
+                    # Saying "COMPLETE" here is a lie: on 2026-08-08 the rover
+                    # declared it one second after reporting START POSE BLOCKED,
+                    # wedged against a chair with 2315 cells blacklisted.
+                    self.get_logger().warn(
+                        f"exploration ENDED with no reachable targets left — "
+                        f"{len(self._covered)} cells covered but {blacklisted} "
+                        "blacklisted as unreachable, so COVERAGE MAY BE INCOMPLETE. "
+                        "Check whether the rover is stuck or boxed in."
+                    )
+                else:
+                    self.get_logger().info(
+                        f"coverage+frontier mission COMPLETE — {len(self._covered)} cells "
+                        "covered; all reachable free space seen and within coverage radius"
+                    )
             return
         self._consecutive_empty = 0
         self._ever_had_target = True
