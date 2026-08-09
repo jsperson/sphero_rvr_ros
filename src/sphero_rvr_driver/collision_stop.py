@@ -860,6 +860,35 @@ class CollisionStopSupervisor:
                 )
             if self.config.reset_policy is ResetPolicy.AUTO_AFTER_CLEAR and self._release_elapsed(now):
                 return self._decision(CollisionState.CLEAR, "auto_released", TwistCommand(), command, health, nearest)
+            # TURNING OUT of a front stop is allowed. A latched stop used to zero
+            # rotation as well as translation, which left the rover facing an obstacle,
+            # unable to drive forward and unable to turn toward the open floor beside
+            # it -- observed 2026-08-09 stopped 0.28 m from an obstacle with 0.93 m
+            # clear on its left, and it could only sit there until the mission gave up.
+            # Forward stays zeroed; only rotation passes, and only when the swept path
+            # of that rotation is itself clear, so this cannot turn the flank into
+            # something.
+            if bounded.angular_z != 0.0:
+                # A pivot in place sweeps the robot's OWN footprint and nothing more,
+                # so the test is simply whether anything is inside that circle. The
+                # projected-trajectory check is the wrong instrument here -- it models
+                # a path being driven along, and it refuses a pure pivot whenever an
+                # obstacle sits ahead, which is exactly and only when we need to turn.
+                pivot_radius = (
+                    max(self.config.footprint_front_m, self.config.footprint_rear_m)
+                    + self.config.payload_margin_m
+                )
+                touching = [d for d in (front, rear, left, right) if d is not None]
+                if touching and min(touching) > pivot_radius:
+                    return self._decision(
+                        CollisionState.SLOW,
+                        "front_stop_turn_escape",
+                        TwistCommand(0.0, bounded.angular_z),
+                        command,
+                        health,
+                        nearest,
+                        scale=1.0,
+                    )
             return self._decision(CollisionState.STOPPED, "reset_required", TwistCommand(), command, health, nearest, reset_required=True)
 
         if bounded.linear_x > 0.0 and _within(front, front_stop_distance):

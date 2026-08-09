@@ -58,7 +58,7 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("stall_time_s", 2.0)
         self.declare_parameter("progress_epsilon_m", 0.03)
         self.declare_parameter("back_off_speed_mps", 0.10)
-        self.declare_parameter("back_off_distance_m", 0.12)
+        self.declare_parameter("back_off_distance_m", 0.25)
         self.declare_parameter("back_off_timeout_s", 3.0)
         self.declare_parameter("max_back_offs", 3)
 

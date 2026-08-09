@@ -612,3 +612,24 @@ def test_stale_command_outputs_zero_before_driver_timeout():
     assert decision.state is CollisionState.CLEAR
     assert decision.reason == "stale_command"
     assert decision.output == TwistCommand(0.0, 0.0)
+
+
+def test_front_stop_allows_turning_toward_open_floor():
+    """A latched front stop used to zero rotation as well as translation, leaving the
+    rover facing an obstacle unable to turn toward open floor beside it (2026-08-09:
+    stopped 0.28 m from an obstacle with 0.93 m clear on its left, stuck until the
+    mission gave up). Forward stays zeroed; rotation gets out."""
+    cfg = CollisionStopConfig(
+        max_forward_mps=0.20, max_angular_rad_s=0.4,
+        stop_distance_m=0.30, slow_distance_m=0.50, release_distance_m=0.40,
+        footprint_front_m=0.11, footprint_rear_m=0.16, payload_margin_m=0.02,
+        reset_policy=ResetPolicy.AUTO_AFTER_CLEAR,
+    )
+    sup = CollisionStopSupervisor(cfg, now=0.0)
+    sup.update_scan(scan_with(front=0.20, rear=2.0, left=2.0, right=2.0, stamp=0.0), now=0.0)
+    sup.apply_command(TwistCommand(0.2, 0.0), now=0.1)              # trips the stop
+    assert sup.state is CollisionState.STOPPED
+
+    decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)   # ask to turn
+    assert decision.output.linear_x == 0.0                          # forward still dead
+    assert decision.output.angular_z != 0.0                         # but it can turn

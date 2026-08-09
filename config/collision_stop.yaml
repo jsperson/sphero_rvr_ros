@@ -68,7 +68,7 @@ lidar_collision_stop_supervisor:
     # 0.30 (was 0.45). Hysteresis above the ~0.175 m stop so it doesn't chatter,
     # but low enough that a short back-off re-opens clearance and lets it resume
     # — 0.45 would have forced ~0.28 m of backing before the latch cleared.
-    release_distance_m: 0.60
+    release_distance_m: 0.40
     release_time_s: 0.50
     # 0.70 (was 0.0). 0.0 let the SLOW zone scale speed straight down through the
     # sub-breakaway range, where the tank motors grind instead of rolling. Floor
