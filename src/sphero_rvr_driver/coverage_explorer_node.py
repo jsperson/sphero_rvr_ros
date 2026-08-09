@@ -20,7 +20,9 @@ disagreeing with the real costmap (map erosion by an inscribed radius, a
 navigability-restricted flood, and a blacklist with a radius and a TTL).
 """
 
+import json
 import math
+import os
 import threading
 import time
 
@@ -34,8 +36,17 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from std_msgs.msg import String
 import tf2_ros
 
+from sphero_rvr_core.mission_report import (
+    OUTCOME_COMPLETE,
+    OUTCOME_NO_PLANNABLE_TARGETS,
+    OUTCOME_START_BLOCKED,
+    build_report,
+    map_yaml_text,
+    occupancy_grid_to_pgm,
+)
 from sphero_rvr_core.coverage_exploration import (
     CoverageConfig,
     candidate_goals,
@@ -83,6 +94,12 @@ class CoverageExplorerNode(Node):
         # Without this the explorer churns goals and blacklists the whole map while
         # going nowhere (observed 2026-08-07: 0.26 m rear clearance, below
         # robot_radius + inflation_radius = 0.30 m, burned a four-minute run).
+        # A mission should end with an ANSWER, not a log line someone has to find and
+        # interpret. The report is latched JSON on a topic; the map is written next to
+        # it. Both are written once, at the moment the mission ends.
+        self.declare_parameter("report_topic", "/coverage_explorer/report")
+        self.declare_parameter("save_map_on_end", True)
+        self.declare_parameter("map_save_dir", os.path.expanduser("~/.ros/missions"))
         self.declare_parameter("blocked_start_check", True)
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
         self.declare_parameter("blocked_hold_s", 5.0)
@@ -117,6 +134,12 @@ class CoverageExplorerNode(Node):
         self._lock = threading.Lock()
         self._unplannable_last_cycle = 0
         self._selecting = False
+        self._mission_start = time.monotonic()
+        self._goals_sent = 0
+        self._goals_succeeded = 0
+        self._goals_aborted = 0
+        self._planner_rejections = 0
+        self._reported = False
         self._active_goal_cell = None
         self._active_goal_handle = None
         self._goal_inflight = False
@@ -144,6 +167,14 @@ class CoverageExplorerNode(Node):
         self._nav = ActionClient(self, NavigateToPose, "navigate_to_pose", callback_group=cbg)
         self._planner = ActionClient(
             self, ComputePathToPose, "compute_path_to_pose", callback_group=cbg
+        )
+        # Latched: the report is a one-shot event, and anything subscribing after the
+        # mission ends (which is most things) must still receive it.
+        report_qos = QoSProfile(depth=1)
+        report_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+        report_qos.reliability = QoSReliabilityPolicy.RELIABLE
+        self._report_pub = self.create_publisher(
+            String, str(self.get_parameter("report_topic").value), report_qos
         )
         self.create_timer(
             float(self.get_parameter("cycle_period_s").value), self._tick, callback_group=cbg
@@ -213,6 +244,21 @@ class CoverageExplorerNode(Node):
                     "minimum; aim for 0.5 m). Not issuing goals."
                 )
                 self._blocked_logged = True
+                # Wedged is not a mission END -- freeing the rover resumes it -- so
+                # this does NOT consume the terminal report latch. But it IS the
+                # answer to "what is it doing", and it is actionable, so say it on the
+                # topic rather than only in a log nobody is tailing. A later terminal
+                # report overwrites it on the latched topic, which is what we want.
+                self._report_pub.publish(String(data=json.dumps(build_report(
+                    OUTCOME_START_BLOCKED,
+                    covered_cells=len(self._covered),
+                    resolution=res,
+                    duration_s=time.monotonic() - self._mission_start,
+                    goals_sent=self._goals_sent,
+                    goals_succeeded=self._goals_succeeded,
+                    goals_aborted=self._goals_aborted,
+                    planner_rejections=self._planner_rejections,
+                ))))
             return
         if time.monotonic() < self._blocked_until:
             self._consecutive_empty = 0   # still within the hold: cannot be "done"
@@ -288,6 +334,7 @@ class CoverageExplorerNode(Node):
         self._unplannable_last_cycle = (
             len(candidates) if goal_cell is None else candidates.index(goal_cell)
         )
+        self._planner_rejections += self._unplannable_last_cycle
         if goal_cell is None and exhausted:
             return  # inconclusive cycle: leave the completion counter alone
 
@@ -311,17 +358,75 @@ class CoverageExplorerNode(Node):
                         "every remaining candidate: check whether the rover is boxed "
                         "in, or whether the costmap is blocking ground /map calls free."
                     )
+                    self._finish(OUTCOME_NO_PLANNABLE_TARGETS, res, len(candidates))
                 else:
                     self.get_logger().info(
                         f"coverage+frontier mission COMPLETE — {len(self._covered)} cells "
                         "covered; all reachable free space seen and within coverage radius"
                     )
+                    self._finish(OUTCOME_COMPLETE, res, 0)
             return
         self._consecutive_empty = 0
         self._ever_had_target = True
         self._goal_start_pose = (wx, wy)
         self._goal_start_time = time.monotonic()
         self._send_goal(goal_cell, frame, ox, oy, res)
+
+    def _finish(self, outcome, resolution, remaining):
+        """End the mission with an artifact: a latched JSON report, and the map on
+        disk. Called once; a second call is ignored so a re-entered terminal branch
+        cannot overwrite the record of what actually happened."""
+        if self._reported:
+            return
+        self._reported = True
+        files = self._save_map() if bool(self.get_parameter("save_map_on_end").value) else []
+        report = build_report(
+            outcome,
+            covered_cells=len(self._covered),
+            resolution=resolution,
+            duration_s=time.monotonic() - self._mission_start,
+            goals_sent=self._goals_sent,
+            goals_succeeded=self._goals_succeeded,
+            goals_aborted=self._goals_aborted,
+            planner_rejections=self._planner_rejections,
+            remaining_candidates=remaining,
+            map_files=files,
+        )
+        self._report_pub.publish(String(data=json.dumps(report)))
+        self.get_logger().info(f"mission report -> {json.dumps(report)}")
+
+    def _save_map(self):
+        """Write the current /map as a map_server PGM+YAML pair.
+
+        Serialized straight from the OccupancyGrid rather than by calling
+        /map_saver/save_map, so it does not depend on another node being alive at the
+        one moment it matters. Failure is logged and reported, never raised: a map
+        that cannot be written must not also destroy the report explaining the run.
+        """
+        m = self._map
+        if m is None:
+            return []
+        try:
+            # expanduser the PARAMETER, not just the default: YAML wins over the code
+            # default, and a literal "~/..." from a config file would silently create a
+            # directory named "~" in the cwd rather than write to $HOME.
+            d = os.path.expanduser(str(self.get_parameter("map_save_dir").value))
+            os.makedirs(d, exist_ok=True)
+            stem = f"mission_{time.strftime('%Y%m%d_%H%M%S')}"
+            pgm_path = os.path.join(d, stem + ".pgm")
+            yaml_path = os.path.join(d, stem + ".yaml")
+            with open(pgm_path, "wb") as f:
+                f.write(occupancy_grid_to_pgm(m.data, m.info.width, m.info.height))
+            with open(yaml_path, "w") as f:
+                f.write(map_yaml_text(
+                    os.path.basename(pgm_path), m.info.resolution,
+                    m.info.origin.position.x, m.info.origin.position.y,
+                ))
+            self.get_logger().info(f"map saved -> {pgm_path}")
+            return [pgm_path, yaml_path]
+        except Exception as exc:
+            self.get_logger().error(f"map save FAILED: {exc}")
+            return []
 
     def _await(self, future, deadline):
         """Block this callback until `future` resolves or `deadline` passes.
@@ -411,6 +516,7 @@ class CoverageExplorerNode(Node):
         with self._lock:
             self._goal_inflight = True
             self._active_goal_cell = cell
+            self._goals_sent += 1
         self.get_logger().info(
             f"coverage goal -> cell {cell} world ({wx:.2f},{wy:.2f}); "
             f"covered={len(self._covered)} planner-rejected={self._unplannable_last_cycle} "
@@ -442,7 +548,12 @@ class CoverageExplorerNode(Node):
             # Also no memory: an abort says this drive failed, not that the ground is
             # unreachable. Re-proposing it costs one planner query, and if it really
             # is unreachable the planner says so for free.
+            with self._lock:
+                self._goals_aborted += 1
             self.get_logger().info("coverage goal aborted — reselecting")
+        elif status == GoalStatus.STATUS_SUCCEEDED:
+            with self._lock:
+                self._goals_succeeded += 1
 
     def _cancel_active(self):
         """Cancel the in-flight goal. The result callback needs no special case:

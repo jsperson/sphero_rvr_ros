@@ -45,6 +45,16 @@ coverage_explorer:
     # ground more than about one footprint away.
     stall_suppress_radius_m: 0.2
     stall_suppress_ttl_s: 45.0
+    # A mission should end with an ANSWER, not a log line someone has to find. On end,
+    # publish a latched JSON report (outcome as a FIELD, not prose -- "covered
+    # everything" and "ran out of reachable targets" are different outcomes and must
+    # never collapse) and write the map next to it.
+    report_topic: /coverage_explorer/report
+    save_map_on_end: true
+    # Written straight from the OccupancyGrid, so saving does not depend on
+    # nav2_map_server being alive at the one moment it matters. A 34-minute SLAM map
+    # was lost to a stack restart on 2026-08-08 and took an A/B with it.
+    map_save_dir: ~/.ros/missions
     # Refuse to issue goals when the robot's OWN costmap cell is at/above inscribed
     # cost. In that state the planner treats the start as in collision, EVERY goal
     # returns "no valid path", and Nav2's motion recoveries are all collision-blocked
