@@ -54,6 +54,15 @@ coverage_explorer:
     # Never issue a goal the rover is already standing on -- it succeeds without
     # moving, the target is still a target next tick, and it is picked again forever.
     min_goal_distance_m: 0.30
+    # When targets remain but none plan FROM HERE, MOVE and retry -- do not end the
+    # mission. Planning runs from the live pose, so an unplannable set is usually
+    # about where the rover is standing, not about the room: after one such stop the
+    # sole remaining target replied PATH in 7 ms once the rover had moved. Ending
+    # there is pretending the job is done.
+    max_unstick_attempts: 4
+    unstick_backup_m: 0.25
+    unstick_spin_rad: 1.57
+    unstick_timeout_s: 12.0
     # A mission should end with an ANSWER, not a log line someone has to find. On end,
     # publish a latched JSON report (outcome as a FIELD, not prose -- "covered
     # everything" and "ran out of reachable targets" are different outcomes and must

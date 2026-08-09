@@ -35,7 +35,7 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
-from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose, Spin
 from std_msgs.msg import String
 import tf2_ros
 
@@ -97,6 +97,13 @@ class CoverageExplorerNode(Node):
         # without moving, the target is still a target next tick, and it gets picked
         # again forever. Never issue one.
         self.declare_parameter("min_goal_distance_m", 0.30)
+        # When targets remain but none plan FROM HERE, move and retry rather than
+        # ending the mission -- planning is done from the live pose, so this is
+        # usually about where the rover is standing, not about the room.
+        self.declare_parameter("max_unstick_attempts", 4)
+        self.declare_parameter("unstick_backup_m", 0.25)
+        self.declare_parameter("unstick_spin_rad", 1.57)
+        self.declare_parameter("unstick_timeout_s", 12.0)
         # Start-pose guard. If the robot's OWN costmap cell is at/above inscribed
         # cost, the planner treats the start as in collision and EVERY goal returns
         # "no valid path" while Nav2's motion recoveries are all collision-blocked.
@@ -131,6 +138,11 @@ class CoverageExplorerNode(Node):
             self.get_parameter("max_consecutive_failures").value)
         self._min_goal_distance_m = float(
             self.get_parameter("min_goal_distance_m").value)
+        self._max_unstick = int(self.get_parameter("max_unstick_attempts").value)
+        self._unstick_backup_m = float(self.get_parameter("unstick_backup_m").value)
+        self._unstick_spin_rad = float(self.get_parameter("unstick_spin_rad").value)
+        self._unstick_timeout_s = float(self.get_parameter("unstick_timeout_s").value)
+        self._unstick_attempts = 0
         map_topic = str(self.get_parameter("map_topic").value)
 
         self._map = None
@@ -184,6 +196,8 @@ class CoverageExplorerNode(Node):
         self._planner = ActionClient(
             self, ComputePathToPose, "compute_path_to_pose", callback_group=cbg
         )
+        self._backup = ActionClient(self, BackUp, "backup", callback_group=cbg)
+        self._spin = ActionClient(self, Spin, "spin", callback_group=cbg)
         # Latched: the report is a one-shot event, and anything subscribing after the
         # mission ends (which is most things) must still receive it.
         report_qos = QoSProfile(depth=1)
@@ -369,6 +383,25 @@ class CoverageExplorerNode(Node):
         self._planner_rejections += self._unplannable_last_cycle
         if goal_cell is None and exhausted:
             return  # inconclusive cycle: leave the completion counter alone
+
+        if goal_cell is None and candidates and self._unstick_attempts < self._max_unstick:
+            # Targets remain but the planner will not route to any of them. Nearly
+            # always that is about where the ROVER is standing, not about the room --
+            # planning is done from the live pose, so a rover parked in inflation
+            # fails every goal no matter how open the map is. Measured after one such
+            # stop: the sole remaining target replied PATH in 7 ms once the rover had
+            # moved.
+            #
+            # So get unstuck and carry on. Ending the mission here is pretending it is
+            # done, which is the whole failure this outcome exists to avoid.
+            self._unstick_attempts += 1
+            self.get_logger().warn(
+                f"{len(candidates)} target(s) left but none plannable from here — "
+                f"unsticking (attempt {self._unstick_attempts}/{self._max_unstick})"
+            )
+            self._unstick()
+            self._consecutive_empty = 0
+            return
 
         if goal_cell is None:
             # Debounce: don't latch "complete" on a transient/startup empty. Only
@@ -632,6 +665,47 @@ class CoverageExplorerNode(Node):
             with self._lock:
                 self._goals_succeeded += 1
                 self._consecutive_failures = 0
+                self._unstick_attempts = 0
+
+    def _unstick(self):
+        """Physically change where the rover is standing, then let selection retry.
+
+        Uses Nav2's own behaviours rather than driving anything directly: back up a
+        little, and if that is refused (rear blocked) spin instead. Both go through
+        the collision supervisor like every other motion, so this cannot reverse into
+        something. A pose change is what makes previously-unplannable targets
+        plannable, which is why this belongs here and not in a recovery BT that only
+        runs while a goal is active -- there is no active goal at this point.
+        """
+        for client, goal, what in (
+            (self._backup, self._backup_goal(), "back up"),
+            (self._spin, self._spin_goal(), "spin"),
+        ):
+            if not client.wait_for_server(timeout_sec=1.0):
+                continue
+            deadline = time.monotonic() + self._unstick_timeout_s
+            handle = self._await(client.send_goal_async(goal), deadline)
+            if handle is None or not handle.accepted:
+                self.get_logger().info(f"unstick: {what} refused, trying the next")
+                continue
+            result = self._await(handle.get_result_async(), deadline)
+            if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
+                self.get_logger().info(f"unstick: {what} done")
+                return True
+            self.get_logger().info(f"unstick: {what} did not finish, trying the next")
+        self.get_logger().warn("unstick: nothing worked from this pose")
+        return False
+
+    def _backup_goal(self):
+        g = BackUp.Goal()
+        g.target.x = float(self._unstick_backup_m)   # BackUp treats +x as backwards
+        g.speed = 0.10
+        return g
+
+    def _spin_goal(self):
+        g = Spin.Goal()
+        g.target_yaw = float(self._unstick_spin_rad)
+        return g
 
     def _note_failure(self, cell):
         """Record that driving to `cell` failed: suppress it, and give up entirely if
