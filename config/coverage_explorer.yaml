@@ -38,13 +38,19 @@ coverage_explorer:
     goal_progress_epsilon_m: 0.10
     base_frame: base_link
     cycle_period_s: 1.0
-    # After such a stall, stop proposing that spot for a while. This is the ONLY
-    # remaining failure memory -- planner refusals and goal aborts keep none, because
-    # the planner is re-asked every cycle and is authoritative. Radius is derived
-    # from the ROBOT (~robot_radius 0.14 plus margin): a stall says nothing about
-    # ground more than about one footprint away.
+    # Stop proposing a spot for a while once a DRIVE there failed -- stalled, aborted
+    # or rejected. All three mean something stopped the robot that the planner cannot
+    # see, so re-asking the planner just gets the same yes and the rover drives at it
+    # again. Radius is derived from the ROBOT (~robot_radius 0.14 plus margin): a
+    # failure says nothing about ground more than about one footprint away. Narrow and
+    # expiring, unlike the old permanent blacklist that wrote off 73% of free space.
     stall_suppress_radius_m: 0.2
     stall_suppress_ttl_s: 45.0
+    # Give up when goals fail EVERYWHERE. Failures at different destinations mean the
+    # stack is broken, not the room. On 2026-08-09 a stuck controller failed 82 of 93
+    # goals in ~70 ms each and the rover thrashed back and forth for two minutes;
+    # this stops that after 5 and reports ABORTED_GOALS_KEEP_FAILING.
+    max_consecutive_failures: 5
     # A mission should end with an ANSWER, not a log line someone has to find. On end,
     # publish a latched JSON report (outcome as a FIELD, not prose -- "covered
     # everything" and "ran out of reachable targets" are different outcomes and must

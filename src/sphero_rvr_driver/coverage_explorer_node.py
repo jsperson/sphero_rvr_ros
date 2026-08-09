@@ -41,6 +41,7 @@ import tf2_ros
 
 from sphero_rvr_core.mission_report import (
     OUTCOME_COMPLETE,
+    OUTCOME_GOALS_KEEP_FAILING,
     OUTCOME_NO_PLANNABLE_TARGETS,
     OUTCOME_START_BLOCKED,
     build_report,
@@ -88,19 +89,23 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("goal_progress_epsilon_m", 0.10)
         self.declare_parameter("stall_suppress_ttl_s", 45.0)
         self.declare_parameter("stall_suppress_radius_m", 0.2)
+        # Give up when goals fail everywhere. Failures at different destinations mean
+        # the stack is broken, not the room; grinding on is how one bad controller
+        # state turns into 93 goals and a thrashing rover.
+        self.declare_parameter("max_consecutive_failures", 5)
         # Start-pose guard. If the robot's OWN costmap cell is at/above inscribed
         # cost, the planner treats the start as in collision and EVERY goal returns
         # "no valid path" while Nav2's motion recoveries are all collision-blocked.
         # Without this the explorer churns goals and blacklists the whole map while
         # going nowhere (observed 2026-08-07: 0.26 m rear clearance, below
         # robot_radius + inflation_radius = 0.30 m, burned a four-minute run).
+        self.declare_parameter("blocked_start_check", True)
         # A mission should end with an ANSWER, not a log line someone has to find and
         # interpret. The report is latched JSON on a topic; the map is written next to
         # it. Both are written once, at the moment the mission ends.
         self.declare_parameter("report_topic", "/coverage_explorer/report")
         self.declare_parameter("save_map_on_end", True)
         self.declare_parameter("map_save_dir", os.path.expanduser("~/.ros/missions"))
-        self.declare_parameter("blocked_start_check", True)
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
         self.declare_parameter("blocked_hold_s", 5.0)
 
@@ -118,6 +123,8 @@ class CoverageExplorerNode(Node):
         self._stall_radius_m = float(self.get_parameter("stall_suppress_radius_m").value)
         self._plan_timeout_s = float(self.get_parameter("plan_timeout_s").value)
         self._select_budget_s = float(self.get_parameter("select_budget_s").value)
+        self._max_consecutive_failures = int(
+            self.get_parameter("max_consecutive_failures").value)
         map_topic = str(self.get_parameter("map_topic").value)
 
         self._map = None
@@ -125,11 +132,13 @@ class CoverageExplorerNode(Node):
         self._blocked_logged = False
         self._blocked_until = 0.0  # monotonic; blocked state flickers, so hold it
         self._covered = set()      # world-grid coords the rover has driven within radius of
-        # World-grid coords of goals that PLANNED but then made no progress, with a
-        # monotonic expiry. Nothing else writes here: an unplannable candidate needs
-        # no memory (we re-ask the planner every cycle and it is authoritative), and
-        # an aborted goal is likewise just re-asked. This is only to stop a
-        # stalled-but-plannable cell being reselected immediately, forever.
+        # World-grid coords we should stop proposing for a while, with a monotonic
+        # expiry. Written whenever a DRIVE failed there -- stalled, aborted or rejected
+        # -- because all three mean something stopped the robot that the planner cannot
+        # see, and re-asking the planner just gets the same yes. Not written for a
+        # planner refusal: that needs no memory, since we re-ask every cycle and the
+        # planner is authoritative. Narrow and expiring, unlike the old permanent
+        # blacklist that wrote off 73% of free space.
         self._stalled = {}
         self._lock = threading.Lock()
         self._unplannable_last_cycle = 0
@@ -140,6 +149,7 @@ class CoverageExplorerNode(Node):
         self._goals_aborted = 0
         self._planner_rejections = 0
         self._reported = False
+        self._consecutive_failures = 0
         self._active_goal_cell = None
         self._active_goal_handle = None
         self._goal_inflight = False
@@ -529,11 +539,13 @@ class CoverageExplorerNode(Node):
         with self._lock:
             self._goal_inflight = False
         if not handle.accepted:
-            # No memory needed: the next cycle re-asks the planner, which is the
-            # authority on whether this is worth trying again.
-            self.get_logger().warn("coverage goal REJECTED by bt_navigator")
+            # Same rule as an abort: a refusal we cannot see the reason for must not be
+            # retried immediately at the same spot.
             with self._lock:
+                cell = self._active_goal_cell
                 self._active_goal_cell = None
+            self.get_logger().warn(f"coverage goal {cell} REJECTED — suppressing it")
+            self._note_failure(cell)
             return
         with self._lock:
             self._active_goal_handle = handle
@@ -542,18 +554,58 @@ class CoverageExplorerNode(Node):
     def _on_goal_result(self, future):
         status = future.result().status
         with self._lock:
+            cell = self._active_goal_cell
             self._active_goal_handle = None
             self._active_goal_cell = None
         if status == GoalStatus.STATUS_ABORTED:
-            # Also no memory: an abort says this drive failed, not that the ground is
-            # unreachable. Re-proposing it costs one planner query, and if it really
-            # is unreachable the planner says so for free.
+            # An ABORT MUST have a consequence. Removing that was a real regression:
+            # on the 2026-08-09 chassis run the explorer sent 93 goals in 127 s and 82
+            # aborted, 67 of them to just two cells, because nothing recorded that a
+            # drive had already failed there. The planner keeps saying yes -- it cannot
+            # see whatever actually stopped the robot -- so "just re-ask the planner"
+            # is an infinite retry into a physical obstacle, and each retry re-runs the
+            # controller's back-off reflex. That is the back-up-drive-forward-back-up
+            # loop Scott watched.
+            #
+            # The old blacklist was too WIDE and permanent (a 0.3 m disc, forever,
+            # 2390 cells = 73% of free space). The fix for that was to narrow it, not
+            # to delete it. Same narrow, expiring shape as the stall suppression.
             with self._lock:
                 self._goals_aborted += 1
-            self.get_logger().info("coverage goal aborted — reselecting")
+            self.get_logger().warn(
+                f"coverage goal {cell} ABORTED — suppressing it for "
+                f"{self._stall_ttl_s:.0f}s so we do not drive at it again"
+            )
+            self._note_failure(cell)
         elif status == GoalStatus.STATUS_SUCCEEDED:
             with self._lock:
                 self._goals_succeeded += 1
+                self._consecutive_failures = 0
+
+    def _note_failure(self, cell):
+        """Record that driving to `cell` failed: suppress it, and give up entirely if
+        goals are failing everywhere.
+
+        The give-up half is the important one. Suppression alone still lets a broken
+        stack chew through the entire map one cell at a time -- on 2026-08-09 that was
+        93 goals in 127 s with the rover thrashing back and forth, because the
+        controller was stuck reporting "boxed in" and would have failed a goal
+        anywhere. Repeated failures regardless of destination are a broken stack, not a
+        hard room, and the mission should stop and say which.
+        """
+        self._suppress_cell(cell)
+        with self._lock:
+            self._consecutive_failures += 1
+            n = self._consecutive_failures
+        if n >= self._max_consecutive_failures:
+            self.get_logger().error(
+                f"{n} goals in a row failed, at different places — this is the stack, "
+                "not the room. Stopping. Check the controller (a stuck 'boxed in' "
+                "state fails every goal in milliseconds) before running again."
+            )
+            self._mission_done = True
+            res = self._map.info.resolution if self._map else 0.05
+            self._finish(OUTCOME_GOALS_KEEP_FAILING, res, 0)
 
     def _cancel_active(self):
         """Cancel the in-flight goal. The result callback needs no special case:

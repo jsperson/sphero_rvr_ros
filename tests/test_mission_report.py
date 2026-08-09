@@ -97,3 +97,15 @@ def test_yaml_names_the_image_and_locates_it():
     assert "image: mission.pgm" in y
     assert "resolution: 0.05" in y
     assert "origin: [-1.2, 3.4, 0.0]" in y
+
+
+def test_goals_keep_failing_is_a_distinct_outcome():
+    """2026-08-09: the controller sat in a permanent 'boxed in' state and killed 82 of
+    93 goals in ~70 ms each while the rover thrashed. That is a broken stack, not a
+    hard room, and it must not be reported as either COMPLETE or 'nothing plannable'."""
+    from sphero_rvr_core.mission_report import OUTCOME_GOALS_KEEP_FAILING
+    r = build_report(OUTCOME_GOALS_KEEP_FAILING, covered_cells=1553, resolution=0.05,
+                     duration_s=127.0, goals_sent=93, goals_aborted=82)
+    assert r["complete"] is False
+    assert r["outcome"] == "ABORTED_GOALS_KEEP_FAILING"
+    assert r["goals"]["aborted"] == 82

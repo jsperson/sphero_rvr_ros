@@ -19,6 +19,18 @@ both arms of an A/B with it.
 OUTCOME_COMPLETE = "COMPLETE"
 OUTCOME_NO_PLANNABLE_TARGETS = "INCOMPLETE_NO_PLANNABLE_TARGETS"
 OUTCOME_START_BLOCKED = "INCOMPLETE_START_BLOCKED"
+# Goals are being accepted and then failing, over and over, wherever they are sent.
+# That is a broken stack, not a hard room: on 2026-08-09 the controller sat in a
+# permanent "boxed in" state and killed 82 of 93 goals in ~70 ms each while the rover
+# thrashed. A mission must give up and say so rather than grind through the whole map.
+OUTCOME_GOALS_KEEP_FAILING = "ABORTED_GOALS_KEEP_FAILING"
+
+ALL_OUTCOMES = (
+    OUTCOME_COMPLETE,
+    OUTCOME_NO_PLANNABLE_TARGETS,
+    OUTCOME_START_BLOCKED,
+    OUTCOME_GOALS_KEEP_FAILING,
+)
 
 # map_server's PGM convention.
 PGM_FREE = 254
@@ -48,8 +60,7 @@ def build_report(
     ``remaining_candidates`` is what makes an incomplete run diagnosable: it says how
     much ground the explorer still wanted when it stopped.
     """
-    if outcome not in (OUTCOME_COMPLETE, OUTCOME_NO_PLANNABLE_TARGETS,
-                       OUTCOME_START_BLOCKED):
+    if outcome not in ALL_OUTCOMES:
         raise ValueError(f"unknown outcome {outcome!r}")
     return {
         "outcome": outcome,
