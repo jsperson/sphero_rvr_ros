@@ -53,10 +53,10 @@ lidar_collision_stop_supervisor:
     # 0.045) = ~0.175 m from base_link = ~0.067 m (~6.7 cm) off the physical
     # nose. The physics term (footprint + braking) governs; stop_distance only
     # floors it. Toned 0.35 -> 0.12 so it no longer inflates the stop.
-    stop_distance_m: 0.12
+    stop_distance_m: 0.30
     # 0.20 (was 0.45). Small SLOW band just above the ~0.175 m stop — a brief
     # ease-off, then the hard stop. Must stay > stop_distance_m.
-    slow_distance_m: 0.20
+    slow_distance_m: 0.50
     reverse_stop_distance_m: 0.25
     # Added to every footprint edge during command-trajectory projection.
     trajectory_clearance_margin_m: 0.02
@@ -68,7 +68,7 @@ lidar_collision_stop_supervisor:
     # 0.30 (was 0.45). Hysteresis above the ~0.175 m stop so it doesn't chatter,
     # but low enough that a short back-off re-opens clearance and lets it resume
     # — 0.45 would have forced ~0.28 m of backing before the latch cleared.
-    release_distance_m: 0.30
+    release_distance_m: 0.60
     release_time_s: 0.50
     # 0.70 (was 0.0). 0.0 let the SLOW zone scale speed straight down through the
     # sub-breakaway range, where the tank motors grind instead of rolling. Floor
