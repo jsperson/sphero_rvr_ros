@@ -51,6 +51,9 @@ coverage_explorer:
     # goals in ~70 ms each and the rover thrashed back and forth for two minutes;
     # this stops that after 5 and reports ABORTED_GOALS_KEEP_FAILING.
     max_consecutive_failures: 5
+    # Never issue a goal the rover is already standing on -- it succeeds without
+    # moving, the target is still a target next tick, and it is picked again forever.
+    min_goal_distance_m: 0.30
     # A mission should end with an ANSWER, not a log line someone has to find. On end,
     # publish a latched JSON report (outcome as a FIELD, not prose -- "covered
     # everything" and "ran out of reachable targets" are different outcomes and must

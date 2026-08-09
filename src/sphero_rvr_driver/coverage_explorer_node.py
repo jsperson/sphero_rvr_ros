@@ -93,6 +93,10 @@ class CoverageExplorerNode(Node):
         # the stack is broken, not the room; grinding on is how one bad controller
         # state turns into 93 goals and a thrashing rover.
         self.declare_parameter("max_consecutive_failures", 5)
+        # A goal nearer than this is somewhere the rover already is: it succeeds
+        # without moving, the target is still a target next tick, and it gets picked
+        # again forever. Never issue one.
+        self.declare_parameter("min_goal_distance_m", 0.30)
         # Start-pose guard. If the robot's OWN costmap cell is at/above inscribed
         # cost, the planner treats the start as in collision and EVERY goal returns
         # "no valid path" while Nav2's motion recoveries are all collision-blocked.
@@ -125,6 +129,8 @@ class CoverageExplorerNode(Node):
         self._select_budget_s = float(self.get_parameter("select_budget_s").value)
         self._max_consecutive_failures = int(
             self.get_parameter("max_consecutive_failures").value)
+        self._min_goal_distance_m = float(
+            self.get_parameter("min_goal_distance_m").value)
         map_topic = str(self.get_parameter("map_topic").value)
 
         self._map = None
@@ -474,14 +480,20 @@ class CoverageExplorerNode(Node):
         offered still lands within coverage range of it -- reaching any of them counts
         as covering the target, and none of them is a different errand.
         """
-        yield (tx, ty)
         d = math.hypot(tx - rx, ty - ry)
+        min_d = self._min_goal_distance_m
+        if d >= min_d:
+            yield (tx, ty)
         if d < 1e-3:
             return
         ux, uy = (rx - tx) / d, (ry - ty) / d      # unit vector target -> robot
         for frac in (0.5, 0.9):
             back = self._config.coverage_radius_m * frac
-            if back < d:                            # never stand behind the robot
+            # Every offered point must be somewhere the rover is NOT. A stand-off
+            # 0.68 m back from a target 0.70 m away is the rover's own position: the
+            # goal succeeds instantly without moving, the cell is still a target next
+            # tick, and it is picked again forever. Observed doing exactly that.
+            if back < d - min_d:
                 yield (tx + ux * back, ty + uy * back)
 
     def _planner_can_reach(self, wx, wy, frame):
