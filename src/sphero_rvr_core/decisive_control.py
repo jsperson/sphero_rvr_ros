@@ -170,6 +170,25 @@ class ProgressGuard:
         self._ref = (x, y)
         self._ref_t = now
 
+    def _give_up(self) -> "GuardResult":
+        """Hand control back to the planner AND rearm.
+
+        Aborting is this guard's way of saying "I cannot solve this, re-plan" -- it is
+        a handoff, not a terminal state. Leaving the guard latched here was a real
+        defect: `_backing_off` stayed true with an expired back-off clock, so every
+        later cycle re-entered the same branch and returned abort within milliseconds,
+        forever. On 2026-08-09 that killed 82 of 93 goals in ~70 ms each while the
+        rover shuffled back and forth; the controller had decided it was boxed in once
+        and could never take it back.
+        """
+        self._backing_off = False
+        self._bo_ref = None
+        self._bo_t = None
+        self._ref = None
+        self._ref_t = None
+        self._back_off_count = 0
+        return GuardResult("abort")
+
     def step(self, x: float, y: float, now: float, translating: bool) -> GuardResult:
         cfg = self._config
 
@@ -182,7 +201,7 @@ class ProgressGuard:
                 return GuardResult("drive")
             if now - self._bo_t >= cfg.back_off_timeout_s:
                 # Could not back up (rear blocked) — let the planner handle it.
-                return GuardResult("abort")
+                return self._give_up()
             return GuardResult("reverse", cfg.back_off_speed_mps)
 
         if not translating:
@@ -199,12 +218,20 @@ class ProgressGuard:
         moved = math.hypot(x - self._ref[0], y - self._ref[1])
         if moved >= cfg.progress_epsilon_m:
             self._mark_progress(x, y, now)
+            # Genuine forward progress clears the back-off tally, so it bounds ONE
+            # stuck episode rather than a lifetime -- otherwise a rover that backed
+            # off a few times across a long, otherwise successful mission would carry
+            # that tally and abort on clear ground later. Note this is the
+            # made-real-progress branch only: COMPLETING a back-off is retreat, not
+            # progress, and must not reset it, or backing off and immediately
+            # re-stalling would loop forever instead of escalating to abort.
+            self._back_off_count = 0
             return GuardResult("drive")
 
         if now - self._ref_t >= cfg.stall_time_s:
             self._back_off_count += 1
             if self._back_off_count > cfg.max_back_offs:
-                return GuardResult("abort")
+                return self._give_up()
             self._backing_off = True
             self._bo_ref = (x, y)
             self._bo_t = now

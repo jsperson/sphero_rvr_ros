@@ -182,3 +182,58 @@ def test_guard_aborts_after_max_back_offs():
     guard.step(-0.10, 0.0, 2.0, translating=True)  # < stall_time from resume
     # Second stall would be back-off #2 > max_back_offs (1) -> abort instead.
     assert guard.step(-0.10, 0.0, 2.5, translating=True).action == "abort"
+
+
+# --- ProgressGuard: aborting is a handoff, not a terminal state (D1, 2026-08-09) ---
+
+
+def test_guard_rearms_after_a_back_off_timeout_abort():
+    """The defect that killed the first chassis run of the coverage rewrite.
+
+    `_backing_off` stayed true with an expired clock, so every later cycle re-entered
+    the back-off branch and returned abort within milliseconds -- forever. 82 of 93
+    goals died in ~70 ms each and the rover just shuffled. Abort means "planner, take
+    over"; the guard must be usable again afterwards.
+    """
+    guard = ProgressGuard(BO)
+    guard.step(0.0, 0.0, 0.0, True)
+    guard.step(0.0, 0.0, BO.stall_time_s, True)                 # stalled -> reverse
+    assert guard.step(0.0, 0.0, BO.stall_time_s + BO.back_off_timeout_s + 1,
+                      True).action == "abort"                    # cannot reverse
+    # Next cycle must NOT still be aborting.
+    assert guard.step(0.0, 0.0, 100.0, True).action == "drive"
+
+
+def test_guard_rearms_after_exhausting_back_offs():
+    guard = ProgressGuard(BO)
+    t = 0.0
+    for _ in range(BO.max_back_offs + 1):
+        guard.step(0.0, 0.0, t, True)
+        t += BO.stall_time_s
+        r = guard.step(0.0, 0.0, t, True)
+        if r.action == "reverse":                                # complete the back-off
+            guard.step(-BO.back_off_distance_m, 0.0, t, True)
+            t += 0.1
+    # Drive it into the exhausted-abort path, then check it rearms.
+    t2 = t
+    guard.step(0.0, 0.0, t2, True)
+    while True:
+        t2 += BO.stall_time_s
+        r = guard.step(0.0, 0.0, t2, True)
+        if r.action == "abort":
+            break
+        if r.action == "reverse":
+            t2 += BO.back_off_timeout_s + 1
+    assert guard.step(0.0, 0.0, t2 + 1000.0, True).action == "drive"
+
+
+def test_progress_clears_the_back_off_tally():
+    """A rover that backed off a few times over a long successful mission must not
+    inherit that tally and abort later on clear ground."""
+    guard = ProgressGuard(BO)
+    guard.step(0.0, 0.0, 0.0, True)
+    guard.step(0.0, 0.0, BO.stall_time_s, True)                 # one back-off used
+    guard.step(-BO.back_off_distance_m, 0.0, BO.stall_time_s + 0.1, True)  # completed
+    # Now drive genuinely far.
+    guard.step(1.0, 0.0, 10.0, True)
+    assert guard._back_off_count == 0
