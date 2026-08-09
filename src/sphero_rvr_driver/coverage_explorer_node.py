@@ -237,6 +237,15 @@ class CoverageExplorerNode(Node):
             return None
         return tf.transform.translation.x, tf.transform.translation.y
 
+    def _robot_yaw(self, frame):
+        try:
+            q = self._tf_buffer.lookup_transform(
+                frame, self._base_frame, rclpy.time.Time()).transform.rotation
+        except Exception:
+            return None
+        return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
     def _tick(self):
         if self._mission_done:
             return
@@ -399,7 +408,7 @@ class CoverageExplorerNode(Node):
                 f"{len(candidates)} target(s) left but none plannable from here — "
                 f"unsticking (attempt {self._unstick_attempts}/{self._max_unstick})"
             )
-            self._unstick()
+            self._unstick(toward=self._cell_world(candidates[0], ox, oy, res))
             self._consecutive_empty = 0
             return
 
@@ -667,7 +676,7 @@ class CoverageExplorerNode(Node):
                 self._consecutive_failures = 0
                 self._unstick_attempts = 0
 
-    def _unstick(self):
+    def _unstick(self, toward=None):
         """Physically change where the rover is standing, then let selection retry.
 
         Uses Nav2's own behaviours rather than driving anything directly: back up a
@@ -677,10 +686,23 @@ class CoverageExplorerNode(Node):
         plannable, which is why this belongs here and not in a recovery BT that only
         runs while a goal is active -- there is no active goal at this point.
         """
-        for client, goal, what in (
-            (self._backup, self._backup_goal(), "back up"),
-            (self._spin, self._spin_goal(), "spin"),
-        ):
+        # Back straight out ONCE. After that, TURN -- and turn toward the ground we
+        # are actually trying to reach, not a fixed direction. Repeating a straight
+        # reverse is what Scott watched it do: "still doing the straight back and
+        # straight forward thing... if it gets stuck straight back then pivot to an
+        # open area would be better." Backing up alone barely changes what the planner
+        # can see; a heading change opens a different set of routes entirely.
+        if self._unstick_attempts <= 1:
+            order = (
+                (self._backup, self._backup_goal(), "back up"),
+                (self._spin, self._spin_goal(toward), "turn toward the target"),
+            )
+        else:
+            order = (
+                (self._spin, self._spin_goal(toward), "turn toward the target"),
+                (self._backup, self._backup_goal(), "back up"),
+            )
+        for client, goal, what in order:
             if not client.wait_for_server(timeout_sec=1.0):
                 continue
             deadline = time.monotonic() + self._unstick_timeout_s
@@ -696,15 +718,32 @@ class CoverageExplorerNode(Node):
         self.get_logger().warn("unstick: nothing worked from this pose")
         return False
 
+    def _cell_world(self, cell, ox, oy, res):
+        return cell_center_world(cell[0], cell[1], ox, oy, res)
+
     def _backup_goal(self):
         g = BackUp.Goal()
         g.target.x = float(self._unstick_backup_m)   # BackUp treats +x as backwards
         g.speed = 0.10
         return g
 
-    def _spin_goal(self):
+    def _spin_goal(self, toward=None):
+        """Turn toward `toward` (a map-frame point) when we know one, else a fixed
+        quarter turn. Turning toward the target we cannot currently plan to is the
+        move most likely to open a route to it -- a blind fixed spin is as likely to
+        face a wall."""
         g = Spin.Goal()
         g.target_yaw = float(self._unstick_spin_rad)
+        if toward is not None:
+            here = self._robot_world(self._map.header.frame_id or "map") if self._map else None
+            yaw = self._robot_yaw(self._map.header.frame_id or "map") if self._map else None
+            if here is not None and yaw is not None:
+                want = math.atan2(toward[1] - here[1], toward[0] - here[0])
+                delta = math.atan2(math.sin(want - yaw), math.cos(want - yaw))
+                # Commit to a real turn: a few degrees changes nothing, and Spin has
+                # to overcome the drivetrain's breakaway to move at all.
+                if abs(delta) >= 0.35:
+                    g.target_yaw = float(delta)
         return g
 
     def _note_failure(self, cell):
