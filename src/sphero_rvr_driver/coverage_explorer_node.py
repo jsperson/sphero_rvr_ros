@@ -287,23 +287,26 @@ class CoverageExplorerNode(Node):
             active_cell = self._active_goal_cell
             inflight = self._goal_inflight
         if active_cell is not None:
-            if self._still_target(m, w, h, ox, oy, res, active_cell):
-                # Watchdog: the goal planned when we asked, so if it is making no
-                # progress the problem is downstream of planning. Drop it and
-                # suppress it briefly -- re-asking the planner would just get the
-                # same yes.
-                if self._goal_stalled(wx, wy):
-                    self.get_logger().warn(
-                        f"coverage goal {active_cell} planned but made no progress in "
-                        f"{self._goal_progress_timeout_s:.0f}s — dropping it"
-                    )
-                    self._cancel_active()
-                    self._suppress_cell(active_cell)
-                else:
-                    return  # valid target, making progress -> keep driving
-            else:
-                # Target was covered en route (or its unknown resolved) -- success.
+            # COMMIT to a goal until it ends. This used to cancel as soon as the target
+            # cell stopped being a target -- but coverage_radius_m is 0.75 m, so a
+            # target 0.8 m away is marked covered after ~10 cm of driving, and the
+            # explorer cancelled and reissued EVERY tick: 13 goals in 15 s, each one
+            # halting the previous follow_path. bt_navigator could not keep up
+            # ("Failed to get result for follow_path in node halt!") and the goals
+            # failed. The explorer was beating itself. Reaching the target is not
+            # wasted even once it counts as covered -- it is still where we were going,
+            # and arriving is what lets the next selection start from there.
+            # The ONLY reason to drop a live goal is that driving it is going nowhere.
+            # The watchdog planned-but-no-progress case still applies.
+            if self._goal_stalled(wx, wy):
+                self.get_logger().warn(
+                    f"coverage goal {active_cell} planned but made no progress in "
+                    f"{self._goal_progress_timeout_s:.0f}s — dropping it"
+                )
                 self._cancel_active()
+                self._suppress_cell(active_cell)
+            else:
+                return  # making progress -> keep driving, do not reselect
         if inflight:
             return
 
