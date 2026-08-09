@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from pathlib import Path
 
 import yaml
@@ -11,6 +13,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def _yaml(path: str) -> dict:
     return yaml.safe_load((REPO_ROOT / path).read_text(encoding="utf-8"))
+
+
+def _strip_comments(source: str) -> str:
+    """Source with `#` comments removed. String literals are kept, so a path or a
+    node name written in code is still caught."""
+    out = []
+    reader = io.StringIO(source).readline
+    for token in tokenize.generate_tokens(reader):
+        if token.type != tokenize.COMMENT:
+            out.append(token.string)
+    return "\n".join(out)
 
 
 def _node_calls(path: str) -> list[ast.Call]:
@@ -110,7 +123,11 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
         "codex_app_server",
         "rolling_",
     ):
-        assert excluded not in source
+        # Scan CODE, not prose. These names must not be wired into the graph; a
+        # comment explaining why one of them is absent is the opposite of a
+        # violation, and a guard that punishes documenting its own reason gets
+        # satisfied by deleting the explanation.
+        assert excluded not in _strip_comments(source)
 
 
 def test_explore_lite_dependency_and_small_room_parameters_are_pinned() -> None:

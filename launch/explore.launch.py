@@ -43,6 +43,9 @@ def generate_launch_description():
     enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
     use_decisive_controller = LaunchConfiguration("use_decisive_controller")
     use_coverage_explorer = LaunchConfiguration("use_coverage_explorer")
+    start_low_obstacle = LaunchConfiguration("start_low_obstacle")
+    start_semantic_map = LaunchConfiguration("start_semantic_map")
+    start_vlm_scene = LaunchConfiguration("start_vlm_scene")
     serial_port = LaunchConfiguration("serial_port")
     lidar_serial_port = LaunchConfiguration("lidar_serial_port")
     rvr_params_file = LaunchConfiguration("rvr_params_file")
@@ -87,6 +90,51 @@ def generate_launch_description():
             "slam_params_file": slam_params_file,
             "use_sim_time": "false",
         }.items(),
+    )
+
+    # --- Camera CONSUMERS (all opt-in, all default off) ----------------------
+    #
+    # Until now no launch file started any of these, so every camera run was
+    # assembled by hand -- which is how a run ends up differing from the last one in
+    # ways nobody wrote down.
+    #
+    # The camera DRIVER is deliberately not started here; run camera.launch.py
+    # separately. Two reasons, and the second is the load-bearing one:
+    #   1. It prepends the pinned ~/.local/rpi-libcamera to LD_LIBRARY_PATH and
+    #      AMENT_PREFIX_PATH, which has no business on nav2/slam.
+    #   2. Kept separate, the camera SURVIVES a motion-stack restart, so a test that
+    #      restarts the stack changes exactly one variable. On 2026-08-08 a restart
+    #      destroyed a 34-minute SLAM map and invalidated both arms of an A/B; the
+    #      camera staying up is what made the retry cheap.
+    # These nodes tolerate the camera starting after them -- they subscribe and wait.
+    #
+    # Sub-lidar obstacle detection -> /camera/low_obstacles, consumed by the
+    # collision brake (and the LOCAL costmap; it is deliberately NOT a global
+    # costmap source -- see lean_nav2.yaml).
+    low_obstacle = Node(
+        package="sphero_rvr_driver",
+        executable="low_obstacle",
+        name="low_obstacle",
+        output="screen",
+        condition=IfCondition(start_low_obstacle),
+    )
+    # Map-frame object memory from VLM sightings -> /semantic_map/objects.
+    # Costs one cloud VLM call per observation.
+    semantic_map = Node(
+        package="sphero_rvr_driver",
+        executable="semantic_map",
+        name="semantic_map",
+        output="screen",
+        condition=IfCondition(start_semantic_map),
+    )
+    # On-demand scene description service. Publishes nothing until called, so it is
+    # safe to leave running.
+    vlm_scene = Node(
+        package="sphero_rvr_driver",
+        executable="vlm_scene",
+        name="vlm_scene",
+        output="screen",
+        condition=IfCondition(start_vlm_scene),
     )
 
     # Pick the navigate-to-pose BT by mode: decisive mode uses the global-costmap
@@ -248,6 +296,33 @@ def generate_launch_description():
                     "false = explore_lite (frontier/see-only)."
                 ),
             ),
+            DeclareLaunchArgument(
+                "start_low_obstacle",
+                default_value="false",
+                description=(
+                    "Start low_obstacle: camera floor-boundary detection of "
+                    "sub-lidar-plane obstacles -> /camera/low_obstacles, which the "
+                    "collision brake uses to stop for things the lidar cannot see "
+                    "(chair legs, shoes). Needs a camera stream."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "start_semantic_map",
+                default_value="false",
+                description=(
+                    "Start semantic_map: VLM sightings -> map-frame object memory on "
+                    "/semantic_map/objects. Needs a camera stream, TF to map, and a "
+                    "Synthetic API key. Costs a cloud call per observation."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "start_vlm_scene",
+                default_value="false",
+                description=(
+                    "Start vlm_scene: on-demand describe_scene service. Idle until "
+                    "called; one cloud VLM call per invocation."
+                ),
+            ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
             DeclareLaunchArgument(
                 "lidar_serial_port", default_value="/dev/ttyUSB0"
@@ -272,6 +347,9 @@ def generate_launch_description():
             supervised,
             lidar,
             mapping,
+            low_obstacle,
+            semantic_map,
+            vlm_scene,
             *nav2_nodes,
             # Autonomous exploration is OPT-IN (start_explore, default false) so
             # bringup is inert and the rover never moves on its own. When enabled:
