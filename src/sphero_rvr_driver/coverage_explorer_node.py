@@ -321,6 +321,7 @@ class CoverageExplorerNode(Node):
             self._selecting = True
         try:
             goal_cell = None
+            goal_point = None
             exhausted = False
             budget = time.monotonic() + self._select_budget_s
             for cell in candidates:
@@ -335,8 +336,20 @@ class CoverageExplorerNode(Node):
                     break
                 gx, gy = cell
                 gwx, gwy = cell_center_world(gx, gy, ox, oy, res)
-                if self._planner_can_reach(gwx, gwy, frame):
-                    goal_cell = cell
+                # Try the cell, then progressively closer stand-off points along the
+                # line back toward the robot. Demanding the planner reach the cell
+                # EXACTLY was too strict and ended missions early: frontier cells sit
+                # against unknown space and walls, so they are usually inflated and
+                # the planner refuses them (26 refusals then a premature end, first
+                # run). The mission does not need the rover ON the cell -- coverage is
+                # satisfied within coverage_radius_m of it, and seeing past a frontier
+                # only needs proximity. So ask for the nearest point that both plans
+                # AND still counts as covering the target.
+                for awx, awy in self._approach_points(gwx, gwy, wx, wy):
+                    if self._planner_can_reach(awx, awy, frame):
+                        goal_cell, goal_point = cell, (awx, awy)
+                        break
+                if goal_cell is not None:
                     break
         finally:
             with self._lock:
@@ -380,7 +393,7 @@ class CoverageExplorerNode(Node):
         self._ever_had_target = True
         self._goal_start_pose = (wx, wy)
         self._goal_start_time = time.monotonic()
-        self._send_goal(goal_cell, frame, ox, oy, res)
+        self._send_goal(goal_cell, frame, ox, oy, res, goal_point)
 
     def _finish(self, outcome, resolution, remaining):
         """End the mission with an artifact: a latched JSON report, and the map on
@@ -451,6 +464,23 @@ class CoverageExplorerNode(Node):
             time.sleep(0.01)
         return future.result()
 
+    def _approach_points(self, tx, ty, rx, ry):
+        """The target, then stand-off points pulled back toward the robot.
+
+        Stops short of the target by fractions of coverage_radius_m, so every point
+        offered still lands within coverage range of it -- reaching any of them counts
+        as covering the target, and none of them is a different errand.
+        """
+        yield (tx, ty)
+        d = math.hypot(tx - rx, ty - ry)
+        if d < 1e-3:
+            return
+        ux, uy = (rx - tx) / d, (ry - ty) / d      # unit vector target -> robot
+        for frac in (0.5, 0.9):
+            back = self._config.coverage_radius_m * frac
+            if back < d:                            # never stand behind the robot
+                yield (tx + ux * back, ty + uy * back)
+
     def _planner_can_reach(self, wx, wy, frame):
         """Ask the PLANNER whether it can route to (wx, wy) from where we are now.
 
@@ -512,12 +542,16 @@ class CoverageExplorerNode(Node):
             m.data, w, h, gx, gy, self._config.free_threshold
         )
 
-    def _send_goal(self, cell, frame, ox, oy, res):
+    def _send_goal(self, cell, frame, ox, oy, res, point=None):
+        """Drive to `point` (the reachable stand-off we found) while still tracking
+        `cell` as the target being covered. They differ whenever the cell itself was
+        not directly plannable."""
         if not self._nav.wait_for_server(timeout_sec=2.0):
             self.get_logger().warn("navigate_to_pose action server not available yet")
             return
         gx, gy = cell
-        wx, wy = cell_center_world(gx, gy, ox, oy, res)
+        cwx, cwy = cell_center_world(gx, gy, ox, oy, res)
+        wx, wy = point if point is not None else (cwx, cwy)
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = frame
         goal.pose.pose.position.x = float(wx)
@@ -527,8 +561,10 @@ class CoverageExplorerNode(Node):
             self._goal_inflight = True
             self._active_goal_cell = cell
             self._goals_sent += 1
+        offset = math.hypot(wx - cwx, wy - cwy)
+        via = f" (standing off {offset:.2f} m)" if offset > 0.01 else ""
         self.get_logger().info(
-            f"coverage goal -> cell {cell} world ({wx:.2f},{wy:.2f}); "
+            f"coverage goal -> cell {cell} world ({wx:.2f},{wy:.2f}){via}; "
             f"covered={len(self._covered)} planner-rejected={self._unplannable_last_cycle} "
             f"stalled={len(self._stalled)}"
         )
