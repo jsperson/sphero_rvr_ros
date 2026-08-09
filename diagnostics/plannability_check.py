@@ -1,14 +1,30 @@
-"""Bench validation for the coverage churn fix (no motion). Brings nothing up
-itself — run it against a live frontier_diag stack (lidar+SLAM+global costmap +
-planner_server). It repeatedly runs the coverage core's select_next_goal and asks
-the PLANNER (ComputePathToPose) whether each selected target is reachable. With
-navigability-aware selection every selected target should be PLANNABLE; with it
-disabled (inscribed_radius=0, the old free-only behavior) some should be NO PATH.
+"""How much of the ground /map calls reachable will the PLANNER actually route to?
 
-Usage: python3 plannability_check.py [inscribed_radius_m]   (default 0.14)
+No motion. Brings nothing up itself — run it against a live stack that has SLAM, a
+global costmap and planner_server (the frontier_diag bench stack is enough).
+
+This is the coverage explorer's selection loop, run once and printed. The explorer
+proposes targets from SLAM's /map nearest-first and asks ComputePathToPose about
+each until one plans; this shows the whole candidate list with the planner's verdict
+on every entry, instead of just the winner.
+
+Read the result two ways:
+
+  * As a regression check on the explorer. The first PLANNABLE candidate is the goal
+    the node would send, and the count above it is what the planner rejected on the
+    way. A handful of rejections is normal and cheap (one query each). Rejections
+    everywhere means the explorer is about to report "targets wanted but none
+    plannable", which is a real condition, not a bug.
+
+  * As the narrow-gap measurement. Every NO PATH is a place SLAM says is free and
+    open, connected to the robot through free cells, that the costmap will not let
+    the planner enter. That is the same disagreement the 2026-08-08 A/B found at the
+    doorway (109 cells lethal in the costmap but free in /map). Run it camera-on and
+    camera-off to see how much of the disagreement the camera layer accounts for.
+
+Usage: python3 plannability_check.py [max_candidates]     (default 12)
 """
 
-import math
 import sys
 import time
 
@@ -22,13 +38,12 @@ import tf2_ros
 
 from sphero_rvr_core.coverage_exploration import (
     CoverageConfig,
+    candidate_goals,
     cell_center_world,
-    select_next_goal,
     stamp_coverage,
-    world_grid,
 )
 
-INSCRIBED = float(sys.argv[1]) if len(sys.argv) > 1 else 0.14
+MAX_CANDIDATES = int(sys.argv[1]) if len(sys.argv) > 1 else 12
 
 
 class Checker(Node):
@@ -104,30 +119,32 @@ def main():
 
     covered = set()
     stamp_coverage(covered, wx, wy, res, 0.75)
-    blacklist = set()
-    cfg = CoverageConfig(inscribed_radius_m=INSCRIBED)
+    cfg = CoverageConfig(max_candidates=MAX_CANDIDATES)
+    cells = candidate_goals(m.data, w, hh, ox, oy, res, rcx, rcy, covered, set(), cfg)
 
-    print(f"=== plannability check: inscribed_radius_m={INSCRIBED} (0.0 = old free-only) ===")
-    ok = bad = checked = 0
-    for _ in range(12):
-        cell = select_next_goal(m.data, w, hh, ox, oy, res, rcx, rcy, covered, blacklist, cfg)
-        if cell is None:
-            print(f"select_next_goal -> None after {checked} targets")
-            break
+    print(f"=== planner verdict on {len(cells)} /map candidates "
+          f"(robot at {wx:.2f},{wy:.2f}) ===")
+    if not cells:
+        print("  no candidates — /map says everything reachable is covered")
+    ok = bad = 0
+    chosen = None
+    for cell in cells:
         gwx, gwy = cell_center_world(cell[0], cell[1], ox, oy, res)
         p = n.plan_ok(frame, gwx, gwy)
-        checked += 1
         label = "PLANNABLE" if p else ("NO PATH" if p is False else "PLANNER?")
         if p:
             ok += 1
+            if chosen is None:
+                chosen = (cell, gwx, gwy)
         else:
             bad += 1
-        print(f"  target {cell} world ({gwx:.2f},{gwy:.2f}) -> {label}")
-        r = int(math.ceil(0.3 / res))
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                blacklist.add(world_grid(gwx + dx * res, gwy + dy * res, res))
-    print(f"=== RESULT: {ok}/{checked} selected targets PLANNABLE ({bad} not) ===")
+        print(f"  candidate {cell} world ({gwx:.2f},{gwy:.2f}) -> {label}")
+    print(f"=== {ok}/{len(cells)} plannable; {bad} refused by the costmap ===")
+    if chosen:
+        cell, gwx, gwy = chosen
+        print(f"the explorer would drive to {cell} ({gwx:.2f},{gwy:.2f})")
+    elif cells:
+        print("the explorer would report: targets wanted but NONE plannable")
     n.destroy_node()
     rclpy.shutdown()
 

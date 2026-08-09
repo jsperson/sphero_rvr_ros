@@ -10,6 +10,14 @@ It reuses the whole nav stack: it sends NavigateToPose to bt_navigator, which us
 the planner + the decisive controller + the collision brake exactly as explore
 does. Run it INSTEAD of explore_lite. Decision logic lives in the pure, tested
 :mod:`sphero_rvr_core.coverage_exploration`.
+
+Reachability comes from the PLANNER, not from a local imitation of it. The core
+proposes targets nearest-first; this node asks ``ComputePathToPose`` about each and
+sends the first that plans. That is one query per rejected candidate — cheap, since
+it is the planner the goal would have been handed to anyway — and it removes the
+whole apparatus that used to exist to paper over a hand-rolled estimate
+disagreeing with the real costmap (map erosion by an inscribed radius, a
+navigability-restricted flood, and a blacklist with a radius and a TTL).
 """
 
 import math
@@ -23,17 +31,18 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 import tf2_ros
 
 from sphero_rvr_core.coverage_exploration import (
     CoverageConfig,
+    candidate_goals,
     cell_center_world,
     cell_world_grid,
     is_frontier,
     robot_start_blocked,
-    select_next_goal,
     stamp_coverage,
     world_grid,
 )
@@ -46,31 +55,28 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("min_cluster_cells", 5)
         self.declare_parameter("include_frontiers", True)
         self.declare_parameter("free_threshold", 0)
-        self.declare_parameter("inscribed_radius_m", 0.14)
-        self.declare_parameter("occupied_threshold", 50)
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("cycle_period_s", 1.0)
-        # Blacklisting stops a failed goal being retried forever -- but it WAS
-        # forever, and wide. Two properties made that wrong in general, not just
-        # here: a planner failure is usually transient (it depends on where the robot
-        # currently is and how good the map is right now), and the disc written off
-        # was far larger than the thing that actually failed. Observed consequence:
-        # 2390 cells blacklisted = 73% of all free space, and the mission ended with
-        # 108 frontier cells still unexplored in an area that was reachable.
-        #
-        # Radius is derived from the ROBOT, not the room: a goal that failed says
-        # nothing about ground more than roughly one footprint away, so ~robot_radius
-        # (0.14) plus a small margin. TTL says how long a failure stays believable
-        # before the area is worth retrying; it is a parameter because the right
-        # value depends on platform speed, not on any particular space.
-        self.declare_parameter("blacklist_radius_m", 0.2)
-        self.declare_parameter("blacklist_ttl_s", 45.0)
+        # How many candidates one selection may ask the planner about before giving
+        # up for this cycle. Bounds the cost of a selection; the map is re-read next
+        # cycle anyway, so "give up for now" is never permanent.
+        self.declare_parameter("max_candidates", 12)
+        self.declare_parameter("plan_timeout_s", 2.0)
+        # Ceiling on ONE selection, so a slow planner cannot stall the explorer for
+        # max_candidates * plan_timeout_s. Running out of budget is explicitly not
+        # the same as running out of candidates.
+        self.declare_parameter("select_budget_s", 6.0)
         self.declare_parameter("complete_after_empty_cycles", 8)
         # Goal-progress watchdog: if a goal makes < this much progress in this many
-        # seconds, cancel + blacklist it instead of letting bt_navigator churn.
+        # seconds, cancel it -- it planned when we asked, but driving it is going
+        # nowhere. Suppressed briefly afterwards so the very next selection does not
+        # hand back the same cell (the planner would still say yes: planning is not
+        # the thing that failed).
         self.declare_parameter("goal_progress_timeout_s", 6.0)
         self.declare_parameter("goal_progress_epsilon_m", 0.10)
+        self.declare_parameter("stall_suppress_ttl_s", 45.0)
+        self.declare_parameter("stall_suppress_radius_m", 0.2)
         # Start-pose guard. If the robot's OWN costmap cell is at/above inscribed
         # cost, the planner treats the start as in collision and EVERY goal returns
         # "no valid path" while Nav2's motion recoveries are all collision-blocked.
@@ -86,14 +92,15 @@ class CoverageExplorerNode(Node):
             min_cluster_cells=int(self.get_parameter("min_cluster_cells").value),
             include_frontiers=bool(self.get_parameter("include_frontiers").value),
             free_threshold=int(self.get_parameter("free_threshold").value),
-            inscribed_radius_m=float(self.get_parameter("inscribed_radius_m").value),
-            occupied_threshold=int(self.get_parameter("occupied_threshold").value),
+            max_candidates=int(self.get_parameter("max_candidates").value),
         )
         self._goal_progress_timeout_s = float(self.get_parameter("goal_progress_timeout_s").value)
         self._goal_progress_epsilon_m = float(self.get_parameter("goal_progress_epsilon_m").value)
         self._base_frame = str(self.get_parameter("base_frame").value)
-        self._blacklist_radius_m = float(self.get_parameter("blacklist_radius_m").value)
-        self._blacklist_ttl_s = float(self.get_parameter("blacklist_ttl_s").value)
+        self._stall_ttl_s = float(self.get_parameter("stall_suppress_ttl_s").value)
+        self._stall_radius_m = float(self.get_parameter("stall_suppress_radius_m").value)
+        self._plan_timeout_s = float(self.get_parameter("plan_timeout_s").value)
+        self._select_budget_s = float(self.get_parameter("select_budget_s").value)
         map_topic = str(self.get_parameter("map_topic").value)
 
         self._map = None
@@ -101,9 +108,15 @@ class CoverageExplorerNode(Node):
         self._blocked_logged = False
         self._blocked_until = 0.0  # monotonic; blocked state flickers, so hold it
         self._covered = set()      # world-grid coords the rover has driven within radius of
-        self._blacklist = {}       # world-grid coord -> monotonic expiry time
-        self._suppress_blacklist = False  # set when WE cancel on purpose
+        # World-grid coords of goals that PLANNED but then made no progress, with a
+        # monotonic expiry. Nothing else writes here: an unplannable candidate needs
+        # no memory (we re-ask the planner every cycle and it is authoritative), and
+        # an aborted goal is likewise just re-asked. This is only to stop a
+        # stalled-but-plannable cell being reselected immediately, forever.
+        self._stalled = {}
         self._lock = threading.Lock()
+        self._unplannable_last_cycle = 0
+        self._selecting = False
         self._active_goal_cell = None
         self._active_goal_handle = None
         self._goal_inflight = False
@@ -129,6 +142,9 @@ class CoverageExplorerNode(Node):
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._nav = ActionClient(self, NavigateToPose, "navigate_to_pose", callback_group=cbg)
+        self._planner = ActionClient(
+            self, ComputePathToPose, "compute_path_to_pose", callback_group=cbg
+        )
         self.create_timer(
             float(self.get_parameter("cycle_period_s").value), self._tick, callback_group=cbg
         )
@@ -166,7 +182,7 @@ class CoverageExplorerNode(Node):
         m = self._map
         if m is None:
             return
-        self._prune_blacklist()
+        self._prune_stalled()
         frame = m.header.frame_id or "map"
         rp = self._robot_world(frame)
         if rp is None:
@@ -216,47 +232,84 @@ class CoverageExplorerNode(Node):
             inflight = self._goal_inflight
         if active_cell is not None:
             if self._still_target(m, w, h, ox, oy, res, active_cell):
-                # Watchdog: navigable selection should keep goals plannable, but if
-                # one still makes no progress (planner churning "no valid path"),
-                # cancel + blacklist it rather than let bt_navigator grind on it.
+                # Watchdog: the goal planned when we asked, so if it is making no
+                # progress the problem is downstream of planning. Drop it and
+                # suppress it briefly -- re-asking the planner would just get the
+                # same yes.
                 if self._goal_stalled(wx, wy):
                     self.get_logger().warn(
-                        f"coverage goal {active_cell} made no progress in "
-                        f"{self._goal_progress_timeout_s:.0f}s — blacklisting"
+                        f"coverage goal {active_cell} planned but made no progress in "
+                        f"{self._goal_progress_timeout_s:.0f}s — dropping it"
                     )
-                    self._cancel_active(voluntary=True)
-                    self._blacklist_cell(active_cell)
+                    self._cancel_active()
+                    self._suppress_cell(active_cell)
                 else:
                     return  # valid target, making progress -> keep driving
             else:
-                # Target was covered en route (or its unknown resolved) -- that is
-                # SUCCESS, not unreachability. Cancel without blacklisting, or every
-                # win would poison a blacklist disc around itself.
-                self._cancel_active(voluntary=True)
+                # Target was covered en route (or its unknown resolved) -- success.
+                self._cancel_active()
         if inflight:
             return
 
-        goal_cell = select_next_goal(
-            m.data, w, h, ox, oy, res, rcx, rcy, self._covered, set(self._blacklist), self._config
+        candidates = candidate_goals(
+            m.data, w, h, ox, oy, res, rcx, rcy, self._covered, set(self._stalled), self._config
         )
+        # Selection blocks on planner queries and can outlast the tick period, so it
+        # must not re-enter: two selection loops would race to send two goals, and
+        # concurrent goals fighting over one actuator is this stack's known way to
+        # produce motion that looks like a perception failure (the 2026-08-03
+        # follow_path preemption bug). One selection at a time.
+        with self._lock:
+            if self._selecting:
+                return
+            self._selecting = True
+        try:
+            goal_cell = None
+            exhausted = False
+            budget = time.monotonic() + self._select_budget_s
+            for cell in candidates:
+                if time.monotonic() >= budget:
+                    # Out of time, not out of candidates -- the rest are unjudged, so
+                    # this cycle must not count as evidence of "nothing plannable".
+                    exhausted = True
+                    self.get_logger().warn(
+                        f"selection budget ({self._select_budget_s:.0f}s) spent after "
+                        f"{candidates.index(cell)}/{len(candidates)} candidates"
+                    )
+                    break
+                gx, gy = cell
+                gwx, gwy = cell_center_world(gx, gy, ox, oy, res)
+                if self._planner_can_reach(gwx, gwy, frame):
+                    goal_cell = cell
+                    break
+        finally:
+            with self._lock:
+                self._selecting = False
+        self._unplannable_last_cycle = (
+            len(candidates) if goal_cell is None else candidates.index(goal_cell)
+        )
+        if goal_cell is None and exhausted:
+            return  # inconclusive cycle: leave the completion counter alone
+
         if goal_cell is None:
             # Debounce: don't latch "complete" on a transient/startup empty. Only
             # finish after N consecutive empties AND once it has actually explored.
             self._consecutive_empty += 1
             if self._ever_had_target and self._consecutive_empty >= self._complete_after_empty:
                 self._mission_done = True
-                blacklisted = len(self._blacklist)
-                if blacklisted:
-                    # Running out of candidates because they were all marked
-                    # unreachable is NOT the same as having covered everything.
-                    # Saying "COMPLETE" here is a lie: on 2026-08-08 the rover
-                    # declared it one second after reporting START POSE BLOCKED,
-                    # wedged against a chair with 2315 cells blacklisted.
+                if candidates:
+                    # There IS uncovered ground the rover wants; the planner just
+                    # will not route to any of it. That is not a finished mission and
+                    # must never be reported as one -- it is the honest form of the
+                    # 2026-08-07 false COMPLETE, and now it is a structural
+                    # distinction (targets exist vs targets don't) rather than an
+                    # inference from how much got blacklisted.
                     self.get_logger().warn(
-                        f"exploration ENDED with no reachable targets left — "
-                        f"{len(self._covered)} cells covered but {blacklisted} "
-                        "blacklisted as unreachable, so COVERAGE MAY BE INCOMPLETE. "
-                        "Check whether the rover is stuck or boxed in."
+                        f"exploration ENDED with {len(candidates)} target(s) still "
+                        f"wanted but NONE plannable — {len(self._covered)} cells "
+                        "covered, so COVERAGE IS INCOMPLETE. The planner refuses "
+                        "every remaining candidate: check whether the rover is boxed "
+                        "in, or whether the costmap is blocking ground /map calls free."
                     )
                 else:
                     self.get_logger().info(
@@ -269,6 +322,50 @@ class CoverageExplorerNode(Node):
         self._goal_start_pose = (wx, wy)
         self._goal_start_time = time.monotonic()
         self._send_goal(goal_cell, frame, ox, oy, res)
+
+    def _await(self, future, deadline):
+        """Block this callback until `future` resolves or `deadline` passes.
+
+        Safe because the node runs on a MultiThreadedExecutor with a reentrant
+        callback group, so another thread services the action response while this
+        one waits. Returns the result, or None on timeout.
+        """
+        while not future.done():
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.01)
+        return future.result()
+
+    def _planner_can_reach(self, wx, wy, frame):
+        """Ask the PLANNER whether it can route to (wx, wy) from where we are now.
+
+        This is the authority on reachability. A path with poses means go; anything
+        else -- refused, timed out, empty path -- means try the next candidate. It
+        fails CLOSED for a single candidate (we skip it) but never for the mission:
+        candidates are re-proposed and re-asked next cycle, so a planner hiccup
+        costs one cycle, not a permanently written-off area.
+        """
+        if not self._planner.server_is_ready():
+            if not self._planner.wait_for_server(timeout_sec=1.0):
+                self.get_logger().warn(
+                    "compute_path_to_pose unavailable — cannot verify reachability"
+                )
+                return False
+        goal = ComputePathToPose.Goal()
+        goal.goal = PoseStamped()
+        goal.goal.header.frame_id = frame
+        goal.goal.pose.position.x = float(wx)
+        goal.goal.pose.position.y = float(wy)
+        goal.goal.pose.orientation.w = 1.0
+        goal.use_start = False  # plan from the robot's live pose
+        deadline = time.monotonic() + self._plan_timeout_s
+        handle = self._await(self._planner.send_goal_async(goal), deadline)
+        if handle is None or not handle.accepted:
+            return False
+        result = self._await(handle.get_result_async(), deadline)
+        if result is None:
+            return False
+        return len(result.result.path.poses) > 0
 
     def _goal_stalled(self, wx, wy):
         """True if the active goal has made < epsilon progress for > timeout. The
@@ -292,7 +389,7 @@ class CoverageExplorerNode(Node):
         if not (0 <= v <= self._config.free_threshold):
             return False
         wg = cell_world_grid(gx, gy, ox, oy, res)
-        if wg in self._blacklist:
+        if wg in self._stalled:
             return False
         if wg not in self._covered:
             return True
@@ -316,7 +413,8 @@ class CoverageExplorerNode(Node):
             self._active_goal_cell = cell
         self.get_logger().info(
             f"coverage goal -> cell {cell} world ({wx:.2f},{wy:.2f}); "
-            f"covered={len(self._covered)} blacklisted={len(self._blacklist)}"
+            f"covered={len(self._covered)} planner-rejected={self._unplannable_last_cycle} "
+            f"stalled={len(self._stalled)}"
         )
         self._nav.send_goal_async(goal).add_done_callback(self._on_goal_response)
 
@@ -325,11 +423,11 @@ class CoverageExplorerNode(Node):
         with self._lock:
             self._goal_inflight = False
         if not handle.accepted:
-            self.get_logger().warn("coverage goal REJECTED — blacklisting")
+            # No memory needed: the next cycle re-asks the planner, which is the
+            # authority on whether this is worth trying again.
+            self.get_logger().warn("coverage goal REJECTED by bt_navigator")
             with self._lock:
-                cell = self._active_goal_cell
                 self._active_goal_cell = None
-            self._blacklist_cell(cell)
             return
         with self._lock:
             self._active_goal_handle = handle
@@ -338,40 +436,32 @@ class CoverageExplorerNode(Node):
     def _on_goal_result(self, future):
         status = future.result().status
         with self._lock:
-            cell = self._active_goal_cell
             self._active_goal_handle = None
             self._active_goal_cell = None
-        with self._lock:
-            suppress = self._suppress_blacklist
-            self._suppress_blacklist = False
-        # Only a genuine ABORT means unreachable. A CANCEL that we initiated is
-        # either success (covered en route) or already blacklisted by the watchdog;
-        # blacklisting it again poisons map we actually covered and can drive a
-        # premature "mission COMPLETE".
-        if status == GoalStatus.STATUS_ABORTED or (
-            status == GoalStatus.STATUS_CANCELED and not suppress
-        ):
-            self._blacklist_cell(cell)
+        if status == GoalStatus.STATUS_ABORTED:
+            # Also no memory: an abort says this drive failed, not that the ground is
+            # unreachable. Re-proposing it costs one planner query, and if it really
+            # is unreachable the planner says so for free.
+            self.get_logger().info("coverage goal aborted — reselecting")
 
-    def _cancel_active(self, voluntary=False):
-        """Cancel the in-flight goal. `voluntary=True` means WE decided to drop it
-        (target already covered, or the watchdog is about to blacklist it
-        explicitly), so the CANCELED result must not be treated as unreachable."""
+    def _cancel_active(self):
+        """Cancel the in-flight goal. The result callback needs no special case:
+        nothing is written off on a cancel."""
         with self._lock:
             handle = self._active_goal_handle
             self._active_goal_handle = None
             self._active_goal_cell = None
-            self._suppress_blacklist = voluntary
         if handle is not None:
             handle.cancel_goal_async()
 
-    def _prune_blacklist(self):
-        """Drop expired entries so a temporarily unreachable area gets retried."""
+    def _prune_stalled(self):
+        """Drop expired entries so a briefly-stuck area gets retried."""
         now = time.monotonic()
-        for coord in [c for c, exp in self._blacklist.items() if exp <= now]:
-            del self._blacklist[coord]
+        for coord in [c for c, exp in self._stalled.items() if exp <= now]:
+            del self._stalled[coord]
 
-    def _blacklist_cell(self, cell):
+    def _suppress_cell(self, cell):
+        """Briefly stop proposing a goal that planned but would not drive."""
         if cell is None or self._map is None:
             return
         info = self._map.info
@@ -379,11 +469,11 @@ class CoverageExplorerNode(Node):
         ox, oy = info.origin.position.x, info.origin.position.y
         gx, gy = cell
         wx, wy = cell_center_world(gx, gy, ox, oy, res)
-        expiry = time.monotonic() + self._blacklist_ttl_s
-        r = int(math.ceil(self._blacklist_radius_m / res))
+        expiry = time.monotonic() + self._stall_ttl_s
+        r = int(math.ceil(self._stall_radius_m / res))
         for dy in range(-r, r + 1):
             for dx in range(-r, r + 1):
-                self._blacklist[world_grid(wx + dx * res, wy + dy * res, res)] = expiry
+                self._stalled[world_grid(wx + dx * res, wy + dy * res, res)] = expiry
 
 
 def main(args=None):

@@ -15,12 +15,16 @@ occupancy grid (``occ``: -1 unknown, 0 free, >0 occupied) plus a ``covered`` set
 world-grid coordinates that the node grows as the rover drives. Coverage is tracked
 in a framing-independent world grid (quantized at the map resolution) so a shifting
 SLAM map origin does not invalidate it.
+
+This module answers "what is worth going to, nearest first" and deliberately not
+"can the rover get there" — the planner owns that question and is the only thing
+that can answer it correctly.
 """
 
 from dataclasses import dataclass
 from collections import deque
 import math
-from typing import Optional, Tuple
+from typing import Tuple
 
 
 @dataclass(frozen=True)
@@ -35,14 +39,10 @@ class CoverageConfig:
     include_frontiers: bool = True
     # A cell counts as free when 0 <= value <= this (0 = strict trinary map).
     free_threshold: int = 0
-    # NAVIGABILITY: only target/traverse free cells at least this far from an
-    # obstacle (the planner's inscribed radius). Cells closer than this become
-    # lethal on the global costmap, so targeting them (or routing a target behind a
-    # passage narrower than 2x this) yields "no valid path" churn. Matching the
-    # planner's robot_radius makes coverage's reachability agree with the planner.
-    inscribed_radius_m: float = 0.14
-    # A map cell counts as an obstacle for the navigability check when value >= this.
-    occupied_threshold: int = 50
+    # How many candidates to offer per selection. The caller asks the PLANNER about
+    # each in turn and takes the first that yields a path, so this bounds how many
+    # planner queries one selection can cost. Reachability is not decided here.
+    max_candidates: int = 12
 
 
 def world_grid(wx: float, wy: float, res: float) -> Tuple[int, int]:
@@ -87,47 +87,13 @@ def is_frontier(occ, w: int, h: int, cx: int, cy: int, free_threshold: int = 0) 
 
 def cell_world_grid(cx: int, cy: int, origin_x: float, origin_y: float, res: float) -> Tuple[int, int]:
     """World-grid coordinate of map cell (cx, cy) — framing-independent, so a
-    shifting SLAM origin doesn't invalidate `covered`/`blacklist` (both are keyed
+    shifting SLAM origin doesn't invalidate `covered`/`suppressed` (both are keyed
     by world grid, not map cell)."""
     wx, wy = cell_center_world(cx, cy, origin_x, origin_y, res)
     return world_grid(wx, wy, res)
 
 
-def compute_navigable(occ, w: int, h: int, inscribed_cells: int, occupied_threshold: int, free_threshold: int):
-    """Bytearray mask (1=navigable) of free cells at least `inscribed_cells` from
-    any obstacle — a stand-in for where the planner won't hit lethal cost. Both
-    coverage targets and reachability flood are restricted to these, so coverage's
-    idea of "reachable" matches the planner's (no targets behind too-narrow
-    passages, no targets in soon-to-be-lethal near-wall cells)."""
-    nav = bytearray(w * h)
-    r = inscribed_cells
-    r2 = r * r
-    for cy in range(h):
-        for cx in range(w):
-            idx = cy * w + cx
-            if not (0 <= occ[idx] <= free_threshold):
-                continue  # not free
-            blocked = False
-            for dy in range(-r, r + 1):
-                if blocked:
-                    break
-                ny = cy + dy
-                if ny < 0 or ny >= h:
-                    continue
-                base = ny * w
-                for dx in range(-r, r + 1):
-                    if dx * dx + dy * dy > r2:
-                        continue
-                    nx = cx + dx
-                    if 0 <= nx < w and occ[base + nx] >= occupied_threshold:
-                        blocked = True
-                        break
-            if not blocked:
-                nav[idx] = 1
-    return nav
-
-
-def select_next_goal(
+def candidate_goals(
     occ,
     w: int,
     h: int,
@@ -137,34 +103,38 @@ def select_next_goal(
     robot_cx: int,
     robot_cy: int,
     covered: set,
-    blacklist: set,
+    suppressed: set,
     config: CoverageConfig,
-) -> Optional[Tuple[int, int]]:
-    """Pick the nearest reachable target cell, or None if the mission is complete.
+) -> list:
+    """Propose target cells in nearest-first order. Does NOT decide navigability.
 
     A *target* is a free cell that is uncovered OR (if enabled) a frontier, and is
-    not blacklisted. ``covered`` and ``blacklist`` are sets of WORLD-GRID coords
+    not suppressed. ``covered`` and ``suppressed`` are sets of WORLD-GRID coords
     (see ``cell_world_grid``), not map cells, so they survive a shifting SLAM
-    origin. "Nearest" and "reachable" are by a flood over free space from the robot
-    (so cells walled off from the robot are never chosen). A target is only returned
-    if it belongs to a cluster of at least ``min_cluster_cells`` (to skip noise).
-    Returns the goal cell (cx, cy), or None when no reachable target remains — the
-    coverage+frontier mission is done.
+    origin. "Nearest" is by a flood over free space from the robot, which also
+    excludes cells walled off from the robot — map connectivity is a fact the
+    occupancy grid can state. A target is only proposed if it belongs to a cluster
+    of at least ``min_cluster_cells`` (to skip sensor noise), and at most one cell
+    per cluster is proposed.
+
+    Whether a proposal is actually *drivable* is the planner's question, and only
+    the planner can answer it: this module previously eroded the map by an inscribed
+    radius and flooded over the result as a stand-in, which disagreed with the real
+    costmap often enough to need a blacklist, a TTL and a watchdog to contain the
+    disagreement. The caller now asks ``ComputePathToPose`` about these candidates in
+    order and takes the first that plans. Returns up to ``max_candidates`` cells.
     """
     if not (0 <= robot_cx < w and 0 <= robot_cy < h):
-        return None
+        return []
 
-    inscribed_cells = max(0, int(round(config.inscribed_radius_m / res)))
-    navigable = compute_navigable(
-        occ, w, h, inscribed_cells, config.occupied_threshold, config.free_threshold
-    )
+    def is_free(cx: int, cy: int) -> bool:
+        return _is_free(occ, cy * w + cx, config.free_threshold)
 
     def is_target(cx: int, cy: int) -> bool:
-        idx = cy * w + cx
-        if not navigable[idx]:
+        if not is_free(cx, cy):
             return False
         wg = cell_world_grid(cx, cy, origin_x, origin_y, res)
-        if wg in blacklist:
+        if wg in suppressed:
             return False
         if wg not in covered:
             return True
@@ -186,28 +156,29 @@ def select_next_goal(
                     stack.append((nx, ny))
         return size
 
-    # BFS over NAVIGABLE space from the robot; the first target (nearest) whose
-    # cluster is big enough wins. Flooding over navigable-only cells makes
-    # reachability match the planner: targets behind passages narrower than the
-    # robot are never reached, so they are never selected -> no "no valid path"
-    # churn. The robot's own start cell is always enqueued (it may sit just inside
-    # the inscribed margin), but expansion only follows navigable cells.
+    # BFS over free space from the robot, collecting one representative per
+    # big-enough target cluster in nearest-first order. The robot's own cell is
+    # always enqueued (it may sit in near-wall cost the planner dislikes, which is
+    # the planner's business, not this flood's).
     visited = bytearray(w * h)
-    start = robot_cy * w + robot_cx
-    visited[start] = 1
+    visited[robot_cy * w + robot_cx] = 1
     dq = deque([(robot_cx, robot_cy)])
     checked_cluster: set = set()
+    found: list = []
     while dq:
         cx, cy = dq.popleft()
         if is_target(cx, cy) and (cx, cy) not in checked_cluster:
             if cluster_size(cx, cy, checked_cluster) >= config.min_cluster_cells:
-                return (cx, cy)
+                found.append((cx, cy))
+                if len(found) >= config.max_candidates:
+                    return found
         for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
-            nidx = ny * w + nx
-            if 0 <= nx < w and 0 <= ny < h and not visited[nidx] and navigable[nidx]:
-                visited[nidx] = 1
-                dq.append((nx, ny))
-    return None
+            if 0 <= nx < w and 0 <= ny < h:
+                nidx = ny * w + nx
+                if not visited[nidx] and _is_free(occ, nidx, config.free_threshold):
+                    visited[nidx] = 1
+                    dq.append((nx, ny))
+    return found
 
 
 # Nav2 publishes its costmap as an OccupancyGrid scaled 0..100 (-1 unknown), where

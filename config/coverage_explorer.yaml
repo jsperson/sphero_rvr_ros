@@ -13,39 +13,43 @@ coverage_explorer:
     # adjacent to unknown (proper frontiers), whereas the costmap's inflation sits
     # between free and unknown near walls and starves target detection. (A run
     # against the costmap declared "complete" immediately with 0 goals; /map
-    # explores thoroughly.) Un-plannable near-wall targets still abort and get
-    # blacklisted, which is acceptable churn.
+    # explores thoroughly.) Whether a /map target is actually drivable is settled
+    # per-goal by ComputePathToPose, so /map's optimism costs a planner query, not
+    # a churning goal.
     map_topic: /map
-    # NAVIGABILITY: only target/route through free cells at least this far from an
-    # obstacle (match the planner's robot_radius). Stops the coverage explorer from
-    # picking cells the planner can't reach (behind too-narrow passages, or in
-    # near-wall soon-to-be-lethal cost) — the "no valid path" churn / 5° shuffles.
-    inscribed_radius_m: 0.14
-    occupied_threshold: 50
+    # REACHABILITY IS THE PLANNER'S. Candidates are proposed nearest-first and each
+    # is checked with ComputePathToPose until one plans; the first that plans is
+    # sent. This caps how many queries one selection may cost. The map is re-read
+    # every cycle, so exhausting the cap is never permanent.
+    max_candidates: 12
+    plan_timeout_s: 2.0
+    # Ceiling on one whole selection, so a slow planner can't stall the explorer for
+    # max_candidates * plan_timeout_s. Exhausting the budget is logged and the cycle
+    # is treated as inconclusive — never as "nothing is plannable".
+    select_budget_s: 6.0
     # Declare the mission complete only after this many CONSECUTIVE empty searches
     # (and only after it has actually found targets) — avoids latching "complete"
     # on a transient/startup empty map.
     complete_after_empty_cycles: 8
-    # Goal-progress watchdog: cancel + blacklist a goal that makes < epsilon
-    # progress within the timeout, instead of letting bt_navigator churn on it.
+    # Goal-progress watchdog: a goal that PLANNED but then makes < epsilon progress
+    # within the timeout gets dropped -- planning is not what failed, so re-asking
+    # the planner would just get the same yes.
     goal_progress_timeout_s: 6.0
     goal_progress_epsilon_m: 0.10
     base_frame: base_link
     cycle_period_s: 1.0
-    # On an unreachable/aborted goal, blacklist a disk of this radius around it.
-    # Derived from the ROBOT, not the room: a failed goal says nothing about ground
-    # more than ~one footprint away, so ~robot_radius (0.14) plus a small margin.
-    # Was 0.3 (169 cells) -- one failure poisoned far more map than it justified.
-    blacklist_radius_m: 0.2
-    # A planner failure is transient (depends on where the robot is and how good the
-    # map is right now), so blacklisting must not be permanent or a reachable area
-    # gets written off for the whole mission.
-    blacklist_ttl_s: 45.0
+    # After such a stall, stop proposing that spot for a while. This is the ONLY
+    # remaining failure memory -- planner refusals and goal aborts keep none, because
+    # the planner is re-asked every cycle and is authoritative. Radius is derived
+    # from the ROBOT (~robot_radius 0.14 plus margin): a stall says nothing about
+    # ground more than about one footprint away.
+    stall_suppress_radius_m: 0.2
+    stall_suppress_ttl_s: 45.0
     # Refuse to issue goals when the robot's OWN costmap cell is at/above inscribed
     # cost. In that state the planner treats the start as in collision, EVERY goal
     # returns "no valid path", and Nav2's motion recoveries are all collision-blocked
-    # -- the explorer would otherwise churn and blacklist the whole map while going
-    # nowhere (2026-08-07: 0.26 m rear clearance vs the 0.30 m robot_radius +
+    # -- so every candidate would be refused and the explorer would report a false
+    # end-of-mission while going nowhere (2026-08-07: 0.26 m rear clearance vs the
     # inflation_radius envelope burned a four-minute run). Fails OPEN: an unknown
     # cell or a missing costmap never halts exploration.
     blocked_start_check: true
