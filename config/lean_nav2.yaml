@@ -166,7 +166,27 @@ global_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         footprint_clearing_enabled: true
-        observation_sources: scan camera_low
+        # GLOBAL GEOMETRY COMES FROM SLAM + LIDAR ONLY -- no camera_low here.
+        #
+        # The camera used to mark this costmap as well, so the planner would route
+        # around low obstacles. Removed 2026-08-08: the global costmap is where a
+        # bad mark does the most damage (it can close a doorway to the planner
+        # outright, which is exactly the narrow-gap regression), and it is the
+        # layer whose job SLAM's /map already does. A monocular floor-boundary
+        # detector is the least trustworthy source in the stack, so it should not
+        # get a vote on global geometry.
+        #
+        # WHAT IS KEPT: camera_low still marks the LOCAL costmap, and the collision
+        # brake still reads /camera/low_obstacles directly -- so the rover still
+        # stops for the sub-lidar obstacles it could not see before (the chair-leg
+        # / shoe case, hardware-validated 2026-08-05/06). Safety is unchanged.
+        #
+        # WHAT IS LOST: in decisive mode there is no local costmap at all, so low
+        # obstacles no longer influence PLANNING there -- the rover brakes for a
+        # shoe rather than routing around it. That is the intended trade: braking is
+        # proven, route-around never was in the field, and a phantom mark that
+        # blocks a doorway costs the whole mission.
+        observation_sources: scan
         scan:
           topic: /scan
           data_type: "LaserScan"
@@ -175,27 +195,6 @@ global_costmap:
           max_obstacle_height: 0.5
           raytrace_max_range: 6.0
           obstacle_max_range: 6.0
-        # Low-obstacle cloud on the GLOBAL costmap too: the planner (and the
-        # decisive controller, which follows the global path and has no local
-        # costmap) routes around low obstacles. Static low obstacles stay marked
-        # (correct); the height gate + raytrace clearing limit stale/false marks.
-        camera_low:
-          topic: /camera/low_obstacles
-          data_type: "PointCloud2"
-          clearing: true
-          marking: true
-          min_obstacle_height: -0.05
-          max_obstacle_height: 0.30
-          # LOAD-BEARING RANGES. low_obstacle publishes clear-ray endpoints at
-          # clear_range_m (1.8) on obstacle-free bearings; those must fall BETWEEN
-          # obstacle_max_range and raytrace_max_range so they clear stale marks
-          # without being marked as obstacles themselves. Bench-proven: without
-          # those rays nothing ever raytraces a bearing that stopped seeing an
-          # obstacle, so its mark persists forever (phantom obstacles accumulate).
-          obstacle_max_range: 1.5
-          obstacle_min_range: 0.0
-          raytrace_max_range: 2.0
-          raytrace_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
