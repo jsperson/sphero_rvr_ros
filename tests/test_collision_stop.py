@@ -690,3 +690,39 @@ def test_pivot_refused_for_an_obstacle_between_the_named_sectors():
     sup.apply_command(TwistCommand(0.2, 0.0), now=0.1)
     decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
     assert decision.output.angular_z == 0.0, "pivot granted into a corner obstacle"
+
+
+def test_front_stop_does_not_synthesize_a_pivot_from_an_amputated_arc():
+    """D25. A front stop zeroes forward motion. It must not then hand back the
+    residual angular of an ARC, because that turns "drive forward while curving
+    left" into "pivot in place" -- a motion the caller never asked for.
+
+    Measured in the field 2026-08-10 at 14:29:01: the controller commanded a forward
+    arc (0.20, -0.80) into a chair, the front stop correctly zeroed linear, and the
+    escape passed the rotation through. The rover ground against the chair for 2.5 s
+    -- audible strain, tracks slipping, reported yaw swinging +/-40 deg per 0.3 s
+    while position never changed -- until the back-off clock expired and reversed it
+    out cleanly on the first attempt.
+
+    The obstacle here sits OUTSIDE the swept circle, so the geometry gates would all
+    permit this rotation; only the pure-pivot condition refuses it. That is what makes
+    this a real regression test rather than a restatement of D17/D18.
+    """
+    sup = _front_stopped(0.25)
+    assert 0.25 > SWEPT_RADIUS, "obstacle must be outside the sweep, or D18 refuses it"
+    decision = sup.apply_command(TwistCommand(0.2, 0.4), now=0.2)
+    assert decision.output.linear_x == 0.0, "the front stop must still kill forward"
+    assert decision.output.angular_z == 0.0, (
+        "an arc whose forward half was amputated must NOT become an in-place pivot"
+    )
+
+
+def test_front_stop_still_grants_a_deliberate_pure_pivot():
+    """The other half of D25: a caller that genuinely wants to rotate out of a stop
+    sends a PURE pivot, and must still get it. Same supervisor, same scan, same
+    obstacle -- only the request differs. Without this pairing the fix above could be
+    'refuse all rotation', which is the D17-era bug that stranded the rover."""
+    sup = _front_stopped(0.25)
+    decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
+    assert decision.output.linear_x == 0.0
+    assert decision.output.angular_z != 0.0

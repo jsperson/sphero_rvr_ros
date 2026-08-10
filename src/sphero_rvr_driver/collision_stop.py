@@ -875,7 +875,25 @@ class CollisionStopSupervisor:
             # Forward stays zeroed; only rotation passes, and only when the swept path
             # of that rotation is itself clear, so this cannot turn the flank into
             # something.
-            if bounded.angular_z != 0.0:
+            #
+            # ONLY FOR A REQUEST THAT WAS ALREADY A PURE PIVOT (D25). Granting the
+            # residual angular of an ARC whose forward half we just amputated
+            # SYNTHESIZES a motion nobody asked for. Measured 2026-08-10 at 14:29:01:
+            # the controller commanded a forward arc (0.20, -0.80) into a chair, the
+            # front stop correctly zeroed linear, and this branch passed -0.40 through
+            # -- turning "drive forward while curving left" into "pivot in place". The
+            # rover ground against the chair for 2.5 s (audible strain; tracks slipping,
+            # reported yaw swinging +/-40 deg per 0.3 s while position never changed)
+            # until the controller's own back-off clock expired and reversed it out
+            # cleanly on the first try.
+            # A caller that genuinely wants to rotate out of a stop sends a pure pivot
+            # and still gets it -- every D17-D21 gate below is untouched. A caller
+            # asking to arc gets its forward request refused, which is what a front
+            # stop MEANS, and is then free to ask for something else (the back-off
+            # reflex asks for straight reverse, the one route known to be clear).
+            # (A reverse arc never reaches here: the reverse-escape branch above
+            # returns first for linear_x < 0, so this condition means "pure pivot".)
+            if bounded.angular_z != 0.0 and bounded.linear_x <= 0.0:
                 # A pivot sweeps a CIRCLE of the footprint's corner radius, in every
                 # direction. Both halves of that sentence were got wrong first time:
                 #
