@@ -363,6 +363,30 @@ def test_d12_timed_out_behaviour_is_cancelled_before_the_next(stack):
         assert allowance == pytest.approx(BASE_PARAMS["unstick_timeout_s"], abs=0.01)
 
 
+def test_d24_give_up_report_states_the_true_remaining_target_count(stack):
+    """D24. The give-up path used to pass a literal 0 for `remaining_candidates`, so
+    a mission that quit surrounded by unexplored floor reported the single most
+    reassuring number available. The field is the one the register credits with
+    making an incomplete run diagnosable, so a fabricated 0 is the same class of
+    defect as D21's lying telemetry.
+
+    The map here is wide open and the rover never moves (nav holds until cancelled),
+    so at give-up there are unmistakably targets left. The report must say so.
+    """
+    stack.world.nav_mode = "hold"          # accepted, never progresses -> watchdog
+    stack.world.publish_map(make_map())
+    assert wait_until(
+        lambda: any(r.get("outcome") == "ABORTED_GOALS_KEEP_FAILING"
+                    for r in stack.world.reports), 30.0
+    ), "the stalled mission never gave up"
+    report = [r for r in stack.world.reports
+              if r.get("outcome") == "ABORTED_GOALS_KEEP_FAILING"][-1]
+    assert report["remaining_candidates"] > 0, (
+        "gave up with open floor all round and still reported 0 targets remaining "
+        "— the field is fabricated, not measured"
+    )
+
+
 def test_d13_no_goal_after_the_mission_reports_done(stack):
     """Three aborts end the mission from an action-callback thread. After the
     terminal report, the nav server must never see another goal."""

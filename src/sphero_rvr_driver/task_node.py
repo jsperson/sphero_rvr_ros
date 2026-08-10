@@ -30,15 +30,17 @@ INTERFACE CHOICES, because they were forced and are worth stating:
   parameters (`query_label`, `query_radius_m`, `query_near_x/y`,
   `query_min_confidence`), read under the same lock that answers. Only `Trigger`,
   `SetBool` and `Empty` exist without generating a custom interface package, and
-  none carries a string; a `.srv` of our own is the honest v2 upgrade.
+  none carries a string; a `.srv` of our own is the honest v2 upgrade, WHEN the LLM
+  client lands and not before.
   These started as ONE `query_json` string parameter, which is the obvious design
   and is unusable: `ros2 param set` SEGFAULTS on any value starting with `{`
   (it YAML-parses the value, a `{...}` becomes a dictionary, and dictionaries are
   not a parameter type). Reproduced twice on jazzy -- a plain string sets fine,
   `{"label": "shoe"}` dumps core. Typed parameters are also simply better ROS:
-  each is self-describing and range-checkable. Read-and-answer is atomic, so a lone
-  caller (which is what an LLM client is) is safe; two concurrent callers can
-  interleave set-then-call and must not be assumed safe.
+  each is self-describing and range-checkable. The lock covers the SNAPSHOT read
+  only; the parameters are read just before it. So one caller setting its own
+  arguments then calling is consistent, but two concurrent callers can interleave
+  set-then-call and must not be assumed safe.
 
 Everything decidable without ROS -- the goal envelope, the semantic query, the
 result shape -- lives in `sphero_rvr_core.task_tools`.
@@ -332,8 +334,8 @@ class TaskNode(Node):
         """Answer from the latest `/semantic_map/objects` snapshot.
 
         Arguments come from the typed query_* parameters (see the interface note at
-        the top). Read-and-answer is atomic under one lock so a single caller cannot
-        be interleaved with its own snapshot update.
+        the top); they are read here, then the lock covers taking a consistent
+        snapshot of the objects JSON while the subscription may be replacing it.
         """
         label = str(self.get_parameter("query_label").value or "") or None
         radius = float(self.get_parameter("query_radius_m").value)

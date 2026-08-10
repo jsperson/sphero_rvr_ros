@@ -843,7 +843,46 @@ class CoverageExplorerNode(Node):
             )
             self._mission_done = True
             res = self._map.info.resolution if self._map else 0.05
-            self._finish(OUTCOME_GOALS_KEEP_FAILING, res, 0)
+            # MEASURE what is left; do not assert 0. This path used to pass a
+            # literal zero, so a mission that quit surrounded by unexplored floor
+            # reported the most reassuring number available -- and both of the
+            # 2026-08-10 runs did exactly that, including one that never moved an
+            # inch and so had every candidate outstanding. remaining_candidates is
+            # the field that makes an incomplete run diagnosable rather than merely
+            # disappointing; fabricating it is the same class of defect as D21's
+            # lying telemetry (D24).
+            self._finish(OUTCOME_GOALS_KEEP_FAILING, res, self._remaining_candidates())
+
+    def _remaining_candidates(self):
+        """How many targets the explorer still wants, measured right now.
+
+        Capped at `max_candidates` exactly like the completion path's count, so the
+        two report paths mean the same thing: "are there targets left, and roughly
+        how many", not a census. Returns None -- serialized as JSON null, i.e.
+        UNKNOWN -- when the map or the robot pose is missing, because in that state
+        the question genuinely cannot be answered and a 0 would be the same lie this
+        exists to remove.
+        """
+        m = self._map
+        if m is None:
+            return None
+        rp = self._robot_world(m.header.frame_id or "map")
+        if rp is None:
+            return None
+        info = m.info
+        res = info.resolution
+        ox, oy = info.origin.position.x, info.origin.position.y
+        try:
+            return len(candidate_goals(
+                m.data, info.width, info.height, ox, oy, res,
+                int((rp[0] - ox) / res), int((rp[1] - oy) / res),
+                self._covered, set(self._stalled), self._config,
+            ))
+        except Exception as exc:
+            # Never let the count-for-the-report take the report down with it: an
+            # unwritten report is strictly worse than one with an unknown field.
+            self.get_logger().warn(f"could not count remaining targets: {exc}")
+            return None
 
     def _cancel_active(self):
         """Cancel the in-flight goal. The result callback needs no special case:

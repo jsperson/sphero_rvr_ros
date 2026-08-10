@@ -109,3 +109,21 @@ def test_goals_keep_failing_is_a_distinct_outcome():
     assert r["complete"] is False
     assert r["outcome"] == "ABORTED_GOALS_KEEP_FAILING"
     assert r["goals"]["aborted"] == 82
+
+
+def test_remaining_candidates_none_means_unknown_not_zero():
+    """D24. None serializes to JSON null so a report can say "I could not tell"
+    instead of the most reassuring number available. A 0 here is a claim that
+    nothing is left worth going to, and that claim was false on both 2026-08-10
+    runs -- including one that never moved and so had every target outstanding."""
+    from sphero_rvr_core.mission_report import OUTCOME_GOALS_KEEP_FAILING
+    r = build_report(OUTCOME_GOALS_KEEP_FAILING, covered_cells=100, resolution=0.05,
+                     duration_s=10.0, remaining_candidates=None)
+    assert r["remaining_candidates"] is None
+    assert json.loads(json.dumps(r))["remaining_candidates"] is None
+
+
+def test_remaining_candidates_zero_is_still_a_real_zero():
+    r = build_report(OUTCOME_COMPLETE, covered_cells=100, resolution=0.05,
+                     duration_s=10.0, remaining_candidates=0)
+    assert r["remaining_candidates"] == 0

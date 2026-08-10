@@ -58,7 +58,11 @@ def build_report(
     whether the room was actually covered.
 
     ``remaining_candidates`` is what makes an incomplete run diagnosable: it says how
-    much ground the explorer still wanted when it stopped.
+    much ground the explorer still wanted when it stopped. **None means UNKNOWN** and
+    serializes to JSON null -- reserved for the case where the count genuinely cannot
+    be taken (no map, no pose). It must never be used as a stand-in for zero: a
+    fabricated 0 reads as "nothing left worth going to", which is the most
+    reassuring possible claim and was untrue on both 2026-08-10 runs (D24).
     """
     if outcome not in ALL_OUTCOMES:
         raise ValueError(f"unknown outcome {outcome!r}")
@@ -74,7 +78,9 @@ def build_report(
             "aborted": int(goals_aborted),
             "planner_rejections": int(planner_rejections),
         },
-        "remaining_candidates": int(remaining_candidates),
+        "remaining_candidates": (
+            None if remaining_candidates is None else int(remaining_candidates)
+        ),
         "map_files": list(map_files or []),
     }
 
