@@ -218,9 +218,14 @@ behavior_server:
   ros__parameters:
     use_sim_time: false
     enable_stamped_cmd_vel: false
-    local_costmap_topic: local_costmap/costmap_raw
+    # D16: decisive mode removes the local costmap and the collision checker
+    # fails closed on missing data, refusing every Spin ("Current footprint not
+    # available." -> "Collision Ahead"; measured by diagnostics/spin_gate_probe.py).
+    # Point the local collision source at the global costmap, which exists in
+    # both modes.
+    local_costmap_topic: global_costmap/costmap_raw
     global_costmap_topic: global_costmap/costmap_raw
-    local_footprint_topic: local_costmap/published_footprint
+    local_footprint_topic: global_costmap/published_footprint
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
     # Recovery behaviors: when a goal fails to make progress, the recovery BT

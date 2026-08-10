@@ -23,7 +23,9 @@ odom->base_link; the PROBE broadcasts that one, rotating:
         --params-file <lean_nav2.yaml>
     ros2 lifecycle set /behavior_server configure
     ros2 lifecycle set /behavior_server activate
-    python3 spin_gate_probe.py [case]      # A, B, C or all (default all)
+    python3 spin_gate_probe.py [case] [topic_base]   # A, B, C or all (default
+                                           # all); topic_base defaults to
+                                           # local_costmap (D16 fix: global_costmap)
 
 THE ROBOT MUST APPEAR TO ROTATE, or nothing is measured: Spin::isCollisionFree
 (jazzy, spin.cpp:179) breaks out of its simulate-ahead loop while
@@ -118,7 +120,7 @@ def footprint_msg(stamp, yaw):
 
 
 class Probe(Node):
-    def __init__(self):
+    def __init__(self, topic_base="local_costmap"):
         super().__init__("spin_gate_probe")
         self.spin = ActionClient(self, Spin, "spin")
         # Costmap2D publishes costmap_raw latched; nav2's CostmapSubscriber
@@ -130,9 +132,9 @@ class Probe(Node):
         latched.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
         latched.reliability = QoSReliabilityPolicy.RELIABLE
         self.cm_pub = self.create_publisher(
-            Costmap, "local_costmap/costmap_raw", latched)
+            Costmap, f"{topic_base}/costmap_raw", latched)
         self.fp_pub = self.create_publisher(
-            PolygonStamped, "local_costmap/published_footprint", latched)
+            PolygonStamped, f"{topic_base}/published_footprint", latched)
         self.rotated = False
         self.wz = 0.0
         self.yaw = 0.0
@@ -249,8 +251,13 @@ class Probe(Node):
 
 def main():
     which = (sys.argv[1].upper() if len(sys.argv) > 1 else "ALL")
+    # Optional second arg: topic base for the synthetic costmap/footprint
+    # publishers (default local_costmap). E.g. `spin_gate_probe.py all
+    # global_costmap` to feed a behavior_server whose collision source was
+    # repointed at the global costmap (D16 fix).
+    topic_base = sys.argv[2] if len(sys.argv) > 2 else "local_costmap"
     rclpy.init()
-    n = Probe()
+    n = Probe(topic_base)
     time.sleep(1.0)
     results = {}
     if which in ("A", "ALL"):
