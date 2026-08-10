@@ -36,7 +36,13 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
 4. **Battery charged** and the plan is to tear down PROMPTLY on a stall — an idle
    stack (lidar spinning, nodes up) drained the battery flat on 2026-08-03.
 5. **Scott attended, within reach of the power switch** for the entire run.
-6. `/collision_stop/state` fields sanity: after bringup, one `ros2 topic echo
+6. **Clock sync.** `ssh sphero-pi-2 timedatectl status` must report *System clock
+   synchronized: yes* BEFORE the stack goes up. A freshly booted Pi has been seen 72
+   minutes behind the workstation until NTP caught up (2026-08-10), and every
+   attribution in this protocol depends on pairing Scott's wall-clock notes against
+   log timestamps. Starting inside that window silently invalidates the whole
+   exercise while every artifact still looks plausible.
+7. `/collision_stop/state` fields sanity: after bringup, one `ros2 topic echo
    --once` must show `pivot_veto=`, `cam_cloud_age=`, `output_angular_published=`
    (proves the deployed supervisor is ≥ 935f95d and the recorder will capture the
    D21/D22 instrumentation).
@@ -97,7 +103,11 @@ scp sphero-pi-2:"~/run_*.csv ~/launch_*.log ~/.ros/missions/*" <local>
 ```
 
 Only then: Ctrl-C the launch. Remember it ignores SIGINT and children survive.
-**Kill by explicit PID — list them with `ps -eo pid,cmd`, then `kill <pid>`.** Do
+**Kill by explicit PID — list them with `ps -eo pid,cmd`, then `kill <pid>` — and
+EXCLUDE YOUR OWN SESSION from that list.** Filtering the listing is not optional:
+`ps | grep <pattern>` matches the SSH wrapper carrying your command too, so feeding
+that straight into `kill` drops your own connection mid-teardown. Add
+`| grep -v tailscaled | grep -v "bin/bash"` (or check each PID) before killing. Do
 not reach for `pkill -f <pattern>`: a bracketed pattern does NOT protect you here.
 The bracket trick only defeats *grep's* self-match; `pkill -f` treats `[d]emo` as a
 plain regex matching `demo`, and your own SSH command line (and the tailscaled
@@ -128,6 +138,12 @@ compared, because nothing recorded *when* and *facing where*.
 
 Two habits fix that, and they need no tooling — the recorder already carries
 `odom_yaw_deg`, `cam_cloud_age` and `pivot_veto` as of `4c397c7`.
+
+**At mission start — Scott, once:** note which compass direction the rover's NOSE
+points. Without it the recorded `odom_yaw_deg` cannot be converted to a cardinal
+bearing at all: yaw is measured from the startup heading, so "yaw 22 deg" means
+nothing until that heading has a compass value. One sentence, once, and every stall
+in the run becomes convertible.
 
 **During the run — Scott, on each audible or visible stall:** note the **wall-clock
 time** (to the nearest ~5 s is plenty) and **one compass-style sentence** about what

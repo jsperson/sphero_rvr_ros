@@ -191,6 +191,19 @@ def main(args=None):
             self._state_lock = threading.RLock()
             self._service_group = ReentrantCallbackGroup()
             self._driver_client_group = ReentrantCallbackGroup()
+            # D22. The camera cloud gets its OWN callback group. Without one it
+            # landed in the node's DEFAULT (mutually exclusive) group alongside
+            # /scan and /cmd_vel, which meant all three serialized onto a single
+            # slot no matter how many executor threads existed -- and scan and
+            # cmd_vel are the two highest-rate topics in the stack. Under load the
+            # cloud callback simply did not get scheduled: measured 2026-08-10 with
+            # an independent observer receiving every cloud while the supervisor's
+            # own copy aged past 0.6 s, 18 times in one mission, twice while the
+            # rover was DRIVING (once at full cruise). Both camera gates fail OPEN
+            # on a stale cloud, so that is the sub-lidar protection silently off.
+            # This callback takes no state lock, so it is safe to run in parallel
+            # with the arbitration path.
+            self._camera_group = ReentrantCallbackGroup()
             now = self._now_seconds()
             self._supervisor = CollisionStopSupervisor(self._config, now=now)
             self._tf_buffer = Buffer()
@@ -239,6 +252,7 @@ def main(args=None):
                 str(self.get_parameter("camera_obstacle_topic").value),
                 self._on_camera_cloud,
                 qos_profile_sensor_data,
+                callback_group=self._camera_group,
             )
 
             self._driver_stop_client = self.create_client(
@@ -714,7 +728,12 @@ def main(args=None):
 
     rclpy.init(args=args)
     node = LidarCollisionStopSupervisorNode()
-    executor = MultiThreadedExecutor(num_threads=2)
+    # 4, not 2: the arbitration path (scan + cmd_vel, mutually exclusive by
+    # design and serialized on the state lock anyway), the camera cloud in its own
+    # group, and the service/driver-client groups all need to make progress
+    # concurrently. Two threads made the camera cloud compete with the very
+    # callbacks that must never be delayed (D22).
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
         executor.spin()

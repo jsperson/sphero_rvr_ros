@@ -24,12 +24,18 @@ OUTCOME_START_BLOCKED = "INCOMPLETE_START_BLOCKED"
 # permanent "boxed in" state and killed 82 of 93 goals in ~70 ms each while the rover
 # thrashed. A mission must give up and say so rather than grind through the whole map.
 OUTCOME_GOALS_KEEP_FAILING = "ABORTED_GOALS_KEEP_FAILING"
+# The room is cluttered with things no sensor can see, not the stack broken. A freeze
+# is positive evidence (the supervisor permitted motion and the rover did not move),
+# so repeated freezes deserve their own honest ending rather than being reported as
+# "goals keep failing" -- which blames the software for a fact about the furniture.
+OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES = "INCOMPLETE_BLOCKED_BY_UNSEEN_OBSTACLES"
 
 ALL_OUTCOMES = (
     OUTCOME_COMPLETE,
     OUTCOME_NO_PLANNABLE_TARGETS,
     OUTCOME_START_BLOCKED,
     OUTCOME_GOALS_KEEP_FAILING,
+    OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES,
 )
 
 # map_server's PGM convention.
@@ -49,6 +55,7 @@ def build_report(
     planner_rejections=0,
     remaining_candidates=0,
     map_files=None,
+    freeze_marks=None,
 ):
     """The end-of-mission summary, as a plain dict ready to serialize.
 
@@ -81,6 +88,10 @@ def build_report(
         "remaining_candidates": (
             None if remaining_candidates is None else int(remaining_candidates)
         ),
+        # Places the robot PROVED it could not pass. In the report, never in the
+        # saved map: the map is the room as SLAM measured it, these are the robot's
+        # own belief about where it could not go.
+        "freeze_marks": list(freeze_marks or []),
         "map_files": list(map_files or []),
     }
 

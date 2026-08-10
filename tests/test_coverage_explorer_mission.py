@@ -131,11 +131,18 @@ class FakeWorld(Node):
             report_qos, callback_group=cbg,
         )
 
+        self._freeze_pub = self.create_publisher(
+            String, "/decisive_controller/freeze_event", 10)
         self._tf = TransformBroadcaster(self)
         self.create_timer(0.02, self._broadcast_tf, callback_group=cbg)
 
     def publish_map(self, grid):
         self._map_pub.publish(grid)
+
+    def publish_freeze(self, x=0.0, y=0.0):
+        """Stand in for the controller reporting a freeze: the supervisor permitted
+        motion and the rover did not move, i.e. an obstacle no sensor can see."""
+        self._freeze_pub.publish(String(data='{"x": %f, "y": %f, "stamp": 0.0}' % (x, y)))
 
     def _broadcast_tf(self):
         t = TransformStamped()
@@ -402,3 +409,94 @@ def test_d13_no_goal_after_the_mission_reports_done(stack):
     time.sleep(1.5)
     late = [g for g in stack.world.nav_goals if g[0] > t_report]
     assert not late, f"{len(late)} NavigateToPose goal(s) issued AFTER the mission reported done"
+
+
+@pytest.mark.parametrize(
+    "stack", [{"max_consecutive_failures": 3, "max_consecutive_freezes": 3}],
+    indirect=True,
+)
+def test_freezes_do_not_count_as_stack_failures(stack):
+    """D26. A freeze is the robot DISCOVERING an obstacle no sensor can see, not the
+    stack failing. Scott's rule: hitting something and stopping is a data point, and
+    it must not end the mission.
+
+    Here every goal aborts AND a freeze is reported just before each one. Under the
+    old semantics three aborts would trip max_consecutive_failures and the mission
+    would end ABORTED_GOALS_KEEP_FAILING, blaming the software for a fact about the
+    furniture. It must instead end with the honest unseen-obstacle outcome.
+
+    MUST FAIL against pre-D26 code (which reports ABORTED_GOALS_KEEP_FAILING).
+    """
+    stack.world.nav_mode = "abort"
+    stack.world.publish_map(make_map())
+
+    def keep_freezing():
+        for _ in range(200):
+            stack.world.publish_freeze(1.0, 0.0)
+            time.sleep(0.05)
+    threading.Thread(target=keep_freezing, daemon=True).start()
+
+    assert wait_until(lambda: bool(stack.world.reports), 30.0), "mission never ended"
+    outcome = stack.world.reports[-1]["outcome"]
+    assert outcome == "INCOMPLETE_BLOCKED_BY_UNSEEN_OBSTACLES", (
+        f"freezes were counted as stack failures (got {outcome}) — the give-up "
+        "counter must be reserved for failures with no freeze signature"
+    )
+
+
+@pytest.mark.parametrize(
+    "stack", [{"max_consecutive_failures": 3, "max_consecutive_freezes": 3}],
+    indirect=True,
+)
+def test_aborts_without_a_freeze_still_reach_the_give_up_counter(stack):
+    """The other half: the exemption must not swallow ordinary failures. No freeze
+    events at all here, so the old counter must still fire and report the stack
+    outcome. Without this pairing, D26 could be 'never give up', which is worse than
+    the bug it replaces."""
+    stack.world.nav_mode = "abort"
+    stack.world.publish_map(make_map())
+    assert wait_until(lambda: bool(stack.world.reports), 30.0), "mission never ended"
+    assert stack.world.reports[-1]["outcome"] == "ABORTED_GOALS_KEEP_FAILING"
+
+
+@pytest.mark.parametrize(
+    "stack", [{"max_consecutive_failures": 3, "max_consecutive_freezes": 8}],
+    indirect=True,
+)
+def test_one_freeze_excuses_only_one_abort(stack):
+    """Consume-once. A single freeze event must pair with AT MOST ONE abort; if one
+    discovery could excuse several unrelated failures the counter would drift away
+    from reality, which is the distrust this redesign exists to answer.
+
+    One freeze is published, then goals keep aborting. The mission must still end on
+    the stack counter, because only the first abort is excused.
+    """
+    stack.world.nav_mode = "abort"
+    stack.world.publish_map(make_map())
+    stack.world.publish_freeze(1.0, 0.0)
+    assert wait_until(lambda: bool(stack.world.reports), 30.0), "mission never ended"
+    assert stack.world.reports[-1]["outcome"] == "ABORTED_GOALS_KEEP_FAILING", (
+        "a single freeze excused more than one abort"
+    )
+
+
+@pytest.mark.parametrize(
+    "stack", [{"max_consecutive_failures": 3, "max_consecutive_freezes": 3}],
+    indirect=True,
+)
+def test_freeze_marks_reach_the_mission_report(stack):
+    """Where the rover could not go is diagnostic gold, and it belongs in the report
+    — never written into the saved map, which is the room as SLAM measured it."""
+    stack.world.nav_mode = "abort"
+    stack.world.publish_map(make_map())
+
+    def keep_freezing():
+        for _ in range(200):
+            stack.world.publish_freeze(1.5, -0.5)
+            time.sleep(0.05)
+    threading.Thread(target=keep_freezing, daemon=True).start()
+
+    assert wait_until(lambda: bool(stack.world.reports), 30.0)
+    marks = stack.world.reports[-1].get("freeze_marks")
+    assert marks, "the report carries no freeze marks"
+    assert marks[0]["x"] == pytest.approx(1.5)

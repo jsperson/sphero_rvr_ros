@@ -42,6 +42,7 @@ import tf2_ros
 
 from sphero_rvr_core.mission_report import (
     OUTCOME_COMPLETE,
+    OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES,
     OUTCOME_GOALS_KEEP_FAILING,
     OUTCOME_NO_PLANNABLE_TARGETS,
     OUTCOME_START_BLOCKED,
@@ -98,6 +99,15 @@ class CoverageExplorerNode(Node):
         # the stack is broken, not the room; grinding on is how one bad controller
         # state turns into 93 goals and a thrashing rover.
         self.declare_parameter("max_consecutive_failures", 5)
+        # A FREEZE is not a failure of the stack -- it is the robot discovering an
+        # obstacle no sensor can see (the supervisor permitted motion and the rover
+        # did not move). Scott's rule: "Hitting an obstacle and stopping should be
+        # just another data point... it should not stop the mission." So freezes are
+        # exempt from max_consecutive_failures and get their own, larger budget.
+        # Without a separate ceiling the exemption would be unbounded and a rover
+        # wedged in a corner would freeze forever, which is why this exists.
+        self.declare_parameter("max_consecutive_freezes", 5)
+        self.declare_parameter("freeze_correlation_window_s", 3.0)
         # A goal nearer than this is somewhere the rover already is: it succeeds
         # without moving, the target is still a target next tick, and it gets picked
         # again forever. Never issue one.
@@ -145,6 +155,10 @@ class CoverageExplorerNode(Node):
         self._select_budget_s = float(self.get_parameter("select_budget_s").value)
         self._max_consecutive_failures = int(
             self.get_parameter("max_consecutive_failures").value)
+        self._max_consecutive_freezes = int(
+            self.get_parameter("max_consecutive_freezes").value)
+        self._freeze_window_s = float(
+            self.get_parameter("freeze_correlation_window_s").value)
         self._min_goal_distance_m = float(
             self.get_parameter("min_goal_distance_m").value)
         self._max_unstick = int(self.get_parameter("max_unstick_attempts").value)
@@ -187,6 +201,13 @@ class CoverageExplorerNode(Node):
         self._planner_rejections = 0
         self._reported = False
         self._consecutive_failures = 0
+        self._consecutive_freezes = 0
+        # Unconsumed freeze events, newest last. An event pairs with AT MOST ONE
+        # abort: two aborts inside the correlation window of a single freeze must
+        # not both be excused, or one discovery would silently forgive an unrelated
+        # failure.
+        self._pending_freezes = []
+        self._freeze_marks = []
         self._active_goal_cell = None
         self._active_goal_handle = None
         self._goal_inflight = False
@@ -209,6 +230,12 @@ class CoverageExplorerNode(Node):
                 OccupancyGrid, str(self.get_parameter("costmap_topic").value),
                 self._on_costmap, map_qos, callback_group=cbg,
             )
+        # Freezes are reported by the controller, which is the only component that
+        # can see both what it commanded and what the supervisor actually let out.
+        self.create_subscription(
+            String, "/decisive_controller/freeze_event", self._on_freeze, 10,
+            callback_group=cbg,
+        )
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._nav = ActionClient(self, NavigateToPose, "navigate_to_pose", callback_group=cbg)
@@ -505,6 +532,7 @@ class CoverageExplorerNode(Node):
             planner_rejections=self._planner_rejections,
             remaining_candidates=remaining,
             map_files=files,
+            freeze_marks=list(self._freeze_marks),
         )
         self._report_pub.publish(String(data=json.dumps(report)))
         self.get_logger().info(f"mission report -> {json.dumps(report)}")
@@ -729,6 +757,7 @@ class CoverageExplorerNode(Node):
             with self._lock:
                 self._goals_succeeded += 1
                 self._consecutive_failures = 0
+                self._consecutive_freezes = 0
                 self._unstick_attempts = 0
 
     def _unstick(self, toward=None):
@@ -820,6 +849,35 @@ class CoverageExplorerNode(Node):
                     g.target_yaw = float(delta)
         return g
 
+    def _on_freeze(self, msg):
+        """A freeze the controller detected. Held until an abort claims it."""
+        try:
+            data = json.loads(msg.data)
+            x, y = float(data["x"]), float(data["y"])
+        except Exception:
+            return
+        with self._lock:
+            self._pending_freezes.append((time.monotonic(), x, y))
+            self._freeze_marks.append({"x": round(x, 3), "y": round(y, 3)})
+
+    def _claim_freeze(self):
+        """Consume the most recent unclaimed freeze if it is recent enough.
+
+        CONSUME-ONCE is the point: a freeze event pairs with AT MOST ONE abort. Two
+        aborts inside one freeze's window must not both be excused, or a single
+        discovery would silently forgive an unrelated failure and the give-up counter
+        would drift away from reality -- which is precisely the distrust this
+        redesign exists to answer.
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._pending_freezes = [
+                f for f in self._pending_freezes if now - f[0] <= self._freeze_window_s
+            ]
+            if not self._pending_freezes:
+                return None
+            return self._pending_freezes.pop()
+
     def _note_failure(self, cell):
         """Record that driving to `cell` failed: suppress it, and give up entirely if
         goals are failing everywhere.
@@ -832,6 +890,35 @@ class CoverageExplorerNode(Node):
         hard room, and the mission should stop and say which.
         """
         self._suppress_cell(cell)
+
+        # DISCOVERY, NOT FAILURE. If the controller reported a freeze just before
+        # this abort, the rover met an obstacle no sensor can see. That is a fact
+        # about the room, so it must not feed the counter whose job is to detect a
+        # broken STACK -- but it gets its own ceiling, because an unbounded exemption
+        # would let a rover wedged in a corner freeze forever.
+        frozen = self._claim_freeze()
+        if frozen is not None:
+            with self._lock:
+                self._consecutive_freezes += 1
+                n_freeze = self._consecutive_freezes
+            self.get_logger().warn(
+                f"coverage goal {cell} ended in a FREEZE at "
+                f"({frozen[1]:.2f},{frozen[2]:.2f}) — an obstacle no sensor can see. "
+                f"Counted as discovery ({n_freeze}/{self._max_consecutive_freezes}), "
+                "not as a stack failure; the spot is marked for the planner."
+            )
+            if n_freeze >= self._max_consecutive_freezes:
+                self.get_logger().error(
+                    f"{n_freeze} freezes in a row — the room is full of things no "
+                    "sensor can see. Stopping and saying so, rather than blaming the "
+                    "stack."
+                )
+                self._mission_done = True
+                res = self._map.info.resolution if self._map else 0.05
+                self._finish(OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES, res,
+                             self._remaining_candidates())
+            return
+
         with self._lock:
             self._consecutive_failures += 1
             n = self._consecutive_failures

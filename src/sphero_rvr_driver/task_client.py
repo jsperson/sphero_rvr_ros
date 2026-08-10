@@ -54,6 +54,11 @@ class ToolRunner(Node):
     def __init__(self, timeout_s=180.0):
         super().__init__("task_client")
         self._timeout_s = timeout_s
+        # F3. The rover keeps driving if this process dies mid-goto: Ctrl-C, or an
+        # uncaught exception from the model call (a network blip is enough), would
+        # exit without cancelling and leave the goal running for up to goal_timeout_s.
+        # Held here so the shutdown path can always find and cancel it.
+        self._active_goto = None
         self._goto = ActionClient(self, NavigateToPose, "task/goto")
         self._observe = self.create_client(Trigger, "task/observe")
         self._query = self.create_client(Trigger, "task/query_semantic_map")
@@ -119,8 +124,24 @@ class ToolRunner(Node):
             params.append(p)
         request = SetParameters.Request(parameters=params)
         future = setter.call_async(request)
-        if self._spin_until(future, time.monotonic() + 10.0) is None:
+        response = self._spin_until(future, time.monotonic() + 10.0)
+        if response is None:
             return json.dumps({"ok": False, "message": "setting query parameters timed out"})
+        # F5. REFUSE rather than answer with unknown filters. These parameters are
+        # the query, and a partially-applied set means a stale filter from an
+        # earlier question silently narrows this one -- the exact bug the per-call
+        # reset exists to prevent, so failing to notice it here would defeat the
+        # whole mechanism.
+        failed = [p.name for p, r in zip(params, getattr(response, "results", []))
+                  if not getattr(r, "successful", False)]
+        if failed or len(getattr(response, "results", [])) != len(params):
+            return json.dumps({
+                "ok": False,
+                "message": ("could not set query parameter(s) "
+                            f"{', '.join(failed) or '(no results returned)'} — "
+                            "refusing the query rather than answering with a "
+                            "possibly stale filter"),
+            })
         return self._call(self._query, "query_semantic_map")
 
     def _run_goto(self, args):
@@ -141,12 +162,48 @@ class ToolRunner(Node):
             # can act on rather than leaving it to infer.
             return json.dumps({"ok": False,
                                "message": "task/goto refused the goal (already driving?)"})
-        result = self._spin_until(handle.get_result_async(),
-                                  time.monotonic() + self._timeout_s)
-        if result is None:
-            handle.cancel_goal_async()
-            return json.dumps({"ok": False, "message": "goto timed out — cancelled"})
-        return result.result.error_msg or json.dumps({"ok": True, "message": "done"})
+        self._active_goto = handle
+        try:
+            result = self._spin_until(handle.get_result_async(),
+                                      time.monotonic() + self._timeout_s)
+            if result is None:
+                # F4. Do not claim "cancelled" on a fire-and-forget request. Spin
+                # the cancel future and say honestly whether it was confirmed --
+                # an unconfirmed cancel means the rover may still be driving, which
+                # is exactly the thing a caller needs to know.
+                confirmed = self._cancel_and_confirm(handle)
+                return json.dumps({
+                    "ok": False,
+                    "message": ("goto timed out — cancel confirmed" if confirmed
+                                else "goto timed out — CANCEL NOT CONFIRMED, the "
+                                     "rover may still be moving"),
+                })
+            return result.result.error_msg or json.dumps({"ok": True, "message": "done"})
+        finally:
+            self._active_goto = None
+
+    def _cancel_and_confirm(self, handle, timeout_s=5.0):
+        """Cancel and actually wait for the acknowledgement. Returns True only when
+        the cancel was accepted or the goal has ended."""
+        try:
+            future = handle.cancel_goal_async()
+        except Exception:
+            return False
+        response = self._spin_until(future, time.monotonic() + timeout_s)
+        if response is None:
+            return False
+        return len(getattr(response, "goals_canceling", [])) > 0
+
+    def shutdown_safely(self):
+        """Cancel anything still driving before this process goes away (F3)."""
+        handle = self._active_goto
+        if handle is None:
+            return
+        self.get_logger().warn(
+            "task_client exiting with a goto in flight — cancelling it; a client "
+            "that just exits leaves the rover driving."
+        )
+        self._cancel_and_confirm(handle)
 
 
 def make_model_caller(base_url, api_key, model, max_tokens, timeout_s):
@@ -204,6 +261,14 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # Order matters: cancel BEFORE destroying the node, or there is no longer a
+        # client with which to cancel. This runs for Ctrl-C and for any uncaught
+        # exception, including a model-call network failure mid-drive.
+        try:
+            runner.shutdown_safely()
+        except Exception as exc:
+            print(f"WARNING: could not cancel the in-flight goto ({exc}). "
+                  "The rover may still be moving — use the STOP service.")
         runner.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

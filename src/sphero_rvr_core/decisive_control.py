@@ -17,6 +17,7 @@ either a controller node or a Nav2 plugin.
 
 from dataclasses import dataclass
 import math
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,12 @@ class GuardResult:
     # "abort"   -> give up this goal so the planner re-routes
     action: str
     reverse_speed_mps: float = 0.0
+    # True when the stall that triggered this result was classified as a FREEZE:
+    # the supervisor was letting us drive and the robot still did not move. That is
+    # positive evidence of an obstacle no sensor can see (below the 0.19 m lidar
+    # plane and inside the camera's ~0.45 m blind zone), as opposed to the supervisor
+    # braking us for something it CAN see. See ProgressGuard.step.
+    freeze: bool = False
 
 
 class ProgressGuard:
@@ -165,10 +172,18 @@ class ProgressGuard:
         self._bo_ref = None       # (x, y) where the current back-off began
         self._bo_t = None         # timestamp the current back-off began
         self._back_off_count = 0
+        # Freeze classification: how many cycles since the progress reference the
+        # SUPERVISOR was actually letting us drive. Counting rather than sampling the
+        # single instant the clock expires, because in a flapping SLOW/STOPPED
+        # approach that instant is a coin toss.
+        self._out_moving = 0
+        self._window = 0
 
     def _mark_progress(self, x: float, y: float, now: float) -> None:
         self._ref = (x, y)
         self._ref_t = now
+        self._out_moving = 0
+        self._window = 0
 
     def _give_up(self) -> "GuardResult":
         """Hand control back to the planner AND rearm.
@@ -189,7 +204,32 @@ class ProgressGuard:
         self._back_off_count = 0
         return GuardResult("abort")
 
-    def step(self, x: float, y: float, now: float, translating: bool) -> GuardResult:
+    def step(self, x: float, y: float, now: float, translating: bool,
+             output_moving: Optional[bool] = None) -> GuardResult:
+        """One control cycle.
+
+        `output_moving` is whether the SUPERVISOR's actual motor output was nonzero —
+        i.e. whether we were permitted to drive. It is what separates the two stalls
+        that look identical from inside this guard:
+
+          * output was ZERO: the supervisor is braking for something it can see.
+            Normal, expected, not news.
+          * output was NONZERO and we still did not move: a FREEZE. Something is
+            physically there that no sensor on this robot can detect. That is
+            positive information about the room and the caller should treat it as
+            discovery, not as a failure of the stack.
+
+        SCOPE BOUNDARY, deliberate for this batch and not an oversight: a
+        supervisor-braked stop at a CAMERA-VISIBLE obstacle is not classified as a
+        freeze, so those goals still count toward the ordinary give-up counter. Those
+        die at obstacles the camera can see but the planner cannot route around --
+        the decisive-mode camera-to-planning gap -- which is a separate design
+        question, to be decided on a future run's data.
+
+        Passing None (the default) keeps the pre-freeze behaviour: no stall is ever
+        classified as a freeze. That keeps every existing caller and test honest
+        about what it is exercising.
+        """
         cfg = self._config
 
         if self._backing_off:
@@ -215,6 +255,12 @@ class ProgressGuard:
             self._mark_progress(x, y, now)
             return GuardResult("drive")
 
+        # Tally what the supervisor permitted during this no-progress window.
+        if output_moving is not None:
+            self._window += 1
+            if output_moving:
+                self._out_moving += 1
+
         moved = math.hypot(x - self._ref[0], y - self._ref[1])
         if moved >= cfg.progress_epsilon_m:
             self._mark_progress(x, y, now)
@@ -229,12 +275,89 @@ class ProgressGuard:
             return GuardResult("drive")
 
         if now - self._ref_t >= cfg.stall_time_s:
+            # A freeze is "we were allowed to drive for most of this window and still
+            # did not move". Majority rather than the final instant: an approach that
+            # flaps between SLOW and STOPPED would otherwise classify on a coin toss.
+            frozen = self._window > 0 and self._out_moving * 2 >= self._window
             self._back_off_count += 1
             if self._back_off_count > cfg.max_back_offs:
-                return self._give_up()
+                result = self._give_up()
+                return GuardResult(result.action, result.reverse_speed_mps, frozen)
             self._backing_off = True
             self._bo_ref = (x, y)
             self._bo_t = now
-            return GuardResult("reverse", cfg.back_off_speed_mps)
+            return GuardResult("reverse", cfg.back_off_speed_mps, frozen)
 
         return GuardResult("drive")
+
+
+@dataclass(frozen=True)
+class FreezeMark:
+    """A place the robot proved it could not pass, with an expiry."""
+    x: float
+    y: float
+    stamp: float
+    expires_at: float
+
+
+class FreezeMarkSet:
+    """The live set of freeze marks, with TTL owned HERE rather than in the costmap.
+
+    WHAT THE TTL ACTUALLY BOUNDS -- measured, because the intuitive reading is wrong:
+    it governs what this set PUBLISHES and what reaches the mission report. It does
+    NOT un-mark the costmap. The layer these feed runs with clearing:false (it must:
+    the lidar sees straight through these obstacles and would otherwise erase them),
+    and an ObstacleLayer never un-marks a cell it has marked. Verified on the bench
+    2026-08-10: a free cell went cost 0 -> 100 on a mark and stayed 100 after
+    publication stopped. In practice a mark therefore lasts the mission, which is the
+    useful scope; revoking one mid-mission would need a different mechanism.
+
+    Why they cannot simply be another source of the existing obstacle layer: that
+    layer raytrace-clears from `scan`, and the entire premise of a freeze is that the
+    lidar sees straight THROUGH the obstacle. The marks would be erased within a scan
+    or two by the one sensor that is blind to them. They need a separate,
+    non-clearing layer.
+
+    Geometry note: a mark records the pose where motion stopped, and the consumer
+    inflates it by roughly the robot radius. We know the robot could not pass HERE;
+    we know nothing about the obstacle's true extent, so we mark the footprint we
+    proved was blocked rather than guessing at the object.
+    """
+
+    def __init__(self, ttl_s: float = 300.0, merge_radius_m: float = 0.15):
+        self._ttl_s = float(ttl_s)
+        self._merge_radius_m = float(merge_radius_m)
+        self._marks: list = []
+
+    def add(self, x: float, y: float, now: float) -> FreezeMark:
+        """Record a freeze. Re-freezing within `merge_radius_m` refreshes the existing
+        mark rather than stacking duplicates -- a rover that retries the same spot
+        three times has learned one fact, not three. (Deduplication is real and
+        useful; expiry bounds publication and the report only -- see the class
+        docstring.)"""
+        self.prune(now)
+        for i, m in enumerate(self._marks):
+            if math.hypot(m.x - x, m.y - y) <= self._merge_radius_m:
+                refreshed = FreezeMark(m.x, m.y, m.stamp, now + self._ttl_s)
+                self._marks[i] = refreshed
+                return refreshed
+        mark = FreezeMark(float(x), float(y), float(now), now + self._ttl_s)
+        self._marks.append(mark)
+        return mark
+
+    def prune(self, now: float) -> None:
+        self._marks = [m for m in self._marks if m.expires_at > now]
+
+    def live(self, now: float) -> list:
+        self.prune(now)
+        return list(self._marks)
+
+    def as_report_list(self, now: float) -> list:
+        """Plain dicts for the mission report. These belong in the REPORT, never in
+        the saved map: the map is the room as SLAM measured it, while these are the
+        robot's own belief about places it could not go."""
+        return [{"x": round(m.x, 3), "y": round(m.y, 3), "stamp": round(m.stamp, 1)}
+                for m in self.live(now)]
+
+    def __len__(self) -> int:
+        return len(self._marks)

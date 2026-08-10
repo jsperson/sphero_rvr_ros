@@ -232,7 +232,20 @@ class TaskNode(Node):
             while not result_future.done():
                 if goal_handle.is_cancel_requested:
                     handle.cancel_goal_async()
-                    self._await(result_future, time.monotonic() + 5.0)
+                    late = self._await(result_future, time.monotonic() + 5.0)
+                    # F7. A cancel can race an arrival. If the drive actually
+                    # SUCCEEDED in the grace window, say so -- reporting "cancelled"
+                    # when the rover is standing on the goal is a small lie that
+                    # would make a caller re-drive somewhere it already is.
+                    if late is not None and late.status == GoalStatus.STATUS_SUCCEEDED:
+                        arrived = NavigateToPose.Result()
+                        arrived.error_msg = tool_result(
+                            True, "goto", "arrived just as cancel was requested",
+                            x=gx, y=gy, status="SUCCEEDED")
+                        goal_handle.succeed()
+                        self.get_logger().info(
+                            "task/goto cancel raced an arrival — reporting arrived")
+                        return arrived
                     goal_handle.canceled()
                     cancelled = NavigateToPose.Result()
                     cancelled.error_msg = tool_result(

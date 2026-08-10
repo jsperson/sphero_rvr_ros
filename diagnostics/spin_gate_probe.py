@@ -316,7 +316,11 @@ def main():
         # obstacle ring is not gating. Only a COLLISION-reasoned refusal counts —
         # ABORTED on time allowance is the gate not firing at all (learned the
         # hard way: the first run scored exactly that as a PASS).
-        ok = results["C"] in ("ABORTED/collision", "rejected")
+        # F6. ONLY a collision-reasoned refusal counts. "rejected" means the server
+        # never even ran the behaviour -- it proves nothing about the gate, and
+        # scoring it as a pass would let a dead behaviour_server look like a working
+        # safety check.
+        ok = results["C"] == "ABORTED/collision"
         print(("PASS" if ok else "**FAIL**") +
               "  case C: gate refuses (collision) a spin with an obstacle it can"
               f" see (got {results['C']})")

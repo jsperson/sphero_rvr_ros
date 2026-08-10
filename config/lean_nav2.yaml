@@ -207,10 +207,17 @@ global_costmap:
       # -- so the marks would be erased within a scan or two by the one sensor that
       # is blind to them. Hence clearing: false, in a layer scan does not touch.
       #
-      # observation_persistence 0.0 means only the newest message counts, so the
-      # PUBLISHER owns expiry (decisive_controller republishes the live set at ~2 Hz
-      # and simply stops including expired marks). One owner, one answer to "which
-      # marks exist" -- rather than a negotiation between our TTL and the layer's.
+      # MEASURED LIMITATION, stated because the obvious reading is wrong: with
+      # clearing:false these marks are PERMANENT for the life of the costmap. Cells
+      # marked lethal here are never un-marked -- observation_persistence governs the
+      # observation BUFFER, not the grid, and nothing raytraces this layer (which is
+      # the whole point). Verified on the bench 2026-08-10: a free cell went 0 -> 100
+      # on a mark and stayed 100 after publication stopped.
+      # So the publisher's TTL bounds what is PUBLISHED and what reaches the mission
+      # report -- it does NOT un-mark the map. In practice a mark therefore lasts the
+      # mission, which is the useful scope anyway (the costmap is rebuilt at every
+      # stack start). If a mark ever needs revoking mid-mission that needs a real
+      # mechanism, not this one.
       freeze_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true

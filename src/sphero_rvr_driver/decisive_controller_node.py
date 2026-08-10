@@ -29,11 +29,14 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav2_msgs.action import FollowPath
+from sensor_msgs.msg import PointCloud2, PointField
+from std_msgs.msg import String
 import tf2_ros
 
 from sphero_rvr_core.decisive_control import (
     BackOffConfig,
     DecisiveControlConfig,
+    FreezeMarkSet,
     ProgressGuard,
     compute_drive_command,
     heading_error_to_point,
@@ -54,6 +57,12 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("max_arc_angular_rad_s", 0.8)
         self.declare_parameter("pivot_rate_rad_s", 0.9)
         self.declare_parameter("goal_tolerance_m", 0.10)
+        # Freeze marks: how long a place the robot could not pass stays believed.
+        # Generous, because freezes are rare and a mark that expires mid-mission
+        # invites the rover straight back into the same obstacle; short enough that
+        # a moved chair does not haunt the map forever.
+        self.declare_parameter("freeze_mark_ttl_s", 300.0)
+        self.declare_parameter("freeze_mark_merge_radius_m", 0.15)
         # Back-off reflex: reverse straight out of a boxed-in stall (no grind).
         self.declare_parameter("stall_time_s", 2.0)
         self.declare_parameter("progress_epsilon_m", 0.03)
@@ -97,6 +106,31 @@ class DecisiveControllerNode(Node):
         self._goal_change_eps_m = 0.15
 
         self._cmd_pub = self.create_publisher(Twist, "cmd_vel", 10)
+
+        # FREEZE-AS-SENSOR. The supervisor's actual motor output is what separates
+        # "it braked me for something it can see" (output zero -- normal) from "it let
+        # me drive and I still did not move" (output nonzero -- something is there
+        # that NO sensor on this robot can detect). Without this subscription those
+        # two are indistinguishable from inside the guard, which is why every stall
+        # used to look alike.
+        self._out_lock = threading.Lock()
+        self._out_moving = False
+        self.create_subscription(Twist, "cmd_vel_motor", self._on_motor_out, 10)
+        self._freeze_marks = FreezeMarkSet(
+            ttl_s=float(self.get_parameter("freeze_mark_ttl_s").value),
+            merge_radius_m=float(self.get_parameter("freeze_mark_merge_radius_m").value),
+        )
+        # Marks go to a costmap layer of their OWN (see lean_nav2.yaml freeze_layer).
+        # They cannot be another source of the existing obstacle layer: that layer
+        # raytrace-clears from scan, and the whole premise is that the lidar sees
+        # straight through this obstacle, so the marks would be wiped within a scan
+        # or two by the one sensor blind to them.
+        self._freeze_cloud_pub = self.create_publisher(
+            PointCloud2, "freeze_marks", 10)
+        # A separate, human- and explorer-readable event: the mission layer uses it
+        # to classify an abort as DISCOVERY rather than as a failure of the stack.
+        self._freeze_event_pub = self.create_publisher(String, "freeze_event", 10)
+        self.create_timer(0.5, self._publish_freeze_marks)
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._callback_group = ReentrantCallbackGroup()
@@ -110,6 +144,66 @@ class DecisiveControllerNode(Node):
             callback_group=self._callback_group,
         )
         self.get_logger().info("decisive_controller ready (follow_path)")
+
+    def _on_motor_out(self, msg):
+        """Track whether the SUPERVISOR is currently letting us drive."""
+        with self._out_lock:
+            self._out_moving = abs(msg.linear.x) > 1e-6
+
+    def _output_moving(self):
+        with self._out_lock:
+            return self._out_moving
+
+    def _record_freeze(self, x, y, now):
+        """A place the robot proved it could not pass. Publish it as an event and
+        add it to the mark set the planner will see."""
+        mark = self._freeze_marks.add(x, y, now)
+        self.get_logger().warn(
+            f"FREEZE at ({x:.2f},{y:.2f}) — the supervisor permitted motion and the "
+            "robot did not move: an obstacle no sensor on this robot can see. "
+            "Marking it for the planner and backing straight out."
+        )
+        self._freeze_event_pub.publish(String(
+            data=f'{{"x": {x:.3f}, "y": {y:.3f}, "stamp": {now:.2f}}}'))
+        self._publish_freeze_marks()
+        return mark
+
+    def _publish_freeze_marks(self):
+        """Republish the whole live set at ~2 Hz.
+
+        NOTE, measured rather than assumed: ceasing to publish does NOT un-mark the
+        costmap. The freeze layer runs clearing:false and an ObstacleLayer never
+        un-marks a cell, so a mark lasts the life of the costmap (i.e. the mission).
+        Republishing keeps the layer fed for late subscribers and keeps this set the
+        single source for the mission report; the TTL bounds those, not the grid.
+        """
+        now = time.monotonic()
+        live = self._freeze_marks.live(now)
+        msg = PointCloud2()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "map"
+        msg.height = 1
+        msg.width = len(live)
+        msg.fields = [
+            PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+            for i, n in enumerate(("x", "y", "z"))
+        ]
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step = 12 * len(live)
+        msg.is_dense = True
+        import struct
+        # z at the lidar plane so the costmap's height filter keeps them: these
+        # stand for an obstacle the lidar CANNOT see, so they must be presented at a
+        # height it would have accepted.
+        msg.data = b"".join(struct.pack("<fff", m.x, m.y, 0.15) for m in live)
+        self._freeze_cloud_pub.publish(msg)
+
+    def freeze_marks_for_report(self):
+        """Consumed by whoever writes the mission report. These belong in the REPORT
+        and never in the saved map: the map is the room as SLAM measured it; these
+        are the robot's own belief about where it could not go."""
+        return self._freeze_marks.as_report_list(time.monotonic())
 
     def _robot_pose_in(self, frame):
         """(x, y, yaw) of base_frame expressed in `frame`, or None if TF unavailable."""
@@ -197,7 +291,17 @@ class DecisiveControllerNode(Node):
                 # grind. Pivots are excluded (position is not expected to change).
                 # After a few fruitless back-offs, abort so the planner re-routes.
                 translating = command.mode in ("straight", "arc")
-                guard_result = guard.step(robot_x, robot_y, time.monotonic(), translating)
+                now_s = time.monotonic()
+                guard_result = guard.step(
+                    robot_x, robot_y, now_s, translating,
+                    output_moving=self._output_moving(),
+                )
+                if guard_result.freeze:
+                    # Hitting something and stopping is a DATA POINT, not a mission
+                    # failure. Record where, so the planner routes around it and the
+                    # mission layer counts it as discovery rather than as the stack
+                    # being broken.
+                    self._record_freeze(robot_x, robot_y, now_s)
                 if guard_result.action == "abort":
                     self.get_logger().warn(
                         "decisive_controller: boxed in — backing off did not clear "
