@@ -428,6 +428,12 @@ def _sector_samples(scan: ScanInput, config: CollisionStopConfig, transform_to_b
         "rear": [],
         "left": [],
         "right": [],
+        # EVERY bearing, no angular window. The four directional sectors together
+        # leave 60 deg uncovered -- (30,45), (135,150), (-150,-135), (-45,-30) -- and
+        # the footprint's corners sit at +/-42.3 and +/-148.0 deg, i.e. the maximum
+        # radius directions of a pivot are exactly the directions nothing reads. Any
+        # check about sweeping the whole footprint has to use this, not the sectors.
+        "any": [],
     }
     min_range = max(float(scan.range_min), config.min_range_m)
     max_range = min(float(scan.range_max), config.max_range_m)
@@ -443,6 +449,7 @@ def _sector_samples(scan: ScanInput, config: CollisionStopConfig, transform_to_b
         base_x, base_y = transform_to_base.transform_point(point_x, point_y)
         angle_deg = _normalize_degrees(math.degrees(math.atan2(base_y, base_x)))
         value = _valid_range(raw_value, min_range=min_range, max_range=max_range)
+        sectors["any"].append(value)
         if config.front_stop_min_angle_deg <= angle_deg <= config.front_stop_max_angle_deg:
             sectors["front"].append(value)
         if config.front_slow_min_angle_deg <= angle_deg <= config.front_slow_max_angle_deg:
@@ -869,17 +876,25 @@ class CollisionStopSupervisor:
             # of that rotation is itself clear, so this cannot turn the flank into
             # something.
             if bounded.angular_z != 0.0:
-                # A pivot in place sweeps the robot's OWN footprint and nothing more,
-                # so the test is simply whether anything is inside that circle. The
-                # projected-trajectory check is the wrong instrument here -- it models
-                # a path being driven along, and it refuses a pure pivot whenever an
-                # obstacle sits ahead, which is exactly and only when we need to turn.
-                pivot_radius = (
-                    max(self.config.footprint_front_m, self.config.footprint_rear_m)
-                    + self.config.payload_margin_m
-                )
-                touching = [d for d in (front, rear, left, right) if d is not None]
-                if touching and min(touching) > pivot_radius:
+                # A pivot sweeps a CIRCLE of the footprint's corner radius, in every
+                # direction. Both halves of that sentence were got wrong first time:
+                #
+                #  * the radius was max(front, rear) + margin = 0.180 m, measuring a
+                #    rectangle along one axis. The corner is hypot(rear, lateral) =
+                #    hypot(0.16, 0.10) = 0.189 m, 0.209 m with the margin -- so
+                #    obstacles at 0.181-0.209 m were granted and are inside the sweep.
+                #  * it consulted four sectors that leave 60 deg unread, and the
+                #    corners sit at +/-42.3 and +/-148.0 deg, squarely in the gaps.
+                #    An obstacle at 0.09 m spanning 137-149 deg was granted a pivot.
+                #
+                # Hence: the circumscribed corner radius, against every bearing. Fails
+                # CLOSED -- no reading means no pivot.
+                pivot_radius = math.hypot(
+                    max(self.config.footprint_front_m, self.config.footprint_rear_m),
+                    max(self.config.footprint_left_m, self.config.footprint_right_m),
+                ) + self.config.payload_margin_m
+                nearest_any = nearest.get("any")
+                if nearest_any is not None and nearest_any > pivot_radius:
                     return self._decision(
                         CollisionState.SLOW,
                         "front_stop_turn_escape",

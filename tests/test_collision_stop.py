@@ -614,22 +614,79 @@ def test_stale_command_outputs_zero_before_driver_timeout():
     assert decision.output == TwistCommand(0.0, 0.0)
 
 
+def _front_stopped(front_m):
+    """A supervisor latched in a front stop, with the DEPLOYED footprint."""
+    cfg = CollisionStopConfig(
+        max_forward_mps=0.20, max_angular_rad_s=0.4,
+        stop_distance_m=0.30, slow_distance_m=0.50, release_distance_m=0.40,
+        # All four extents, from YAML. Omitting the lateral pair silently falls back
+        # to 0.14 and quietly changes the robot the test is describing -- which is how
+        # the first version of this test came to certify a collision as acceptable.
+        footprint_front_m=0.11, footprint_rear_m=0.16,
+        footprint_left_m=0.10, footprint_right_m=0.10, payload_margin_m=0.02,
+        reset_policy=ResetPolicy.AUTO_AFTER_CLEAR,
+    )
+    sup = CollisionStopSupervisor(cfg, now=0.0)
+    sup.update_scan(scan_with(front=front_m, rear=2.0, left=2.0, right=2.0, stamp=0.0), now=0.0)
+    sup.apply_command(TwistCommand(0.2, 0.0), now=0.1)
+    assert sup.state is CollisionState.STOPPED
+    return sup
+
+
+# The circle a pivot actually sweeps: hypot(max(front,rear), max(left,right)) + margin
+# = hypot(0.16, 0.10) + 0.02 = 0.2087 m.
+SWEPT_RADIUS = math.hypot(0.16, 0.10) + 0.02
+
+
 def test_front_stop_allows_turning_toward_open_floor():
     """A latched front stop used to zero rotation as well as translation, leaving the
     rover facing an obstacle unable to turn toward open floor beside it (2026-08-09:
     stopped 0.28 m from an obstacle with 0.93 m clear on its left, stuck until the
     mission gave up). Forward stays zeroed; rotation gets out."""
+    sup = _front_stopped(0.25)                       # stopped, but outside the sweep
+    assert 0.25 > SWEPT_RADIUS
+    decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
+    assert decision.output.linear_x == 0.0           # forward still dead
+    assert decision.output.angular_z != 0.0          # but it can turn
+
+
+def test_pivot_refused_when_the_obstacle_is_inside_the_swept_circle():
+    """The pivot gate must measure the circle a pivot really sweeps. It first used
+    max(front, rear) + margin = 0.180 m, measuring a rectangle along one axis, and
+    granted pivots at 0.181-0.209 m that sweep the corner straight through the
+    obstacle."""
+    sup = _front_stopped(0.20)                       # inside the swept circle
+    assert 0.20 < SWEPT_RADIUS
+    decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
+    assert decision.output.angular_z == 0.0
+    assert decision.state is CollisionState.STOPPED
+
+
+def test_pivot_refused_for_an_obstacle_between_the_named_sectors():
+    """front/rear/left/right leave 60 deg unread, and the footprint corners sit at
+    +/-42.3 and +/-148.0 deg -- squarely in those gaps. An obstacle at a corner
+    bearing must still refuse the pivot."""
     cfg = CollisionStopConfig(
         max_forward_mps=0.20, max_angular_rad_s=0.4,
         stop_distance_m=0.30, slow_distance_m=0.50, release_distance_m=0.40,
-        footprint_front_m=0.11, footprint_rear_m=0.16, payload_margin_m=0.02,
+        footprint_front_m=0.11, footprint_rear_m=0.16,
+        footprint_left_m=0.10, footprint_right_m=0.10, payload_margin_m=0.02,
         reset_policy=ResetPolicy.AUTO_AFTER_CLEAR,
     )
     sup = CollisionStopSupervisor(cfg, now=0.0)
-    sup.update_scan(scan_with(front=0.20, rear=2.0, left=2.0, right=2.0, stamp=0.0), now=0.0)
-    sup.apply_command(TwistCommand(0.2, 0.0), now=0.1)              # trips the stop
-    assert sup.state is CollisionState.STOPPED
-
-    decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)   # ask to turn
-    assert decision.output.linear_x == 0.0                          # forward still dead
-    assert decision.output.angular_z != 0.0                         # but it can turn
+    # 0.09 m at ~143 deg: rear-left corner, inside every sector's blind gap.
+    ranges = [2.0] * 360
+    for i in range(360):
+        deg = math.degrees(-math.pi + i * (2.0 * math.pi / 360))
+        if 137.0 <= deg <= 149.0:
+            ranges[i] = 0.09
+        if -10.0 <= deg <= 10.0:
+            ranges[i] = 0.20
+    scan = ScanInput(ranges=tuple(ranges), angle_min=-math.pi,
+                     angle_increment=(2.0 * math.pi) / 360, range_min=0.05,
+                     range_max=8.0, stamp=0.0, received_at=0.0, frame_id="laser",
+                     transform_to_base=Transform2D())
+    sup.update_scan(scan, now=0.0)
+    sup.apply_command(TwistCommand(0.2, 0.0), now=0.1)
+    decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
+    assert decision.output.angular_z == 0.0, "pivot granted into a corner obstacle"
