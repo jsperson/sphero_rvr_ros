@@ -12,15 +12,25 @@
 
 ## Roles and governance
 
-- Codex is the sole committer to the repository. Push to a branch/PR. Do not merge
-  a PR until it has passed review; a goal that explicitly says to merge authorizes
-  merging that PR.
-- Do not edit the Obsidian vault. Report status and results in chat; the reviewer
-  keeps the vault canonical.
-- Codex operates the Pi. Deploy to and actuate the rover ONLY when a goal
-  explicitly authorizes a physical test, and only attended (Scott present,
-  power-cut reachable), bounded and low-speed. Otherwise code and tests only — no
-  actuation.
+Updated 2026-08-09. **Codex is retired.** This section previously said Codex was the
+sole committer and that agents must not edit the vault; both were stale and
+contradicted `Current Status.md` and the Forward Plan's own frontmatter.
+
+- **Claude implements, commits, and pushes directly to `main`.** No branch/PR
+  ceremony is required. Scott decides, approves, and runs anything physical.
+- **Claude owns the vault** (`Projects/Sphero RVR ROS/`) and keeps it current and
+  lean. `Current Status.md` is the narrative; `Open Defects.md` is the checklist and
+  is authoritative for what is broken; `01_planning/Forward Plan to SOTA.md` is the
+  active roadmap. Requirements and scope remain Scott's call — do not rescope
+  unilaterally.
+- **Claude operates the Pi over SSH (`ssh sphero-pi-2`)** for deploys, bench work,
+  and read-only inspection. **Actuate the rover ONLY when a goal explicitly
+  authorizes a physical test**, and only attended (Scott present, power-cut
+  reachable), bounded and low-speed. Otherwise code, bench, and tests only.
+- Chassis runs are the project's scarce resource. Never spend one on something a
+  bench test or an offline harness could have caught, and never start one without
+  the run recorder capturing `/collision_stop/state` — an unrecorded failure has to
+  be repeated.
 
 ## Working discipline (lean by default)
 
