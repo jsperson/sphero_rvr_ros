@@ -726,3 +726,49 @@ def test_front_stop_still_grants_a_deliberate_pure_pivot():
     decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
     assert decision.output.linear_x == 0.0
     assert decision.output.angular_z != 0.0
+
+
+def _latched_by(reason_command, front_m=2.0):
+    """A supervisor latched STOPPED by something OTHER than a front stop."""
+    cfg = CollisionStopConfig(
+        max_forward_mps=0.20, max_angular_rad_s=0.4,
+        stop_distance_m=0.30, slow_distance_m=0.50, release_distance_m=0.40,
+        footprint_front_m=0.11, footprint_rear_m=0.16,
+        footprint_left_m=0.10, footprint_right_m=0.10, payload_margin_m=0.02,
+        reset_policy=ResetPolicy.AUTO_AFTER_CLEAR,
+    )
+    sup = CollisionStopSupervisor(cfg, now=0.0)
+    sup.update_scan(scan_with(front=front_m, rear=2.0, left=2.0, right=2.0, stamp=0.0),
+                    now=0.0)
+    sup.apply_command(reason_command, now=0.1)
+    assert sup.state is CollisionState.STOPPED
+    return sup
+
+
+def test_reverse_arc_under_a_non_front_stop_latch_does_not_become_a_pivot():
+    """D25, second door. The pure-pivot condition was first written `<= 0.0` on the
+    reasoning that a reverse arc could never reach the turn escape, because the
+    reverse-escape branch returns first for linear_x < 0. That reasoning omitted
+    that branch's OTHER precondition: it only fires when the latch is `front_stop`.
+
+    Under a `non_finite_command` latch the reverse-escape branch is skipped, a
+    reverse arc falls through to the turn escape, and `<= 0.0` handed the rotation
+    back -- output (0.0, 0.4), the same synthesized motion entered by another door.
+
+    MUST FAIL against the `<= 0.0` version.
+    """
+    sup = _latched_by(TwistCommand(float("nan"), 0.0))
+    decision = sup.apply_command(TwistCommand(-0.15, 0.5), now=0.2)
+    assert decision.output.linear_x == 0.0
+    assert decision.output.angular_z == 0.0, (
+        "a reverse ARC must not be turned into an in-place pivot, whatever latched "
+        "the stop"
+    )
+
+
+def test_pure_pivot_under_a_non_front_stop_latch_is_still_granted():
+    """The pairing again: the fix must stay a scalpel. A deliberate pure pivot is
+    still allowed to rotate out from under a non-front-stop latch."""
+    sup = _latched_by(TwistCommand(float("nan"), 0.0))
+    decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
+    assert decision.output.angular_z != 0.0

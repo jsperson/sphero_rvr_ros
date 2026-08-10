@@ -891,9 +891,19 @@ class CollisionStopSupervisor:
             # asking to arc gets its forward request refused, which is what a front
             # stop MEANS, and is then free to ask for something else (the back-off
             # reflex asks for straight reverse, the one route known to be clear).
-            # (A reverse arc never reaches here: the reverse-escape branch above
-            # returns first for linear_x < 0, so this condition means "pure pivot".)
-            if bounded.angular_z != 0.0 and bounded.linear_x <= 0.0:
+            # PURE PIVOT ONLY -- `== 0.0`, not `<= 0.0`.
+            # The first version of this fix used `<= 0.0` on the reasoning that a
+            # reverse arc could never reach here, because the reverse-escape branch
+            # above returns first for linear_x < 0. That reasoning omitted the
+            # branch's OTHER precondition: it only fires when the latch is
+            # `front_stop`. Under any other latching reason -- `non_finite_command`,
+            # or an operator stop -- a reverse arc such as (-0.15, 0.5) falls
+            # straight through to here, and `<= 0.0` handed the rotation back:
+            # output (0.0, 0.4). That is the same synthesized motion this whole
+            # condition exists to prevent, just entered from a different door.
+            # Reproduced directly against the previous commit before fixing.
+            # A request is a pivot when its linear component is EXACTLY zero.
+            if bounded.angular_z != 0.0 and bounded.linear_x == 0.0:
                 # A pivot sweeps a CIRCLE of the footprint's corner radius, in every
                 # direction. Both halves of that sentence were got wrong first time:
                 #
