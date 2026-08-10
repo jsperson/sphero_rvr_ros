@@ -156,7 +156,7 @@ global_costmap:
       resolution: 0.05
       track_unknown_space: true
       robot_radius: 0.14
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "freeze_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
@@ -193,6 +193,38 @@ global_costmap:
           clearing: true
           marking: true
           max_obstacle_height: 0.5
+      # FREEZE MARKS — places the robot PROVED it could not pass (D25/D26).
+      #
+      # A freeze is the one thing this robot can detect that no sensor reports: the
+      # supervisor permitted motion and the rover did not move. That means an
+      # obstacle below the 0.19 m lidar plane and inside the camera's ~0.45 m blind
+      # zone -- a chair leg, a couch skirt, a castor. Measured twice on 2026-08-10,
+      # once in the couch/table gap and once at the chair Scott heard it hit.
+      #
+      # THIS MUST BE ITS OWN LAYER. Adding the marks as another observation source of
+      # `obstacle_layer` above cannot work: that layer raytrace-clears from `scan`,
+      # and the entire premise is that the lidar sees straight THROUGH this obstacle
+      # -- so the marks would be erased within a scan or two by the one sensor that
+      # is blind to them. Hence clearing: false, in a layer scan does not touch.
+      #
+      # observation_persistence 0.0 means only the newest message counts, so the
+      # PUBLISHER owns expiry (decisive_controller republishes the live set at ~2 Hz
+      # and simply stops including expired marks). One owner, one answer to "which
+      # marks exist" -- rather than a negotiation between our TTL and the layer's.
+      freeze_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        footprint_clearing_enabled: true
+        observation_sources: freeze
+        observation_persistence: 0.0
+        freeze:
+          topic: /decisive_controller/freeze_marks
+          data_type: "PointCloud2"
+          clearing: false
+          marking: true
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.5
+          obstacle_max_range: 6.0
           raytrace_max_range: 6.0
           obstacle_max_range: 6.0
       inflation_layer:
@@ -239,7 +271,29 @@ behavior_server:
       plugin: "nav2_behaviors::BackUp"
     wait:
       plugin: "nav2_behaviors::Wait"
-    local_frame: odom
+    # local_frame MUST match the frame of the costmap the collision checker reads.
+    # It was `odom` while the checker read an odom-framed LOCAL costmap. Since the
+    # D16 fix repointed the collision source at the GLOBAL costmap (global_frame:
+    # map, line 150), `odom` here meant the behaviours fetched poses in odom and
+    # scored them against a map-framed grid: CostmapTopicCollisionChecker does NOT
+    # transform the pose it is given, so every simulated footprint was checked at
+    # the wrong cell by exactly the map->odom offset -- small in a fresh room,
+    # unbounded after a SLAM loop closure. A Spin could be granted straight through
+    # a real obstacle.
+    #
+    # THE TRADE, stated because it is a real one: local_frame also drives the
+    # DISTANCE and YAW accounting (DriveOnHeading/BackUp measure travel as
+    # initial_pose minus current_pose, Spin accumulates relative yaw, all in this
+    # frame). odom is smooth by construction; map is not, so a loop closure
+    # mid-behaviour makes those measurements jump. Accepted deliberately:
+    #   * behaviours are <= 12 s under our time_allowance, so the exposure is tiny;
+    #   * a loop closure DURING a recovery (rover barely moving) is rarer still;
+    #   * the jump degrades toward CONSERVATIVE outcomes that other, still-correct
+    #     layers backstop -- a BackUp ending early is merely a shorter retreat, and
+    #     an over-rotating Spin is still gated by the SUPERVISOR's own swept-circle
+    #     pivot checks, which are odom-independent and separately measured (D17-D21).
+    # Continuous wrong-cell scoring is strictly worse than a rare jump.
+    local_frame: map
     global_frame: map
     robot_base_frame: base_link
     transform_tolerance: 0.2

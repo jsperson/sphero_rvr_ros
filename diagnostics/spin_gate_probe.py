@@ -18,7 +18,11 @@ Run with the driver DOWN and the supervisor DOWN (nothing consumes /cmd_vel, so 
 granted Spin moves nothing). Bring up TF + behavior_server first — NOTE: no static
 odom->base_link; the PROBE broadcasts that one, rotating:
 
-    ros2 run tf2_ros static_transform_publisher --frame-id map --child-frame-id odom &
+    # NON-IDENTITY map->odom (0.5 m): with an identity transform map and odom
+    # coincide and a frame mismatch is invisible by construction — which is exactly
+    # how this instrument missed the bug 4f3d1f2 introduced.
+    ros2 run tf2_ros static_transform_publisher --x 0.5 --y 0 --z 0 \
+        --roll 0 --pitch 0 --yaw 0 --frame-id map --child-frame-id odom &
     ros2 run nav2_behaviors behavior_server --ros-args \
         --params-file <lean_nav2.yaml>
     ros2 lifecycle set /behavior_server configure
@@ -81,24 +85,46 @@ FREE = 0
 LETHAL = 254        # nav2_msgs/Costmap uses the 0..255 cost scale, not 0..100
 
 
-def costmap_msg(stamp, obstacle_ring_m=None):
+# The robot's TRUE position in the map frame. The bench publishes a NON-IDENTITY
+# map->odom of exactly this offset, so map and odom no longer coincide and the frame
+# path is actually exercised. With an identity transform (the original probe) a
+# frame mismatch is invisible by construction -- which is why this instrument missed
+# the bug that 4f3d1f2 introduced.
+MAP_OFFSET_X = 0.5
+MAP_OFFSET_Y = 0.0
+
+
+def costmap_msg(stamp, obstacle_ring_m=None, free_island_m=None):
+    """Costmap in the MAP frame, matching the real global costmap.
+
+    Two shapes, both placed around the robot's TRUE map position:
+      * obstacle_ring_m: a lethal annulus AT the robot -> a correct checker refuses.
+      * free_island_m:   free only within this radius of the robot, lethal beyond
+                         -> a correct checker grants; a checker reading the wrong
+                         cell (off by the map->odom offset) lands outside the island
+                         and refuses. That is what makes case B invert too.
+    """
     m = Costmap()
     m.header.stamp = stamp
-    m.header.frame_id = "odom"
+    m.header.frame_id = "map"
     m.metadata.resolution = RES
     m.metadata.size_x = SIZE
     m.metadata.size_y = SIZE
-    m.metadata.origin.position.x = -SIZE * RES / 2.0
-    m.metadata.origin.position.y = -SIZE * RES / 2.0
+    # Centre the window on the robot's true map position.
+    m.metadata.origin.position.x = MAP_OFFSET_X - SIZE * RES / 2.0
+    m.metadata.origin.position.y = MAP_OFFSET_Y - SIZE * RES / 2.0
     data = bytearray(SIZE * SIZE)
-    if obstacle_ring_m is not None:
-        lo, hi = obstacle_ring_m
-        for cy in range(SIZE):
-            for cx in range(SIZE):
-                x = (cx + 0.5) * RES + m.metadata.origin.position.x
-                y = (cy + 0.5) * RES + m.metadata.origin.position.y
-                if lo <= math.hypot(x, y) <= hi:
+    for cy in range(SIZE):
+        for cx in range(SIZE):
+            x = (cx + 0.5) * RES + m.metadata.origin.position.x
+            y = (cy + 0.5) * RES + m.metadata.origin.position.y
+            r = math.hypot(x - MAP_OFFSET_X, y - MAP_OFFSET_Y)
+            if obstacle_ring_m is not None:
+                lo, hi = obstacle_ring_m
+                if lo <= r <= hi:
                     data[cy * SIZE + cx] = LETHAL
+            elif free_island_m is not None and r > free_island_m:
+                data[cy * SIZE + cx] = LETHAL
     m.data = bytes(data)
     return m
 
@@ -110,11 +136,12 @@ def footprint_msg(stamp, yaw):
     so an axis-aligned polygon under a rotated robot is a lie."""
     p = PolygonStamped()
     p.header.stamp = stamp
-    p.header.frame_id = "odom"
+    p.header.frame_id = "map"
     c, s = math.cos(yaw), math.sin(yaw)
     for x, y in ((0.11, 0.10), (0.11, -0.10), (-0.16, -0.10), (-0.16, 0.10)):
         pt = Point32()
-        pt.x, pt.y = float(x * c - y * s), float(x * s + y * c)
+        pt.x = float(x * c - y * s) + MAP_OFFSET_X
+        pt.y = float(x * s + y * c) + MAP_OFFSET_Y
         p.polygon.points.append(pt)
     return p
 
@@ -177,7 +204,7 @@ class Probe(Node):
         while time.monotonic() < end:
             rclpy.spin_once(self, timeout_sec=0.05)
 
-    def run_case(self, label, publish_costmap, obstacle_ring):
+    def run_case(self, label, publish_costmap, obstacle_ring, free_island=None):
         # rosout delivery lags the action result by a beat: without draining, each
         # case's terminal reason lands in the NEXT case's capture and every verdict
         # is attributed one case late (measured). Drain stragglers, then reset.
@@ -195,7 +222,7 @@ class Probe(Node):
         while time.monotonic() < end_warm:
             if publish_costmap:
                 now = self.get_clock().now().to_msg()
-                self.cm_pub.publish(costmap_msg(now, obstacle_ring))
+                self.cm_pub.publish(costmap_msg(now, obstacle_ring, free_island))
                 self.fp_pub.publish(footprint_msg(now, self.yaw))
             rclpy.spin_once(self, timeout_sec=0.05)
 
@@ -215,7 +242,7 @@ class Probe(Node):
         while not result_future.done() and time.monotonic() - t0 < 12.0:
             if publish_costmap:
                 now = self.get_clock().now().to_msg()
-                self.cm_pub.publish(costmap_msg(now, obstacle_ring))
+                self.cm_pub.publish(costmap_msg(now, obstacle_ring, free_island))
                 self.fp_pub.publish(footprint_msg(now, self.yaw))
             rclpy.spin_once(self, timeout_sec=0.05)
         if not result_future.done():
@@ -264,13 +291,26 @@ def main():
         results["A"] = n.run_case(
             "A (no local costmap at all — deployed decisive reality)", False, None)
     if which in ("B", "ALL"):
+        # Free only NEAR the robot's true map position. A checker reading the wrong
+        # cell (off by the map->odom offset) lands outside the island and refuses,
+        # so this case inverts on a frame mismatch instead of passing regardless.
         results["B"] = n.run_case(
-            "B (synthetic costmap, all free)", True, None)
+            # 0.30 m: comfortably covers the footprint at the TRUE position, but
+            # SMALLER than the map->odom offset, so a checker reading the wrong cell
+            # lands outside the island and refuses. Sized this way on purpose --
+            # at 0.8 m the offset still landed inside and the case passed under both
+            # frames, i.e. it discriminated nothing.
+            "B (free island 0.30 m at TRUE pos, lethal beyond)", True, None,
+            free_island=0.30)
     if which in ("C", "ALL"):
         results["C"] = n.run_case(
-            "C (obstacle ring 0.15-0.25 m — inside the swept circle)", True,
-            (0.15, 0.25))
+            "C (lethal ring 0.15-0.25 m at TRUE pos)", True, (0.15, 0.25))
     print()
+    if "B" in results:
+        okB = results["B"] == "SUCCEEDED/unstated"
+        print(("PASS" if okB else "**FAIL**") +
+              "  case B: gate GRANTS a spin on free ground at the robot's true map "
+              f"position (got {results['B']})")
     if "C" in results:
         # The one hard verdict: a gate that grants a spin THROUGH a visible
         # obstacle ring is not gating. Only a COLLISION-reasoned refusal counts —
