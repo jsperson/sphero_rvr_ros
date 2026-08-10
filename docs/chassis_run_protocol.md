@@ -96,10 +96,16 @@ ros2 run nav2_map_server map_saver_cli -f ~/manual_map_$(date +%H%M%S)
 scp sphero-pi-2:"~/run_*.csv ~/launch_*.log ~/.ros/missions/*" <local>
 ```
 
-Only then: Ctrl-C the launch. Remember it ignores SIGINT and children survive —
-kill children by explicit PID (`pgrep` with a bracketed pattern, never a bare
-`pgrep -f` that matches your own SSH command line), then `ros2 service call
-/stop_motor` for the lidar, then verify `/scan` silent and `/dev/ttyUSB0` free.
+Only then: Ctrl-C the launch. Remember it ignores SIGINT and children survive.
+**Kill by explicit PID — list them with `ps -eo pid,cmd`, then `kill <pid>`.** Do
+not reach for `pkill -f <pattern>`: a bracketed pattern does NOT protect you here.
+The bracket trick only defeats *grep's* self-match; `pkill -f` treats `[d]emo` as a
+plain regex matching `demo`, and your own SSH command line (and the tailscaled
+wrapper carrying it) contains the target string — including when the name appears
+in an unrelated part of the same command, such as an `rm` in the cleanup half.
+This killed the operator's session three times on 2026-08-10 alone, twice mid-teardown
+with nodes still running. Then `ros2 service call /stop_motor` for the lidar, and
+verify `/scan` silent and `/dev/ttyUSB0` free.
 
 ## Directed gap test (D5, after the mission)
 
@@ -108,6 +114,48 @@ With the stack still up and the mission over (or explorer stopped), send one
 `/collision_stop/state` in a spare pane: the 2026-08-03 result was that a clean
 crossing stays CLEAR throughout — SLOW/STOPPED chatter in the gap is itself a
 finding.
+
+## Boxed-in attribution — pairing the human eye with the recording
+
+The 2026-08-10 run ended with the rover stuck and the costmap insisting it was
+boxed in, while Scott stood there looking at open floor. That disagreement could
+not be settled afterwards, and the reason is worth stating precisely: **the rover
+rotated between the observation and the measurement.** By the time the costmap was
+dumped, "east" in Scott's cardinal sense and "the direction the robot is facing"
+were no longer the same bearing, so neither reading could confirm or refute the
+other. Nothing was wrong with either observation. They simply could not be
+compared, because nothing recorded *when* and *facing where*.
+
+Two habits fix that, and they need no tooling — the recorder already carries
+`odom_yaw_deg`, `cam_cloud_age` and `pivot_veto` as of `4c397c7`.
+
+**During the run — Scott, on each audible or visible stall:** note the **wall-clock
+time** (to the nearest ~5 s is plenty) and **one compass-style sentence** about what
+you see, phrased as direction plus distance: *"11:04:30 — east about 2 m clear,
+backpack close on the southwest, chair legs northwest."* Cardinal directions rather
+than robot-relative ones ("its left") — the robot's left changes when it turns, and
+that ambiguity is exactly what cost the last attribution. Note it even when the
+stall resolves itself; a stall that clears is still evidence about the costmap.
+
+**After the run — pair each note against the recording.** For each boxed-in event in
+the launch log, take its timestamp, find the matching rows in the recorder CSV, and
+read `odom_yaw_deg` there. That yaw converts Scott's cardinal observation into the
+robot's frame, so his "east is clear" and the costmap's "blocked ahead" finally
+describe the same physical direction and can agree or disagree meaningfully. Then
+one of three things is true, and the run can say which:
+
+- **They agree** (something really was where the costmap said): the boxed-in verdict
+  was correct, and the question becomes why recovery could not escape it.
+- **They disagree** (open floor marked lethal): that is a costmap-fidelity defect
+  with a concrete bearing and timestamp attached — the strongest form of that
+  finding this project has ever had, and far better than the standing suspicion.
+- **The yaw shows the robot had turned** between the note and the reading: the
+  comparison is void, exactly as on 2026-08-10 — but now it is *known* to be void
+  rather than mistaken for a result.
+
+Also read `cam_cloud_age` at those same rows. Both camera gates fail open on a stale
+cloud, so a boxed-in event with a stale or empty `cam_cloud_age` was decided by lidar
+and costmap alone, and the camera should not be credited or blamed for it.
 
 ## Post-run, same sitting
 
