@@ -447,6 +447,33 @@ def main(args=None):
                 self._cam_points = pts
                 self._cam_stamp = self._now_seconds()
 
+        def _camera_blocks_pivot(self, now):
+            """True when a FRESH camera cloud has a point inside the swept circle.
+
+            Same geometry as the supervisor's pivot gate: the circumscribed corner
+            radius of the footprint, because a pivot sweeps that circle in every
+            direction. Fails OPEN on a stale or absent cloud, exactly like the forward
+            camera brake -- a dead camera must degrade to lidar-only behaviour, never
+            freeze the rover.
+            """
+            if not self._cam_enable:
+                return False
+            with self._cam_lock:
+                pts = self._cam_points
+                stamp = self._cam_stamp
+            if stamp is None or (now - stamp) > self._cam_max_age or not pts:
+                return False
+            radius = math.hypot(
+                max(float(self.get_parameter("footprint_front_m").value),
+                    float(self.get_parameter("footprint_rear_m").value)),
+                max(float(self.get_parameter("footprint_left_m").value),
+                    float(self.get_parameter("footprint_right_m").value)),
+            ) + float(self.get_parameter("payload_margin_m").value)
+            for px, py in ((p[0], p[1]) for p in pts):
+                if math.hypot(px, py) <= radius:
+                    return True
+            return False
+
         def _apply_camera_brake(self, linear_x, angular_z, now):
             """Additive forward limit from a FRESH camera low-obstacle cloud. Returns
             (limited_linear_x, nearest_m, scale). Only reduces positive forward speed;
@@ -530,6 +557,16 @@ def main(args=None):
             self._cam_nearest, self._cam_scale = cam_nearest, cam_scale
             msg.linear.x = cam_linear
             msg.angular.z = decision.output.angular_z
+            # A PIVOT is the one motion the camera used to be blind to. The forward
+            # brake early-returns on linear_x <= 0, and a pivot escape emits exactly
+            # linear_x == 0, so the cloud was never even read -- while the lidar, at
+            # 0.19 m, reports the wall behind a shoe rather than the shoe. That is the
+            # precise failure class low_obstacle was built to prevent, re-opened for a
+            # new motion type. A pivot sweeps the footprint's corner circle, so any
+            # camera point inside that circle blocks the turn.
+            if msg.linear.x == 0.0 and msg.angular.z != 0.0:
+                if self._camera_blocks_pivot(self._now_seconds()):
+                    msg.angular.z = 0.0
             self._cmd_pub.publish(msg)
 
             state = String()

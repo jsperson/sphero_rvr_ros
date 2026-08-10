@@ -895,14 +895,24 @@ class CollisionStopSupervisor:
                 ) + self.config.payload_margin_m
                 nearest_any = nearest.get("any")
                 if nearest_any is not None and nearest_any > pivot_radius:
+                    # Stay STOPPED. Letting a turn through does not mean the obstacle
+                    # went anywhere, and reporting SLOW here was actively harmful:
+                    # SLOW clears `_latched_stop_reason`, so one rotation took the
+                    # state STOPPED -> SLOW -> CLEAR with an obstacle still held at
+                    # 0.20 m, inside both the 0.30 stop and the 0.40 release. That
+                    # published CLEAR to everything watching -- including the run
+                    # recorder whose whole job is making the next failure
+                    # diagnosable -- and silently disabled the reverse-escape guard
+                    # below, which requires the latch.
                     return self._decision(
-                        CollisionState.SLOW,
+                        CollisionState.STOPPED,
                         "front_stop_turn_escape",
                         TwistCommand(0.0, bounded.angular_z),
                         command,
                         health,
                         nearest,
                         scale=1.0,
+                        reset_required=True,
                     )
             return self._decision(CollisionState.STOPPED, "reset_required", TwistCommand(), command, health, nearest, reset_required=True)
 
