@@ -91,6 +91,13 @@ def build_report(
         # Places the robot PROVED it could not pass. In the report, never in the
         # saved map: the map is the room as SLAM measured it, these are the robot's
         # own belief about where it could not go.
+        # SCOPE: a mark lasts the MISSION by design. The costmap layer that carries
+        # them runs clearing:false (it must -- the lidar sees straight through these
+        # obstacles and would otherwise erase them), and an ObstacleLayer never
+        # un-marks a cell. Measured 2026-08-10: a marked cell stayed lethal after
+        # publication stopped. Revoking a mark mid-mission would need a real
+        # mechanism; the publisher's TTL bounds this list and what is published,
+        # not the grid.
         "freeze_marks": list(freeze_marks or []),
         "map_files": list(map_files or []),
     }
