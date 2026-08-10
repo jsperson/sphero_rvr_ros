@@ -447,7 +447,7 @@ def main(args=None):
                 self._cam_points = pts
                 self._cam_stamp = self._now_seconds()
 
-        def _camera_blocks_pivot(self, now):
+        def _camera_blocks_pivot(self, pts, cloud_age):
             """True when a FRESH camera cloud has a point inside the swept circle.
 
             Same geometry as the supervisor's pivot gate: the circumscribed corner
@@ -455,13 +455,15 @@ def main(args=None):
             direction. Fails OPEN on a stale or absent cloud, exactly like the forward
             camera brake -- a dead camera must degrade to lidar-only behaviour, never
             freeze the rover.
+
+            Takes the cloud snapshot as arguments rather than re-reading it, so the
+            caller can report the SAME snapshot in telemetry: an age read twice can
+            straddle a cloud arrival, and then the state line disagrees with what the
+            veto actually saw.
             """
             if not self._cam_enable:
                 return False
-            with self._cam_lock:
-                pts = self._cam_points
-                stamp = self._cam_stamp
-            if stamp is None or (now - stamp) > self._cam_max_age or not pts:
+            if cloud_age is None or cloud_age > self._cam_max_age or not pts:
                 return False
             radius = math.hypot(
                 max(float(self.get_parameter("footprint_front_m").value),
@@ -564,8 +566,18 @@ def main(args=None):
             # precise failure class low_obstacle was built to prevent, re-opened for a
             # new motion type. A pivot sweeps the footprint's corner circle, so any
             # camera point inside that circle blocks the turn.
+            # ONE snapshot of the cloud feeds both the veto and the telemetry, so
+            # the state line reports exactly what the veto judged.
+            with self._cam_lock:
+                cam_pts = self._cam_points
+                cam_stamp = self._cam_stamp
+            cam_cloud_age = (
+                None if cam_stamp is None else self._now_seconds() - cam_stamp
+            )
+            pivot_veto = False
             if msg.linear.x == 0.0 and msg.angular.z != 0.0:
-                if self._camera_blocks_pivot(self._now_seconds()):
+                pivot_veto = self._camera_blocks_pivot(cam_pts, cam_cloud_age)
+                if pivot_veto:
                     msg.angular.z = 0.0
             self._cmd_pub.publish(msg)
 
@@ -595,7 +607,17 @@ def main(args=None):
                 f"requested=({decision.requested.linear_x:.3f},{decision.requested.angular_z:.3f}) "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f}) "
                 f"cam_nearest={_fmt_optional(cam_nearest)} cam_scale={cam_scale:.2f} "
-                f"cam_output_linear={msg.linear.x:.3f}"
+                f"cam_output_linear={msg.linear.x:.3f} "
+                # The published command differs from decision.output whenever the
+                # pivot veto zeroed the turn, and the veto silently disengages when
+                # the cloud goes stale -- measured happening while clouds were still
+                # ARRIVING, because a saturated executor starved the cloud
+                # subscription. A recording without these fields cannot distinguish
+                # "camera vetoed the pivot" from "gate granted it", nor see the
+                # fail-open window at all.
+                f"pivot_veto={str(pivot_veto).lower()} "
+                f"cam_cloud_age={_fmt_optional(None if cam_cloud_age is None else round(cam_cloud_age, 3))} "
+                f"output_angular_published={msg.angular.z:.3f}"
             )
             self._state_pub.publish(state)
             event_text = f"{decision.state.value} {decision.reason}"
