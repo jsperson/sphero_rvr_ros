@@ -87,6 +87,7 @@ setup(
             "vlm_explorer = sphero_rvr_driver.vlm_explorer_node:main",
             "semantic_map = sphero_rvr_driver.semantic_map_node:main",
             "task_node = sphero_rvr_driver.task_node:main",
+            "task_client = sphero_rvr_driver.task_client:main",
         ],
     },
 )

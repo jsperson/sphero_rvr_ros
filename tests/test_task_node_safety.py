@@ -18,6 +18,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TASK_NODE = REPO_ROOT / "src" / "sphero_rvr_driver" / "task_node.py"
+TASK_CLIENT = REPO_ROOT / "src" / "sphero_rvr_driver" / "task_client.py"
 
 
 def _executable_body(text: str) -> str:
@@ -74,4 +75,62 @@ def test_task_node_carries_no_transport_or_model_layer():
     body = _executable_body(TASK_NODE.read_text())
     for forbidden in ("import requests", "http", "socket", "openai", "anthropic",
                       "mcp", "stdio"):
+        assert forbidden not in body.lower()
+
+
+# --- the same boundary, applied to the LLM client ---------------------------
+# The client is where a language model's output first becomes an action, so it gets
+# the identical scan. A model cannot ask for a velocity if nothing in the path can
+# express one.
+
+def test_task_client_never_touches_velocity_or_motor_topics():
+    body = _executable_body(TASK_CLIENT.read_text())
+    assert "Twist" not in body
+    assert "from geometry_msgs" not in body
+    assert "import geometry_msgs" not in body
+    assert "/cmd_vel" not in body
+    assert "cmd_vel_motor" not in body
+    assert "Serial" not in body
+
+
+def test_task_client_publishes_nothing():
+    assert "create_publisher" not in _executable_body(TASK_CLIENT.read_text())
+
+
+def test_task_client_only_reaches_the_three_tool_interfaces():
+    """It may talk to task_node and nothing else. A client that could call
+    /navigate_to_pose directly would bypass the envelope entirely."""
+    body = _executable_body(TASK_CLIENT.read_text())
+    assert '"task/goto"' in body
+    assert '"task/observe"' in body
+    assert '"task/query_semantic_map"' in body
+    # The bare Nav2 interfaces are the envelope bypass; only task_node may use them.
+    assert '"navigate_to_pose"' not in body
+    assert '"compute_path_to_pose"' not in body
+    assert '"/observe"' not in body
+
+
+def test_task_client_is_removable_and_nothing_depends_on_it():
+    """Stage D acceptance, mechanically: delete the client and the robot is
+    unchanged. Nothing in the driver package may import it, and no launch file may
+    start it."""
+    driver = REPO_ROOT / "src" / "sphero_rvr_driver"
+    for path in driver.glob("*.py"):
+        if path.name == "task_client.py":
+            continue
+        assert "task_client" not in path.read_text(), (
+            f"{path.name} imports the LLM client — it must be removable"
+        )
+    for launch in (REPO_ROOT / "launch").glob("*.py"):
+        assert "task_client" not in launch.read_text(), (
+            f"{launch.name} starts the LLM client — it must be opt-in and removable"
+        )
+
+
+def test_task_client_carries_no_provider_sdk():
+    """One provider, reached through the repo's existing helper. A vendor SDK here
+    would be a new dependency and a second way to hold a key."""
+    body = _executable_body(TASK_CLIENT.read_text())
+    for forbidden in ("import openai", "import anthropic", "from openai",
+                      "from anthropic", "mcp"):
         assert forbidden not in body.lower()

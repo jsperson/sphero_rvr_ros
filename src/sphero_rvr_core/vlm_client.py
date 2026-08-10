@@ -54,6 +54,40 @@ def query_vlm(base_url, api_key, model, prompt, jpeg_bytes, max_tokens=300, time
     raise RuntimeError(f"VLM returned no usable text after retries (last: {last!r})")
 
 
+def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
+               timeout=30.0, retries=3, json_mode=False):
+    """Same endpoint, key and retry discipline as `query_vlm`, without an image.
+
+    Exists because the task client reasons over text (a tool contract and tool
+    results), not pictures -- so this adds an argument shape, not a dependency or a
+    provider. `json_mode` sets response_format json_object, which is what makes a
+    model that likes to think out loud still land on a parseable object; see the
+    vision path's note about needing token headroom for the same reason.
+    """
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    last = ""
+    for _ in range(retries):
+        r = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"].strip()
+        if len(content) >= 2 and "<|" not in content:
+            return content
+        last = content
+    raise RuntimeError(f"model returned no usable text after retries (last: {last!r})")
+
+
 def extract_json(text):
     """Parse the first COMPLETE JSON object in `text` (models wrap JSON in prose or
     code fences). Raises ValueError if none parses.
