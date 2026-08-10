@@ -43,6 +43,16 @@ class CoverageConfig:
     # each in turn and takes the first that yields a path, so this bounds how many
     # planner queries one selection can cost. Reachability is not decided here.
     max_candidates: int = 12
+    # Never offer a cluster cell closer to the robot than this (world metres).
+    # The caller refuses goals inside its own minimum goal distance, so a cluster
+    # represented by its very nearest cell can be silently unofferable in full: a
+    # frontier arc 0.25 m away is a real target the mission wants, but its nearest
+    # cell yields no goal and the cluster then contributes NOTHING -- the likely
+    # end-of-mission cause in D14. When the nearest cell is inside this distance,
+    # the representative moves outward to the nearest cluster cell beyond it; a
+    # cluster entirely inside is skipped for THIS pose (distances are re-measured
+    # from the live pose every cycle, so moving re-offers it). 0.0 = old behaviour.
+    min_offer_distance_m: float = 0.0
 
 
 def world_grid(wx: float, wy: float, res: float) -> Tuple[int, int]:
@@ -142,19 +152,41 @@ def candidate_goals(
             return True
         return False
 
-    def cluster_size(cx: int, cy: int, seen_cluster: set) -> int:
-        """Flood connected target cells (4-connected) starting at (cx, cy)."""
+    def cluster_cells(cx: int, cy: int, seen_cluster: set) -> list:
+        """Flood connected target cells (4-connected) from (cx, cy); return them."""
         stack = [(cx, cy)]
         seen_cluster.add((cx, cy))
-        size = 0
+        cells = []
         while stack:
             x, y = stack.pop()
-            size += 1
+            cells.append((x, y))
             for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
                 if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in seen_cluster and is_target(nx, ny):
                     seen_cluster.add((nx, ny))
                     stack.append((nx, ny))
-        return size
+        return cells
+
+    def representative(cells: list):
+        """The cell to offer for a cluster: the nearest one the caller can USE.
+
+        The flood reaches a cluster at its nearest cell, but a cell closer than
+        min_offer_distance_m yields no goal at the caller (a goal where the rover
+        already stands succeeds without moving, forever), so offering it silences
+        the whole cluster. Offer the nearest cell at a USABLE distance instead --
+        with one cell of margin, since the caller measures from its live world
+        pose and this measures from the robot's cell. None when every cell is
+        inside: unofferable from THIS pose, and re-measured after any move.
+        """
+        if config.min_offer_distance_m <= 0.0:
+            return cells[0]
+        min_cells = config.min_offer_distance_m / res + 1.0
+        best = None
+        best_d = math.inf
+        for x, y in cells:
+            d = math.hypot(x - robot_cx, y - robot_cy)
+            if d >= min_cells and d < best_d:
+                best, best_d = (x, y), d
+        return best
 
     # BFS over free space from the robot, collecting one representative per
     # big-enough target cluster in nearest-first order. The robot's own cell is
@@ -168,10 +200,13 @@ def candidate_goals(
     while dq:
         cx, cy = dq.popleft()
         if is_target(cx, cy) and (cx, cy) not in checked_cluster:
-            if cluster_size(cx, cy, checked_cluster) >= config.min_cluster_cells:
-                found.append((cx, cy))
-                if len(found) >= config.max_candidates:
-                    return found
+            cells = cluster_cells(cx, cy, checked_cluster)
+            if len(cells) >= config.min_cluster_cells:
+                rep = representative(cells)
+                if rep is not None:
+                    found.append(rep)
+                    if len(found) >= config.max_candidates:
+                        return found
         for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
             if 0 <= nx < w and 0 <= ny < h:
                 nidx = ny * w + nx

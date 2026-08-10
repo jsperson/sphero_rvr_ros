@@ -197,6 +197,43 @@ def test_candidates_are_nearest_first_and_one_per_cluster():
     assert cells[1] == (8, 0)  # nearest cell of the far cluster
 
 
+def test_cluster_too_close_offers_a_farther_cell_instead():
+    # D14: the flood reaches a cluster at its NEAREST cell, but a cell inside
+    # min_offer_distance yields no goal at the caller -- offering it silences the
+    # whole cluster. The representative must move outward to the nearest usable
+    # cell, not vanish.
+    occ, w, h = build(["........."])
+    covered = cover_all(w, h) - {(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)}
+    # res=1.0, robot at (0,0): cluster spans distances 1..5.
+    cfg = CoverageConfig(min_cluster_cells=2, include_frontiers=False,
+                         min_offer_distance_m=1.5)
+    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
+    # min distance 1.5 m + one cell of live-pose margin = 2.5 cells -> (3,0).
+    assert cells == [(3, 0)]
+
+
+def test_cluster_entirely_too_close_is_skipped_for_this_pose():
+    # A cluster with no cell at usable distance is unofferable FROM HERE -- it must
+    # yield nothing rather than a goal the caller will refuse forever. Distances
+    # are re-measured from the live pose each cycle, so moving re-offers it.
+    occ, w, h = build(["...."])
+    covered = cover_all(w, h) - {(1, 0), (2, 0)}
+    cfg = CoverageConfig(min_cluster_cells=2, include_frontiers=False,
+                         min_offer_distance_m=3.0)
+    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
+    assert cells == []
+
+
+def test_min_offer_distance_zero_keeps_the_nearest_cell():
+    # Default config: the representative stays the flood's first-touched (nearest)
+    # cell, exactly as before D14.
+    occ, w, h = build(["......"])
+    covered = cover_all(w, h) - {(2, 0), (3, 0)}
+    cfg = CoverageConfig(min_cluster_cells=2, include_frontiers=False)
+    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
+    assert cells == [(2, 0)]
+
+
 def test_max_candidates_bounds_the_planner_queries():
     # Many separate single-cell clusters; the cap is what stops one selection
     # cycle from firing an unbounded number of ComputePathToPose queries.

@@ -82,3 +82,8 @@ coverage_explorer:
     # cell or a missing costmap never halts exploration.
     blocked_start_check: true
     costmap_topic: /global_costmap/costmap
+    # Hold the blocked-start state this long after the robot's cell last read
+    # at/above inscribed cost. The cell value flickers around the threshold; without
+    # the hold, a single "clear" tick lets the completion path run while the rover
+    # is in fact wedged. Was a code-only default, untunable from here (D15).
+    blocked_hold_s: 5.0

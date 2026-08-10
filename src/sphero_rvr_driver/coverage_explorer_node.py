@@ -80,7 +80,11 @@ class CoverageExplorerNode(Node):
         # max_candidates * plan_timeout_s. Running out of budget is explicitly not
         # the same as running out of candidates.
         self.declare_parameter("select_budget_s", 6.0)
-        self.declare_parameter("complete_after_empty_cycles", 8)
+        # Matches coverage_explorer.yaml. The two drifted once already (YAML 20 vs
+        # code 8, the blacklist_ttl_s pattern): production loads the YAML, but any
+        # run overriding coverage_params_file silently got the premature-end
+        # behaviour back. Change BOTH or neither.
+        self.declare_parameter("complete_after_empty_cycles", 20)
         # Goal-progress watchdog: if a goal makes < this much progress in this many
         # seconds, cancel it -- it planned when we asked, but driving it is going
         # nowhere. Suppressed briefly afterwards so the very next selection does not
@@ -127,6 +131,10 @@ class CoverageExplorerNode(Node):
             include_frontiers=bool(self.get_parameter("include_frontiers").value),
             free_threshold=int(self.get_parameter("free_threshold").value),
             max_candidates=int(self.get_parameter("max_candidates").value),
+            # The core must not represent a cluster by a cell this node would then
+            # refuse to send a goal to (see min_goal_distance_m) -- that silences
+            # the entire cluster (D14).
+            min_offer_distance_m=float(self.get_parameter("min_goal_distance_m").value),
         )
         self._goal_progress_timeout_s = float(self.get_parameter("goal_progress_timeout_s").value)
         self._goal_progress_epsilon_m = float(self.get_parameter("goal_progress_epsilon_m").value)
