@@ -1,0 +1,386 @@
+"""The thin task surface: `goto`, `observe`, `query_semantic_map`. Track 2 v1.
+
+Three tools over capabilities that are already hardware-validated, exposed as plain
+ROS services and actions so they are callable with `ros2 service call` /
+`ros2 action send_goal` and nothing else is required to drive the robot. That is the
+Stage D acceptance in structural form: **delete the LLM and a working robot
+remains.** A language model, when it arrives, is a client of this node -- it is not
+inside it, and this file imports nothing that knows what a model is.
+
+THE SAFETY BOUNDARY IS THE SHAPE OF THIS FILE. It imports no `geometry_msgs`, holds
+no `Twist`, publishes no velocity, and names no `/cmd_vel*` topic. Motion is
+requested exclusively as a map-frame `NavigateToPose` goal; Nav2 plans it, the
+decisive controller drives it, and beneath all of that the collision/STOP/ESTOP
+supervisor stays the sole `/cmd_vel_motor` publisher and the final speed gate. A tool
+surface that could publish a velocity would be a second controller racing the first
+-- this stack's documented way to make a control bug look like a perception bug.
+`tests/test_task_node.py` asserts this boundary by scanning this source, a test
+lifted from the culled prompt-drive suite where it did the same job.
+
+INTERFACE CHOICES, because they were forced and are worth stating:
+* `task/goto` is an ActionServer of type `nav2_msgs/action/NavigateToPose` -- the
+  same type it forwards to. That is deliberate, not lazy. The semantics match
+  exactly ("go to this map pose"), it costs no new interface package, an action
+  gives cancellation of a long drive for free, and `error_code`/`error_msg` carry a
+  typed failure. Best of all it lets this node REUSE the caller's `PoseStamped`
+  object for the downstream goal, so `geometry_msgs` never has to be imported here
+  and the safety boundary above is structural rather than a promise.
+* `task/observe` is a `Trigger` -- it takes no arguments, so nothing is lost.
+* `task/query_semantic_map` is a `Trigger` whose arguments come from TYPED
+  parameters (`query_label`, `query_radius_m`, `query_near_x/y`,
+  `query_min_confidence`), read under the same lock that answers. Only `Trigger`,
+  `SetBool` and `Empty` exist without generating a custom interface package, and
+  none carries a string; a `.srv` of our own is the honest v2 upgrade.
+  These started as ONE `query_json` string parameter, which is the obvious design
+  and is unusable: `ros2 param set` SEGFAULTS on any value starting with `{`
+  (it YAML-parses the value, a `{...}` becomes a dictionary, and dictionaries are
+  not a parameter type). Reproduced twice on jazzy -- a plain string sets fine,
+  `{"label": "shoe"}` dumps core. Typed parameters are also simply better ROS:
+  each is self-describing and range-checkable. Read-and-answer is atomic, so a lone
+  caller (which is what an LLM client is) is safe; two concurrent callers can
+  interleave set-then-call and must not be assumed safe.
+
+Everything decidable without ROS -- the goal envelope, the semantic query, the
+result shape -- lives in `sphero_rvr_core.task_tools`.
+"""
+
+import threading
+import time
+
+import rclpy
+from action_msgs.msg import GoalStatus
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
+from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
+import tf2_ros
+
+from sphero_rvr_core.task_tools import (
+    EnvelopeError,
+    GoalEnvelope,
+    query_semantic_objects,
+    tool_result,
+    validate_goal,
+)
+
+
+class TaskNode(Node):
+    def __init__(self):
+        super().__init__("task_node")
+        self.declare_parameter("max_goal_distance_m", 5.0)
+        self.declare_parameter("max_query_radius_m", 10.0)
+        self.declare_parameter("map_frame", "map")
+        self.declare_parameter("base_frame", "base_link")
+        # plan_timeout_s bounds the optional reachability precheck; goal_timeout_s
+        # bounds the drive itself, so a goal that neither succeeds nor fails cannot
+        # hold the action open forever.
+        self.declare_parameter("plan_timeout_s", 2.0)
+        self.declare_parameter("goal_timeout_s", 120.0)
+        # Ask the planner before committing. Cheap -- one query against the planner
+        # the goal would go to anyway -- and it turns "drove at a wall for two
+        # minutes then aborted" into an immediate typed refusal. False = send blind.
+        self.declare_parameter("precheck_reachable", True)
+        self.declare_parameter("observe_service", "observe")
+        self.declare_parameter("observe_timeout_s", 30.0)
+        self.declare_parameter("semantic_objects_topic", "/semantic_map/objects")
+        # Arguments for task/query_semantic_map. See the interface note above for why
+        # these are typed parameters rather than one JSON string.
+        self.declare_parameter("query_label", "")          # "" = everything
+        self.declare_parameter("query_radius_m", 0.0)      # 0 = unbounded
+        self.declare_parameter("query_near_x", 0.0)
+        self.declare_parameter("query_near_y", 0.0)
+        self.declare_parameter("query_min_confidence", 0.0)
+
+        self._envelope = GoalEnvelope(
+            max_goal_distance_m=float(self.get_parameter("max_goal_distance_m").value),
+            max_query_radius_m=float(self.get_parameter("max_query_radius_m").value),
+        )
+        self._map_frame = str(self.get_parameter("map_frame").value)
+        self._base_frame = str(self.get_parameter("base_frame").value)
+        self._plan_timeout_s = float(self.get_parameter("plan_timeout_s").value)
+        self._goal_timeout_s = float(self.get_parameter("goal_timeout_s").value)
+        self._observe_timeout_s = float(self.get_parameter("observe_timeout_s").value)
+        self._precheck = bool(self.get_parameter("precheck_reachable").value)
+
+        cbg = ReentrantCallbackGroup()
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self._nav = ActionClient(self, NavigateToPose, "navigate_to_pose",
+                                 callback_group=cbg)
+        self._planner = ActionClient(self, ComputePathToPose, "compute_path_to_pose",
+                                     callback_group=cbg)
+        self._observe_client = self.create_client(
+            Trigger, str(self.get_parameter("observe_service").value),
+            callback_group=cbg,
+        )
+
+        self._objects_lock = threading.Lock()
+        self._objects_json = ""
+        self.create_subscription(
+            String, str(self.get_parameter("semantic_objects_topic").value),
+            self._on_objects, 10, callback_group=cbg,
+        )
+
+        # One goto at a time. Two concurrent gotos would put two NavigateToPose goals
+        # on one robot -- the failure class the explorer's tick serialization exists
+        # to prevent. A second caller is REFUSED, not queued: a queued drive would
+        # start at an unpredictable later moment, which is worse than a clear "busy".
+        self._goto_busy = threading.Lock()
+
+        self._goto_server = ActionServer(
+            self, NavigateToPose, "task/goto",
+            execute_callback=self._execute_goto,
+            goal_callback=self._accept_goto,
+            cancel_callback=lambda _gh: CancelResponse.ACCEPT,
+            callback_group=cbg,
+        )
+        self.create_service(Trigger, "task/observe", self._on_observe,
+                            callback_group=cbg)
+        self.create_service(Trigger, "task/query_semantic_map", self._on_query,
+                            callback_group=cbg)
+        self.get_logger().info(
+            "task_node ready — tools: task/goto (action), task/observe, "
+            f"task/query_semantic_map (envelope {self._envelope.to_json_dict()})"
+        )
+
+    # --- plumbing -------------------------------------------------------------
+
+    def _on_objects(self, msg):
+        with self._objects_lock:
+            self._objects_json = msg.data
+
+    def _robot_xy(self):
+        """Pose in the map frame, or None. None is a refusal condition for goto (see
+        validate_goal) rather than something to guess around."""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._map_frame, self._base_frame, rclpy.time.Time()
+            )
+        except Exception:
+            return None
+        return tf.transform.translation.x, tf.transform.translation.y
+
+    def _await(self, future, deadline):
+        """Block until `future` resolves or `deadline` passes; None on timeout.
+
+        Safe on a MultiThreadedExecutor with a reentrant group -- another thread
+        services the action response while this one waits. Same discipline as the
+        explorer, including its hard-won rule: whatever you stop waiting for, you
+        must also cancel (see every caller below).
+        """
+        while not future.done():
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.01)
+        return future.result()
+
+    # --- goto -----------------------------------------------------------------
+
+    def _accept_goto(self, goal_request):
+        """Refuse rather than queue when a drive is already running."""
+        if self._goto_busy.locked():
+            self.get_logger().warn("task/goto refused: a goto is already running")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _fail(self, goal_handle, reason, **fields):
+        result = NavigateToPose.Result()
+        result.error_code = 1
+        result.error_msg = tool_result(False, "goto", reason, **fields)
+        goal_handle.abort()
+        self.get_logger().warn(f"task/goto refused: {reason}")
+        return result
+
+    def _execute_goto(self, goal_handle):
+        # The accept callback can race two near-simultaneous goals, so the lock is
+        # taken here too and is the real guard; the callback only makes the common
+        # case a clean rejection instead of a wait.
+        if not self._goto_busy.acquire(blocking=False):
+            return self._fail(goal_handle, "another goto is already running")
+        try:
+            pose = goal_handle.request.pose
+            gx, gy = pose.pose.position.x, pose.pose.position.y
+            try:
+                gx, gy = validate_goal(gx, gy, self._robot_xy(), self._envelope)
+            except EnvelopeError as exc:
+                return self._fail(goal_handle, str(exc), x=gx, y=gy)
+
+            if self._precheck and not self._plannable(pose):
+                return self._fail(
+                    goal_handle, "planner found no path to that goal", x=gx, y=gy
+                )
+
+            if not self._nav.wait_for_server(timeout_sec=5.0):
+                return self._fail(goal_handle, "navigate_to_pose server unavailable")
+
+            outbound = NavigateToPose.Goal()
+            # Reuse the caller's PoseStamped verbatim: it is already the right type,
+            # and passing it through is what keeps geometry_msgs out of this file.
+            outbound.pose = pose
+            deadline = time.monotonic() + self._goal_timeout_s
+            handle = self._await(self._nav.send_goal_async(outbound), deadline)
+            if handle is None or not handle.accepted:
+                return self._fail(goal_handle, "navigate_to_pose rejected the goal",
+                                  x=gx, y=gy)
+
+            result_future = handle.get_result_async()
+            while not result_future.done():
+                if goal_handle.is_cancel_requested:
+                    handle.cancel_goal_async()
+                    self._await(result_future, time.monotonic() + 5.0)
+                    goal_handle.canceled()
+                    cancelled = NavigateToPose.Result()
+                    cancelled.error_msg = tool_result(
+                        False, "goto", "cancelled by caller", x=gx, y=gy
+                    )
+                    self.get_logger().info("task/goto cancelled — downstream cancelled")
+                    return cancelled
+                if time.monotonic() >= deadline:
+                    # Stopped waiting, so stop the drive: an abandoned goal keeps
+                    # driving, which is exactly how a mission reports done and the
+                    # rover keeps moving (D13).
+                    handle.cancel_goal_async()
+                    self._await(result_future, time.monotonic() + 5.0)
+                    return self._fail(
+                        goal_handle,
+                        f"goal did not finish within {self._goal_timeout_s:.0f}s "
+                        "— cancelled",
+                        x=gx, y=gy,
+                    )
+                time.sleep(0.02)
+
+            status = result_future.result().status
+            if status == GoalStatus.STATUS_SUCCEEDED:
+                result = NavigateToPose.Result()
+                result.error_msg = tool_result(
+                    True, "goto", "arrived", x=gx, y=gy, status="SUCCEEDED"
+                )
+                goal_handle.succeed()
+                self.get_logger().info(f"task/goto arrived at ({gx:.2f},{gy:.2f})")
+                return result
+            name = {
+                GoalStatus.STATUS_ABORTED: "ABORTED",
+                GoalStatus.STATUS_CANCELED: "CANCELED",
+            }.get(status, f"status_{status}")
+            return self._fail(goal_handle, f"navigation {name}", x=gx, y=gy,
+                              status=name)
+        finally:
+            self._goto_busy.release()
+
+    def _plannable(self, pose):
+        """Ask the planner whether it can route there from the live pose.
+
+        Fails CLOSED for this one request (no path -> refuse) but never latches:
+        every call re-asks, so a planner hiccup costs one tool call, not a session.
+        """
+        if not self._planner.server_is_ready():
+            if not self._planner.wait_for_server(timeout_sec=1.0):
+                self.get_logger().warn(
+                    "compute_path_to_pose unavailable — skipping the precheck"
+                )
+                return True   # degrade to sending blind rather than block all motion
+        goal = ComputePathToPose.Goal()
+        goal.goal = pose
+        goal.use_start = False
+        deadline = time.monotonic() + self._plan_timeout_s
+        handle = self._await(self._planner.send_goal_async(goal), deadline)
+        if handle is None or not handle.accepted:
+            return False
+        result = self._await(handle.get_result_async(), deadline)
+        if result is None:
+            handle.cancel_goal_async()   # stop what we stopped waiting for
+            return False
+        return len(result.result.path.poses) > 0
+
+    # --- observe --------------------------------------------------------------
+
+    def _on_observe(self, request, response):
+        """Pass-through to the semantic_map node's existing `observe` Trigger.
+
+        Deliberately adds nothing: that service is hardware-validated, it costs a
+        cloud VLM call per invocation, and wrapping it in retries or policy here
+        would be inventing behaviour the tool surface has no business owning.
+        """
+        if not self._observe_client.wait_for_service(timeout_sec=2.0):
+            response.success = False
+            response.message = tool_result(
+                False, "observe", "observe service unavailable "
+                "(is semantic_map running with a camera?)"
+            )
+            return response
+        future = self._observe_client.call_async(Trigger.Request())
+        result = self._await(future, time.monotonic() + self._observe_timeout_s)
+        if result is None:
+            response.success = False
+            response.message = tool_result(
+                False, "observe",
+                f"observe did not answer within {self._observe_timeout_s:.0f}s",
+            )
+            return response
+        response.success = bool(result.success)
+        response.message = tool_result(
+            bool(result.success), "observe", str(result.message)
+        )
+        return response
+
+    # --- query_semantic_map ---------------------------------------------------
+
+    def _on_query(self, request, response):
+        """Answer from the latest `/semantic_map/objects` snapshot.
+
+        Arguments come from the typed query_* parameters (see the interface note at
+        the top). Read-and-answer is atomic under one lock so a single caller cannot
+        be interleaved with its own snapshot update.
+        """
+        label = str(self.get_parameter("query_label").value or "") or None
+        radius = float(self.get_parameter("query_radius_m").value)
+        min_conf = float(self.get_parameter("query_min_confidence").value)
+        # radius 0 means "no proximity filter"; near is meaningless without it, so
+        # the pair is passed together or not at all (validate_query enforces that).
+        near = None
+        if radius > 0.0:
+            near = (float(self.get_parameter("query_near_x").value),
+                    float(self.get_parameter("query_near_y").value))
+        with self._objects_lock:
+            snapshot = self._objects_json
+        try:
+            found = query_semantic_objects(
+                snapshot,
+                label=label,
+                near=near,
+                radius_m=radius if radius > 0.0 else None,
+                min_confidence=min_conf if min_conf > 0.0 else None,
+                envelope=self._envelope,
+            )
+        except EnvelopeError as exc:
+            response.success = False
+            response.message = tool_result(False, "query_semantic_map", str(exc))
+            return response
+        response.success = True
+        response.message = tool_result(
+            True, "query_semantic_map", "", count=len(found), objects=found,
+            have_map=bool(snapshot),
+        )
+        return response
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TaskNode()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
