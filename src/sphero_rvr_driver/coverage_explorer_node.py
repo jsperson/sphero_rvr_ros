@@ -29,6 +29,7 @@ import time
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
@@ -160,7 +161,17 @@ class CoverageExplorerNode(Node):
         self._stalled = {}
         self._lock = threading.Lock()
         self._unplannable_last_cycle = 0
-        self._selecting = False
+        # The tick is long: selection blocks on planner queries (up to
+        # select_budget_s) and an unstick blocks on Nav2 behaviours (up to
+        # ~2x unstick_timeout_s), while the timer refires every cycle_period_s on a
+        # ReentrantCallbackGroup. A re-entered tick during an unstick passes the
+        # active-goal checks (nothing is inflight) and runs a full selection: it can
+        # send NavigateToPose while BackUp/Spin is still executing -- two Nav2
+        # servers driving /cmd_vel, this stack's known way to make a control bug
+        # look like a perception bug -- and burn every unstick attempt in seconds.
+        # So the WHOLE tick is one critical section: a timer firing while the
+        # previous tick still runs is skipped, not queued.
+        self._tick_busy = threading.Lock()
         self._mission_start = time.monotonic()
         self._goals_sent = 0
         self._goals_succeeded = 0
@@ -247,6 +258,14 @@ class CoverageExplorerNode(Node):
                           1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def _tick(self):
+        if not self._tick_busy.acquire(blocking=False):
+            return
+        try:
+            self._tick_impl()
+        finally:
+            self._tick_busy.release()
+
+    def _tick_impl(self):
         if self._mission_done:
             return
         m = self._map
@@ -333,7 +352,17 @@ class CoverageExplorerNode(Node):
                     f"{self._goal_progress_timeout_s:.0f}s — dropping it"
                 )
                 self._cancel_active()
-                self._suppress_cell(active_cell)
+                # A watchdog cancel IS a failed drive and must count as one. Its
+                # result status is CANCELED, which the result callback counts as
+                # neither ABORTED nor SUCCEEDED -- so without counting it here,
+                # stall -> cancel -> suppress -> reselect loops FOREVER: the
+                # suppression disc expires after stall_suppress_ttl_s, the empty
+                # counter resets on every send, and the give-up counter that exists
+                # precisely to stop this thrash never moves. The rover sits nearly
+                # still logging "made no progress" every few seconds indefinitely.
+                self._note_failure(active_cell)
+                if self._mission_done:
+                    return  # that was the last straw; _finish already ran
             else:
                 return  # making progress -> keep driving, do not reselect
         if inflight:
@@ -342,50 +371,43 @@ class CoverageExplorerNode(Node):
         candidates = candidate_goals(
             m.data, w, h, ox, oy, res, rcx, rcy, self._covered, set(self._stalled), self._config
         )
-        # Selection blocks on planner queries and can outlast the tick period, so it
-        # must not re-enter: two selection loops would race to send two goals, and
-        # concurrent goals fighting over one actuator is this stack's known way to
-        # produce motion that looks like a perception failure (the 2026-08-03
-        # follow_path preemption bug). One selection at a time.
-        with self._lock:
-            if self._selecting:
-                return
-            self._selecting = True
-        try:
-            goal_cell = None
-            goal_point = None
-            exhausted = False
-            budget = time.monotonic() + self._select_budget_s
-            for cell in candidates:
-                if time.monotonic() >= budget:
-                    # Out of time, not out of candidates -- the rest are unjudged, so
-                    # this cycle must not count as evidence of "nothing plannable".
-                    exhausted = True
-                    self.get_logger().warn(
-                        f"selection budget ({self._select_budget_s:.0f}s) spent after "
-                        f"{candidates.index(cell)}/{len(candidates)} candidates"
-                    )
+        # Selection blocks on planner queries and can outlast the tick period. It
+        # cannot re-enter -- the whole tick is serialized by _tick_busy -- which is
+        # what keeps two selection loops from racing to send two goals: concurrent
+        # goals fighting over one actuator is this stack's known way to produce
+        # motion that looks like a perception failure (the 2026-08-03 follow_path
+        # preemption bug).
+        goal_cell = None
+        goal_point = None
+        exhausted = False
+        budget = time.monotonic() + self._select_budget_s
+        for cell in candidates:
+            if time.monotonic() >= budget:
+                # Out of time, not out of candidates -- the rest are unjudged, so
+                # this cycle must not count as evidence of "nothing plannable".
+                exhausted = True
+                self.get_logger().warn(
+                    f"selection budget ({self._select_budget_s:.0f}s) spent after "
+                    f"{candidates.index(cell)}/{len(candidates)} candidates"
+                )
+                break
+            gx, gy = cell
+            gwx, gwy = cell_center_world(gx, gy, ox, oy, res)
+            # Try the cell, then progressively closer stand-off points along the
+            # line back toward the robot. Demanding the planner reach the cell
+            # EXACTLY was too strict and ended missions early: frontier cells sit
+            # against unknown space and walls, so they are usually inflated and
+            # the planner refuses them (26 refusals then a premature end, first
+            # run). The mission does not need the rover ON the cell -- coverage is
+            # satisfied within coverage_radius_m of it, and seeing past a frontier
+            # only needs proximity. So ask for the nearest point that both plans
+            # AND still counts as covering the target.
+            for awx, awy in self._approach_points(gwx, gwy, wx, wy):
+                if self._planner_can_reach(awx, awy, frame):
+                    goal_cell, goal_point = cell, (awx, awy)
                     break
-                gx, gy = cell
-                gwx, gwy = cell_center_world(gx, gy, ox, oy, res)
-                # Try the cell, then progressively closer stand-off points along the
-                # line back toward the robot. Demanding the planner reach the cell
-                # EXACTLY was too strict and ended missions early: frontier cells sit
-                # against unknown space and walls, so they are usually inflated and
-                # the planner refuses them (26 refusals then a premature end, first
-                # run). The mission does not need the rover ON the cell -- coverage is
-                # satisfied within coverage_radius_m of it, and seeing past a frontier
-                # only needs proximity. So ask for the nearest point that both plans
-                # AND still counts as covering the target.
-                for awx, awy in self._approach_points(gwx, gwy, wx, wy):
-                    if self._planner_can_reach(awx, awy, frame):
-                        goal_cell, goal_point = cell, (awx, awy)
-                        break
-                if goal_cell is not None:
-                    break
-        finally:
-            with self._lock:
-                self._selecting = False
+            if goal_cell is not None:
+                break
         self._unplannable_last_cycle = (
             len(candidates) if goal_cell is None else candidates.index(goal_cell)
         )
@@ -450,9 +472,19 @@ class CoverageExplorerNode(Node):
         """End the mission with an artifact: a latched JSON report, and the map on
         disk. Called once; a second call is ignored so a re-entered terminal branch
         cannot overwrite the record of what actually happened."""
-        if self._reported:
-            return
-        self._reported = True
+        with self._lock:
+            # Check-and-set atomically: _finish can be reached from the tick thread
+            # and an action-callback thread in the same instant, and the report must
+            # be written exactly once.
+            if self._reported:
+                return
+            self._reported = True
+        # A finished mission must not leave a goal driving. _mission_done is set from
+        # action-callback threads while a tick may be mid-flight past its own check,
+        # so without this cancel the goal that tick issued would run UNWATCHED: later
+        # ticks return early at the top, the progress watchdog never runs again, and
+        # the report says the mission is over while the rover is still moving.
+        self._cancel_active()
         files = self._save_map() if bool(self.get_parameter("save_map_on_end").value) else []
         report = build_report(
             outcome,
@@ -566,6 +598,9 @@ class CoverageExplorerNode(Node):
             return False
         result = self._await(handle.get_result_async(), deadline)
         if result is None:
+            # Same rule as the unstick behaviours: a query we stop waiting for must
+            # also stop running, or slow planner queries pile up server-side.
+            handle.cancel_goal_async()
             return False
         return len(result.result.path.poses) > 0
 
@@ -615,6 +650,12 @@ class CoverageExplorerNode(Node):
         goal.pose.pose.position.y = float(wy)
         goal.pose.pose.orientation.w = 1.0
         with self._lock:
+            # Checked HERE, under the lock, not only at the top of the tick:
+            # _mission_done is set from action-callback threads, and a tick that was
+            # already past its top check must not issue a goal for a mission that
+            # has since reported itself over.
+            if self._mission_done:
+                return
             self._goal_inflight = True
             self._active_goal_cell = cell
             self._goals_sent += 1
@@ -642,7 +683,13 @@ class CoverageExplorerNode(Node):
             return
         with self._lock:
             self._active_goal_handle = handle
+            done = self._mission_done
         handle.get_result_async().add_done_callback(self._on_goal_result)
+        if done:
+            # The mission finished between our send and the server accepting it, so
+            # _finish's cancel ran before there was a handle to cancel. Close the
+            # gap from this side.
+            handle.cancel_goal_async()
 
     def _on_goal_result(self, future):
         status = future.result().status
@@ -703,6 +750,8 @@ class CoverageExplorerNode(Node):
                 (self._backup, self._backup_goal(), "back up"),
             )
         for client, goal, what in order:
+            if self._mission_done:
+                return False
             if not client.wait_for_server(timeout_sec=1.0):
                 continue
             deadline = time.monotonic() + self._unstick_timeout_s
@@ -711,7 +760,19 @@ class CoverageExplorerNode(Node):
                 self.get_logger().info(f"unstick: {what} refused, trying the next")
                 continue
             result = self._await(handle.get_result_async(), deadline)
-            if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
+            if result is None:
+                # Timed out here does NOT mean finished there. The behaviour is
+                # still executing -- a BackUp against something only the supervisor
+                # can see never advances and never ends on its own (time_allowance
+                # is our only server-side deadline, and it equals this one) -- and
+                # sending the next behaviour on top of it means two Nav2 servers
+                # driving /cmd_vel at once. Cancel, and give the cancel a moment to
+                # actually stop the behaviour before anything else is sent.
+                handle.cancel_goal_async()
+                self._await(handle.get_result_async(), time.monotonic() + 2.0)
+                self.get_logger().info(f"unstick: {what} timed out — cancelled")
+                continue
+            if result.status == GoalStatus.STATUS_SUCCEEDED:
                 self.get_logger().info(f"unstick: {what} done")
                 return True
             self.get_logger().info(f"unstick: {what} did not finish, trying the next")
@@ -725,6 +786,10 @@ class CoverageExplorerNode(Node):
         g = BackUp.Goal()
         g.target.x = float(self._unstick_backup_m)   # BackUp treats +x as backwards
         g.speed = 0.10
+        # Explicit server-side deadline. Left at 0, nav2 applies no time limit and a
+        # BackUp that cannot advance runs forever; our client-side _await timeout
+        # abandons it but does not stop it.
+        g.time_allowance = Duration(seconds=self._unstick_timeout_s).to_msg()
         return g
 
     def _spin_goal(self, toward=None):
@@ -734,6 +799,7 @@ class CoverageExplorerNode(Node):
         face a wall."""
         g = Spin.Goal()
         g.target_yaw = float(self._unstick_spin_rad)
+        g.time_allowance = Duration(seconds=self._unstick_timeout_s).to_msg()
         if toward is not None:
             here = self._robot_world(self._map.header.frame_id or "map") if self._map else None
             yaw = self._robot_yaw(self._map.header.frame_id or "map") if self._map else None
