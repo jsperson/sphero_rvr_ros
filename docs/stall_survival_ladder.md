@@ -234,9 +234,29 @@ Per the review ruling — if this note proposes addition without deletion, it is
 |---|---|---|
 | **`ProgressGuard` back-off reflex** as an independent reaction | `decisive_control.py` — the `_backing_off` state machine, `back_off_*` config | Becomes rung 1 of the ladder. Its reverse-only, translating-only scope is exactly the limitation the ladder exists to remove. The guard keeps *detection* and freeze classification; it loses its private recovery. |
 | **`_give_up()` → abort on back-off exhaustion** | `decisive_control.py` | Replaced by ladder exhaustion. Today three refused reverses end a goal; that is a single rung failing. |
-| **Explorer `_unstick` and its four parameters** | `coverage_explorer_node.py:453, 763` | Deleted outright. Its backup+spin content becomes rungs 1 and 3; its trigger is the wrong one and has never fired. Keeping it alongside the ladder is precisely the fourth layer we were told not to build. |
+| ~~**Explorer `_unstick` and its four parameters**~~ **NOT DELETED — see below** | `coverage_explorer_node.py` | **This row was false, and the correction matters more than the row did.** |
 | **Per-goal failure counting on drive failure** | `coverage_explorer_node.py` | Counter ticks on ladder exhaustion instead. Same 5-strike safety net, correct unit. |
 | **The "at different places" diagnostic** | `coverage_explorer_node.py` | Actively false and must not survive. It reports "5 goals in a row failed, at different places — this is the stack, not the room", measured against *goal* positions. In run 190528 the **robot** sat in one 0.25 m cell for 81% of the mission. The message asserts the opposite of what happened and sends the next debugger to the wrong place. |
+
+### Correction, 2026-08-11: `_unstick` was never deleted
+
+The row above planned its deletion, the wiring commit (`dbbc8b1`) reported the
+deletion table as executed, and **neither was true of the explorer**. `dbbc8b1`
+deleted `ProgressGuard` and `BackOffConfig` from the CONTROLLER and never touched
+`_unstick`, which is still present with all four of its parameters. I then edited
+that very code the same night — adding stop-awareness for F5 — without noticing I
+had reported it gone.
+
+The field settled it: gauntlet mission 1 logged `unsticking (attempt 1/4)` through
+`4/4`. So the claim that its trigger "has never fired" was also wrong. Its trigger is
+SELECTION failure, which does occur; what it cannot see is DRIVE failure, which is
+the gap the ladder fills. Escape-tried-and-insufficient, not escape-untried.
+
+**Standing question for the next batch, not settled here:** two recovery mechanisms
+now exist on two different triggers. That is the "fourth layer" this note was written
+to prevent, so either `_unstick` becomes the ladder invoked from the selection path,
+or the note stops claiming a single ladder. Deciding that by writing it down was the
+mistake the first time; it gets decided by a batch that actually changes the code.
 
 **Kept unchanged:** the collision supervisor and all its gates (it was correct both
 nights — it refused motions that would have hit things); freeze marks and the freeze
