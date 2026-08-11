@@ -87,3 +87,13 @@ coverage_explorer:
     # the hold, a single "clear" tick lets the completion path run while the rover
     # is in fact wedged. Was a code-only default, untunable from here (D15).
     blocked_hold_s: 5.0
+
+    # DISABLED for the gauntlet (2026-08-11). A clearance filter on goal poses is
+    # structurally anti-frontier: a frontier borders unknown space BY DEFINITION, and
+    # measured on the live costmap the frontier population has median clearance
+    # 0.05 m — the floor. Zero of 125 frontiers passed the original 0.35 m, so the
+    # filter made frontier exploration impossible in any room on any robot; even at
+    # 0.10 m only 9% passed. Selection reverts to planner-gated truth. Full removal is
+    # a reviewed batch after the gauntlet — this is the minimal diff to restore
+    # correct behaviour without changing code mid-run.
+    min_goal_clearance_m: 0.0
