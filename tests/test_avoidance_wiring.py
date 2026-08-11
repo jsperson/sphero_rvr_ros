@@ -1,0 +1,214 @@
+"""Node-level revert-proofs for the gentle turn-away (design note item 1).
+
+The pure core is covered on any host by `test_avoidance_steering.py`. Three claims
+can only be made at the node, with a real TF and real messages:
+
+  1. lidar bearings reach the steering law in the BASE frame (the N1 trap: the laser
+     is mounted at ~179 deg, so an unrotated bearing leans the rover TOWARD the
+     obstacle);
+  2. a stale camera cloud stops steering the robot, exactly as it stops braking it;
+  3. a running ladder rung owns cmd_vel outright -- the steering offset cannot reach
+     the wire while an escape is in progress.
+
+rclpy is not installed on the workstation, so this module skips there and runs on
+the Pi, same as `test_open_bearing_frame.py`.
+"""
+
+import math
+
+import pytest
+
+rclpy = pytest.importorskip("rclpy", reason="ROS 2 not available on this host")
+
+from geometry_msgs.msg import TransformStamped  # noqa: E402
+from sensor_msgs.msg import LaserScan  # noqa: E402
+import sensor_msgs_py.point_cloud2 as pc2  # noqa: E402
+from std_msgs.msg import Header  # noqa: E402
+
+LASER_YAW = 3.1239668018215028      # base_to_laser_static_tf, as deployed
+COUNT = 360
+
+
+def _wrap(a):
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _scan_with_obstacle_at(base_bearing_rad, range_m, clear_range=6.0):
+    """A scan that is clear everywhere except one narrow return, placed at a known
+    BASE-frame bearing and converted back into the LASER frame -- so the expected
+    answer is stated in the frame that matters."""
+    laser_bearing = _wrap(base_bearing_rad - LASER_YAW)
+    msg = LaserScan()
+    msg.header.frame_id = "laser"
+    msg.angle_min = -math.pi
+    msg.angle_increment = 2.0 * math.pi / COUNT
+    msg.range_min, msg.range_max = 0.05, 8.0
+    ranges = []
+    for i in range(COUNT):
+        bearing = msg.angle_min + i * msg.angle_increment
+        delta = abs(_wrap(bearing - laser_bearing))
+        ranges.append(range_m if delta <= math.radians(3.0) else clear_range)
+    msg.ranges = ranges
+    return msg
+
+
+def _node():
+    from sphero_rvr_driver.decisive_controller_node import DecisiveControllerNode
+    node = DecisiveControllerNode()
+    tf = TransformStamped()
+    tf.header.frame_id = "base_link"
+    tf.child_frame_id = "laser"
+    tf.transform.rotation.z = math.sin(LASER_YAW / 2.0)
+    tf.transform.rotation.w = math.cos(LASER_YAW / 2.0)
+    node._tf_buffer.set_transform_static(tf, "test")
+    return node
+
+
+def test_lidar_blockers_reach_the_law_in_the_base_frame():
+    """An obstacle at robot-LEFT must be reported at robot-left. Unrotated it would
+    arrive at robot-right, and the rover would lean left -- into it."""
+    rclpy.init(args=["--ros-args"])
+    try:
+        node = _node()
+        try:
+            for base_bearing in (math.radians(6.0), math.radians(-6.0)):
+                node._on_scan(_scan_with_obstacle_at(base_bearing, 0.60))
+                blocker = node._nearest_blocker(max_relevant_m=5.0)
+                assert blocker is not None, "an obstacle in the corridor was missed"
+                rng, bearing = blocker
+                assert rng == pytest.approx(0.60, abs=0.02)
+                assert abs(_wrap(bearing - base_bearing)) < math.radians(5.0), (
+                    f"obstacle at base {math.degrees(base_bearing):+.0f} deg reported "
+                    f"at {math.degrees(bearing):+.0f} deg -- the steering law would "
+                    "lean the wrong way")
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+def test_a_blocked_scan_still_yields_a_blocker():
+    """The gap search returns early when nothing at all is open. Blockers must be
+    extracted before that return: a scan with no gap is precisely a scan with
+    something in the way, and it is the last moment steering could help."""
+    rclpy.init(args=["--ros-args"])
+    try:
+        node = _node()
+        try:
+            node._on_scan(_scan_with_obstacle_at(0.0, 0.55, clear_range=0.55))
+            assert node._nearest_blocker(max_relevant_m=5.0) is not None
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+def test_a_stale_camera_cloud_stops_steering_the_robot():
+    """The camera BRAKE degrades to lidar-only on a stale cloud. Steering must use
+    the same freshness bound, or the rover would keep curving around an obstacle
+    reported by a camera that stopped talking -- and the two layers would disagree
+    about whether the camera is speaking at all."""
+    import time as _time
+    rclpy.init(args=["--ros-args"])
+    try:
+        node = _node()
+        try:
+            header = Header()
+            header.frame_id = "base_link"
+            cloud = pc2.create_cloud_xyz32(header, [(0.60, 0.05, 0.0)])
+            node._on_camera_cloud(cloud)
+            assert node._nearest_blocker(max_relevant_m=5.0) is not None
+
+            node._camera_blocker_at = (_time.monotonic()
+                                       - node._avoid_camera_max_age_s - 0.1)
+            assert node._nearest_blocker(max_relevant_m=5.0) is None
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+def test_the_cameras_unreliable_near_band_does_not_steer_the_robot():
+    """A real PointCloud2 through the real callback, carrying a point at 0.30 m --
+    inside `camera_min_range_m`, where the monocular detector is not trusted and the
+    deployed brake ignores it. It must not steer the rover.
+
+    This replaced a clear-ray-at-1.8 m test that PASSED FOR THE WRONG REASON: the
+    engagement radius (0.90) excludes 1.8 m on its own, so the assertion held even
+    with the range filter deleted. A mutation run caught it. The near band is the
+    half of the filter that is load-bearing at the deployed config, and it is the
+    worse failure of the two -- a 0.30 m blocker leans the heading at maximum
+    urgency on the least trustworthy reading this sensor produces.
+    """
+    rclpy.init(args=["--ros-args"])
+    try:
+        node = _node()
+        try:
+            header = Header()
+            header.frame_id = "base_link"
+            node._on_camera_cloud(pc2.create_cloud_xyz32(header, [(0.30, 0.02, 0.0)]))
+            assert node._nearest_blocker(max_relevant_m=5.0) is None
+
+            # ...and the same cloud with a legitimate mark in it still steers, so
+            # the filter is not simply swallowing the topic.
+            node._on_camera_cloud(pc2.create_cloud_xyz32(
+                header, [(0.30, 0.02, 0.0), (0.65, -0.05, 0.0)]))
+            blocker = node._nearest_blocker(max_relevant_m=5.0)
+            assert blocker is not None and blocker[0] == pytest.approx(0.65, abs=0.02)
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+def test_a_running_rung_owns_cmd_vel():
+    """While the ladder is working an escape, what reaches the wire is the rung's
+    twist and nothing else. Steering must not be able to add a lean to an escape in
+    progress -- two authors for one motion is the failure the ladder was built to
+    end.
+
+    Asserted structurally: the rung branch publishes `ladder_result` values and
+    `continue`s before the normal command is ever built, and the steering offset is
+    computed with `ladder.active` passed in (which the core zeroes on). Both halves
+    are checked here because either one alone can be deleted by an edit that still
+    looks reasonable.
+    """
+    import inspect
+    from sphero_rvr_driver.decisive_controller_node import DecisiveControllerNode
+
+    src = inspect.getsource(DecisiveControllerNode._execute)
+    rung_branch = src.split('if ladder_result.action == "rung":', 1)
+    assert len(rung_branch) == 2, "the rung branch has been renamed or removed"
+    body = rung_branch[1].split("twist = Twist()", 1)[1].split("continue", 1)[0]
+    assert "ladder_result.linear_x" in body and "ladder_result.angular_z" in body
+    assert "_avoid_offset_rad" not in body, (
+        "the steering offset must not reach a rung's twist")
+    assert "ladder.active" in src, (
+        "the steering law must be told when a rung is running")
+
+
+def test_rung_transitions_are_logged_without_a_throttle():
+    """The escalation lines are the ladder's testimony and must never be throttled.
+
+    One throttled logger call used to serve both the ~30 `{rung}_running` lines a
+    rung emits in its 3 s budget and the single `{rung}_failed->{next}` transition,
+    so the transition almost always landed inside another line's 1 s shadow. Run
+    114626 proves the damage: `reverse_arc_running`, `pivot_open_running` and
+    `drive_open_running` all appear in its log while NOT ONE `_failed->` line does.
+    The record shows rungs 2-4 executing with no trace of how they were entered --
+    and it misled this session's own grading before the counts were checked.
+
+    Asserted structurally on the source, because provoking a real escalation needs
+    a whole stack; a logger call is not worth one.
+    """
+    import inspect
+    from sphero_rvr_driver.decisive_controller_node import DecisiveControllerNode
+
+    src = inspect.getsource(DecisiveControllerNode._execute)
+    branch = src.split('if ladder_result.action == "rung":', 1)[1].split("continue", 1)[0]
+    assert 'endswith("_running")' in branch, (
+        "the rung logger no longer distinguishes repetition from transitions")
+    throttled = [line for line in branch.splitlines()
+                 if "throttle_duration_sec" in line]
+    assert len(throttled) == 1, (
+        "exactly one throttled call expected -- the `_running` repetition")

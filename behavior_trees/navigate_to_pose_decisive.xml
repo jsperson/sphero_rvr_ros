@@ -12,8 +12,15 @@
   This tree is byte-for-byte the stock tree EXCEPT the two local-costmap clears
   are retargeted to the GLOBAL costmap (owned by planner_server, which is always
   up). Everything else — replanning at 1 Hz, retries, spin/wait/backup recovery —
-  is unchanged. The decisive controller's own back-off reflex handles the common
-  "boxed in" case inside FollowPath, before these BT recoveries ever fire.
+  is unchanged. The decisive controller handles the common "boxed in" case inside
+  FollowPath, before these BT recoveries ever fire: it steers away from what is in
+  its corridor, and escalates through the stall survival ladder when that is not
+  enough (docs/stall_survival_ladder.md, docs/turning_batch_design.md).
+
+  This paragraph used to credit "the decisive controller's own back-off reflex",
+  which was deleted in dbbc8b1. A comment describing a mechanism that no longer
+  exists is the cheapest possible lying diagnostic: it sends the next reader
+  looking for code that is not there.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">

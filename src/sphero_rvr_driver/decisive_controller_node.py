@@ -36,9 +36,13 @@ import tf2_ros
 
 from sphero_rvr_core.stall_ladder import LadderConfig, StallLadder
 from sphero_rvr_core.decisive_control import (
+    AvoidanceConfig,
     DecisiveControlConfig,
     FreezeMarkSet,
+    avoidance_heading_offset,
+    camera_points_to_polar,
     compute_drive_command,
+    corridor_blocker,
     heading_error_to_point,
     select_target_point,
 )
@@ -58,7 +62,13 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("heading_deadband_rad", 0.17)
         self.declare_parameter("pivot_threshold_rad", 1.22)
         self.declare_parameter("arc_gain", 1.2)
-        self.declare_parameter("max_arc_angular_rad_s", 0.8)
+        # 0.40, matched to the supervisor's max_angular_rad_s. It was 0.8, and the
+        # top half of that range has never reached a motor: the supervisor clamps
+        # every command to 0.40, so an arc asking for 0.8 was executed at half what
+        # it requested. A parameter whose upper half is inert is exactly how
+        # "commanded" and "achieved" drifted apart in the grind-yaw guard (D32);
+        # change this only together with collision_stop.yaml's max_angular_rad_s.
+        self.declare_parameter("max_arc_angular_rad_s", 0.40)
         self.declare_parameter("pivot_rate_rad_s", 0.9)
         self.declare_parameter("goal_tolerance_m", 0.10)
         # Freeze marks: how long a place the robot could not pass stays believed.
@@ -80,6 +90,18 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("ladder_reverse_speed_mps", 0.10)
         self.declare_parameter("ladder_forward_speed_mps", 0.10)
         self.declare_parameter("ladder_pivot_rate_rad_s", 0.40)
+        # GENTLE TURN-AWAY (docs/turning_batch_design.md item 1). Every default is
+        # derived in AvoidanceConfig from the deployed supervisor/brake config.
+        self.declare_parameter("avoid_enable", True)
+        self.declare_parameter("avoid_engage_m", 0.90)
+        self.declare_parameter("avoid_stop_ref_m", 0.50)
+        self.declare_parameter("avoid_max_offset_rad", 0.33)
+        self.declare_parameter("avoid_corridor_half_width_m", 0.18)
+        self.declare_parameter("avoid_max_offset_step_rad", 0.08)
+        self.declare_parameter("avoid_camera_min_range_m", 0.40)
+        self.declare_parameter("avoid_camera_max_range_m", 1.20)
+        self.declare_parameter("avoid_camera_topic", "/camera/low_obstacles")
+        self.declare_parameter("avoid_camera_max_age_s", 0.6)
 
         self._frequency = float(self.get_parameter("control_frequency").value)
         self._lookahead = float(self.get_parameter("lookahead_m").value)
@@ -107,6 +129,20 @@ class DecisiveControllerNode(Node):
             forward_speed_mps=float(_p("ladder_forward_speed_mps").value),
             pivot_rate_rad_s=float(_p("ladder_pivot_rate_rad_s").value),
         )
+        self._avoid_enable = bool(_p("avoid_enable").value)
+        self._avoid_config = AvoidanceConfig(
+            engage_m=float(_p("avoid_engage_m").value),
+            stop_ref_m=float(_p("avoid_stop_ref_m").value),
+            max_offset_rad=float(_p("avoid_max_offset_rad").value),
+            corridor_half_width_m=float(_p("avoid_corridor_half_width_m").value),
+            max_offset_step_rad=float(_p("avoid_max_offset_step_rad").value),
+            camera_min_range_m=float(_p("avoid_camera_min_range_m").value),
+            camera_max_range_m=float(_p("avoid_camera_max_range_m").value),
+        )
+        self._avoid_camera_max_age_s = float(_p("avoid_camera_max_age_s").value)
+        # The steering offset is per-goal state on the node, because the rate limit
+        # is what keeps a 5 Hz camera from snapping a 10 Hz heading.
+        self._avoid_offset_rad = 0.0
 
         # Goal preemption + a stall ladder that PERSISTS across replans.
         # bt_navigator resends a fresh follow_path goal ~1 Hz as it replans; only
@@ -140,8 +176,24 @@ class DecisiveControllerNode(Node):
         self._open_bearing_at = None
         self._open_bearing_max_age_s = 1.0
         self._open_gap_min_range_m = 0.8
+        # Nearest thing actually in our way, from each sensor, in the BASE frame.
+        # Both are freshness-bounded: steering toward a remembered gap is how an
+        # escape drives into a wall it already passed, and steering away from a
+        # remembered obstacle is the same mistake with the sign flipped.
+        self._lidar_blocker = None
+        self._lidar_blocker_at = None
+        self._camera_blocker = None
+        self._camera_blocker_at = None
         self.create_subscription(
             LaserScan, "scan", self._on_scan, qos_profile_sensor_data)
+        # READ-ONLY consumption of the low-obstacle cloud. This node does not brake,
+        # does not veto and does not touch the detector -- the supervisor keeps every
+        # one of those jobs. It reads the same points so it can start turning while
+        # the brake would still let it drive, because the brake's forward scale is
+        # zero at 0.50 m and by then the turn cannot be completed (design note §1.2).
+        self.create_subscription(
+            PointCloud2, str(self.get_parameter("avoid_camera_topic").value),
+            self._on_camera_cloud, qos_profile_sensor_data)
         # AUTHORITATIVE journey boundary from the explorer. Replaces the endpoint
         # proxy: bt_navigator's ~1 Hz replans of one journey carry the SAME
         # generation, so the anti-thrash budget still accumulates within a journey,
@@ -260,6 +312,16 @@ class DecisiveControllerNode(Node):
         if not n:
             return
 
+        # TF FIRST. It used to be read at the very end, which was fine when the gap
+        # bearing was the only consumer; the steering blockers need the same rotation
+        # and must not be skipped by the "nothing open at all" early return below --
+        # a scan with no gap is precisely a scan with a blocker in it.
+        yaw = self._laser_to_base_yaw(msg.header.frame_id)
+        if yaw is None:
+            return
+        if self._avoid_enable:
+            self._update_lidar_blocker(msg, yaw)
+
         def open_at(i):
             r = rng[i % n]
             return (r != r) or r > self._open_gap_min_range_m
@@ -289,12 +351,79 @@ class DecisiveControllerNode(Node):
         mid = start + best_len / 2.0
         laser_bearing = msg.angle_min + mid * msg.angle_increment
 
-        yaw = self._laser_to_base_yaw(msg.header.frame_id)
-        if yaw is None:
-            return
         with self._scan_lock:
             self._open_bearing_rad = _wrap_angle(laser_bearing + yaw)
             self._open_bearing_at = time.monotonic()
+
+    def _update_lidar_blocker(self, msg, laser_to_base_yaw):
+        """Nearest lidar return that is actually in our way, in the BASE frame.
+
+        Bearings are rotated by the TF yaw for the same reason the gap search is
+        (N1): the laser is mounted at ~179 deg, so an unrotated bearing is very
+        nearly a point reflection, and a steering law fed one would lean toward the
+        obstacle instead of away from it -- confidently, and in the direction that
+        makes contact more likely rather than less.
+        """
+        polar = []
+        engage = self._avoid_config.engage_m
+        r_min = max(float(msg.range_min), 1e-3)
+        r_max = float(msg.range_max)
+        for i, r in enumerate(msg.ranges):
+            if r != r:                      # NaN: no return on this bearing
+                continue
+            if r < r_min or r > r_max or r >= engage:
+                continue
+            bearing = _wrap_angle(
+                msg.angle_min + i * msg.angle_increment + laser_to_base_yaw)
+            polar.append((float(r), bearing))
+        blocker = corridor_blocker(polar, self._avoid_config)
+        with self._scan_lock:
+            self._lidar_blocker = blocker
+            self._lidar_blocker_at = time.monotonic()
+
+    def _on_camera_cloud(self, msg):
+        """Nearest low-obstacle MARK in our way. Read-only; nothing here brakes.
+
+        The range filter inside `camera_points_to_polar` is the load-bearing part:
+        this cloud carries clear-ray endpoints at 1.8 m mixed in with real marks.
+        """
+        try:
+            import sensor_msgs_py.point_cloud2 as pc2
+            pts = [
+                (float(p[0]), float(p[1]))
+                for p in pc2.read_points(msg, field_names=("x", "y"), skip_nans=True)
+            ]
+        except Exception:
+            pts = []
+        blocker = corridor_blocker(
+            camera_points_to_polar(pts, self._avoid_config), self._avoid_config)
+        with self._scan_lock:
+            self._camera_blocker = blocker
+            self._camera_blocker_at = time.monotonic()
+
+    def _nearest_blocker(self, max_relevant_m):
+        """The nearer of the two sensors' blockers, ignoring stale ones.
+
+        A stale camera must degrade to lidar-only steering, exactly as the camera
+        BRAKE degrades to lidar-only braking on a stale cloud. Same freshness bound
+        (`camera_max_age_s` 0.6) so the two layers agree about when the camera is
+        speaking.
+        """
+        now = time.monotonic()
+        with self._scan_lock:
+            lidar, lidar_at = self._lidar_blocker, self._lidar_blocker_at
+            camera, camera_at = self._camera_blocker, self._camera_blocker_at
+        best = None
+        if (lidar is not None and lidar_at is not None
+                and now - lidar_at <= self._open_bearing_max_age_s):
+            best = lidar
+        if (camera is not None and camera_at is not None
+                and now - camera_at <= self._avoid_camera_max_age_s):
+            if best is None or camera[0] < best[0]:
+                best = camera
+        if best is not None and best[0] > max_relevant_m:
+            return None
+        return best
 
     def _laser_to_base_yaw(self, laser_frame):
         """Yaw of the laser frame in base_link, FROM TF. Never hardcoded."""
@@ -452,6 +581,9 @@ class DecisiveControllerNode(Node):
                 # would reset the anti-livelock counter forever.
                 self._ladder.reset_goal()
                 self._ladder_goal = (goal_x, goal_y)
+                # A new journey starts pointed at its own path, not carrying the
+                # lean it had while dodging something on the last one.
+                self._avoid_offset_rad = 0.0
             ladder = self._ladder
 
         try:  # NOTE: the finally below abandons any rung in progress (F10).
@@ -480,6 +612,25 @@ class DecisiveControllerNode(Node):
                     robot_x, robot_y, robot_yaw, target[0], target[1]
                 )
                 distance_to_goal = math.hypot(goal_x - robot_x, goal_y - robot_y)
+
+                # GENTLE TURN-AWAY. Lean the target heading away from whatever is in
+                # the corridor, so the curve is already underway when the rover
+                # reaches the distance at which the brake would otherwise zero it.
+                # This changes only the heading fed to compute_drive_command: the
+                # regimes below, the ladder's predicate and the supervisor's final
+                # say are all untouched. `ladder.active` bypasses it because a rung
+                # is what happens after normal control has already failed, and two
+                # authors for one motion is the failure the ladder ended.
+                if self._avoid_enable:
+                    self._avoid_offset_rad = avoidance_heading_offset(
+                        self._nearest_blocker(distance_to_goal),
+                        self._open_bearing(),
+                        self._avoid_offset_rad,
+                        ladder.active,
+                        self._avoid_config,
+                    )
+                    heading_error = _wrap_angle(heading_error + self._avoid_offset_rad)
+
                 command = compute_drive_command(heading_error, distance_to_goal, self._config)
 
                 if command.mode == "arrived":
@@ -543,12 +694,23 @@ class DecisiveControllerNode(Node):
                     goal_handle.abort()
                     return result
                 if ladder_result.action == "rung":
-                    self.get_logger().info(
-                        f"ladder: {ladder_result.reason} "
-                        f"({ladder_result.linear_x:+.2f}, "
-                        f"{ladder_result.angular_z:+.2f})",
-                        throttle_duration_sec=1.0,
-                    )
+                    # THROTTLE THE REPETITION, NEVER THE TRANSITIONS. One throttled
+                    # call used to serve both, and since a rung emits ~30 `_running`
+                    # lines in its 3 s budget, the one-shot `{rung}_failed->{next}`
+                    # line almost always landed inside another line's 1 s shadow and
+                    # was dropped. Run 114626 shows the damage: `reverse_arc_running`,
+                    # `pivot_open_running` and `drive_open_running` all appear in the
+                    # log and NOT ONE `_failed->` transition does, so the record shows
+                    # rungs 2-4 executing with no trace of how they were entered. The
+                    # escalations are the ladder's entire testimony and they are rare
+                    # by construction; there is nothing to throttle.
+                    message = (f"ladder: {ladder_result.reason} "
+                               f"({ladder_result.linear_x:+.2f}, "
+                               f"{ladder_result.angular_z:+.2f})")
+                    if ladder_result.reason.endswith("_running"):
+                        self.get_logger().info(message, throttle_duration_sec=1.0)
+                    else:
+                        self.get_logger().info(message)
                     twist = Twist()
                     twist.linear.x = float(ladder_result.linear_x)
                     twist.angular.z = float(ladder_result.angular_z)

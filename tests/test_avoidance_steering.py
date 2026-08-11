@@ -117,8 +117,32 @@ def test_a_real_mark_among_clear_rays_still_steers():
 def test_points_inside_the_cameras_near_limit_are_not_marks():
     """Below `camera_min_range_m` the monocular detector is unreliable, and the
     deployed brake ignores that band. A steering law must not be more credulous
-    about the same sensor than the safety layer is."""
+    about the same sensor than the safety layer is.
+
+    This is the half of the range filter that is load-bearing at the deployed
+    config: a 0.30 m point is well inside the engagement radius, so without the
+    filter it becomes a blocker at MAXIMUM urgency -- a full-lock swerve on the
+    least trustworthy reading the sensor produces.
+    """
     assert camera_points_to_polar([(0.30, 0.0)], CFG) == []
+    assert _settle(corridor_blocker(camera_points_to_polar([(0.30, 0.0)], CFG), CFG)) == 0.0
+
+
+def test_clear_rays_stay_rejected_if_the_engagement_radius_grows():
+    """The far half of the filter, pinned so it cannot become decorative.
+
+    At the deployed config `engage_m` 0.90 already excludes 1.8 m clear rays, so
+    deleting the max-range filter changes nothing today -- a mutation run proved
+    exactly that, and it means the protection currently rests on a coincidence
+    between two unrelated numbers. Raise the engagement radius past the clear range
+    and the filter is the only thing standing between the rover and a cloud full of
+    'the floor is clear' points read as obstacles.
+    """
+    reaching = AvoidanceConfig(engage_m=2.0)
+    rays = [(1.8 * math.cos(a), 1.8 * math.sin(a))
+            for a in (math.radians(d) for d in range(-30, 31, 5))]
+    assert camera_points_to_polar(rays, reaching) == []
+    assert corridor_blocker(camera_points_to_polar(rays, reaching), reaching) is None
 
 
 # --------------------------------------------------------------------------- #

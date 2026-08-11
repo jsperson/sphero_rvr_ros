@@ -180,15 +180,27 @@ class AvoidanceConfig:
 def camera_points_to_polar(points_xy, config: AvoidanceConfig):
     """(range, bearing) for camera cloud points that are actually OBSTACLE MARKS.
 
-    THE RANGE FILTER IS LOAD-BEARING, and it is the trap in this topic:
-    `/camera/low_obstacles` is NOT a pure obstacle cloud. `low_obstacle_node` also
-    publishes CLEAR-RAY ENDPOINTS -- "the floor is clear this far" -- at
-    `clear_range_m` 1.8 m, into the same cloud, at the same z, indistinguishable
-    from marks by anything except their range. The existing camera brake is immune
-    only because `camera_max_range_m` (1.20) filters them out. A new consumer that
-    skips the filter would steer AWAY FROM PROOF THAT THE FLOOR IS CLEAR, which
-    looks exactly like working code until it drives the rover into the one place it
-    knew was safe.
+    This topic is NOT a pure obstacle cloud. `low_obstacle_node` also publishes
+    CLEAR-RAY ENDPOINTS -- "the floor is clear this far" -- at `clear_range_m` 1.8 m,
+    into the same cloud, at the same z, indistinguishable from marks by anything
+    except their range. The deployed camera brake is immune only because
+    `camera_max_range_m` (1.20) filters them out; a consumer that skips the filter
+    steers AWAY FROM PROOF THAT THE FLOOR IS CLEAR.
+
+    WHICH HALF IS LOAD-BEARING HERE, stated precisely because a mutation run caught
+    me claiming both were:
+
+      * MIN (0.40) is load-bearing TODAY. Below it the monocular detector is
+        unreliable and the brake ignores the band; without this filter a point at
+        0.30 m becomes a blocker at maximum urgency, and the steering law would be
+        more credulous about this sensor than the safety layer is.
+      * MAX (1.20) is defence-in-depth today and load-bearing tomorrow. At the
+        deployed config `engage_m` (0.90) already excludes 1.8 m clear rays, so
+        dropping the max filter changes nothing -- until someone raises the
+        engagement radius, at which point every clear ray becomes an obstacle. The
+        protection must not rest on a coincidence between two unrelated numbers, so
+        it is stated here and pinned by a test that raises `engage_m` past the clear
+        range.
     """
     out = []
     for x, y in points_xy:
