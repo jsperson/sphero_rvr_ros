@@ -143,6 +143,18 @@ class DecisiveControllerNode(Node):
         self._open_gap_min_range_m = 0.8
         self.create_subscription(
             LaserScan, "scan", self._on_scan, qos_profile_sensor_data)
+        # Disc geometry (design_d25_freeze.md). Radius ~robot_radius; the ring is
+        # sampled densely enough that no costmap cell inside it is missed at 0.05 m
+        # resolution, and at two radii so the interior fills rather than leaving a
+        # hollow annulus the planner could thread.
+        self.declare_parameter("freeze_mark_radius_m", 0.14)
+        self.declare_parameter("freeze_mark_disc_points", 12)
+        self.declare_parameter("footprint_front_m", 0.11)
+        self._mark_radius_m = float(self.get_parameter("freeze_mark_radius_m").value)
+        self._mark_disc_points = int(
+            self.get_parameter("freeze_mark_disc_points").value)
+        self._footprint_front_m = float(
+            self.get_parameter("footprint_front_m").value)
         self._freeze_marks = FreezeMarkSet(
             ttl_s=float(self.get_parameter("freeze_mark_ttl_s").value),
             merge_radius_m=float(self.get_parameter("freeze_mark_merge_radius_m").value),
@@ -299,6 +311,21 @@ class DecisiveControllerNode(Node):
         with self._out_lock:
             return self._out_moving
 
+    def _freeze_mark_pose(self, robot_x, robot_y, robot_yaw):
+        """Where the mark goes: the frozen footprint's LEADING EDGE, not the centre.
+
+        Implementation drift, found on 2026-08-11 and corrected against the approved
+        design (design_d25_freeze.md, now committed to docs/): the mark was stamped at
+        the robot's centre, so every mark sat `footprint_front_m` (0.11 m deployed)
+        BEHIND the obstacle it marked, along the approach heading. The costmap got a
+        point where the robot was standing rather than where the thing it hit was --
+        so an approach from a slightly different angle reached the same physical
+        object without ever crossing a mark. That is part of the contact-by-contact
+        face-walking seen in gauntlet run 20260811_093818 against Scott's chair.
+        """
+        return (robot_x + self._footprint_front_m * math.cos(robot_yaw),
+                robot_y + self._footprint_front_m * math.sin(robot_yaw))
+
     def _record_freeze(self, x, y, now):
         """A place the robot proved it could not pass. Publish it as an event and
         add it to the mark set the planner will see."""
@@ -338,10 +365,26 @@ class DecisiveControllerNode(Node):
         msg.row_step = 12 * len(live)
         msg.is_dense = True
         import struct
-        # z at the lidar plane so the costmap's height filter keeps them: these
-        # stand for an obstacle the lidar CANNOT see, so they must be presented at a
-        # height it would have accepted.
-        msg.data = b"".join(struct.pack("<fff", m.x, m.y, 0.15) for m in live)
+        # GEOMETRY, per the approved design: one mark is a DISC of radius
+        # ~robot_radius, not a point. Rationale from the design note: we know the
+        # robot could not pass here, and we do NOT know the obstacle's true extent --
+        # so mark the footprint we proved is blocked rather than guessing at the
+        # object. A single point marks neither.
+        #
+        # z at the lidar plane so the costmap's height filter keeps them: these stand
+        # for an obstacle the lidar CANNOT see, so they must be presented at a height
+        # it would have accepted.
+        pts = []
+        for m in live:
+            pts.append((m.x, m.y))
+            for k in range(self._mark_disc_points):
+                a = 2.0 * math.pi * k / self._mark_disc_points
+                for frac in (0.5, 1.0):
+                    r = self._mark_radius_m * frac
+                    pts.append((m.x + r * math.cos(a), m.y + r * math.sin(a)))
+        msg.width = len(pts)
+        msg.row_step = 12 * len(pts)
+        msg.data = b"".join(struct.pack("<fff", px, py, 0.15) for px, py in pts)
         self._freeze_cloud_pub.publish(msg)
 
     def freeze_marks_for_report(self):
@@ -454,7 +497,8 @@ class DecisiveControllerNode(Node):
                     # POINT, not a mission failure. Mark it for the planner — and keep
                     # running the ladder, because discovering an invisible obstacle
                     # does not excuse us from escaping it.
-                    self._record_freeze(robot_x, robot_y, now_s)
+                    fx, fy = self._freeze_mark_pose(robot_x, robot_y, robot_yaw)
+                    self._record_freeze(fx, fy, now_s)
                 if ladder_result.exhausted:
                     # Say WHICH kind of dead end this was. "Genuinely wedged" means
                     # the supervisor refused every rung outright -- the room has us
