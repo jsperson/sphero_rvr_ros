@@ -155,6 +155,39 @@ readings prescribe different fixes.
 
 ---
 
+## 0b. BUILD CORRECTIONS (2026-08-11, during item 1's implementation)
+
+Recorded here rather than edited into the sections below. An approved design note
+that is quietly reconciled with whatever got built stops being a record of what was
+approved — that is exactly how two clauses of `design_d25_freeze.md` drifted through
+three reviews.
+
+**BC1 — corridor half-width 0.12 → 0.18 m, engagement radius 0.85 → 0.90 m.** §1.2
+derived the corridor from the robot's own half-width plus the trajectory margin
+(0.10 + 0.02). Wrong reference: what stops the rover is the camera brake, and it
+tests its *swept path* at `camera_half_width_m` **0.16**. Clearing the body still
+leaves the obstacle inside the gate's corridor, so the fix would have stopped just
+short of working. 0.18 = 0.16 + margin, and the derivation chain is unchanged —
+`engage = stop_ref + R(1 − cos θ) travel`, now 0.50 + 0.384 → 0.90.
+
+**BC2 — which half of the camera range filter is load-bearing.** §1.3 said a
+consumer without the filter "would steer away from proof that the floor is clear".
+A mutation run refuted that for *this* consumer at the deployed config: clear rays
+sit at 1.8 m and the engagement radius (0.90) already excludes them, so deleting the
+max-range filter changed nothing and the first version of the node-level test passed
+for the wrong reason. Corrected: **the near limit (0.40 m) is load-bearing today** —
+without it a point at 0.30 m, in the band the detector is not trusted in, becomes a
+blocker at maximum urgency. The far limit is defence-in-depth, and it is now pinned
+by a test that raises the engagement radius past the clear range so the protection
+does not rest on a coincidence between two unrelated numbers.
+
+**BC3 — a second instrument defect, found while grading and now fixed with §6.4(a).**
+The rung logger's throttle hid every escalation line in run 114626. Named here
+because it changes how the *next* run is read: rungs 2–4 executing with no `_failed->`
+line in the log is a logging artifact, not evidence that they were never entered.
+
+---
+
 ## 1. Item 1 — gentle turn-away
 
 **Objective:** the rover curves around what stops it, while still moving, instead of

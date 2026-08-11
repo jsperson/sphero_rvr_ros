@@ -6,8 +6,8 @@ captured, so "did the brake fire?" could not be answered and the run had to be
 written off. Anything that is not recorded may have to be repeated.
 
 Records to a CSV, one row per sample:
-  t, state, reason, front, rear, left, right, cam_cloud_age, pivot_veto,
-  cmd_vx, cmd_wz, out_vx, out_wz, odom_x, odom_y, odom_yaw_deg
+  t, state, reason, front, rear, left, right, cam_cloud_age, cam_nearest, cam_scale,
+  pivot_veto, cmd_vx, cmd_wz, out_vx, out_wz, odom_x, odom_y, odom_yaw_deg
 
   * state/front/rear/... come from /collision_stop/state -- did the brake see it,
     and did it act?
@@ -15,6 +15,10 @@ Records to a CSV, one row per sample:
     to diagnose with: several different paths all report SLOW, and one of them
     zeroes a commanded pivot outright. Recording state without reason is what left
     run 20260810_185048 undiagnosable.
+  * cam_nearest / cam_scale say what the camera brake DID: scale 0.0 is the hard
+    cut at 0.50 m that ended most of run 114626's goals, and cam_nearest is the
+    range it cut at. Without them, "the lidar said SLOW but the motors got zero"
+    has to be reasoned about instead of read.
   * cam_cloud_age / pivot_veto say whether the CAMERA layer was live and whether it
     refused a turn. Both camera gates fail OPEN on a stale cloud, so a run without
     this column cannot distinguish "the camera cleared it" from "the camera was not
@@ -51,7 +55,18 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else None
 # measured starving its own cloud subscription under load while an independent
 # observer received every message. Without this column a run recording cannot say
 # whether the camera layer was actually live when it mattered.
-NUM_FIELDS = ("front", "rear", "left", "right", "cam_cloud_age")
+#
+# cam_nearest / cam_scale were added 2026-08-11 after grading gauntlet run 114626,
+# where 55 s of the mission's 86 s of "commanding but not moving" had to be
+# ATTRIBUTED TO THE CAMERA BY ARITHMETIC rather than simply read: the core's
+# min_forward_scale is 0.70, so a row reading `SLOW / front_slow` proves the lidar
+# emitted >= 0.14 m/s, and a motor output of 0.000 in the same row can only be the
+# camera brake. The supervisor already publishes both numbers on
+# /collision_stop/state; nothing was recording them, so the run also cannot say
+# whether those stops were real low obstacles or D27 sun phantoms. Two columns of an
+# existing instrument, and they turn a derivation into a reading.
+NUM_FIELDS = ("front", "rear", "left", "right", "cam_cloud_age",
+              "cam_nearest", "cam_scale")
 # Boolean words, matched separately (see _on_state).
 BOOL_FIELDS = ("pivot_veto",)
 FIELDS = NUM_FIELDS + BOOL_FIELDS
