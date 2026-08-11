@@ -455,3 +455,26 @@ def test_f7_drive_open_steers_toward_the_open_bearing():
         assert seen is not None, "never reached the drive rung"
         assert abs(seen) > 1e-9, "drive rung drove straight ahead, ignoring open space"
         assert (seen > 0) is expect_positive, "drive rung steered the wrong way"
+
+
+# -------------------------------------------------------------------------- F10
+
+def test_f10_abandon_rung_drops_the_escape_but_keeps_the_goal_budget():
+    """Pins the intended split. The ladder SURVIVES a same-destination replan (else
+    bt_navigator's ~1 Hz replan clears the anti-livelock budget forever), but a
+    half-run rung must not be inherited by the next execute loop with a stale
+    reference pose and a stale clock."""
+    ladder = StallLadder()
+    for i in range(_cycles(5)):
+        if ladder.step(x=0.0, y=0.0, yaw=0.0, now=i / HZ,
+                       commanding=True, output_moving=False).action == "rung":
+            break
+    assert ladder.active, "setup failed: no rung was running"
+    spent = ladder.invocations
+    assert spent >= 1
+
+    ladder.abandon_rung()
+    assert not ladder.active, "a rung survived the end of its goal"
+    assert ladder.invocations == spent, (
+        "abandoning a rung reset the per-goal invocation budget — a replanning "
+        "goal could then livelock forever")

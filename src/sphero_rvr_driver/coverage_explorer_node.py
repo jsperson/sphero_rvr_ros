@@ -974,8 +974,10 @@ class CoverageExplorerNode(Node):
     def _pose_clearance(self, wx, wy):
         """Clearance at a candidate pose, from the GLOBAL costmap.
 
-        Returns None when it cannot be judged, and the caller must treat that as a
-        rejection rather than as clear.
+        Returns None when it cannot be judged. The caller passes those poses to the
+        planner rather than rejecting them — see the call site. This docstring said
+        the opposite until the rehearsal suite proved rejecting-on-None makes the
+        explorer refuse every candidate whenever the costmap is absent.
         """
         m = self._costmap
         if m is None:

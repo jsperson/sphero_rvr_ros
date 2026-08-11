@@ -265,8 +265,15 @@ def pose_clearance_m(costmap_data, width, height, origin_x, origin_y, resolution
     "is this pose hemmed in", and a rover boxed on one side is boxed. Returns
     ``max_probe_m`` when nothing is found within that radius (the pose is open
     enough — we deliberately do not measure further, because the answer stops
-    mattering), and ``None`` when the pose is off-map or unknown, so callers can
-    distinguish "open" from "cannot tell" and fail safe on the latter.
+    mattering), and ``None`` when the pose is off-map or unknown.
+
+    None means "cannot judge", and the CALLER passes such poses through to the
+    planner rather than rejecting them. Rejecting on None was tried and reverted:
+    with no costmap every candidate returns None, so the explorer refused every goal
+    forever while the map was wide open. This docstring used to say callers "fail
+    safe on the latter", which is now the opposite of what happens — a stale
+    instruction in a docstring is how a reverted bug gets reintroduced by someone
+    reading the contract instead of the code.
     """
     if resolution <= 0.0 or width <= 0 or height <= 0:
         return None

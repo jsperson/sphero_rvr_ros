@@ -331,7 +331,7 @@ class DecisiveControllerNode(Node):
                 self._ladder_goal = (goal_x, goal_y)
             ladder = self._ladder
 
-        try:
+        try:  # NOTE: the finally below abandons any rung in progress (F10).
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
                     self._stop()
@@ -445,6 +445,15 @@ class DecisiveControllerNode(Node):
                 if self._active_goal_handle is goal_handle:
                     self._active_goal_handle = None
                     self._stop()
+                    # F10. Drop any rung still in progress. The ladder deliberately
+                    # SURVIVES a same-destination replan -- resetting on every
+                    # bt_navigator replan would clear the anti-livelock budget about
+                    # once a second -- but a half-run rung must not be inherited by
+                    # the next execute loop, which would resume someone else's escape
+                    # against a stale reference pose and a stale clock. Only the
+                    # still-active goal does this, for the same reason it owns the
+                    # stop: a superseded loop must not reach into the live one.
+                    self._ladder.abandon_rung()
 
         goal_handle.succeed()
         return result

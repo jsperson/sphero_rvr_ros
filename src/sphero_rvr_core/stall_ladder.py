@@ -154,6 +154,21 @@ class StallLadder:
         self._rung_last_yaw = None
         self._rung_last_t = None
 
+    def abandon_rung(self):
+        """Drop any rung in progress, keeping the per-goal invocation budget.
+
+        F10. The ladder deliberately PERSISTS across a same-destination replan (see
+        the controller: bt_navigator replans ~1 Hz, and resetting there would clear
+        the anti-livelock counter forever). But persisting mid-RUNG is different: a
+        goal that ends while rung 3 is running would leave the next execute loop
+        resuming someone else's escape, with a stale reference pose and a stale
+        clock. Called when a goal ends for any reason -- arrived, aborted, cancelled.
+        """
+        self._rung_index = None
+        self._rung_started = None
+        self._rung_ref = None
+        self._clear_monitor()
+
     def _clear_monitor(self):
         self._ref = None
         self._ref_t = None
