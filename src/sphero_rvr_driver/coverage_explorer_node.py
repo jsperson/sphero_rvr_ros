@@ -281,9 +281,15 @@ class CoverageExplorerNode(Node):
         # D29: the mission-control surface. The ladder needed one anyway (a recovery
         # regime you cannot stop is not a regime), and it is what makes the run
         # protocol's "gates, THEN go" real rather than aspirational.
-        self.create_service(Trigger, "mission/start", self._on_mission_start,
+        # PRIVATE names ("~/"), so these resolve to /coverage_explorer/mission/*
+        # rather than to bare /mission/*. Verified on the Pi, because I documented
+        # the namespaced path first and the node registered the bare one: a relative
+        # service name resolves against the NAMESPACE, not the node name, and the
+        # stack runs in the root namespace. A run protocol whose copy-paste command
+        # hangs on a nonexistent service is worse than no protocol.
+        self.create_service(Trigger, "~/mission/start", self._on_mission_start,
                             callback_group=cbg)
-        self.create_service(Trigger, "mission/stop", self._on_mission_stop,
+        self.create_service(Trigger, "~/mission/stop", self._on_mission_stop,
                             callback_group=cbg)
         self.get_logger().info(
             "coverage_explorer ready (coverage + frontier mission) — "
