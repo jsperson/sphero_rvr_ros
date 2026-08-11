@@ -56,6 +56,7 @@ from sphero_rvr_core.coverage_exploration import (
     cell_center_world,
     cell_world_grid,
     is_frontier,
+    pose_clearance_m,
     robot_start_blocked,
     stamp_coverage,
     world_grid,
@@ -133,6 +134,12 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("save_map_on_end", True)
         self.declare_parameter("map_save_dir", os.path.expanduser("~/.ros/missions"))
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
+        # PREVENTION. 0.35 m, derived from the robot, not this room: the planner
+        # treats the start pose as in collision once the robot's own cell reaches
+        # inscribed cost, which happens at robot_radius + inflation_radius =
+        # 0.14 + 0.16 = 0.30 m. 0.35 leaves a small margin above the pose at which
+        # nothing plans and no recovery works.
+        self.declare_parameter("min_goal_clearance_m", 0.35)
         self.declare_parameter("blocked_hold_s", 5.0)
 
         self._config = CoverageConfig(
@@ -170,6 +177,11 @@ class CoverageExplorerNode(Node):
 
         self._map = None
         self._costmap = None
+        self._min_goal_clearance_m = float(
+            self.get_parameter("min_goal_clearance_m").value)
+        # Reported, never silent: a filter that quietly eats every candidate looks
+        # exactly like a room with nothing left to explore.
+        self._clearance_rejections = 0
         self._blocked_logged = False
         self._blocked_until = 0.0  # monotonic; blocked state flickers, so hold it
         self._covered = set()      # world-grid coords the rover has driven within radius of
@@ -438,6 +450,21 @@ class CoverageExplorerNode(Node):
             # only needs proximity. So ask for the nearest point that both plans
             # AND still counts as covering the target.
             for awx, awy in self._approach_points(gwx, gwy, wx, wy):
+                # PREVENTION (docs/stall_survival_ladder.md): never send the rover to
+                # a pose it will not be able to LEAVE. Run 185048 selected, planned to
+                # and reached a pose with 0.22 m on two sides, where the planner then
+                # refused every onward goal and every escape was vetoed. Recovery
+                # cannot help there -- at that clearance the ladder's rungs are all
+                # refused too -- so the cheapest fix by far is not to go.
+                #
+                # A pose we cannot judge (unknown/off-map -> None) is NOT accepted:
+                # exploration goals sit near the frontier by construction, so
+                # "cannot tell" is the common case near unknown space and treating it
+                # as clear would make this filter inert exactly where it is needed.
+                clearance = self._pose_clearance(awx, awy)
+                if clearance is None or clearance < self._min_goal_clearance_m:
+                    self._clearance_rejections += 1
+                    continue
                 if self._planner_can_reach(awx, awy, frame):
                     goal_cell, goal_point = cell, (awx, awy)
                     break
@@ -700,6 +727,7 @@ class CoverageExplorerNode(Node):
         self.get_logger().info(
             f"coverage goal -> cell {cell} world ({wx:.2f},{wy:.2f}){via}; "
             f"covered={len(self._covered)} planner-rejected={self._unplannable_last_cycle} "
+            f"clearance-rejected={self._clearance_rejections} "
             f"stalled={len(self._stalled)}"
         )
         self._nav.send_goal_async(goal).add_done_callback(self._on_goal_response)
@@ -815,6 +843,22 @@ class CoverageExplorerNode(Node):
             self.get_logger().info(f"unstick: {what} did not finish, trying the next")
         self.get_logger().warn("unstick: nothing worked from this pose")
         return False
+
+    def _pose_clearance(self, wx, wy):
+        """Clearance at a candidate pose, from the GLOBAL costmap.
+
+        Returns None when it cannot be judged, and the caller must treat that as a
+        rejection rather than as clear.
+        """
+        m = self._costmap
+        if m is None:
+            return None
+        return pose_clearance_m(
+            m.data, m.info.width, m.info.height,
+            m.info.origin.position.x, m.info.origin.position.y,
+            m.info.resolution, wx, wy,
+            max_probe_m=self._min_goal_clearance_m + 0.25,
+        )
 
     def _cell_world(self, cell, ox, oy, res):
         return cell_center_world(cell[0], cell[1], ox, oy, res)
