@@ -116,6 +116,155 @@ def compute_drive_command(
     return DriveCommand(0.0, math.copysign(config.pivot_rate_rad_s, error), "pivot")
 
 
+# --------------------------------------------------------------------------- #
+# GENTLE TURN-AWAY (docs/turning_batch_design.md item 1)
+#
+# Measured on gauntlet run 114626: 86 s of a 309 s mission (28%) was spent asking
+# for motion the motors never saw, and 55 s of that -- 63% -- was the CAMERA
+# low-obstacle brake, whose forward scale is ZERO at <= 0.50 m. A cliff, not a band.
+# Every one of the 12 aborts ran the same loop: forward -> camera cuts output ->
+# 2 s suppressed -> ladder rung 1 reverses (the camera never brakes reverse, so it
+# is always granted and always "clears") -> re-approach the same heading -> repeat
+# -> per-goal escape budget spent -> abort. Five aborts end the mission.
+#
+# So the rover has to be ALREADY TURNING before it reaches the gate. And it cannot
+# start at the gate: at the supervisor's angular cap (0.40 rad/s) and cruise
+# (0.20 m/s) the tightest executable arc has radius v/w = 0.50 m, so displacing the
+# swept corridor clear of a point dead ahead takes ~0.38 m of forward travel -- more
+# than the whole brake band. The timidity is structural, and no gain fixes it; the
+# reaction has to begin further out.
+#
+# This law only ever changes the TARGET HEADING. It emits no twist, so every regime
+# below (deadband, arc, pivot) and the supervisor's final say are untouched.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class AvoidanceConfig:
+    """Steering-away geometry, derived from the robot and the DEPLOYED supervisor
+    config -- never from this room.
+
+    `engage_m` = `stop_ref_m` + the forward travel needed to swing the corridor off
+    a point dead ahead at cruise. With corridor half-width 0.18 m and arc radius
+    0.50 m that travel is 0.384 m, so 0.50 + 0.38 = 0.88 -> 0.90 rounded out. It sits
+    inside the camera's useful range (1.20 m), so both sensors can supply it.
+    """
+
+    # Where reacting begins. Beyond this, nothing steers.
+    engage_m: float = 0.90
+    # Where urgency reaches 1: the camera brake's hard-zero distance. Full steering
+    # is applied at the last moment it can still be executed.
+    stop_ref_m: float = 0.50
+    # Ceiling on the heading offset. Chosen so the RESULTING angular cannot exceed
+    # the supervisor's max_angular_rad_s (0.40): with arc_gain 1.2, 0.40 rad/s is
+    # reached at a heading error of 0.33 rad. Asking for more would be a command the
+    # supervisor silently clamps -- which is how a controller ends up lying to its
+    # own ladder about what it requested (D32's root cause, one layer up).
+    max_offset_rad: float = 0.33
+    # Half-width of the corridor a blocker must be inside to count. NOT the robot's
+    # own half-width (0.10): the thing that stops us is the camera brake, which
+    # tests its swept path at camera_half_width_m 0.16. Steering must clear the
+    # gate's corridor, not merely the body, or it stops just short of working.
+    corridor_half_width_m: float = 0.18
+    # Rate limit per control cycle. The camera runs ~5 Hz into a 10 Hz loop, so half
+    # of all camera-driven blockers are a cycle stale; one noisy frame must not snap
+    # the heading. Crossing engage -> stop_ref at cruise takes 2.0 s (20 cycles), so
+    # 0.08 rad/cycle reaches full offset in 4 cycles with an order of magnitude to
+    # spare.
+    max_offset_step_rad: float = 0.08
+    # The camera cloud's own validity window, mirrored from the deployed brake.
+    camera_min_range_m: float = 0.40
+    camera_max_range_m: float = 1.20
+
+
+def camera_points_to_polar(points_xy, config: AvoidanceConfig):
+    """(range, bearing) for camera cloud points that are actually OBSTACLE MARKS.
+
+    THE RANGE FILTER IS LOAD-BEARING, and it is the trap in this topic:
+    `/camera/low_obstacles` is NOT a pure obstacle cloud. `low_obstacle_node` also
+    publishes CLEAR-RAY ENDPOINTS -- "the floor is clear this far" -- at
+    `clear_range_m` 1.8 m, into the same cloud, at the same z, indistinguishable
+    from marks by anything except their range. The existing camera brake is immune
+    only because `camera_max_range_m` (1.20) filters them out. A new consumer that
+    skips the filter would steer AWAY FROM PROOF THAT THE FLOOR IS CLEAR, which
+    looks exactly like working code until it drives the rover into the one place it
+    knew was safe.
+    """
+    out = []
+    for x, y in points_xy:
+        if x <= 0.0:
+            continue
+        rng = math.hypot(x, y)
+        if rng < config.camera_min_range_m or rng > config.camera_max_range_m:
+            continue
+        out.append((rng, math.atan2(y, x)))
+    return out
+
+
+def corridor_blocker(points_polar, config: AvoidanceConfig,
+                     max_relevant_m: float = float("inf")):
+    """Nearest (range, bearing) that is actually in the way, or None.
+
+    "In the way" is three tests: ahead of us, inside the engagement radius, and
+    inside the corridor the robot will sweep. The corridor test is what stops the
+    rover from swerving around everything it passes -- an obstacle 0.5 m away at 40
+    deg sits 0.32 m off the centreline and needs no reaction at all.
+
+    `max_relevant_m` drops blockers beyond the goal: we stop there, so curving away
+    from something behind it would be steering away from the destination.
+    """
+    best = None
+    for rng, bearing in points_polar:
+        if abs(bearing) >= math.pi / 2.0:
+            continue
+        if rng >= config.engage_m or rng > max_relevant_m:
+            continue
+        if abs(rng * math.sin(bearing)) > config.corridor_half_width_m:
+            continue
+        if best is None or rng < best[0]:
+            best = (rng, bearing)
+    return best
+
+
+def avoidance_heading_offset(nearest, open_bearing_rad, previous_offset_rad,
+                             ladder_active, config: AvoidanceConfig) -> float:
+    """How far to lean the target heading away from the nearest blocker, this cycle.
+
+    `nearest` is `corridor_blocker`'s answer (None when the way is clear).
+    `ladder_active` bypasses the whole law: while a rung is running the ladder owns
+    the command, and a rung is by definition what happens after normal control has
+    already failed. Steering must never second-guess an escape in progress.
+
+    Returns a heading-error offset in radians, rate-limited from
+    `previous_offset_rad` -- including on the way back to zero, so releasing is as
+    smooth as engaging.
+    """
+    if ladder_active or nearest is None:
+        target = 0.0
+    else:
+        rng, bearing = nearest
+        span = config.engage_m - config.stop_ref_m
+        urgency = 1.0 if span <= 0.0 else (config.engage_m - rng) / span
+        urgency = max(0.0, min(1.0, urgency))
+        # Which way to lean. A blocker off to one side is escaped by turning the
+        # other way; one dead ahead has no such hint, so fall back to where the
+        # widest gap is (the ladder's own open bearing, already TF-rotated into the
+        # base frame by the caller). With neither signal, lean left deterministically
+        # -- an arbitrary but repeatable choice beats a coin toss that makes field
+        # behaviour unreproducible.
+        if abs(bearing) >= 1e-3:
+            away = -math.copysign(1.0, bearing)
+        elif open_bearing_rad:
+            away = math.copysign(1.0, open_bearing_rad)
+        else:
+            away = 1.0
+        target = away * urgency * config.max_offset_rad
+
+    step = config.max_offset_step_rad
+    low, high = previous_offset_rad - step, previous_offset_rad + step
+    return max(low, min(high, target))
+
+
 @dataclass(frozen=True)
 class BackOffConfig:
     """Tunables for the back-off reflex (getting un-stuck without grinding)."""
