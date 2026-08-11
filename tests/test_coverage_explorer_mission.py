@@ -629,3 +629,37 @@ def test_f5_no_goal_is_sent_after_mission_stop(stack):
     assert len(stack.world.nav_goals) == settled, (
         "a goal was sent after mission/stop — with the tick halted and the watchdog "
         "deferring, nothing would ever cancel it and the rover drives unwatched")
+
+
+# --------------------------------------------------- freeze correlation (by goal)
+
+@pytest.mark.parametrize("stack", [{"max_consecutive_failures": 3}], indirect=True)
+def test_freeze_is_claimed_however_long_recovery_took(stack):
+    """Replay of gauntlet run 20260811_093818's abort timeline.
+
+    That run produced 8 freeze events and 7 aborts, and excused exactly ONE: the
+    others were 5.5, 8.2, 5.6 and 18.7 s old when their goal finally aborted, because
+    the stall ladder runs up to four 3 s rungs before exhausting. The 3 s correlation
+    window was tuned when a freeze was followed immediately by an abort. Four honest
+    discoveries were charged to the give-up counter and killed the mission.
+
+    A freeze belongs to the GOAL it happened during, however long the escape took.
+    """
+    from std_msgs.msg import String
+
+    explorer = stack.explorer
+    pub = stack.world.create_publisher(String, "/decisive_controller/freeze_event", 10)
+    pub.publish(String(data='{"x": -0.91, "y": -1.12, "stamp": 0.0}'))
+    assert wait_until(lambda: bool(explorer._pending_freezes), 5.0), "freeze not received"
+
+    # The ladder's full escalation, far beyond the old 3 s window.
+    time.sleep(4.0)
+
+    claimed = explorer._claim_freeze()
+    assert claimed is not None, (
+        "a freeze from this goal went unclaimed because recovery took longer than "
+        "the old wall-clock window — four of these ended gauntlet run 093818")
+    assert abs(claimed[1] - (-0.91)) < 1e-6
+
+    # Consume-once still holds: the same freeze cannot excuse a second abort.
+    assert explorer._claim_freeze() is None, "one freeze excused two aborts"

@@ -109,7 +109,6 @@ class CoverageExplorerNode(Node):
         # Without a separate ceiling the exemption would be unbounded and a rover
         # wedged in a corner would freeze forever, which is why this exists.
         self.declare_parameter("max_consecutive_freezes", 5)
-        self.declare_parameter("freeze_correlation_window_s", 3.0)
         # A goal nearer than this is somewhere the rover already is: it succeeds
         # without moving, the target is still a target next tick, and it gets picked
         # again forever. Never issue one.
@@ -176,8 +175,6 @@ class CoverageExplorerNode(Node):
             self.get_parameter("max_consecutive_failures").value)
         self._max_consecutive_freezes = int(
             self.get_parameter("max_consecutive_freezes").value)
-        self._freeze_window_s = float(
-            self.get_parameter("freeze_correlation_window_s").value)
         self._min_goal_distance_m = float(
             self.get_parameter("min_goal_distance_m").value)
         self._max_unstick = int(self.get_parameter("max_unstick_attempts").value)
@@ -1092,26 +1089,47 @@ class CoverageExplorerNode(Node):
         except Exception:
             return
         with self._lock:
-            self._pending_freezes.append((time.monotonic(), x, y))
+            # Tagged with the GOAL it arrived during, not just a timestamp. See
+            # _claim_freeze for why the wall clock was the wrong key.
+            self._pending_freezes.append((self._goals_sent, x, y))
             self._freeze_marks.append({"x": round(x, 3), "y": round(y, 3)})
 
     def _claim_freeze(self):
-        """Consume the most recent unclaimed freeze if it is recent enough.
+        """Consume the most recent unclaimed freeze FROM THIS GOAL.
 
-        CONSUME-ONCE is the point: a freeze event pairs with AT MOST ONE abort. Two
-        aborts inside one freeze's window must not both be excused, or a single
-        discovery would silently forgive an unrelated failure and the give-up counter
-        would drift away from reality -- which is precisely the distrust this
-        redesign exists to answer.
+        CONSUME-ONCE is still the point: a freeze event pairs with AT MOST ONE abort,
+        so one discovery cannot silently forgive an unrelated failure.
+
+        CORRELATED BY GOAL, NOT BY WALL CLOCK. It used to require the freeze to be
+        within freeze_correlation_window_s (3.0 s) of the abort, which was true when a
+        freeze was followed almost immediately by an abort. The stall ladder changed
+        that: it runs up to four rungs at rung_budget_s each before exhausting, so a
+        freeze detected at rung 1 is 12+ seconds stale by the time the goal aborts.
+
+        Measured on gauntlet run 20260811_093818: eight freeze events, seven aborts,
+        and freeze ages at abort of 0.0, 5.5, 8.2, 5.6 and 18.7 s. Exactly ONE was
+        claimed. The other four ticked the give-up counter and ended the mission with
+        "5 goals in a row failed, at different places -- this is the stack, not the
+        room" -- doubly false, because they failed at the SAME place and the stack had
+        correctly identified it as an obstacle every time.
+
+        "During this goal" is what the rule always meant, it cannot be invalidated by
+        changing how long recovery takes, and it removes a tuned constant instead of
+        re-tuning one.
         """
-        now = time.monotonic()
         with self._lock:
-            self._pending_freezes = [
-                f for f in self._pending_freezes if now - f[0] <= self._freeze_window_s
-            ]
-            if not self._pending_freezes:
+            goal = self._goals_sent
+            mine = [f for f in self._pending_freezes if f[0] == goal]
+            if not mine:
                 return None
-            return self._pending_freezes.pop()
+            claimed = mine[-1]
+            self._pending_freezes.remove(claimed)
+            # Freezes from earlier goals are dead: they can never be claimed now, and
+            # keeping them would let a stale discovery excuse a later unrelated abort.
+            self._pending_freezes = [
+                f for f in self._pending_freezes if f[0] >= goal
+            ]
+            return claimed
 
     def _note_failure(self, cell):
         """Record that driving to `cell` failed: suppress it, and give up entirely if
