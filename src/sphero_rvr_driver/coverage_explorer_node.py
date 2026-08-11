@@ -235,6 +235,7 @@ class CoverageExplorerNode(Node):
         # not both be excused, or one discovery would silently forgive an unrelated
         # failure.
         self._pending_freezes = []
+        self._active_goal_generation = 0
         self._freeze_marks = []
         self._active_goal_cell = None
         self._active_goal_handle = None
@@ -492,7 +493,7 @@ class CoverageExplorerNode(Node):
                 # counter resets on every send, and the give-up counter that exists
                 # precisely to stop this thrash never moves. The rover sits nearly
                 # still logging "made no progress" every few seconds indefinitely.
-                self._note_failure(active_cell)
+                self._note_failure(active_cell, self._active_goal_generation)
                 if self._mission_done:
                     return  # that was the last straw; _finish already ran
             else:
@@ -856,6 +857,13 @@ class CoverageExplorerNode(Node):
             self._goal_inflight = True
             self._active_goal_cell = cell
             self._goals_sent += 1
+            # The generation THIS goal belongs to. A freeze is claimed against the
+            # goal it happened during, and the abort arrives on an async result
+            # callback -- by which time _goals_sent may already have advanced to the
+            # next goal. Reading the live counter at claim time therefore looks for
+            # the wrong generation and silently drops a legitimate discovery, which
+            # is a race, not a policy. Bind it here, where it is unambiguous.
+            self._active_goal_generation = self._goals_sent
         offset = math.hypot(wx - cwx, wy - cwy)
         via = f" (standing off {offset:.2f} m)" if offset > 0.01 else ""
         self.get_logger().info(
@@ -894,9 +902,10 @@ class CoverageExplorerNode(Node):
             # retried immediately at the same spot.
             with self._lock:
                 cell = self._active_goal_cell
+                generation = self._active_goal_generation
                 self._active_goal_cell = None
             self.get_logger().warn(f"coverage goal {cell} REJECTED — suppressing it")
-            self._note_failure(cell)
+            self._note_failure(cell, generation)
             return
         with self._lock:
             self._active_goal_handle = handle
@@ -912,6 +921,7 @@ class CoverageExplorerNode(Node):
         status = future.result().status
         with self._lock:
             cell = self._active_goal_cell
+            generation = self._active_goal_generation
             self._active_goal_handle = None
             self._active_goal_cell = None
         if status == GoalStatus.STATUS_ABORTED:
@@ -933,7 +943,7 @@ class CoverageExplorerNode(Node):
                 f"coverage goal {cell} ABORTED — suppressing it for "
                 f"{self._stall_ttl_s:.0f}s so we do not drive at it again"
             )
-            self._note_failure(cell)
+            self._note_failure(cell, generation)
         elif status == GoalStatus.STATUS_SUCCEEDED:
             with self._lock:
                 self._goals_succeeded += 1
@@ -1094,7 +1104,7 @@ class CoverageExplorerNode(Node):
             self._pending_freezes.append((self._goals_sent, x, y))
             self._freeze_marks.append({"x": round(x, 3), "y": round(y, 3)})
 
-    def _claim_freeze(self):
+    def _claim_freeze(self, generation=None):
         """Consume the most recent unclaimed freeze FROM THIS GOAL.
 
         CONSUME-ONCE is still the point: a freeze event pairs with AT MOST ONE abort,
@@ -1118,8 +1128,19 @@ class CoverageExplorerNode(Node):
         re-tuning one.
         """
         with self._lock:
-            goal = self._goals_sent
-            mine = [f for f in self._pending_freezes if f[0] == goal]
+            goal = self._goals_sent if generation is None else generation
+            # THIS goal, or the one immediately before it. A freeze detected as goal
+            # N-1 ends is the same physical discovery as goal N aborting at the same
+            # spot, and the two orderings are not distinguishable from here: the
+            # controller publishes during a goal, but an abort arriving on an async
+            # callback can be processed either side of the next send. Requiring an
+            # exact generation match dropped every discovery in the D26 rehearsal,
+            # whose freezes arrive between goals -- an assumption I had not noticed I
+            # was making until that test refused to pass.
+            #
+            # Still bounded and still consume-once: a freeze cannot excuse an abort
+            # two goals later, and one freeze never excuses two aborts.
+            mine = [f for f in self._pending_freezes if goal - 1 <= f[0] <= goal]
             if not mine:
                 return None
             claimed = mine[-1]
@@ -1127,11 +1148,11 @@ class CoverageExplorerNode(Node):
             # Freezes from earlier goals are dead: they can never be claimed now, and
             # keeping them would let a stale discovery excuse a later unrelated abort.
             self._pending_freezes = [
-                f for f in self._pending_freezes if f[0] >= goal
+                f for f in self._pending_freezes if f[0] >= goal - 1
             ]
             return claimed
 
-    def _note_failure(self, cell):
+    def _note_failure(self, cell, generation=None):
         """Record that driving to `cell` failed: suppress it, and give up entirely if
         goals are failing everywhere.
 
@@ -1149,7 +1170,7 @@ class CoverageExplorerNode(Node):
         # about the room, so it must not feed the counter whose job is to detect a
         # broken STACK -- but it gets its own ceiling, because an unbounded exemption
         # would let a rover wedged in a corner freeze forever.
-        frozen = self._claim_freeze()
+        frozen = self._claim_freeze(generation)
         if frozen is not None:
             with self._lock:
                 self._consecutive_freezes += 1
