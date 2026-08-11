@@ -6,11 +6,15 @@ captured, so "did the brake fire?" could not be answered and the run had to be
 written off. Anything that is not recorded may have to be repeated.
 
 Records to a CSV, one row per sample:
-  t, state, front, rear, left, right, cam_cloud_age, pivot_veto,
+  t, state, reason, front, rear, left, right, cam_cloud_age, pivot_veto,
   cmd_vx, cmd_wz, out_vx, out_wz, odom_x, odom_y, odom_yaw_deg
 
   * state/front/rear/... come from /collision_stop/state -- did the brake see it,
     and did it act?
+  * reason is the supervisor's own word for WHICH gate acted. `state` is too coarse
+    to diagnose with: several different paths all report SLOW, and one of them
+    zeroes a commanded pivot outright. Recording state without reason is what left
+    run 20260810_185048 undiagnosable.
   * cam_cloud_age / pivot_veto say whether the CAMERA layer was live and whether it
     refused a turn. Both camera gates fail OPEN on a stale cloud, so a run without
     this column cannot distinguish "the camera cleared it" from "the camera was not
@@ -58,6 +62,15 @@ class Recorder(Node):
         super().__init__("run_recorder")
         self.w = writer
         self.state = ""
+        # The supervisor's OWN word for why it decided what it decided. Run
+        # 20260810_185048 died with 140 rows of state=SLOW, cmd_wz=-0.9 and
+        # out_wz=0.0: the brake was zeroing every pivot the controller asked for,
+        # and `state` alone cannot say which gate did it. Several distinct code
+        # paths report SLOW, and only `reason` separates
+        # "right_trajectory_blocked" from "rear_hold" from a stale command. That
+        # run's diagnosis stalled on exactly this missing column while every other
+        # field was present and healthy-looking.
+        self.reason = ""
         self.near = {k: "" for k in FIELDS}
         self.cmd = (0.0, 0.0)
         self.out = (0.0, 0.0)
@@ -78,6 +91,8 @@ class Recorder(Node):
         # on the wire.
         d = m.data
         self.state = d.split(" ", 1)[0]
+        hit = re.search(r"\breason=(\S+)", d)
+        self.reason = hit.group(1) if hit else ""
         for k in NUM_FIELDS:
             hit = re.search(rf"\b{k}=([-\d.]+|None)", d)
             self.near[k] = hit.group(1) if hit else ""
@@ -110,7 +125,7 @@ class Recorder(Node):
 
     def _sample(self):
         self.w.writerow([
-            round(time.monotonic() - self.t0, 2), self.state,
+            round(time.monotonic() - self.t0, 2), self.state, self.reason,
             *[self.near[k] for k in FIELDS],
             round(self.cmd[0], 3), round(self.cmd[1], 3),
             round(self.out[0], 3), round(self.out[1], 3),
@@ -124,7 +139,7 @@ def main():
     rclpy.init()
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["t", "state", *FIELDS,
+        w.writerow(["t", "state", "reason", *FIELDS,
                     "cmd_vx", "cmd_wz", "out_vx", "out_wz",
                     "odom_x", "odom_y", "odom_yaw_deg"])
         n = Recorder(w)
