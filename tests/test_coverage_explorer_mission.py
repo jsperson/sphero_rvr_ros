@@ -586,3 +586,46 @@ def test_f1_watchdog_still_fires_when_no_ladder_is_running(stack):
     assert wait_until(lambda: bool(stack.world.nav_cancels),
                       BASE_PARAMS["goal_progress_timeout_s"] * 3.0), (
         "watchdog never fired with no ladder active — deferral disabled it outright")
+
+
+# --------------------------------------------------------------------------- F5
+
+@pytest.mark.parametrize("stack", [{"autostart": False}], indirect=True)
+def test_f5_no_goal_is_sent_after_mission_stop(stack):
+    """A tick already in flight when mission/stop arrives must not send a goal.
+
+    With the mission stopped nothing would ever cancel it -- the tick has halted and
+    the watchdog defers -- so the rover would drive on, unwatched, after the operator
+    stopped it.
+    """
+    from std_srvs.srv import Trigger
+
+    stack.world.nav_mode = "hold"
+    stack.world.publish_map(make_map())
+    start = stack.world.create_client(Trigger, "/coverage_explorer/mission/start")
+    stop = stack.world.create_client(Trigger, "/coverage_explorer/mission/stop")
+    assert start.wait_for_service(timeout_sec=5.0)
+    assert stop.wait_for_service(timeout_sec=5.0)
+
+    start.call_async(Trigger.Request())
+    assert wait_until(lambda: bool(stack.world.nav_goals), 15.0)
+    stop.call_async(Trigger.Request())
+    assert wait_until(lambda: not stack.explorer._armed, 5.0), "stop did not disarm"
+    settled = len(stack.world.nav_goals)
+
+    # Drive the guarded path DIRECTLY. Waiting for the natural race is not a test:
+    # the tick's own top-level armed check means a fresh tick never reaches
+    # _send_goal, so the window only opens for a tick already in flight when stop
+    # arrives -- which no amount of sleeping makes deterministic. My first version
+    # waited, and passed with the guard removed, proving nothing. This calls the
+    # method the in-flight tick would have been inside.
+    m = stack.explorer._map
+    info = m.info
+    stack.explorer._send_goal(
+        (int(info.width // 2), int(info.height // 2)), m.header.frame_id or "map",
+        info.origin.position.x, info.origin.position.y, info.resolution)
+
+    time.sleep(1.0)
+    assert len(stack.world.nav_goals) == settled, (
+        "a goal was sent after mission/stop — with the tick halted and the watchdog "
+        "deferring, nothing would ever cancel it and the rover drives unwatched")

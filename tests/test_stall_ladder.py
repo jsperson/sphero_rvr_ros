@@ -413,3 +413,45 @@ def test_f4_a_slip_burst_does_not_credit_the_pivot_rung():
         assert not (in_pivot and result.reason == f"{PIVOT_OPEN}_cleared"), (
             "a slip burst credited the pivot rung as a successful escape")
         now += 1.0 / HZ
+
+
+# ------------------------------------------------------------------------ F6/F7
+
+def test_f6_reverse_arc_is_credited_when_the_supervisor_grants_only_rotation():
+    """Under `rear_hold` the supervisor refuses the linear half of a reverse arc and
+    passes the ANGULAR through, so what reaches the motors is a pure rotation. Judged
+    by position alone that rung can never be credited in the exact geometry it was
+    added for -- it burns its full budget and escalates past a working escape."""
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    now, yaw, x, seen_arc = 0.0, 0.0, 0.0, False
+    for _ in range(_cycles(60)):
+        result = ladder.step(x=x, y=0.0, yaw=yaw, now=now,
+                             commanding=True, output_moving=ladder.active)
+        if result.rung == REVERSE_ARC and result.action == "rung":
+            seen_arc = True
+            yaw += cfg.pivot_rate_rad_s / HZ      # rotation granted, no translation
+        if seen_arc and result.reason == f"{REVERSE_ARC}_cleared":
+            return
+        now += 1.0 / HZ
+    pytest.fail("a rotation-only reverse arc was never credited as a working escape")
+
+
+def test_f7_drive_open_steers_toward_the_open_bearing():
+    """Rung 4 ignored open_bearing and drove straight at the heading we stalled on.
+    In a freeze that is powered contact with the obstacle that stopped us."""
+    cfg = LadderConfig()
+    for bearing, expect_positive in ((1.2, True), (-1.2, False)):
+        ladder = StallLadder(cfg)
+        now, seen = 0.0, None
+        for _ in range(_cycles(60)):
+            result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now,
+                                 commanding=True, output_moving=False,
+                                 open_bearing_rad=bearing)
+            if result.rung == DRIVE_OPEN and result.action == "rung":
+                seen = result.angular_z
+                break
+            now += 1.0 / HZ
+        assert seen is not None, "never reached the drive rung"
+        assert abs(seen) > 1e-9, "drive rung drove straight ahead, ignoring open space"
+        assert (seen > 0) is expect_positive, "drive rung steered the wrong way"

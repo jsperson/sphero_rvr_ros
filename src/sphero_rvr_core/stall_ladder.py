@@ -33,14 +33,19 @@ PIVOT_OPEN = "pivot_open"
 DRIVE_OPEN = "drive_open"
 RUNG_ORDER = (REVERSE_STRAIGHT, REVERSE_ARC, PIVOT_OPEN, DRIVE_OPEN)
 
-# Which measure tells us a rung is WORKING. A pivot that is granted but pinned moves
-# no distance, and a reverse that is granted but blocked changes no heading, so asking
-# the wrong question of a rung makes a refused escape look successful.
+# F6. A rung used to be judged by the axis its REQUEST implied, which is wrong in the
+# one geometry that motivated rung 2: under `rear_hold` the supervisor refuses the
+# linear half of a reverse arc and passes the ANGULAR through, so what actually
+# reaches the motors is a pure rotation -- judged by POSITION it can never be
+# credited, burns its full budget, and (before F1) that wasted time was fatal.
+#
+# So progress is judged on EITHER axis. The rung asked for something; the supervisor
+# decided what we actually got; the only honest question is whether we moved.
 _RUNG_PROGRESS = {
-    REVERSE_STRAIGHT: "position",
-    REVERSE_ARC: "position",
+    REVERSE_STRAIGHT: "either",
+    REVERSE_ARC: "either",
     PIVOT_OPEN: "yaw",
-    DRIVE_OPEN: "position",
+    DRIVE_OPEN: "either",
 }
 
 
@@ -84,7 +89,13 @@ class LadderConfig:
     forward_speed_mps: float = 0.10
     pivot_rate_rad_s: float = 0.40
     # How far a successful escape must travel / turn before we call it cleared.
+    # 0.12 m, NOT the 0.5 m the design note quoted for rung 4: 0.5 m is a distance to
+    # travel INTO open space once free, while this is the threshold at which a rung
+    # has demonstrably broken the stall. Conflating them would keep a working escape
+    # running four times too long -- and under a rung budget, never credit it at all.
     escape_distance_m: float = 0.12
+    # How hard rung 4 steers toward the open bearing (rad/s per rad of bearing).
+    drive_open_arc_gain: float = 0.5
     escape_yaw_rad: float = 0.35
 
 
@@ -301,7 +312,14 @@ class StallLadder:
             return (-cfg.reverse_speed_mps, turn)
         if rung == PIVOT_OPEN:
             return (0.0, math.copysign(cfg.pivot_rate_rad_s, open_bearing or 1.0))
-        return (cfg.forward_speed_mps, 0.0)
+        # F7. Drive toward the OPEN bearing, not straight ahead at the heading we
+        # stalled on. Rung 4 previously ignored open_bearing entirely, which in a
+        # freeze means powered contact with the very obstacle we could not see -- the
+        # rover pushing into the thing that stopped it. Arcing also gives the rung a
+        # chance under a latch, where straight forward is refused outright.
+        turn = max(-cfg.pivot_rate_rad_s,
+                   min(cfg.pivot_rate_rad_s, open_bearing * cfg.drive_open_arc_gain))
+        return (cfg.forward_speed_mps, turn)
 
     def _run_rung(self, x, y, yaw, now, output_moving, open_bearing):
         cfg = self._cfg
@@ -311,7 +329,8 @@ class StallLadder:
         rx, ry, ryaw = self._rung_ref
 
         # Did this rung WORK? Ask the measure that matches what the rung does.
-        if _RUNG_PROGRESS[rung] == "yaw":
+        measure = _RUNG_PROGRESS[rung]
+        if measure in ("yaw", "either"):
             # SUSTAINED, RATE-SANE yaw only. _run_rung applied no rate filter at all,
             # so a single slip burst mid-grind credited the pivot rung as "cleared"
             # and handed control back while the rover was still pinned. Accumulate
@@ -323,7 +342,10 @@ class StallLadder:
             self._rung_last_yaw, self._rung_last_t = yaw, now
             cleared = self._rung_yaw >= cfg.escape_yaw_rad
         else:
-            cleared = math.hypot(x - rx, y - ry) >= cfg.escape_distance_m
+            cleared = False
+        if measure in ("position", "either"):
+            cleared = cleared or (math.hypot(x - rx, y - ry)
+                                  >= cfg.escape_distance_m)
 
         if cleared:
             self._rung_index = None

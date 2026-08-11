@@ -361,6 +361,11 @@ class CoverageExplorerNode(Node):
         response.message = "mission started"
         return response
 
+    def _stop_requested(self):
+        """True once mission/stop has disarmed us. Long-running recovery loops poll
+        this so they abandon instead of finishing a manoeuvre for a stopped mission."""
+        return not self._armed
+
     def _on_mission_stop(self, _request, response):
         """Disarm and drop any goal in flight.
 
@@ -814,7 +819,12 @@ class CoverageExplorerNode(Node):
             # _mission_done is set from action-callback threads, and a tick that was
             # already past its top check must not issue a goal for a mission that
             # has since reported itself over.
-            if self._mission_done:
+            # F5. Disarm is checked HERE too, not only at the top of the tick: a tick
+            # already in flight when mission/stop arrives would otherwise send a fresh
+            # goal for a stopped mission -- and with the watchdog also disarmed,
+            # nothing would ever cancel it. The rover would drive on, unwatched, after
+            # the operator stopped it. Same reasoning as _mission_done directly below.
+            if self._mission_done or not self._armed:
                 return
             self._goal_inflight = True
             self._active_goal_cell = cell
@@ -833,6 +843,15 @@ class CoverageExplorerNode(Node):
         handle = future.result()
         with self._lock:
             self._goal_inflight = False
+            disarmed = not self._armed
+        if disarmed and handle.accepted:
+            # The goal was in flight across a mission/stop and Nav2 accepted it after
+            # we disarmed. Nothing else will cancel it -- the watchdog defers to the
+            # ladder and the tick has stopped running -- so cancel it here or the
+            # rover drives a goal for a mission that is over.
+            self.get_logger().info("goal accepted after mission/stop — cancelling")
+            handle.cancel_goal_async()
+            return
         if not handle.accepted:
             # Same rule as an abort: a refusal we cannot see the reason for must not be
             # retried immediately at the same spot.
@@ -912,7 +931,12 @@ class CoverageExplorerNode(Node):
                 (self._backup, self._backup_goal(), "back up"),
             )
         for client, goal, what in order:
-            if self._mission_done:
+            if self._mission_done or self._stop_requested():
+                # F5. mission/stop must abandon an unstick, not let it finish. Each
+                # behaviour can run for unstick_timeout_s, so without this the rover
+                # keeps manoeuvring for many seconds after the operator stopped the
+                # mission -- which is exactly when someone is walking toward it.
+                self.get_logger().info("unstick abandoned — mission stopped")
                 return False
             if not client.wait_for_server(timeout_sec=1.0):
                 continue
@@ -921,6 +945,12 @@ class CoverageExplorerNode(Node):
             if handle is None or not handle.accepted:
                 self.get_logger().info(f"unstick: {what} refused, trying the next")
                 continue
+            if self._stop_requested():
+                # Stopped while this behaviour was accepted and running: cancel it
+                # rather than waiting out its deadline.
+                handle.cancel_goal_async()
+                self.get_logger().info(f"unstick: {what} cancelled — mission stopped")
+                return False
             result = self._await(handle.get_result_async(), deadline)
             if result is None:
                 # Timed out here does NOT mean finished there. The behaviour is
