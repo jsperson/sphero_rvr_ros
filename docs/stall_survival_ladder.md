@@ -75,6 +75,35 @@ One detail makes this especially cheap to fix: `rear_hold` passes **angular thro
 untouched** (`collision_stop.py:951`). A reverse *arc* would have kept its rotation.
 It is the reflex asking for angular exactly zero that guarantees the zero output.
 
+### 1.1 The mission gave up with four escapes available — measured
+
+Run 190528's 44 `rear_hold` rows sit at a near-identical pose: front 0.58, rear 0.23,
+left 0.44, right 0.41, refusing a command of exactly `(-0.1, 0.0)` every time. Feeding
+that geometry to the real supervisor core:
+
+| candidate rung | command | supervisor verdict | output |
+|---|---|---|---|
+| straight reverse (the only one tried) | (-0.10, 0.00) | SLOW `rear_hold` | **(0, 0) refused** |
+| reverse arc, either way | (-0.10, ±0.40) | SLOW `rear_hold` | (0, ±0.40) **granted** |
+| pure pivot, either way | (0.00, ±0.40) | CLEAR `command` | (0, ±0.40) **granted** |
+| **forward** | (+0.10, 0.00) | SLOW `front_slow` | **(0.093, 0) granted** |
+
+The rover aborted three goals, and then the mission, **while it had 0.58 m of clear
+space in front of it and permission to drive into it at 0.093 m/s.** It gave up
+because the single escape it knows — straight reverse — was refused. This is the
+strongest possible argument for the ladder, and it is a measurement rather than an
+argument.
+
+It also settles rung 2: `rear_hold` fires *before* the trajectory gate and passes
+angular through untouched, so a reverse arc is genuinely granted where a straight
+reverse is refused. Rung 2 is a rung.
+
+*Caveat, recorded because it bit me earlier the same night:* this reconstruction uses
+a scan populated only in the four named sectors, so bearings between them read free.
+The `rear_hold` and `front_slow` results are sound — both are sector tests reached
+before the trajectory gate — but any rung whose verdict comes from the trajectory gate
+(the pivot rows above) is optimistic here and must be re-checked against a real scan.
+
 ### The third mechanism: a ladder rung that already exists and is unreachable
 
 `coverage_explorer_node.py` already implements backup-and-spin recovery —
@@ -263,12 +292,8 @@ defaulting to **false**. Launch brings the stack up; a service starts the missio
 Stated explicitly because two D27 fixes died tonight from confident reasoning that
 skipped the measurement.
 
-1. **Would rung 2 (reverse arc) actually have been granted** at run 190528's abort
-   poses? `rear_hold` passes angular through, so the arc's *rotation* survives — but its
-   linear component is still zeroed, so whether the robot actually moves depends on the
-   driver's handling of `(0, ω)`. This is testable offline against the supervisor core
-   with the recorded clearances, and it must be tested: if rung 2 produces no motion,
-   it is not a rung, and the ladder is rungs 1-3-4.
+1. ~~**Would rung 2 (reverse arc) actually have been granted?**~~ **MEASURED — and the
+   answer is bigger than the question.** See section 1.1 below.
 2. **Yaw-stall threshold.** How much yaw change per second counts as progress? Needs a
    number derived from the pivot rate the supervisor permits (`max_angular_rad_s` 0.4),
    not from this room.
