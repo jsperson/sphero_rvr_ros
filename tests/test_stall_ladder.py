@@ -342,3 +342,74 @@ def test_a_long_successful_drive_does_not_make_the_next_stop_a_freeze():
                 "the vote window is not being reset on progress")
             return
     pytest.fail("ladder never triggered after the brake")
+
+
+# --------------------------------------------------------------------------- F4
+
+# The real chair-pin trace, run 20260810_142641, t=47.6..51.2 at 10 Hz: odom_yaw_deg
+# recorded while the rover was pinned against a chair leg. It bursts 102 deg in 0.6 s
+# (peak 5.04 rad/s) as the tracks slip and the estimator catches up, then settles and
+# sits. Position moved 15 mm across the whole window -- the rover went nowhere.
+# Inlined rather than shipped as a CSV: one trace, one consumer, no parser.
+CHAIR_PIN_YAW_DEG = [
+    105.3, 105.3, 105.3, 105.3, 105.3, 112.1, 120.3, 137.2, 154.5, -176.6,
+    -154.1, -152.8, -152.6, -152.6, -152.6, -152.6, -152.6, -152.6, -152.6,
+    -152.6, -152.6, -152.6, -152.6, -152.6, -152.6, -152.6, -152.6, -152.6,
+    -152.6, -152.6, -152.6, -152.6, -152.6, -152.6, -152.6, -152.6,
+]
+CHAIR_PIN_HZ = 10.0
+
+
+def test_f4_real_chair_pin_burst_does_not_mask_the_stall():
+    """A slip burst must not buy the rover more time.
+
+    Zeroing `turned` for the burst CYCLES alone was not enough: on the next settled
+    cycle the burst is still inside (yaw - ref_yaw), so it reads as 1.78 rad of
+    progress, re-arms the stall clock, and the ladder never fires. The filter was
+    defeated by the exact signature that motivated it, which is why this replays the
+    recorded trace rather than a synthetic square wave.
+    """
+    def fire_time(yaws):
+        ladder = StallLadder()
+        for i, deg in enumerate(yaws):
+            result = ladder.step(x=0.0, y=0.0, yaw=math.radians(deg),
+                                 now=i / CHAIR_PIN_HZ,
+                                 commanding=True, output_moving=True)
+            if result.action == "rung":
+                return i / CHAIR_PIN_HZ
+        return None
+
+    tail = [CHAIR_PIN_YAW_DEG[-1]] * int(10 * CHAIR_PIN_HZ)
+    with_burst = fire_time(CHAIR_PIN_YAW_DEG + tail)
+    # The same pinned rover, without the estimator's slip burst: yaw simply holds.
+    without_burst = fire_time([CHAIR_PIN_YAW_DEG[0]] * (len(CHAIR_PIN_YAW_DEG)
+                                                       + len(tail)))
+    assert with_burst is not None, "the ladder never fired while the rover sat pinned"
+    assert without_burst is not None
+
+    # ASSERT THE TIMING, not merely that it eventually fires. Without the reference
+    # poison the ladder still fires -- just later, because the burst re-arms the stall
+    # clock once and buys the pin an extra stall_time_s. "Eventually" is exactly the
+    # assertion a grind can satisfy while the rover sits against a chair leg, so the
+    # burst must cost NOTHING.
+    assert with_burst <= without_burst + 1.0 / CHAIR_PIN_HZ, (
+        f"the recorded burst delayed the stall detection ({with_burst:.1f}s vs "
+        f"{without_burst:.1f}s without it) — it bought the pin extra time")
+
+
+def test_f4_a_slip_burst_does_not_credit_the_pivot_rung():
+    """_run_rung applied no rate filter at all, so one slip burst mid-grind marked
+    the pivot rung 'cleared' and handed control back with the rover still pinned."""
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    now, yaw, in_pivot = 0.0, 0.0, False
+    for i in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=yaw, now=now,
+                             commanding=True, output_moving=True)
+        if result.rung == PIVOT_OPEN and result.action == "rung":
+            in_pivot = True
+            # A single impossible burst, then pinned again — the grind signature.
+            yaw += math.radians(60.0) if i % 20 == 0 else 0.0
+        assert not (in_pivot and result.reason == f"{PIVOT_OPEN}_cleared"), (
+            "a slip burst credited the pivot rung as a successful escape")
+        now += 1.0 / HZ

@@ -139,6 +139,9 @@ class StallLadder:
         self._rung_started = None
         self._rung_ref = None
         self._any_rung_moved = False
+        self._rung_yaw = 0.0
+        self._rung_last_yaw = None
+        self._rung_last_t = None
 
     def _clear_monitor(self):
         self._ref = None
@@ -208,13 +211,31 @@ class StallLadder:
             return LadderResult("drive")
 
         moved = math.hypot(x - self._ref[0], y - self._ref[1])
-        turned = abs(_wrap(yaw - self._ref_yaw))
-        # Reject physically impossible yaw before it can count as progress.
+        # Reject physically impossible yaw before it can count as progress -- and
+        # POISON THE REFERENCE, which the first version failed to do.
+        #
+        # Measured on run 142641 (the chair pin): yaw goes 105.3 -> 112.1 -> 120.3 ->
+        # 137.2 -> 154.5 -> -176.6 -> -154.1 -> -152.6 and then sits there, while the
+        # rover moves 15 mm. That is 102 deg in 0.6 s at up to 5.04 rad/s -- tracks
+        # slipping against an obstacle while the estimator catches up, not motion.
+        # Zeroing `turned` only for the BURST cycles was not enough: on the very next
+        # settled cycle the burst is still inside (yaw - _ref_yaw), so it reads as
+        # 1.78 rad of progress, re-arms the stall clock, and the ladder never fires.
+        # The filter was defeated by the exact signature that motivated it.
+        #
+        # Re-marking the yaw reference at the post-burst value makes settles measure
+        # only settled motion. The stall CLOCK is deliberately not reset here: a burst
+        # is not progress, so it must not buy the rover more time.
+        impossible = False
         if self._last_yaw is not None and now > self._last_yaw_t:
             rate = abs(_wrap(yaw - self._last_yaw)) / (now - self._last_yaw_t)
-            if rate > cfg.max_yaw_rate_rad_s:
-                turned = 0.0
+            impossible = rate > cfg.max_yaw_rate_rad_s
         self._last_yaw, self._last_yaw_t = yaw, now
+        if impossible:
+            self._ref_yaw = yaw
+            turned = 0.0
+        else:
+            turned = abs(_wrap(yaw - self._ref_yaw))
 
         if moved >= cfg.progress_epsilon_m or turned >= cfg.yaw_progress_epsilon_rad:
             self._mark(x, y, yaw, now)
@@ -259,6 +280,9 @@ class StallLadder:
         self._rung_started = now
         self._rung_ref = (x, y, yaw)
         self._any_rung_moved = False
+        self._rung_yaw = 0.0
+        self._rung_last_yaw = None
+        self._rung_last_t = None
         cmd = self._rung_command(open_bearing)
         return LadderResult("rung", cmd[0], cmd[1], RUNG_ORDER[0],
                             f"{reason}->{RUNG_ORDER[0]}", freeze=freeze)
@@ -288,8 +312,16 @@ class StallLadder:
 
         # Did this rung WORK? Ask the measure that matches what the rung does.
         if _RUNG_PROGRESS[rung] == "yaw":
-            turned = abs(_wrap(yaw - ryaw))
-            cleared = turned >= cfg.escape_yaw_rad
+            # SUSTAINED, RATE-SANE yaw only. _run_rung applied no rate filter at all,
+            # so a single slip burst mid-grind credited the pivot rung as "cleared"
+            # and handed control back while the rover was still pinned. Accumulate
+            # only physically achievable per-cycle deltas.
+            if self._rung_last_yaw is not None and now > self._rung_last_t:
+                step = abs(_wrap(yaw - self._rung_last_yaw))
+                if step / (now - self._rung_last_t) <= cfg.max_yaw_rate_rad_s:
+                    self._rung_yaw += step
+            self._rung_last_yaw, self._rung_last_t = yaw, now
+            cleared = self._rung_yaw >= cfg.escape_yaw_rad
         else:
             cleared = math.hypot(x - rx, y - ry) >= cfg.escape_distance_m
 
@@ -310,6 +342,9 @@ class StallLadder:
                     exhausted=True, genuinely_wedged=wedged)
             self._rung_started = now
             self._rung_ref = (x, y, yaw)
+            self._rung_yaw = 0.0
+            self._rung_last_yaw = None
+            self._rung_last_t = None
             nxt = RUNG_ORDER[self._rung_index]
             cmd = self._rung_command(open_bearing)
             return LadderResult("rung", cmd[0], cmd[1], nxt, f"{rung}_failed->{nxt}")
