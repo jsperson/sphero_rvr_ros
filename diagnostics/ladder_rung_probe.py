@@ -36,7 +36,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from sphero_rvr_core.stall_ladder import (  # noqa: E402
-    RUNG_ORDER, LadderConfig, StallLadder,
+    DRIVE_OPEN, PIVOT_OPEN, RUNG_ORDER, LadderConfig, StallLadder,
 )
 from sphero_rvr_driver.collision_stop import (  # noqa: E402
     CollisionStopConfig, CollisionStopSupervisor, ScanInput, Transform2D,
@@ -275,12 +275,47 @@ def part_b():
     return results
 
 
+def part_c():
+    """N1 re-proof: do rungs 3 and 4 steer TOWARD open space, through the supervisor?
+
+    Part A/B fed the ladder a hardcoded open bearing, so neither could see that the
+    node was handing it a laser-frame value -- a near point-reflection of open space.
+    This places a gap at a known BASE-frame bearing and asks the two steering rungs
+    which way they turn, with the real supervisor ruling on each command.
+    """
+    print("\n" + "=" * 78)
+    print("PART C — do the steering rungs turn TOWARD open space?")
+    print("=" * 78)
+    cmds_for = lambda b: rung_commands(open_bearing=b)
+    ok = True
+    print("  %-14s %-14s %-24s %s" % ("gap bearing", "rung", "commanded wz", "verdict"))
+    for name, bearing in (("robot-left", +1.2), ("robot-right", -1.2)):
+        # Blocked all round except a gap at `bearing`: the pose a ladder escapes from.
+        pts = tuple((b, 0.30) for b in range(-180, 180, 5)
+                    if abs(((b - math.degrees(bearing)) + 180) % 360 - 180) > 25)
+        sc = scan(pts)
+        _SCAN_PTS[id(sc)] = pts
+        sup, t = make_supervisor(sc, "none")
+        for rung in (PIVOT_OPEN, DRIVE_OPEN):
+            vx, wz = cmds_for(bearing)[rung]
+            d = sup.apply_command(TwistCommand(vx, wz), now=t)
+            toward = (wz > 0) == (bearing > 0) and abs(wz) > 1e-9
+            ok = ok and toward
+            print("  %-14s %-14s %+8.3f rad/s          %s"
+                  % (name, rung, wz, "TOWARD" if toward else "** AWAY **"))
+            if abs(d.output.angular_z) > 1e-9:
+                print("      supervisor granted (%+.3f, %+.3f)"
+                      % (d.output.linear_x, d.output.angular_z))
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json")
     args = ap.parse_args()
     rows, findings = part_a()
     loop = part_b()
+    steering_ok = part_c()
     print("\n" + "=" * 78)
     print("FINDINGS")
     print("=" * 78)
@@ -289,6 +324,8 @@ def main():
             print(f"  ** {rung} refused in EVERY latch state under '{name}'")
     else:
         print("  no rung was refused across all latch states in any scenario")
+    if not steering_ok:
+        print("  ** a steering rung turned AWAY from open space (N1 regression)")
     stuck = [k for k, v in loop.items() if v != "ESCAPED"]
     print(f"\n  closed loop: {len(loop) - len(stuck)}/{len(loop)} scenario-latch "
           f"combinations escaped")
