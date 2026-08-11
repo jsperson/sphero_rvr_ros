@@ -31,7 +31,7 @@ from geometry_msgs.msg import Twist
 from nav2_msgs.action import FollowPath
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 import tf2_ros
 
 from sphero_rvr_core.stall_ladder import LadderConfig, StallLadder
@@ -145,11 +145,27 @@ class DecisiveControllerNode(Node):
         # raytrace-clears from scan, and the whole premise is that the lidar sees
         # straight through this obstacle, so the marks would be wiped within a scan
         # or two by the one sensor blind to them.
+        # PRIVATE names ("~/"). A bare relative name resolves against the NAMESPACE,
+        # not the node name, so "freeze_marks" published to /freeze_marks while
+        # lean_nav2.yaml's freeze_layer reads /decisive_controller/freeze_marks and
+        # the explorer subscribes /decisive_controller/freeze_event. Both freeze
+        # channels were DARK: marks never reached the planner, events never reached
+        # the mission layer, and nothing errored -- the publisher succeeded, it just
+        # spoke into an empty room. Identical to the mission-service trap fixed in
+        # b2f0980; I fixed that one and did not sweep for its siblings.
         self._freeze_cloud_pub = self.create_publisher(
-            PointCloud2, "freeze_marks", 10)
+            PointCloud2, "~/freeze_marks", 10)
         # A separate, human- and explorer-readable event: the mission layer uses it
         # to classify an abort as DISCOVERY rather than as a failure of the stack.
-        self._freeze_event_pub = self.create_publisher(String, "freeze_event", 10)
+        self._freeze_event_pub = self.create_publisher(
+            String, "~/freeze_event", 10)
+        # F1: the explorer's 6 s goal watchdog would cancel the goal at t+6 while the
+        # ladder is still working -- detection ~1-2 s plus 3 s per rung puts rung 3 at
+        # t+8 and exhaustion at t+14. Rungs 3 and 4 were therefore UNREACHABLE in the
+        # assembled system precisely when rungs 1 and 2 are refused, which is the only
+        # case the ladder exists for. The controller owns recovery now, so it says so
+        # out loud and the explorer holds off while a ladder is running.
+        self._ladder_active_pub = self.create_publisher(Bool, "~/ladder_active", 10)
         self.create_timer(0.5, self._publish_freeze_marks)
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -361,6 +377,8 @@ class DecisiveControllerNode(Node):
                     output_moving=self._output_moving(),
                     open_bearing_rad=self._open_bearing(),
                 )
+                self._ladder_active_pub.publish(
+                    Bool(data=(ladder_result.action == "rung")))
                 if ladder_result.freeze:
                     # The supervisor permitted motion and we did not move: something is
                     # physically there that no sensor on this robot can see. A DATA

@@ -37,7 +37,7 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose, Spin
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 import tf2_ros
 
@@ -187,6 +187,9 @@ class CoverageExplorerNode(Node):
         # Reported, never silent: a filter that quietly eats every candidate looks
         # exactly like a room with nothing left to explore.
         self._clearance_rejections = 0
+        # F1: last time the controller reported an active escape. See _ladder_running.
+        self._ladder_active_at = None
+        self._ladder_signal_max_age_s = 1.0
         self._blocked_logged = False
         self._blocked_until = 0.0  # monotonic; blocked state flickers, so hold it
         self._covered = set()      # world-grid coords the rover has driven within radius of
@@ -256,6 +259,9 @@ class CoverageExplorerNode(Node):
         # Freezes are reported by the controller, which is the only component that
         # can see both what it commanded and what the supervisor actually let out.
         self.create_subscription(
+            Bool, "/decisive_controller/ladder_active", self._on_ladder_active, 10,
+            callback_group=cbg)
+        self.create_subscription(
             String, "/decisive_controller/freeze_event", self._on_freeze, 10,
             callback_group=cbg,
         )
@@ -296,6 +302,10 @@ class CoverageExplorerNode(Node):
             + ("ARMED, mission running" if self._armed else
                "DISARMED, waiting for mission/start")
         )
+
+    def _on_ladder_active(self, msg):
+        if msg.data:
+            self._ladder_active_at = time.monotonic()
 
     def _on_map(self, msg):
         self._map = msg
@@ -734,12 +744,32 @@ class CoverageExplorerNode(Node):
             return False
         return len(result.result.path.poses) > 0
 
+    def _ladder_running(self):
+        """True while the controller is actively working an escape.
+
+        Freshness-bounded on purpose: if the controller dies mid-rung the signal goes
+        stale and the watchdog resumes, rather than the mission hanging forever on a
+        promise from a process that is gone.
+        """
+        if self._ladder_active_at is None:
+            return False
+        return (time.monotonic() - self._ladder_active_at) <= self._ladder_signal_max_age_s
+
     def _goal_stalled(self, wx, wy):
         """True if the active goal has made < epsilon progress for > timeout. The
         progress reference resets whenever the rover advances, so this fires only on
         a sustained no-progress stretch (planner churning), not a slow-but-moving
         drive."""
         if self._goal_start_pose is None or self._goal_start_time is None:
+            return False
+        if self._ladder_running():
+            # DEFER. The controller owns recovery, and a rung that is refused looks
+            # exactly like no progress from here -- so firing the watchdog would
+            # cancel the goal at 6 s and count a failure while the escape sequence
+            # was still running, making rungs 3 and 4 unreachable in the assembled
+            # system. Hold the progress clock too, so the ladder's own time does not
+            # count against the goal once it finishes.
+            self._goal_start_time = time.monotonic()
             return False
         moved = math.hypot(wx - self._goal_start_pose[0], wy - self._goal_start_pose[1])
         if moved >= self._goal_progress_epsilon_m:

@@ -544,3 +544,45 @@ def test_d29_mission_start_service_arms_it(stack):
     assert future.result().success
     assert wait_until(lambda: bool(stack.world.nav_goals), 15.0), (
         "mission/start reported success but the rover never moved")
+
+
+# --------------------------------------------------------------------------- F1
+
+def test_f1_watchdog_defers_to_an_active_ladder(stack):
+    """The goal watchdog must not cancel a goal while the controller is escaping.
+
+    Detection plus four 3 s rungs reaches ladder exhaustion around t+14, while the
+    watchdog fires at 6 s -- so rungs 3 and 4 were unreachable in the assembled
+    system precisely when rungs 1 and 2 are refused, which is the only case the
+    ladder exists for. A refused rung looks exactly like no progress from here, so
+    the explorer has to be told, not left to infer.
+    """
+    from std_msgs.msg import Bool
+
+    stack.world.nav_mode = "hold"          # accepted, never progresses
+    stack.world.publish_map(make_map())
+    assert wait_until(lambda: bool(stack.world.nav_goals), 15.0), "no goal was sent"
+    first = len(stack.world.nav_goals)
+
+    pub = stack.world.create_publisher(
+        Bool, "/decisive_controller/ladder_active", 10)
+    deadline = time.monotonic() + (BASE_PARAMS["goal_progress_timeout_s"] * 2.5)
+    while time.monotonic() < deadline:
+        pub.publish(Bool(data=True))       # a ladder is working
+        time.sleep(0.1)
+
+    assert not stack.world.nav_cancels, (
+        "the watchdog cancelled a goal while a ladder was running — rungs 3 and 4 "
+        "are unreachable in the assembled system")
+    assert len(stack.world.nav_goals) == first, "a replacement goal was sent"
+
+
+def test_f1_watchdog_still_fires_when_no_ladder_is_running(stack):
+    """The paired negative. A deferral that never expires is just a disabled
+    watchdog, and a goal going nowhere with nobody recovering must still be dropped."""
+    stack.world.nav_mode = "hold"
+    stack.world.publish_map(make_map())
+    assert wait_until(lambda: bool(stack.world.nav_goals), 15.0), "no goal was sent"
+    assert wait_until(lambda: bool(stack.world.nav_cancels),
+                      BASE_PARAMS["goal_progress_timeout_s"] * 3.0), (
+        "watchdog never fired with no ladder active — deferral disabled it outright")

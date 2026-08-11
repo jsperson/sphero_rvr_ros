@@ -55,9 +55,16 @@ class LadderConfig:
     # 2 s stall window. An eighth of that is unambiguously "not turning" while staying
     # clear of odometry noise.
     yaw_progress_epsilon_rad: float = 0.10
-    # Condition 3: the supervisor has zeroed our chosen action. At 20 Hz this is 1.0 s
-    # of being refused -- long enough that a momentary brake is not a stall, short
-    # enough to beat the explorer's 6 s goal-drop.
+    # Condition 3: the supervisor has zeroed our chosen action. At the deployed 10 Hz
+    # control rate this is 2.0 s of being refused -- long enough that a momentary
+    # brake is not a stall.
+    #
+    # It does NOT "beat the explorer's 6 s goal-drop", which is what this comment used
+    # to claim: detection plus four 3 s rungs reaches exhaustion around t+14, so the
+    # watchdog would cancel the goal before rungs 3 and 4 ever ran. That is fixed by
+    # the explorer DEFERRING to an active ladder (see ladder_active), not by racing
+    # a deadline -- a recovery whose rungs are chosen to fit inside someone else's
+    # timeout is a recovery designed around the wrong constraint.
     suppressed_cycles: int = 20
     # GRIND YAW: a pivot against an invisible pin produces bursts of +/-80 deg in 0.3 s
     # (~4.6 rad/s) as the tracks slip and the estimator catches up. That is not motion,
@@ -175,6 +182,11 @@ class StallLadder:
             return self._run_rung(x, y, yaw, now, output_moving, open_bearing_rad)
 
         # ---- condition 3: the supervisor is zeroing what we asked for -------------
+        # NOTE, a deliberate difference from the old guard rather than a second drift:
+        # this tallies on every COMMANDED cycle, where the old one tallied only while
+        # translating. Restoring translating-only would re-blind the classifier to a
+        # pinned PIVOT -- the supervisor permitting rotation that never happens is a
+        # freeze, and Class A is the whole reason this module exists.
         if commanding:
             self._window += 1
             if output_moving:
@@ -219,6 +231,17 @@ class StallLadder:
         self._ref = (x, y)
         self._ref_yaw = yaw
         self._ref_t = now
+        # ZERO THE FREEZE TALLY ON PROGRESS. The vote must cover the CURRENT
+        # no-progress window only. Without this the counters run for the life of the
+        # goal, so 60 s of happily granted driving banks ~1200 "permitted" votes, and
+        # a later, entirely legitimate front-stop (20 refused cycles) still carries
+        # the majority -- classifying a normal brake as a FREEZE and planting a
+        # permanent phantom mark in the costmap that blames the room for a wall the
+        # lidar can see perfectly well. The old ProgressGuard zeroed these in
+        # _mark_progress; I moved the classifier and dropped the reset, so "semantics
+        # unchanged" was not true.
+        self._window = 0
+        self._out_moving = 0
 
     def _begin(self, now, x, y, yaw, open_bearing, reason):
         cfg = self._cfg

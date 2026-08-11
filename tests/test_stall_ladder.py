@@ -316,3 +316,29 @@ def test_granted_but_ineffective_is_not_reported_as_wedged():
     assert result.exhausted
     assert not result.genuinely_wedged
     assert result.reason == "all_rungs_ineffective"
+
+
+def test_a_long_successful_drive_does_not_make_the_next_stop_a_freeze():
+    """F2. The freeze vote covers the CURRENT no-progress window, not the whole goal.
+
+    60 s of granted driving followed by a legitimate refusal must classify as an
+    ordinary brake. Without the tally reset the drive banks ~1200 'permitted' votes
+    and outvotes the 20 refused cycles, planting a permanent phantom mark and
+    blaming the room for a wall the lidar sees perfectly well.
+    """
+    ladder = StallLadder()
+    x = 0.0
+    for i in range(_cycles(60)):                 # driving, permitted, progressing
+        x += 0.2 / HZ
+        ladder.step(x=x, y=0.0, yaw=0.0, now=i / HZ,
+                    commanding=True, output_moving=True)
+    base = _cycles(60)
+    for j in range(_cycles(10)):                 # now the supervisor brakes us
+        result = ladder.step(x=x, y=0.0, yaw=0.0, now=(base + j) / HZ,
+                             commanding=True, output_moving=False)
+        if result.action == "rung":
+            assert not result.freeze, (
+                "a normal brake after a long drive was classified as a FREEZE — "
+                "the vote window is not being reset on progress")
+            return
+    pytest.fail("ladder never triggered after the brake")
