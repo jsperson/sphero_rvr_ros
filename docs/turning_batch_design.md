@@ -186,6 +186,29 @@ The rung logger's throttle hid every escalation line in run 114626. Named here
 because it changes how the *next* run is read: rungs 2–4 executing with no `_failed->`
 line in the log is a logging artifact, not evidence that they were never entered.
 
+**BC4 — how far BC3's doubt actually reaches: CHECKED, and it does not reach §0's
+exhaustion counts.** The reasonable worry on reading BC3 is that if the throttle ate
+the escalation lines, it may have eaten exhaustion lines too — which would undermine
+the "13 `budget_exhausted`, 0 `all_rungs_ineffective`, 0 `genuinely_wedged`" table
+that §0's conclusion leans on. It does not, for two independent reasons:
+
+1. **The exhaustion lines were never throttled.** They are three separate
+   `get_logger().warn(...)` calls in the `ladder_result.exhausted` branch, none of
+   which passes `throttle_duration_sec` at all. Only the rung line ever did, and
+   after §6.4(a) only its `_running` half does. Verified by reading the branch, not
+   by assuming symmetry with the line next to it.
+2. **rclpy throttles per call site**, so even a throttled warn would have had its own
+   independent window rather than sharing the rung line's.
+
+What BC3's doubt *does* reach is exactly what BC3 says and no more: **which rungs ran,
+and how they were entered.** The counts of *how ladders ended* stand, and so does the
+§0 mechanism — which in any case rests on the recorder rows (`cmd_vx` vs `out_vx` at
+10 Hz), a channel with no throttle anywhere in it.
+
+Recorded as a correction to a review rider rather than silently dropped: a caveat
+written into the record without checking it is as much a lying diagnostic as a
+missing one, and this project has a rule about asserting instead of measuring.
+
 ---
 
 ## 1. Item 1 — gentle turn-away
