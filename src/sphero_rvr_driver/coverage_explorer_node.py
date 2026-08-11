@@ -135,12 +135,19 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("save_map_on_end", True)
         self.declare_parameter("map_save_dir", os.path.expanduser("~/.ros/missions"))
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
-        # PREVENTION. 0.35 m, derived from the robot, not this room: the planner
-        # treats the start pose as in collision once the robot's own cell reaches
-        # inscribed cost, which happens at robot_radius + inflation_radius =
-        # 0.14 + 0.16 = 0.30 m. 0.35 leaves a small margin above the pose at which
-        # nothing plans and no recovery works.
-        self.declare_parameter("min_goal_clearance_m", 0.35)
+        # PREVENTION. Measured to INSCRIBED-cost cells, so the boundary this is
+        # measured FROM already guarantees the robot fits: inscribed = obstacle +
+        # robot_radius + inflation_radius (0.14 + 0.16 = 0.30 m). What remains to
+        # justify is manoeuvring margin on top of that, and the honest robot-derived
+        # figure is TWO COSTMAP CELLS -- 2 x 0.05 m resolution -- covering grid
+        # quantization and localization jitter. Two cells is defensible in any room.
+        #
+        # It was 0.35 m, and that number double-counted the inflation: I derived it
+        # from the same 0.14 + 0.16 = 0.30 m that the inscribed boundary had ALREADY
+        # applied, so the filter demanded a second robot-and-inflation clearance
+        # beyond the one the costmap encoded. Defensible in the abstract, wrong about
+        # the quantity being measured.
+        self.declare_parameter("min_goal_clearance_m", 0.10)
         # Defaults to FALSE: bringing the stack up must not commit the robot to
         # moving. Set true only for an unattended run that genuinely wants liftoff
         # at launch.
