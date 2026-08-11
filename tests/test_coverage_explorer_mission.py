@@ -243,6 +243,12 @@ BASE_PARAMS = {
     "max_unstick_attempts": 2,
     "blocked_start_check": False,
     "save_map_on_end": False,
+    # D29 made the explorer come up DISARMED. This harness drives the REAL node, so
+    # without arming it every mission test now waits forever for a mission that never
+    # starts -- which is exactly what happened when D29 landed, and exactly what this
+    # suite is for. Rehearsals arm at construction; `test_d29_*` below covers the
+    # disarmed default and the service path.
+    "autostart": True,
 }
 
 
@@ -500,3 +506,41 @@ def test_freeze_marks_reach_the_mission_report(stack):
     marks = stack.world.reports[-1].get("freeze_marks")
     assert marks, "the report carries no freeze marks"
     assert marks[0]["x"] == pytest.approx(1.5)
+
+
+# ------------------------------------------------------------------------- D29
+
+@pytest.mark.parametrize("stack", [{"autostart": False}], indirect=True)
+def test_d29_a_disarmed_explorer_sends_no_goal(stack):
+    """Launch must not be liftoff.
+
+    Run 185048's whole 53 s mission ran and died DURING bringup gate checks, because
+    the mission began the instant the node came up. A disarmed explorer must sit
+    there and send nothing.
+
+    The map is published deliberately: without one the explorer is idle for a
+    perfectly ordinary reason, and the assertion would pass while proving nothing.
+    """
+    stack.world.nav_mode = "succeed"
+    stack.world.publish_map(make_map())
+    time.sleep(2.0)
+    assert stack.world.nav_goals == [], (
+        "a disarmed explorer sent a goal with a map available — launch is liftoff again")
+
+
+@pytest.mark.parametrize("stack", [{"autostart": False}], indirect=True)
+def test_d29_mission_start_service_arms_it(stack):
+    """And the service at the DOCUMENTED path is what starts it."""
+    from std_srvs.srv import Trigger
+
+    stack.world.nav_mode = "succeed"
+    stack.world.publish_map(make_map())
+    client = stack.world.create_client(Trigger, "/coverage_explorer/mission/start")
+    assert client.wait_for_service(timeout_sec=5.0), (
+        "mission/start missing at the documented path — the run protocol's liftoff "
+        "command would hang on a service that does not exist")
+    future = client.call_async(Trigger.Request())
+    assert wait_until(lambda: future.done(), 5.0)
+    assert future.result().success
+    assert wait_until(lambda: bool(stack.world.nav_goals), 15.0), (
+        "mission/start reported success but the rover never moved")

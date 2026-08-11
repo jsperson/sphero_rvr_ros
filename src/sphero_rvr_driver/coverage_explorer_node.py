@@ -519,12 +519,17 @@ class CoverageExplorerNode(Node):
                 # cannot help there -- at that clearance the ladder's rungs are all
                 # refused too -- so the cheapest fix by far is not to go.
                 #
-                # A pose we cannot judge (unknown/off-map -> None) is NOT accepted:
-                # exploration goals sit near the frontier by construction, so
-                # "cannot tell" is the common case near unknown space and treating it
-                # as clear would make this filter inert exactly where it is needed.
+                # A pose we cannot JUDGE (unknown, off-map, or no costmap at all ->
+                # None) passes through to the planner rather than being rejected.
+                # I built it the other way first, reasoning that "cannot tell" should
+                # fail safe -- and the rehearsal suite showed that rejecting on None
+                # makes the explorer refuse EVERY candidate whenever the costmap is
+                # absent or the goal sits near unknown space, which is where coverage
+                # goals live by construction. An inert explorer is not a safe one.
+                # The planner still gates every candidate below, so this filter only
+                # ever REMOVES poses it can positively prove are too tight.
                 clearance = self._pose_clearance(awx, awy)
-                if clearance is None or clearance < self._min_goal_clearance_m:
+                if clearance is not None and clearance < self._min_goal_clearance_m:
                     self._clearance_rejections += 1
                     continue
                 if self._planner_can_reach(awx, awy, frame):
@@ -914,6 +919,26 @@ class CoverageExplorerNode(Node):
         """
         m = self._costmap
         if m is None:
+            # THE FILTER IS INOPERABLE, which is NOT the same as "this pose is bad".
+            # Rejecting on this branch made the explorer refuse every candidate
+            # forever whenever the costmap was absent or late -- caught by the
+            # rehearsal suite, which runs the real node with no costmap publisher at
+            # all, and which sat there reporting "targets left but none plannable"
+            # while the map was wide open. Exactly the silent-inertia failure this
+            # filter's own commit message warned about.
+            #
+            # Passing through is safe: the planner still gates every candidate
+            # afterwards, so this restores the pre-filter behaviour rather than
+            # inventing a weaker one. Loud, because a prevention layer that is not
+            # running must never be invisible.
+            self._costmap_missing_warned = getattr(
+                self, "_costmap_missing_warned", False)
+            if not self._costmap_missing_warned:
+                self.get_logger().warn(
+                    "goal-clearance prevention INACTIVE: no costmap on "
+                    f"{self.get_parameter('costmap_topic').value}. Candidates are "
+                    "planner-gated only.")
+                self._costmap_missing_warned = True
             return None
         return pose_clearance_m(
             m.data, m.info.width, m.info.height,
