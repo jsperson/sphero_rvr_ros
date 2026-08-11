@@ -38,6 +38,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose, Spin
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 import tf2_ros
 
 from sphero_rvr_core.mission_report import (
@@ -140,6 +141,10 @@ class CoverageExplorerNode(Node):
         # 0.14 + 0.16 = 0.30 m. 0.35 leaves a small margin above the pose at which
         # nothing plans and no recovery works.
         self.declare_parameter("min_goal_clearance_m", 0.35)
+        # Defaults to FALSE: bringing the stack up must not commit the robot to
+        # moving. Set true only for an unattended run that genuinely wants liftoff
+        # at launch.
+        self.declare_parameter("autostart", False)
         self.declare_parameter("blocked_hold_s", 5.0)
 
         self._config = CoverageConfig(
@@ -226,6 +231,12 @@ class CoverageExplorerNode(Node):
         self._goal_start_pose = None   # (wx, wy) when the active goal was sent
         self._goal_start_time = None   # time.monotonic() when the active goal was sent
         self._mission_done = False
+        # D29: ARMED STATE. Until 2026-08-10 the mission began the instant the node
+        # came up, so "bringup gates, THEN go" was not expressible: run 185048's
+        # entire 53 s mission ran and died DURING the gate checks, and the operator
+        # watched a stopped rover with no idea a mission had happened at all. Launch
+        # is no longer liftoff -- a service is.
+        self._armed = bool(self.get_parameter("autostart").value)
         self._consecutive_empty = 0
         self._ever_had_target = False
         self._complete_after_empty = int(self.get_parameter("complete_after_empty_cycles").value)
@@ -267,7 +278,18 @@ class CoverageExplorerNode(Node):
         self.create_timer(
             float(self.get_parameter("cycle_period_s").value), self._tick, callback_group=cbg
         )
-        self.get_logger().info("coverage_explorer ready (coverage + frontier mission)")
+        # D29: the mission-control surface. The ladder needed one anyway (a recovery
+        # regime you cannot stop is not a regime), and it is what makes the run
+        # protocol's "gates, THEN go" real rather than aspirational.
+        self.create_service(Trigger, "mission/start", self._on_mission_start,
+                            callback_group=cbg)
+        self.create_service(Trigger, "mission/stop", self._on_mission_stop,
+                            callback_group=cbg)
+        self.get_logger().info(
+            "coverage_explorer ready (coverage + frontier mission) — "
+            + ("ARMED, mission running" if self._armed else
+               "DISARMED, waiting for mission/start")
+        )
 
     def _on_map(self, msg):
         self._map = msg
@@ -304,6 +326,40 @@ class CoverageExplorerNode(Node):
         return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                           1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
+    def _on_mission_start(self, _request, response):
+        if self._mission_done:
+            # A finished mission stays finished: restarting one in place would
+            # silently reuse the coverage set and report a second mission's outcome
+            # against the first one's map.
+            response.success = False
+            response.message = ("mission already finished — restart the node for a "
+                                "fresh mission")
+            return response
+        if self._armed:
+            response.success = True
+            response.message = "already running"
+            return response
+        self._armed = True
+        self.get_logger().info("mission STARTED by service")
+        response.success = True
+        response.message = "mission started"
+        return response
+
+    def _on_mission_stop(self, _request, response):
+        """Disarm and drop any goal in flight.
+
+        Not an emergency stop -- the collision supervisor owns stopping, and this
+        does not touch it. This ends the MISSION; the rover coasts to a halt through
+        the normal command path.
+        """
+        was = self._armed
+        self._armed = False
+        self._cancel_active()
+        self.get_logger().info("mission STOPPED by service")
+        response.success = True
+        response.message = "mission stopped" if was else "was not running"
+        return response
+
     def _tick(self):
         if not self._tick_busy.acquire(blocking=False):
             return
@@ -313,7 +369,7 @@ class CoverageExplorerNode(Node):
             self._tick_busy.release()
 
     def _tick_impl(self):
-        if self._mission_done:
+        if self._mission_done or not self._armed:
             return
         m = self._map
         if m is None:

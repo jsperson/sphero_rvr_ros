@@ -59,7 +59,9 @@ cd ~/ros2_ws/src/sphero_rvr_ros/diagnostics
 python3 run_recorder.py 1800 ~/run_$(date +%Y%m%d_%H%M%S).csv
 
 # Pane 3 — console log captured to disk, then the stack. ALL FIVE args are
-# required; the guide's bare command yields an inert stack that never moves:
+# required; the guide's bare command yields an inert stack that never moves.
+# The stack now comes up DISARMED (mission_autostart defaults false, D29), so
+# this command no longer commits the robot to moving:
 ros2 launch sphero_rvr_driver explore.launch.py \
     start_motion_stack:=true \
     start_explore:=true \
@@ -67,7 +69,26 @@ ros2 launch sphero_rvr_driver explore.launch.py \
     use_decisive_controller:=true \
     start_low_obstacle:=true \
     2>&1 | tee ~/launch_$(date +%Y%m%d_%H%M%S).log
+
+# Pane 3, AFTER the gates below pass — THIS is liftoff, not the launch above:
+ros2 service call /coverage_explorer/mission/start std_srvs/srv/Trigger
+# and to end the mission early (this is NOT an e-stop; the supervisor owns that):
+ros2 service call /coverage_explorer/mission/stop std_srvs/srv/Trigger
 ```
+
+**Gates, THEN go — and as of D29 that is real rather than aspirational.** Until
+2026-08-10 the mission began the instant the explorer node started, so run 185048's
+entire 53 s mission ran and died *during* the bringup gate checks: the first gate
+was read after the mission report had already latched, and the operator spent over a
+minute watching a stopped rover with no idea a mission had happened at all. Verify
+every gate below against the live stack, and only then call `mission/start`.
+
+**Beats go out on a TIMER, not on events.** One line every 60 s from liftoff to
+teardown — position, cardinal heading, supervisor state and `reason`, whether output
+is moving — *including* "driving, all nominal". Twice on 2026-08-10 an event-driven
+policy went silent exactly when the operator most needed a line, because a silent
+stall produces no event. That is the failure mode of reporting only what seems
+noteworthy.
 
 Open decision (flag at run time): `enable_imu_fusion:=true` is hardware-validated
 and visibly straightened driving-with-turns; include it unless the run is meant to

@@ -53,6 +53,7 @@ def generate_launch_description():
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     explore_lite_params_file = LaunchConfiguration("explore_lite_params_file")
     coverage_params_file = LaunchConfiguration("coverage_params_file")
+    mission_autostart = LaunchConfiguration("mission_autostart")
 
     # start_explore picks ONE explorer: coverage+frontier (use_coverage_explorer)
     # or explore_lite's frontier-only (default). Both drive via NavigateToPose.
@@ -241,7 +242,7 @@ def generate_launch_description():
         executable="coverage_explorer",
         name="coverage_explorer",
         output="screen",
-        parameters=[coverage_params_file],
+        parameters=[coverage_params_file, {"autostart": mission_autostart}],
         remappings=[("navigate_to_pose", "/navigate_to_pose")],
         condition=IfCondition(coverage_active),
     )
@@ -254,6 +255,21 @@ def generate_launch_description():
                 description=(
                     "MOTOR-CAPABLE: start the collision supervisor and RVR driver. "
                     "Do not enable until tank-SI mapping validation has passed."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "mission_autostart",
+                default_value="false",
+                description=(
+                    "Begin the coverage mission the moment the explorer comes up. "
+                    "Default FALSE, and that default is the D29 fix: on 2026-08-10 "
+                    "launching WAS liftoff, so a 53 s mission ran and died during "
+                    "the bringup gate checks while the operator watched a stopped "
+                    "rover with no idea a mission had happened. Leave false and "
+                    "call `ros2 service call /coverage_explorer/mission/start "
+                    "std_srvs/srv/Trigger` when the gates pass; "
+                    "`.../mission/stop` ends it. Set true only for an unattended "
+                    "run that genuinely wants motion at launch."
                 ),
             ),
             DeclareLaunchArgument(
