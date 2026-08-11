@@ -187,6 +187,10 @@ class CoverageExplorerNode(Node):
         # Reported, never silent: a filter that quietly eats every candidate looks
         # exactly like a room with nothing left to explore.
         self._clearance_rejections = 0
+        # Per-CYCLE, so the none-plannable warning can say where this cycle's
+        # candidates died. The cumulative counter above cannot: it answers "how many
+        # ever" when the question is "which gate killed the set we just had".
+        self._clearance_rejected_this_cycle = 0
         # F1: last time the controller reported an active escape. See _ladder_running.
         self._ladder_active_at = None
         self._ladder_signal_max_age_s = 1.0
@@ -504,6 +508,7 @@ class CoverageExplorerNode(Node):
         goal_cell = None
         goal_point = None
         exhausted = False
+        self._clearance_rejected_this_cycle = 0
         budget = time.monotonic() + self._select_budget_s
         for cell in candidates:
             if time.monotonic() >= budget:
@@ -546,6 +551,7 @@ class CoverageExplorerNode(Node):
                 clearance = self._pose_clearance(awx, awy)
                 if clearance is not None and clearance < self._min_goal_clearance_m:
                     self._clearance_rejections += 1
+                    self._clearance_rejected_this_cycle += 1
                     continue
                 if self._planner_can_reach(awx, awy, frame):
                     goal_cell, goal_point = cell, (awx, awy)
@@ -571,7 +577,9 @@ class CoverageExplorerNode(Node):
             # done, which is the whole failure this outcome exists to avoid.
             self._unstick_attempts += 1
             self.get_logger().warn(
-                f"{len(candidates)} target(s) left but none plannable from here — "
+                f"{len(candidates)} target(s) left but none plannable from here "
+                f"({self._clearance_rejected_this_cycle} rejected on CLEARANCE, "
+                f"{self._unplannable_last_cycle} on the PLANNER) — "
                 f"unsticking (attempt {self._unstick_attempts}/{self._max_unstick})"
             )
             self._unstick(toward=self._cell_world(candidates[0], ox, oy, res))
@@ -594,9 +602,15 @@ class CoverageExplorerNode(Node):
                     self.get_logger().warn(
                         f"exploration ENDED with {len(candidates)} target(s) still "
                         f"wanted but NONE plannable — {len(self._covered)} cells "
-                        "covered, so COVERAGE IS INCOMPLETE. The planner refuses "
-                        "every remaining candidate: check whether the rover is boxed "
-                        "in, or whether the costmap is blocking ground /map calls free."
+                        "covered, so COVERAGE IS INCOMPLETE. Where the candidates "
+                        f"died THIS cycle: {self._clearance_rejected_this_cycle} "
+                        f"rejected on CLEARANCE (min_goal_clearance_m="
+                        f"{self._min_goal_clearance_m:.2f}), "
+                        f"{self._unplannable_last_cycle} refused by the PLANNER. "
+                        "Both gates thin the same set and the clearance one runs "
+                        "FIRST, so a candidate it drops never reaches the planner to "
+                        "be counted — without this split the log cannot say which "
+                        "gate ended the mission."
                     )
                     self._finish(OUTCOME_NO_PLANNABLE_TARGETS, res, len(candidates))
                 else:
