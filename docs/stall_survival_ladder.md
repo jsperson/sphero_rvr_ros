@@ -302,10 +302,22 @@ skipped the measurement.
 
 ---
 
-## Appendix — D27 status, for completeness
+## Appendix — D27, SUPERSEDED BY HARDWARE (2026-08-10)
 
-D27 (sunlight phantom low obstacles) is **not** part of this ladder and does not block
-it. Three candidate fixes are now dead on measurement:
+**Scott has ordered a rangefinder and is retiring the optical low-obstacle approach.
+No further work on the monocular detector — this appendix is now a record of what was
+measured, not a plan.** It is kept because three candidates died here and nobody should
+spend an evening rediscovering them. The replay fixture stays in the tree as regression
+evidence and gets no further investment.
+
+Operationally, until the rangefinder integrates the camera layer remains the only
+sub-lidar protection, so missions under hard sun will still phantom-brake. Schedule
+runs around the sun rather than fixing the optics.
+
+The ladder is sensor-independent and survives this hardware change untouched.
+
+D27 (sunlight phantom low obstacles) was never part of this ladder and never blocked
+it. Three candidate fixes died on measurement:
 
 - **Texture/CV normalisation** — needs a CV ratio of 1.0; measured 0.37.
 - **Reference-locality** — measured *worse*: brake-band phantoms 79 → 103, because the
