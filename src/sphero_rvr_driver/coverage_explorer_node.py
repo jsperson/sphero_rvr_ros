@@ -492,7 +492,36 @@ class CoverageExplorerNode(Node):
             # and arriving is what lets the next selection start from there.
             # The ONLY reason to drop a live goal is that driving it is going nowhere.
             # The watchdog planned-but-no-progress case still applies.
-            if self._goal_stalled(wx, wy):
+            #
+            # ARRIVAL AT COVERAGE RADIUS (docs/turning_batch_design.md §1.5). Two
+            # contracts disagree by 0.65 m: the controller drives to within
+            # goal_tolerance_m (0.10) of the PATH END, while the mission is satisfied
+            # within coverage_radius_m (0.75) of the TARGET CELL. Run 114626 spent
+            # that gap grinding -- four of its twelve aborts moved less than 0.14 m in
+            # their final 8 s, parked in front of something with the goal just beyond
+            # it. Those goals had already achieved everything the mission wanted from
+            # them, and were then counted as FAILURES toward mission death.
+            #
+            # The trigger is deliberately narrow: covered AND blocked. Cancelling
+            # merely because the target became covered is the bug described above --
+            # 13 goals in 15 s. Blocked means the drive was about to die anyway, so
+            # the only question left is whether it dies as a success that changes
+            # nothing about where we stand, or as a lie about a goal whose purpose
+            # was achieved.
+            if self._goal_covered_and_blocked(wx, wy, active_cell, ox, oy, res):
+                self.get_logger().info(
+                    f"coverage goal {active_cell} SATISFIED at coverage radius — the "
+                    "rover is within coverage_radius_m of the target and the drive is "
+                    "blocked. Counting it as covered rather than failed, and picking "
+                    "the next target."
+                )
+                self._cancel_active()
+                with self._lock:
+                    self._goals_succeeded += 1
+                    self._consecutive_failures = 0
+                    self._consecutive_freezes = 0
+                    self._unstick_attempts = 0
+            elif self._goal_stalled(wx, wy):
                 self.get_logger().warn(
                     f"coverage goal {active_cell} planned but made no progress in "
                     f"{self._goal_progress_timeout_s:.0f}s — dropping it"
@@ -800,6 +829,43 @@ class CoverageExplorerNode(Node):
         if self._ladder_active_at is None:
             return False
         return (time.monotonic() - self._ladder_active_at) <= self._ladder_signal_max_age_s
+
+    def _goal_covered_and_blocked(self, wx, wy, cell, ox, oy, res):
+        """True when this goal has already done its job and cannot finish anyway.
+
+        Both halves are required, and each rules out a known failure:
+
+        * COVERED -- the rover is within `coverage_radius_m` of the TARGET CELL, so
+          the cell is stamped covered by this very tick and will not be re-selected.
+          Without this clause we would be inventing successes for goals that achieved
+          nothing.
+        * BLOCKED -- the controller is working an escape (`ladder_active`) or the
+          progress watchdog has run out. Without this clause the check fires the
+          instant a distant target is covered, which is the 13-goals-in-15-s churn
+          the commit-to-a-goal rule exists to prevent.
+
+        Note what this does NOT do: it does not move the robot, does not suppress the
+        cell, and does not touch the give-up counter's meaning. It changes only which
+        of two truthful endings a blocked-but-covered goal gets.
+        """
+        if cell is None or self._map is None:
+            return False
+        if not (self._ladder_running() or self._goal_progress_expired()):
+            return False
+        cwx, cwy = cell_center_world(cell[0], cell[1], ox, oy, res)
+        return math.hypot(cwx - wx, cwy - wy) <= self._config.coverage_radius_m
+
+    def _goal_progress_expired(self):
+        """Has the progress watchdog's clock run out? Read-only.
+
+        `_goal_stalled` answers the same question but MUTATES on the way -- it resets
+        the clock when the rover has moved, and defers while a rung runs. Calling it
+        for a second purpose would silently consume that state, so the covered check
+        gets its own read-only view of the same timer.
+        """
+        if self._goal_start_time is None:
+            return False
+        return (time.monotonic() - self._goal_start_time) >= self._goal_progress_timeout_s
 
     def _goal_stalled(self, wx, wy):
         """True if the active goal has made < epsilon progress for > timeout. The

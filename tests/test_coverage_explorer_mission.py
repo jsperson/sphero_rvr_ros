@@ -53,6 +53,7 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy  # n
 from std_msgs.msg import String  # noqa: E402
 from tf2_ros import TransformBroadcaster  # noqa: E402
 
+from sphero_rvr_core.coverage_exploration import cell_center_world  # noqa: E402
 from sphero_rvr_driver.coverage_explorer_node import CoverageExplorerNode  # noqa: E402
 
 
@@ -688,3 +689,113 @@ def test_goal_generation_is_published_and_changes_per_goal(stack):
         f"goal_generation did not advance per goal (saw {sorted(set(seen))}) — the "
         "controller cannot tell a new journey from a replan")
     assert sorted(set(seen)) == sorted(set(seen)), "generations must be monotonic"
+
+
+# --------------------------------------------------- arrival at coverage radius
+
+def _active_cell_world(stack):
+    """World centre of the cell the explorer is currently driving at (NOT the
+    stand-off point it sent, which can be 0.68 m short of it)."""
+    cell = stack.explorer._active_goal_cell
+    if cell is None or stack.explorer._map is None:
+        return None
+    info = stack.explorer._map.info
+    return cell_center_world(cell[0], cell[1], info.origin.position.x,
+                             info.origin.position.y, info.resolution)
+
+
+def test_a_blocked_goal_inside_coverage_radius_is_satisfied_not_failed(stack):
+    """A goal whose purpose is already achieved must not be counted as a failure.
+
+    Two contracts disagree by 0.65 m: the controller drives to within 0.10 m of the
+    path end, the mission is satisfied within coverage_radius_m (0.75) of the target
+    cell. Run 114626 spent that gap grinding -- four of its twelve aborts moved less
+    than 0.14 m in their final 8 s, parked in front of something with the goal just
+    beyond. Every one of those fed the give-up counter that ended the mission.
+
+    Fails against HEAD before this change: the goal runs to the watchdog, aborts,
+    and increments _consecutive_failures.
+    """
+    from std_msgs.msg import Bool
+
+    stack.world.nav_mode = "hold"                 # accepted, never progresses
+    stack.world.publish_map(make_map())
+    assert wait_until(lambda: bool(stack.world.nav_goals), 15.0), "no goal was sent"
+    assert wait_until(lambda: _active_cell_world(stack) is not None, 5.0)
+    cx, cy = _active_cell_world(stack)
+    goals_before = len(stack.world.nav_goals)
+
+    # Drove most of the way and then got stopped by something: inside coverage
+    # radius of the target, with the controller working an escape.
+    stack.world.pose = (cx - 0.50, cy)
+    pub = stack.world.create_publisher(
+        Bool, "/decisive_controller/ladder_active", 10)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and stack.explorer._goals_succeeded == 0:
+        pub.publish(Bool(data=True))
+        time.sleep(0.05)
+
+    assert stack.explorer._goals_succeeded >= 1, (
+        "a blocked goal inside coverage radius was not credited as covered")
+    assert stack.explorer._consecutive_failures == 0, (
+        "a goal that achieved what the mission wanted was counted toward giving up")
+    assert len(stack.world.nav_goals) > goals_before or wait_until(
+        lambda: len(stack.world.nav_goals) > goals_before, 5.0), (
+        "the mission did not move on to another target")
+
+
+def test_a_blocked_goal_outside_coverage_radius_still_counts_as_a_failure(stack):
+    """The paired negative, and the one that keeps the exemption honest. Far from
+    the target with nothing recovering, a goal going nowhere is still a failure --
+    otherwise this change would quietly disable the give-up counter that exists to
+    catch a broken stack."""
+    stack.world.nav_mode = "hold"
+    stack.world.publish_map(make_map())
+    assert wait_until(lambda: bool(stack.world.nav_goals), 15.0), "no goal was sent"
+    assert wait_until(lambda: _active_cell_world(stack) is not None, 5.0)
+    cx, cy = _active_cell_world(stack)
+    assert math.hypot(cx - stack.world.pose[0], cy - stack.world.pose[1]) > 0.75, (
+        "scenario precondition: the target must be outside coverage radius")
+
+    assert wait_until(lambda: stack.explorer._consecutive_failures >= 1,
+                      BASE_PARAMS["goal_progress_timeout_s"] * 6.0), (
+        "a goal that went nowhere, far from its target, was not counted as failed")
+    assert stack.explorer._goals_succeeded == 0
+
+
+def test_a_covered_goal_that_is_still_driving_is_not_cancelled(stack):
+    """THE CHURN FALSIFIER, pre-registered in the design note.
+
+    Cancelling as soon as the target counts as covered is a bug this explorer
+    already had and already fixed: coverage radius 0.75 m means a target 0.8 m away
+    is covered after ~10 cm of driving, and it reissued EVERY tick -- 13 goals in
+    15 s, each halting the previous follow_path until bt_navigator could not keep
+    up. The satisfied-at-coverage rule must fire only when the drive is ALSO
+    blocked, so a rover that is simply driving through its own coverage radius
+    keeps its goal.
+
+    Fails against a version whose trigger is 'covered' alone.
+    """
+    stack.world.nav_mode = "hold"
+    stack.world.publish_map(make_map())
+    assert wait_until(lambda: bool(stack.world.nav_goals), 15.0), "no goal was sent"
+    assert wait_until(lambda: _active_cell_world(stack) is not None, 5.0)
+    cx, cy = _active_cell_world(stack)
+    goals_before = len(stack.world.nav_goals)
+    cancels_before = len(stack.world.nav_cancels)
+
+    # Drive: 0.15 m steps, faster than goal_progress_epsilon_m, straight through the
+    # coverage boundary and on toward the target. Never blocked, never stalled.
+    x0, y0 = stack.world.pose
+    steps = 8
+    for i in range(1, steps + 1):
+        stack.world.pose = (x0 + (cx - x0) * i / (steps + 1.0),
+                            y0 + (cy - y0) * i / (steps + 1.0))
+        time.sleep(BASE_PARAMS["goal_progress_timeout_s"] / 3.0)
+
+    assert math.hypot(cx - stack.world.pose[0], cy - stack.world.pose[1]) <= 0.75, (
+        "scenario precondition: the rover must end up inside coverage radius")
+    assert len(stack.world.nav_cancels) == cancels_before, (
+        "a goal was cancelled while the rover was driving normally toward it — "
+        "this is the 13-goals-in-15-s churn")
+    assert len(stack.world.nav_goals) == goals_before, "a replacement goal was sent"
