@@ -93,6 +93,13 @@ class LadderResult:
     # True exactly once, on the cycle the ladder gives up: the caller aborts the goal
     # and ticks its failure counter THEN, and only then.
     exhausted: bool = False
+    # True on the cycle the ladder BEGINS, when the supervisor was permitting motion
+    # for most of the stall window and the robot still did not move. That is positive
+    # information about the room -- something is physically there that no sensor on
+    # this robot can detect -- and the caller should mark it, not count it as failure.
+    # The ladder still runs: discovering an invisible obstacle does not excuse us from
+    # escaping it.
+    freeze: bool = False
 
 
 def _wrap(angle: float) -> float:
@@ -125,6 +132,11 @@ class StallLadder:
         self._suppressed = 0
         self._last_yaw = None
         self._last_yaw_t = None
+        # Tally of what the SUPERVISOR permitted during this no-progress window.
+        # Majority vote rather than the final instant: an approach flapping between
+        # SLOW and STOPPED would otherwise be classified on a coin toss.
+        self._window = 0
+        self._out_moving = 0
 
     @property
     def active(self) -> bool:
@@ -155,6 +167,10 @@ class StallLadder:
             return self._run_rung(x, y, yaw, now, output_moving, open_bearing_rad)
 
         # ---- condition 3: the supervisor is zeroing what we asked for -------------
+        if commanding:
+            self._window += 1
+            if output_moving:
+                self._out_moving += 1
         if commanding and not output_moving:
             self._suppressed += 1
         else:
@@ -198,18 +214,22 @@ class StallLadder:
 
     def _begin(self, now, x, y, yaw, open_bearing, reason):
         cfg = self._cfg
+        # A FREEZE is "we were allowed to drive for most of this window and still did
+        # not move". If the supervisor was refusing us, the stall is explained and
+        # there is nothing invisible to report.
+        freeze = self._window > 0 and self._out_moving * 2 >= self._window
         self._invocations += 1
         if self._invocations > cfg.max_invocations_per_goal:
             # Escaped before and re-stalled on the same goal. The goal is the problem.
             self._rung_index = None
             return LadderResult("exhausted", reason="ladder_budget_exhausted",
-                                exhausted=True)
+                                exhausted=True, freeze=freeze)
         self._rung_index = 0
         self._rung_started = now
         self._rung_ref = (x, y, yaw)
         cmd = self._rung_command(open_bearing)
         return LadderResult("rung", cmd[0], cmd[1], RUNG_ORDER[0],
-                            f"{reason}->{RUNG_ORDER[0]}")
+                            f"{reason}->{RUNG_ORDER[0]}", freeze=freeze)
 
     def _rung_command(self, open_bearing):
         cfg = self._cfg

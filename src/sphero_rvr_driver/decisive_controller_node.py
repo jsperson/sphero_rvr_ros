@@ -29,15 +29,15 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav2_msgs.action import FollowPath
-from sensor_msgs.msg import PointCloud2, PointField
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import String
 import tf2_ros
 
+from sphero_rvr_core.stall_ladder import LadderConfig, StallLadder
 from sphero_rvr_core.decisive_control import (
-    BackOffConfig,
     DecisiveControlConfig,
     FreezeMarkSet,
-    ProgressGuard,
     compute_drive_command,
     heading_error_to_point,
     select_target_point,
@@ -63,13 +63,19 @@ class DecisiveControllerNode(Node):
         # a moved chair does not haunt the map forever.
         self.declare_parameter("freeze_mark_ttl_s", 300.0)
         self.declare_parameter("freeze_mark_merge_radius_m", 0.15)
-        # Back-off reflex: reverse straight out of a boxed-in stall (no grind).
+        # THE STALL SURVIVAL LADDER (docs/stall_survival_ladder.md). Replaces the
+        # back-off reflex, whose single escape -- straight reverse -- the supervisor
+        # refuses outright at exactly the poses where it is needed.
         self.declare_parameter("stall_time_s", 2.0)
         self.declare_parameter("progress_epsilon_m", 0.03)
-        self.declare_parameter("back_off_speed_mps", 0.10)
-        self.declare_parameter("back_off_distance_m", 0.25)
-        self.declare_parameter("back_off_timeout_s", 3.0)
-        self.declare_parameter("max_back_offs", 3)
+        self.declare_parameter("yaw_progress_epsilon_rad", 0.10)
+        self.declare_parameter("max_yaw_rate_rad_s", 0.6)
+        self.declare_parameter("suppressed_cycles", 20)
+        self.declare_parameter("rung_budget_s", 3.0)
+        self.declare_parameter("max_ladder_invocations_per_goal", 2)
+        self.declare_parameter("ladder_reverse_speed_mps", 0.10)
+        self.declare_parameter("ladder_forward_speed_mps", 0.10)
+        self.declare_parameter("ladder_pivot_rate_rad_s", 0.40)
 
         self._frequency = float(self.get_parameter("control_frequency").value)
         self._lookahead = float(self.get_parameter("lookahead_m").value)
@@ -83,26 +89,33 @@ class DecisiveControllerNode(Node):
             pivot_rate_rad_s=float(self.get_parameter("pivot_rate_rad_s").value),
             goal_tolerance_m=float(self.get_parameter("goal_tolerance_m").value),
         )
-        self._back_off_config = BackOffConfig(
-            stall_time_s=float(self.get_parameter("stall_time_s").value),
-            progress_epsilon_m=float(self.get_parameter("progress_epsilon_m").value),
-            back_off_speed_mps=float(self.get_parameter("back_off_speed_mps").value),
-            back_off_distance_m=float(self.get_parameter("back_off_distance_m").value),
-            back_off_timeout_s=float(self.get_parameter("back_off_timeout_s").value),
-            max_back_offs=int(self.get_parameter("max_back_offs").value),
+        _p = self.get_parameter
+        self._ladder_config = LadderConfig(
+            stall_time_s=float(_p("stall_time_s").value),
+            progress_epsilon_m=float(_p("progress_epsilon_m").value),
+            yaw_progress_epsilon_rad=float(_p("yaw_progress_epsilon_rad").value),
+            max_yaw_rate_rad_s=float(_p("max_yaw_rate_rad_s").value),
+            suppressed_cycles=int(_p("suppressed_cycles").value),
+            rung_budget_s=float(_p("rung_budget_s").value),
+            max_invocations_per_goal=int(
+                _p("max_ladder_invocations_per_goal").value),
+            reverse_speed_mps=float(_p("ladder_reverse_speed_mps").value),
+            forward_speed_mps=float(_p("ladder_forward_speed_mps").value),
+            pivot_rate_rad_s=float(_p("ladder_pivot_rate_rad_s").value),
         )
 
-        # Goal preemption + a progress guard that PERSISTS across replans.
+        # Goal preemption + a stall ladder that PERSISTS across replans.
         # bt_navigator resends a fresh follow_path goal ~1 Hz as it replans; only
         # the newest may drive (older execute loops must bail, or they fight over
         # cmd_vel and stutter the motion). And the back-off reflex must track the
-        # real robot over time, so the guard lives on the node and is only reset
-        # when the goal ENDPOINT actually moves (a new destination), not on every
-        # same-destination replan.
+        # real robot over time, so the ladder lives on the node and its per-goal
+        # invocation budget is only reset when the goal ENDPOINT actually moves (a new
+        # destination), not on every same-destination replan -- otherwise bt_navigator
+        # would clear the anti-livelock counter roughly once a second, forever.
         self._active_goal_handle = None
         self._goal_lock = threading.Lock()
-        self._guard = ProgressGuard(self._back_off_config)
-        self._guard_goal = None  # (x, y) endpoint the guard is currently tracking
+        self._ladder = StallLadder(self._ladder_config)
+        self._ladder_goal = None  # (x, y) endpoint the ladder is currently tracking
         self._goal_change_eps_m = 0.15
 
         self._cmd_pub = self.create_publisher(Twist, "cmd_vel", 10)
@@ -111,11 +124,18 @@ class DecisiveControllerNode(Node):
         # "it braked me for something it can see" (output zero -- normal) from "it let
         # me drive and I still did not move" (output nonzero -- something is there
         # that NO sensor on this robot can detect). Without this subscription those
-        # two are indistinguishable from inside the guard, which is why every stall
+        # two are indistinguishable from inside the ladder, which is why every stall
         # used to look alike.
         self._out_lock = threading.Lock()
         self._out_moving = False
         self.create_subscription(Twist, "cmd_vel_motor", self._on_motor_out, 10)
+        # Which way is open, for the ladder's pivot and drive rungs. The ladder core
+        # stays pure -- it does not parse scans -- so the bearing is computed here and
+        # handed in.
+        self._scan_lock = threading.Lock()
+        self._open_bearing_rad = 0.0
+        self.create_subscription(
+            LaserScan, "scan", self._on_scan, qos_profile_sensor_data)
         self._freeze_marks = FreezeMarkSet(
             ttl_s=float(self.get_parameter("freeze_mark_ttl_s").value),
             merge_radius_m=float(self.get_parameter("freeze_mark_merge_radius_m").value),
@@ -146,9 +166,49 @@ class DecisiveControllerNode(Node):
         self.get_logger().info("decisive_controller ready (follow_path)")
 
     def _on_motor_out(self, msg):
-        """Track whether the SUPERVISOR is currently letting us drive."""
+        """Track whether the SUPERVISOR is currently letting us drive.
+
+        ANGULAR COUNTS. This tested `linear.x` alone until the ladder landed, which
+        was survivable only because the old back-off reflex ignored pivots entirely.
+        The ladder does not: a GRANTED pivot is motion, and reading it as "output
+        zero" would fire the output-suppressed condition one second into every
+        legitimate turn.
+        """
         with self._out_lock:
-            self._out_moving = abs(msg.linear.x) > 1e-6
+            self._out_moving = (abs(msg.linear.x) > 1e-6
+                                or abs(msg.angular.z) > 1e-6)
+
+    def _on_scan(self, msg):
+        """Remember the bearing of the widest open direction, in the ROBOT frame.
+
+        Deliberately crude: the widest gap, not the single furthest ray. One long
+        return down a doorway is not somewhere a rover fits, and escaping toward it
+        is how you swap a stall for a wedge. Bearings are laser-frame here; the laser
+        is mounted with ~179 deg yaw (see base_to_laser_static_tf), so the sign
+        convention is handled by the caller's own TF, not assumed here.
+        """
+        best_bearing, best_span, span_start = 0.0, 0, None
+        rng = msg.ranges
+        threshold = 0.8
+        for i, r in enumerate(rng):
+            open_here = (r != r) or r > threshold   # NaN reads as open sky
+            if open_here and span_start is None:
+                span_start = i
+            elif not open_here and span_start is not None:
+                if i - span_start > best_span:
+                    best_span = i - span_start
+                    mid = (span_start + i) // 2
+                    best_bearing = msg.angle_min + mid * msg.angle_increment
+                span_start = None
+        if span_start is not None and len(rng) - span_start > best_span:
+            mid = (span_start + len(rng)) // 2
+            best_bearing = msg.angle_min + mid * msg.angle_increment
+        with self._scan_lock:
+            self._open_bearing_rad = float(best_bearing)
+
+    def _open_bearing(self):
+        with self._scan_lock:
+            return self._open_bearing_rad
 
     def _output_moving(self):
         with self._out_lock:
@@ -237,20 +297,23 @@ class DecisiveControllerNode(Node):
         feedback = FollowPath.Feedback()
 
         # Become the active goal (preempting any older execute loop) and reset the
-        # shared progress guard only for a genuinely new destination — a
-        # same-destination replan keeps the guard so it tracks the real robot.
+        # shared stall ladder only for a genuinely new destination — a
+        # same-destination replan keeps it so it tracks the real robot.
         with self._goal_lock:
             self._active_goal_handle = goal_handle
             if (
-                self._guard_goal is None
+                self._ladder_goal is None
                 or math.hypot(
-                    goal_x - self._guard_goal[0], goal_y - self._guard_goal[1]
+                    goal_x - self._ladder_goal[0], goal_y - self._ladder_goal[1]
                 )
                 > self._goal_change_eps_m
             ):
-                self._guard = ProgressGuard(self._back_off_config)
-                self._guard_goal = (goal_x, goal_y)
-            guard = self._guard
+                # A genuinely new destination gets a fresh invocation budget; a
+                # same-destination replan must NOT, or bt_navigator's ~1 Hz replan
+                # would reset the anti-livelock counter forever.
+                self._ladder.reset_goal()
+                self._ladder_goal = (goal_x, goal_y)
+            ladder = self._ladder
 
         try:
             while rclpy.ok():
@@ -282,38 +345,49 @@ class DecisiveControllerNode(Node):
 
                 if command.mode == "arrived":
                     with self._goal_lock:
-                        self._guard_goal = None  # fresh guard for the next journey
+                        self._ladder_goal = None  # fresh ladder next journey
                     break
 
-                # Back-off reflex: if we are trying to translate but not actually
-                # moving (boxed in against an obstacle), reverse straight out —
-                # both tracks roll back together, above breakaway, so it does not
-                # grind. Pivots are excluded (position is not expected to change).
-                # After a few fruitless back-offs, abort so the planner re-routes.
-                translating = command.mode in ("straight", "arc")
+                # THE STALL SURVIVAL LADDER. One predicate for "we are not getting
+                # anywhere" from any cause, one escalating sequence of escapes, and a
+                # failure counted ONCE PER EXHAUSTED LADDER rather than once per
+                # refused action. See docs/stall_survival_ladder.md for the two
+                # missions this replaces, both of which died with escapes untried.
                 now_s = time.monotonic()
-                guard_result = guard.step(
-                    robot_x, robot_y, now_s, translating,
+                ladder_result = ladder.step(
+                    x=robot_x, y=robot_y, yaw=robot_yaw, now=now_s,
+                    commanding=(command.linear_mps != 0.0
+                                or command.angular_rad_s != 0.0),
                     output_moving=self._output_moving(),
+                    open_bearing_rad=self._open_bearing(),
                 )
-                if guard_result.freeze:
-                    # Hitting something and stopping is a DATA POINT, not a mission
-                    # failure. Record where, so the planner routes around it and the
-                    # mission layer counts it as discovery rather than as the stack
-                    # being broken.
+                if ladder_result.freeze:
+                    # The supervisor permitted motion and we did not move: something is
+                    # physically there that no sensor on this robot can see. A DATA
+                    # POINT, not a mission failure. Mark it for the planner — and keep
+                    # running the ladder, because discovering an invisible obstacle
+                    # does not excuse us from escaping it.
                     self._record_freeze(robot_x, robot_y, now_s)
-                if guard_result.action == "abort":
+                if ladder_result.exhausted:
                     self.get_logger().warn(
-                        "decisive_controller: boxed in — backing off did not clear "
-                        "it; aborting so the planner can re-route"
+                        "decisive_controller: every escape refused "
+                        f"({ladder_result.reason}) — aborting so the planner can "
+                        "re-route. This is the ONLY condition that counts as a goal "
+                        "failure."
                     )
                     self._stop()
                     goal_handle.abort()
                     return result
-                if guard_result.action == "reverse":
+                if ladder_result.action == "rung":
+                    self.get_logger().info(
+                        f"ladder: {ladder_result.reason} "
+                        f"({ladder_result.linear_x:+.2f}, "
+                        f"{ladder_result.angular_z:+.2f})",
+                        throttle_duration_sec=1.0,
+                    )
                     twist = Twist()
-                    twist.linear.x = -abs(guard_result.reverse_speed_mps)
-                    twist.angular.z = 0.0
+                    twist.linear.x = float(ladder_result.linear_x)
+                    twist.angular.z = float(ladder_result.angular_z)
                     self._cmd_pub.publish(twist)
                     feedback.distance_to_goal = float(distance_to_goal)
                     feedback.speed = float(twist.linear.x)

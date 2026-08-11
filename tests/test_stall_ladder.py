@@ -249,3 +249,34 @@ def test_drive_open_is_the_last_resort_not_the_first():
     the retreats, not before them."""
     assert RUNG_ORDER.index(DRIVE_OPEN) == len(RUNG_ORDER) - 1
     assert RUNG_ORDER.index(REVERSE_STRAIGHT) == 0
+
+
+# ------------------------------------------------------------- freeze classification
+
+def test_refused_motion_is_not_a_freeze():
+    """Run 185048: the supervisor refused every pivot for 14 s. The stall is fully
+    explained by the refusal, so there is nothing invisible to mark. The empty
+    `freeze_marks` in that mission report was the CORRECT answer."""
+    ladder = StallLadder()
+    for i in range(_cycles(14)):
+        result = ladder.step(x=0.411, y=-0.310, yaw=math.radians(-136.4), now=i / HZ,
+                             commanding=True, output_moving=False)
+        if result.action == "rung":
+            assert not result.freeze
+            return
+    pytest.fail("ladder never triggered")
+
+
+def test_permitted_but_immobile_is_a_freeze_and_still_escalates():
+    """The supervisor said yes, the robot did not move: something is physically there
+    that no sensor can see. Mark it — and still run the ladder, because discovering an
+    invisible obstacle does not excuse us from escaping it."""
+    ladder = StallLadder()
+    for i in range(_cycles(14)):
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=i / HZ,
+                             commanding=True, output_moving=True)
+        if result.action == "rung":
+            assert result.freeze, "an invisible obstacle was not reported as a freeze"
+            assert result.rung == REVERSE_STRAIGHT, "freeze suppressed the escape"
+            return
+    pytest.fail("ladder never triggered")
