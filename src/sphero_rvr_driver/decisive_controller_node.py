@@ -31,7 +31,7 @@ from geometry_msgs.msg import Twist
 from nav2_msgs.action import FollowPath
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 import tf2_ros
 
 from sphero_rvr_core.stall_ladder import LadderConfig, StallLadder
@@ -120,7 +120,6 @@ class DecisiveControllerNode(Node):
         self._goal_lock = threading.Lock()
         self._ladder = StallLadder(self._ladder_config)
         self._ladder_goal = None  # (x, y) endpoint the ladder is currently tracking
-        self._goal_change_eps_m = 0.15
 
         self._cmd_pub = self.create_publisher(Twist, "cmd_vel", 10)
 
@@ -143,6 +142,14 @@ class DecisiveControllerNode(Node):
         self._open_gap_min_range_m = 0.8
         self.create_subscription(
             LaserScan, "scan", self._on_scan, qos_profile_sensor_data)
+        # AUTHORITATIVE journey boundary from the explorer. Replaces the endpoint
+        # proxy: bt_navigator's ~1 Hz replans of one journey carry the SAME
+        # generation, so the anti-thrash budget still accumulates within a journey,
+        # while a genuinely new explorer goal changes it and earns a fresh budget.
+        self._goal_generation = None
+        self.create_subscription(
+            Int32, "/coverage_explorer/goal_generation",
+            self._on_goal_generation, 10)
         # Disc geometry (design_d25_freeze.md). Radius ~robot_radius; the ring is
         # sampled densely enough that no costmap cell inside it is missed at 0.05 m
         # resolution, and at two radii so the interior fills rather than leaving a
@@ -221,6 +228,11 @@ class DecisiveControllerNode(Node):
         with self._out_lock:
             self._out_moving = (abs(msg.linear.x) >= lin_floor
                                 or abs(msg.angular.z) >= ang_floor)
+
+    def _on_goal_generation(self, msg):
+        if self._goal_generation is not None and msg.data != self._goal_generation:
+            self._ladder.reset_goal()
+        self._goal_generation = msg.data
 
     def _on_scan(self, msg):
         """Remember the bearing of the widest open direction, IN THE ROBOT FRAME.
@@ -429,13 +441,12 @@ class DecisiveControllerNode(Node):
         # same-destination replan keeps it so it tracks the real robot.
         with self._goal_lock:
             self._active_goal_handle = goal_handle
-            if (
-                self._ladder_goal is None
-                or math.hypot(
-                    goal_x - self._ladder_goal[0], goal_y - self._ladder_goal[1]
-                )
-                > self._goal_change_eps_m
-            ):
+            if self._ladder_goal is None:
+                # First journey only. Journey boundaries now arrive from the
+                # explorer's goal_generation topic (see _on_goal_generation); the
+                # 0.15 m endpoint proxy that used to decide this is retired, because
+                # it could not tell a NEW clustered goal from a replan and starved
+                # new goals of their escape budget.
                 # A genuinely new destination gets a fresh invocation budget; a
                 # same-destination replan must NOT, or bt_navigator's ~1 Hz replan
                 # would reset the anti-livelock counter forever.
@@ -506,7 +517,15 @@ class DecisiveControllerNode(Node):
                     # were permitted to move and it did not help, which IS worth
                     # hunting. Reporting both as "aborted" is how a stack bug hides
                     # behind a tight room, and vice versa.
-                    if ladder_result.genuinely_wedged:
+                    if ladder_result.budget_exhausted:
+                        self.get_logger().warn(
+                            "decisive_controller: this goal's escape budget was "
+                            "already spent — NOTHING was tried on this goal, so "
+                            "nothing was permitted or refused. Aborting. If this "
+                            "repeats at one pose, the budget is not being reset "
+                            "between goals."
+                        )
+                    elif ladder_result.genuinely_wedged:
                         self.get_logger().warn(
                             "decisive_controller: GENUINELY WEDGED — the supervisor "
                             "refused every escape (reverse, arc, pivot, forward); "

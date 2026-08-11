@@ -526,3 +526,44 @@ def test_n3_genuine_rotation_still_clears_the_pivot_rung():
             return
         now += 1.0 / HZ
     pytest.fail("a genuine sustained rotation was never credited")
+
+
+# ------------------------------------------------- budget-spent is its own outcome
+
+def test_budget_spent_reports_as_itself_not_as_ineffective():
+    """The third state, from gauntlet run 20260811_103337.
+
+    Five consecutive goals each exhausted instantly with the budget already spent.
+    Nothing was tried, so nothing was permitted or refused -- yet the result carried
+    genuinely_wedged=False, which made the controller log "we WERE permitted to move
+    and it did not help": blaming the ROBOT for trying when it never tried. The
+    recorder for that window shows zero commands, zero output and one pose.
+    """
+    cfg = LadderConfig(max_invocations_per_goal=1)
+    ladder = StallLadder(cfg)
+    x, now, first = 0.0, 0.0, None
+    for _ in range(_cycles(40)):
+        if ladder.active:
+            x += cfg.reverse_speed_mps / HZ
+        first = ladder.step(x=x, y=0.0, yaw=0.0, now=now,
+                            commanding=True, output_moving=ladder.active)
+        now += 1.0 / HZ
+        if first.exhausted:
+            break
+    assert first.exhausted and first.reason == "ladder_budget_exhausted"
+    assert first.budget_exhausted, "budget-spent did not report as itself"
+    assert not first.genuinely_wedged
+    # And it emitted NOTHING on the way there -- the field's zero-command signature.
+    ladder2 = StallLadder(cfg)
+    ladder2._invocations = cfg.max_invocations_per_goal
+    cmds = []
+    for i in range(_cycles(5)):
+        r = ladder2.step(x=0.0, y=0.0, yaw=0.0, now=i / HZ,
+                         commanding=True, output_moving=False)
+        if r.action == "rung":
+            cmds.append(r)
+        if r.exhausted:
+            assert r.budget_exhausted
+            assert not cmds, "a rung was emitted despite the budget being spent"
+            return
+    pytest.fail("never exhausted")

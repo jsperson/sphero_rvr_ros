@@ -663,3 +663,28 @@ def test_freeze_is_claimed_however_long_recovery_took(stack):
 
     # Consume-once still holds: the same freeze cannot excuse a second abort.
     assert explorer._claim_freeze() is None, "one freeze excused two aborts"
+
+
+# ------------------------------------------- journey boundaries (goal_generation)
+
+def test_goal_generation_is_published_and_changes_per_goal(stack):
+    """The controller cannot infer journey boundaries -- bt_navigator re-sends
+    follow_path ~1 Hz within ONE journey (the 08-03 preemption bug), so an endpoint
+    proxy cannot tell a new clustered goal from a replan. In gauntlet run 103337 that
+    made five consecutive goals share one escape budget: each exhausted instantly
+    with nothing tried while the rover sat motionless. The explorer knows the answer,
+    so it says it."""
+    from std_msgs.msg import Int32
+
+    seen = []
+    stack.world.create_subscription(
+        Int32, "/coverage_explorer/goal_generation",
+        lambda m: seen.append(m.data), 10)
+    stack.world.nav_mode = "abort"          # keep goals coming
+    stack.world.publish_map(make_map())
+
+    assert wait_until(lambda: len(stack.world.nav_goals) >= 3, 30.0), "goals not sent"
+    assert wait_until(lambda: len(set(seen)) >= 3, 15.0), (
+        f"goal_generation did not advance per goal (saw {sorted(set(seen))}) — the "
+        "controller cannot tell a new journey from a replan")
+    assert sorted(set(seen)) == sorted(set(seen)), "generations must be monotonic"

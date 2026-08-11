@@ -37,7 +37,7 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose, Spin
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 from std_srvs.srv import Trigger
 import tf2_ros
 
@@ -302,6 +302,16 @@ class CoverageExplorerNode(Node):
         # service name resolves against the NAMESPACE, not the node name, and the
         # stack runs in the root namespace. A run protocol whose copy-paste command
         # hangs on a nonexistent service is worse than no protocol.
+        # The journey boundary, published rather than inferred. The controller has
+        # no notion of an explorer goal -- it sees only follow_path from
+        # bt_navigator, which re-sends ~1 Hz while replanning ONE journey (the
+        # 08-03 preemption bug). It was therefore guessing "new journey?" from goal
+        # endpoint distance, and clustered goals shared one escape budget: five
+        # consecutive goals each exhausted instantly with nothing tried, and the
+        # rover sat motionless while the give-up counter emptied (run 103337).
+        # We know the answer here; say it. Namespaced (~/) per the F3 lesson.
+        self._generation_pub = self.create_publisher(Int32, "~/goal_generation", 10)
+        self.create_timer(0.5, self._publish_generation)
         self.create_service(Trigger, "~/mission/start", self._on_mission_start,
                             callback_group=cbg)
         self.create_service(Trigger, "~/mission/stop", self._on_mission_stop,
@@ -311,6 +321,9 @@ class CoverageExplorerNode(Node):
             + ("ARMED, mission running" if self._armed else
                "DISARMED, waiting for mission/start")
         )
+
+    def _publish_generation(self):
+        self._generation_pub.publish(Int32(data=int(self._active_goal_generation)))
 
     def _on_ladder_active(self, msg):
         if msg.data:
@@ -864,6 +877,12 @@ class CoverageExplorerNode(Node):
             # the wrong generation and silently drops a legitimate discovery, which
             # is a race, not a policy. Bind it here, where it is unambiguous.
             self._active_goal_generation = self._goals_sent
+            new_generation = self._goals_sent
+        # Publish the boundary IMMEDIATELY, outside the lock. The 0.5 s heartbeat
+        # below is for late subscribers only: relying on it alone would let the first
+        # half-second of a new goal run on the previous goal's spent escape budget,
+        # which is the very failure this topic exists to end.
+        self._generation_pub.publish(Int32(data=int(new_generation)))
         offset = math.hypot(wx - cwx, wy - cwy)
         via = f" (standing off {offset:.2f} m)" if offset > 0.01 else ""
         self.get_logger().info(

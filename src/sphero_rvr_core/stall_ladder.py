@@ -125,6 +125,13 @@ class LadderResult:
     # the ladder when the honest answer is that the room had it surrounded. Same
     # honest-reporting rule as D24's UNKNOWN vs zero remaining candidates.
     genuinely_wedged: bool = False
+    # Set when the ladder declined to act because this goal's invocation budget was
+    # already spent: NOTHING was tried, so nothing was permitted or refused. The
+    # third state. Collapsing it into "ineffective" made the controller report that
+    # the rover had been permitted to move and it had not helped -- blaming the
+    # ROBOT for trying when it never tried. Five such lines in gauntlet run
+    # 20260811_103337, against a recorder showing zero commands and one pose.
+    budget_exhausted: bool = False
 
 
 def _wrap(angle: float) -> float:
@@ -301,7 +308,8 @@ class StallLadder:
             # Escaped before and re-stalled on the same goal. The goal is the problem.
             self._rung_index = None
             return LadderResult("exhausted", reason="ladder_budget_exhausted",
-                                exhausted=True, freeze=freeze)
+                                exhausted=True, freeze=freeze,
+                                budget_exhausted=True)
         self._rung_index = 0
         self._rung_started = now
         self._rung_ref = (x, y, yaw)
