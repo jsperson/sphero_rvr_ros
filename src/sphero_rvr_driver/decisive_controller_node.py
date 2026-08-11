@@ -44,6 +44,10 @@ from sphero_rvr_core.decisive_control import (
 )
 
 
+def _wrap_angle(a):
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
 class DecisiveControllerNode(Node):
     def __init__(self):
         super().__init__("decisive_controller")
@@ -134,6 +138,9 @@ class DecisiveControllerNode(Node):
         # handed in.
         self._scan_lock = threading.Lock()
         self._open_bearing_rad = 0.0
+        self._open_bearing_at = None
+        self._open_bearing_max_age_s = 1.0
+        self._open_gap_min_range_m = 0.8
         self.create_subscription(
             LaserScan, "scan", self._on_scan, qos_profile_sensor_data)
         self._freeze_marks = FreezeMarkSet(
@@ -190,40 +197,102 @@ class DecisiveControllerNode(Node):
         zero" would fire the output-suppressed condition one second into every
         legitimate turn.
         """
+        # N2. The floor is what the ladder needs to see PROGRESS within its own
+        # stall window, not a bare non-zero test: output slow enough that it cannot
+        # move progress_epsilon_m in stall_time_s is not "the supervisor is letting
+        # us drive", and counting it as permitted would vote FREEZE on a granted
+        # crawl. Unreachable at the deployed config, closed structurally so it stays
+        # unreachable if a scale factor ever changes.
+        cfg = self._ladder_config
+        lin_floor = cfg.progress_epsilon_m / cfg.stall_time_s
+        ang_floor = cfg.yaw_progress_epsilon_rad / cfg.stall_time_s
         with self._out_lock:
-            self._out_moving = (abs(msg.linear.x) > 1e-6
-                                or abs(msg.angular.z) > 1e-6)
+            self._out_moving = (abs(msg.linear.x) >= lin_floor
+                                or abs(msg.angular.z) >= ang_floor)
 
     def _on_scan(self, msg):
-        """Remember the bearing of the widest open direction, in the ROBOT frame.
+        """Remember the bearing of the widest open direction, IN THE ROBOT FRAME.
 
-        Deliberately crude: the widest gap, not the single furthest ray. One long
-        return down a doorway is not somewhere a rover fits, and escaping toward it
-        is how you swap a stall for a wedge. Bearings are laser-frame here; the laser
-        is mounted with ~179 deg yaw (see base_to_laser_static_tf), so the sign
-        convention is handled by the caller's own TF, not assumed here.
+        N1. This used to return the laser-frame bearing while its own docstring
+        claimed "the caller's TF handles the sign convention" -- and no caller did.
+        The laser is mounted at ~179 deg yaw, so an unrotated bearing is very nearly
+        a POINT REFLECTION of open space: a gap at robot-left arrives as robot-right,
+        and rungs 3 and 4 steer confidently into the closed side. This project has a
+        standing rule about exactly this ("rotate into base_link, read the rotation
+        FROM TF, never hardcode"), which I broke four lines under a docstring
+        admitting the frame problem existed.
+
+        So the rotation is read from TF -- never a hardcoded 179 -- and returns None
+        when TF is unavailable, because a bearing we cannot place is worse than no
+        bearing: the ladder's default of "straight" is at least frame-agnostic.
+
+        The gap search is CIRCULAR. A linear scan splits a gap that spans the end of
+        the array into two half-width pieces, and for this laser that wrap point is
+        very nearly dead ahead of the robot -- so the one direction most likely to be
+        the way out was the one systematically biased against.
         """
-        best_bearing, best_span, span_start = 0.0, 0, None
         rng = msg.ranges
-        threshold = 0.8
-        for i, r in enumerate(rng):
-            open_here = (r != r) or r > threshold   # NaN reads as open sky
-            if open_here and span_start is None:
-                span_start = i
-            elif not open_here and span_start is not None:
-                if i - span_start > best_span:
-                    best_span = i - span_start
-                    mid = (span_start + i) // 2
-                    best_bearing = msg.angle_min + mid * msg.angle_increment
-                span_start = None
-        if span_start is not None and len(rng) - span_start > best_span:
-            mid = (span_start + len(rng)) // 2
-            best_bearing = msg.angle_min + mid * msg.angle_increment
+        n = len(rng)
+        if not n:
+            return
+
+        def open_at(i):
+            r = rng[i % n]
+            return (r != r) or r > self._open_gap_min_range_m
+
+        if all(open_at(i) for i in range(n)):
+            start, best_len = 0, n                 # everything open: straight on
+        else:
+            # Start from a CLOSED ray so the walk cannot begin mid-gap, then sweep
+            # once around, which makes a wrapping gap a single contiguous run.
+            origin = next(i for i in range(n) if not open_at(i))
+            best_len, best_start = 0, None
+            run_len, run_start = 0, None
+            for k in range(1, n + 1):
+                i = origin + k
+                if open_at(i):
+                    if run_start is None:
+                        run_start = i
+                        run_len = 0
+                    run_len += 1
+                    if run_len > best_len:
+                        best_len, best_start = run_len, run_start
+                else:
+                    run_start, run_len = None, 0
+            if best_start is None:
+                return                              # nothing open at all
+            start = best_start
+        mid = start + best_len / 2.0
+        laser_bearing = msg.angle_min + mid * msg.angle_increment
+
+        yaw = self._laser_to_base_yaw(msg.header.frame_id)
+        if yaw is None:
+            return
         with self._scan_lock:
-            self._open_bearing_rad = float(best_bearing)
+            self._open_bearing_rad = _wrap_angle(laser_bearing + yaw)
+            self._open_bearing_at = time.monotonic()
+
+    def _laser_to_base_yaw(self, laser_frame):
+        """Yaw of the laser frame in base_link, FROM TF. Never hardcoded."""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._base_frame, laser_frame or "laser", rclpy.time.Time())
+        except Exception:
+            return None
+        q = tf.transform.rotation
+        return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def _open_bearing(self):
+        """Base-frame bearing of the widest gap, or 0.0 (straight) when stale.
+
+        Stale-bounded because steering toward a remembered gap after the rover has
+        turned is how an escape drives into a wall it already passed.
+        """
         with self._scan_lock:
+            if (self._open_bearing_at is None
+                    or time.monotonic() - self._open_bearing_at > self._open_bearing_max_age_s):
+                return 0.0
             return self._open_bearing_rad
 
     def _output_moving(self):

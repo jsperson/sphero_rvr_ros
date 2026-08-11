@@ -679,15 +679,24 @@ class CoverageExplorerNode(Node):
             self.get_logger().error(f"map save FAILED: {exc}")
             return []
 
-    def _await(self, future, deadline):
+    def _await(self, future, deadline, stop_aware=False):
         """Block this callback until `future` resolves or `deadline` passes.
 
         Safe because the node runs on a MultiThreadedExecutor with a reentrant
         callback group, so another thread services the action response while this
         one waits. Returns the result, or None on timeout.
+
+        N4. `stop_aware` makes the wait abandon on mission/stop. It already slices at
+        10 ms, but it only ever LOOKED at the deadline -- so a recovery behaviour
+        could hold this thread for the full unstick_timeout_s (12 s deployed) after
+        the operator stopped the mission, which is precisely when someone is walking
+        toward the robot. Off by default: a planner query should still finish, since
+        it commands no motion.
         """
         while not future.done():
             if time.monotonic() >= deadline:
+                return None
+            if stop_aware and self._stop_requested():
                 return None
             time.sleep(0.01)
         return future.result()
@@ -845,6 +854,16 @@ class CoverageExplorerNode(Node):
             self._goal_inflight = False
             disarmed = not self._armed
         if disarmed and handle.accepted:
+            # N5. Clear the goal bookkeeping too. Leaving _active_goal_cell set meant
+            # the next mission start inherited a phantom active goal, counted one
+            # spurious failure against the give-up budget, and suppressed a perfectly
+            # good cell for 45 s -- all from a goal that was cancelled before it ever
+            # drove.
+            with self._lock:
+                self._active_goal_cell = None
+                self._active_goal_handle = None
+            self._goal_start_pose = None
+            self._goal_start_time = None
             # The goal was in flight across a mission/stop and Nav2 accepted it after
             # we disarmed. Nothing else will cancel it -- the watchdog defers to the
             # ladder and the tick has stopped running -- so cancel it here or the
@@ -941,7 +960,8 @@ class CoverageExplorerNode(Node):
             if not client.wait_for_server(timeout_sec=1.0):
                 continue
             deadline = time.monotonic() + self._unstick_timeout_s
-            handle = self._await(client.send_goal_async(goal), deadline)
+            handle = self._await(client.send_goal_async(goal), deadline,
+                                 stop_aware=True)
             if handle is None or not handle.accepted:
                 self.get_logger().info(f"unstick: {what} refused, trying the next")
                 continue
@@ -951,7 +971,8 @@ class CoverageExplorerNode(Node):
                 handle.cancel_goal_async()
                 self.get_logger().info(f"unstick: {what} cancelled — mission stopped")
                 return False
-            result = self._await(handle.get_result_async(), deadline)
+            result = self._await(handle.get_result_async(), deadline,
+                                 stop_aware=True)
             if result is None:
                 # Timed out here does NOT mean finished there. The behaviour is
                 # still executing -- a BackUp against something only the supervisor

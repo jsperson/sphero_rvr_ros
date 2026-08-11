@@ -478,3 +478,51 @@ def test_f10_abandon_rung_drops_the_escape_but_keeps_the_goal_budget():
     assert ladder.invocations == spent, (
         "abandoning a rung reset the per-goal invocation budget — a replanning "
         "goal could then livelock forever")
+
+
+# --------------------------------------------------------------------------- N3
+
+def test_n3_rocking_does_not_fake_clear_the_pivot_rung():
+    """Zero-net rocking is not an escape.
+
+    A rover pinned against something compliant oscillates within the rate-sane band.
+    Accumulating |step| banked those wobbles and "cleared" the pivot rung having
+    turned nowhere -- burning an invocation and publishing pivot_open_cleared, which
+    is telemetry that lies about the rover's state.
+    """
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    now, yaw, in_pivot = 0.0, 0.0, False
+    # RATE-SANE by construction: at 20 Hz this is 0.52 rad/s against a 0.6 bound, so
+    # F4's grind filter passes it and N3's signed accumulation is the only thing that
+    # can reject it. My first attempt used 2.0 deg/cycle = 0.70 rad/s, which the rate
+    # filter rejected outright -- so the test passed with N3 mutated out and proved
+    # nothing about signing at all.
+    swing = math.radians(1.5)
+    assert swing * HZ < LadderConfig().max_yaw_rate_rad_s, "oscillation must be rate-sane"
+    for i in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=yaw, now=now,
+                             commanding=True, output_moving=True)
+        if result.rung == PIVOT_OPEN and result.action == "rung":
+            in_pivot = True
+            yaw += swing if (i // 2) % 2 == 0 else -swing   # rocking, net zero
+        assert not (in_pivot and result.reason == f"{PIVOT_OPEN}_cleared"), (
+            "rocking in place was credited as a completed pivot escape")
+        now += 1.0 / HZ
+
+
+def test_n3_genuine_rotation_still_clears_the_pivot_rung():
+    """Paired negative: signed accumulation must not stop crediting a real turn."""
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    now, yaw, in_pivot = 0.0, 0.0, False
+    for _ in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=yaw, now=now,
+                             commanding=True, output_moving=True)
+        if result.rung == PIVOT_OPEN and result.action == "rung":
+            in_pivot = True
+            yaw += cfg.pivot_rate_rad_s / HZ
+        if in_pivot and result.reason == f"{PIVOT_OPEN}_cleared":
+            return
+        now += 1.0 / HZ
+    pytest.fail("a genuine sustained rotation was never credited")

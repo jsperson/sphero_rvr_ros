@@ -350,12 +350,18 @@ class StallLadder:
             # so a single slip burst mid-grind credited the pivot rung as "cleared"
             # and handed control back while the rover was still pinned. Accumulate
             # only physically achievable per-cycle deltas.
+            # N3. SIGNED, then absolute at the end. Accumulating |step| credited
+            # rocking: a rover pinned against something compliant oscillates within
+            # the rate-sane band, banks unsigned steps, and "clears" the pivot rung in
+            # a second or two having turned nowhere -- burning an invocation and
+            # publishing pivot_open_cleared, which is telemetry that lies. Net
+            # rotation is what an escape means.
             if self._rung_last_yaw is not None and now > self._rung_last_t:
-                step = abs(_wrap(yaw - self._rung_last_yaw))
-                if step / (now - self._rung_last_t) <= cfg.max_yaw_rate_rad_s:
+                step = _wrap(yaw - self._rung_last_yaw)
+                if abs(step) / (now - self._rung_last_t) <= cfg.max_yaw_rate_rad_s:
                     self._rung_yaw += step
             self._rung_last_yaw, self._rung_last_t = yaw, now
-            cleared = self._rung_yaw >= cfg.escape_yaw_rad
+            cleared = abs(self._rung_yaw) >= cfg.escape_yaw_rad
         else:
             cleared = False
         if measure in ("position", "either"):
