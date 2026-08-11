@@ -46,6 +46,16 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
    --once` must show `pivot_veto=`, `cam_cloud_age=`, `output_angular_published=`
    (proves the deployed supervisor is ≥ 935f95d and the recorder will capture the
    D21/D22 instrumentation).
+8. **`ros2 node list` is EMPTY before bringup.** Added 2026-08-11 after finding
+   seven `/fake_world` nodes and a `/coverage_explorer` still alive on the Pi hours
+   after a test run. The mission harness hosts FAKE `navigate_to_pose`,
+   `compute_path_to_pose`, `backup` and `spin` action servers, and the Pi's pytest
+   process routinely outlives its own suite by many minutes (67 s of tests, process
+   alive 26 min later, zero CPU — an asyncio teardown hang, `Event loop is closed`).
+   A real bt_navigator coming up alongside a fake action server of the same name is
+   a bizarre failure that would cost a chassis run to diagnose. Kill leftovers **by
+   explicit PID** — see the teardown section on why `pkill -f` is not safe here —
+   then `ros2 daemon stop` so the listing is not a stale cache.
 
 ## Bringup order (separate terminals / tmux panes on the Pi)
 
@@ -135,7 +145,10 @@ plain regex matching `demo`, and your own SSH command line (and the tailscaled
 wrapper carrying it) contains the target string — including when the name appears
 in an unrelated part of the same command, such as an `rm` in the cleanup half.
 This killed the operator's session three times on 2026-08-10 alone, twice mid-teardown
-with nodes still running. Then `ros2 service call /stop_motor` for the lidar, and
+with nodes still running — and once more on 2026-08-11, in a session that had read
+this paragraph the same hour: `pkill -f "pytest tests/test_coverage"` matched the SSH
+command line carrying it. Knowing about the trap is not protection; only filtering the
+PID list is. Then `ros2 service call /stop_motor` for the lidar, and
 verify `/scan` silent and `/dev/ttyUSB0` free.
 
 ## Directed gap test (D5, after the mission)
