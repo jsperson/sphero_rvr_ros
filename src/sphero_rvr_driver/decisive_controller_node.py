@@ -369,12 +369,26 @@ class DecisiveControllerNode(Node):
                     # does not excuse us from escaping it.
                     self._record_freeze(robot_x, robot_y, now_s)
                 if ladder_result.exhausted:
-                    self.get_logger().warn(
-                        "decisive_controller: every escape refused "
-                        f"({ladder_result.reason}) — aborting so the planner can "
-                        "re-route. This is the ONLY condition that counts as a goal "
-                        "failure."
-                    )
+                    # Say WHICH kind of dead end this was. "Genuinely wedged" means
+                    # the supervisor refused every rung outright -- the room has us
+                    # surrounded, and there is no bug to hunt. "Ineffective" means we
+                    # were permitted to move and it did not help, which IS worth
+                    # hunting. Reporting both as "aborted" is how a stack bug hides
+                    # behind a tight room, and vice versa.
+                    if ladder_result.genuinely_wedged:
+                        self.get_logger().warn(
+                            "decisive_controller: GENUINELY WEDGED — the supervisor "
+                            "refused every escape (reverse, arc, pivot, forward); "
+                            "the rover was never permitted to move. Aborting so the "
+                            "planner can re-route. Not a stack failure."
+                        )
+                    else:
+                        self.get_logger().warn(
+                            "decisive_controller: every escape tried and none freed "
+                            f"us ({ladder_result.reason}) — we WERE permitted to "
+                            "move and it did not help. Aborting so the planner can "
+                            "re-route."
+                        )
                     self._stop()
                     goal_handle.abort()
                     return result

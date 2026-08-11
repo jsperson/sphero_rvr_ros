@@ -100,6 +100,13 @@ class LadderResult:
     # The ladder still runs: discovering an invisible obstacle does not excuse us from
     # escaping it.
     freeze: bool = False
+    # Set with `exhausted` when EVERY rung was refused outright by the supervisor --
+    # the rover never got a single cycle of permitted motion. That is "genuinely
+    # wedged", and it is a different fact from "we manoeuvred and it did not help".
+    # Reporting them as the same thing sends the next debugger looking for a bug in
+    # the ladder when the honest answer is that the room had it surrounded. Same
+    # honest-reporting rule as D24's UNKNOWN vs zero remaining candidates.
+    genuinely_wedged: bool = False
 
 
 def _wrap(angle: float) -> float:
@@ -124,6 +131,7 @@ class StallLadder:
         self._rung_index = None
         self._rung_started = None
         self._rung_ref = None
+        self._any_rung_moved = False
 
     def _clear_monitor(self):
         self._ref = None
@@ -227,6 +235,7 @@ class StallLadder:
         self._rung_index = 0
         self._rung_started = now
         self._rung_ref = (x, y, yaw)
+        self._any_rung_moved = False
         cmd = self._rung_command(open_bearing)
         return LadderResult("rung", cmd[0], cmd[1], RUNG_ORDER[0],
                             f"{reason}->{RUNG_ORDER[0]}", freeze=freeze)
@@ -249,6 +258,8 @@ class StallLadder:
 
     def _run_rung(self, x, y, yaw, now, output_moving, open_bearing):
         cfg = self._cfg
+        if output_moving:
+            self._any_rung_moved = True
         rung = RUNG_ORDER[self._rung_index]
         rx, ry, ryaw = self._rung_ref
 
@@ -269,8 +280,11 @@ class StallLadder:
             self._rung_index += 1
             if self._rung_index >= len(RUNG_ORDER):
                 self._rung_index = None
-                return LadderResult("exhausted", reason="all_rungs_refused",
-                                    exhausted=True)
+                wedged = not self._any_rung_moved
+                return LadderResult(
+                    "exhausted",
+                    reason=("genuinely_wedged" if wedged else "all_rungs_ineffective"),
+                    exhausted=True, genuinely_wedged=wedged)
             self._rung_started = now
             self._rung_ref = (x, y, yaw)
             nxt = RUNG_ORDER[self._rung_index]

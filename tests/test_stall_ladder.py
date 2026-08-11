@@ -280,3 +280,39 @@ def test_permitted_but_immobile_is_a_freeze_and_still_escalates():
             assert result.rung == REVERSE_STRAIGHT, "freeze suppressed the escape"
             return
     pytest.fail("ladder never triggered")
+
+
+# ---------------------------------------------- honest exhaustion reporting (D30)
+
+def test_every_rung_refused_reports_genuinely_wedged():
+    """The bench probe found a real pose (returns at the swept-circle corners at
+    0.20 m) where the supervisor refuses reverse, arc AND pivot. That is correct
+    behaviour -- the rover IS surrounded -- but the report must say so, rather than
+    imply the ladder manoeuvred and it did not help."""
+    ladder = StallLadder()
+    result = None
+    for i in range(_cycles(40)):
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=i / HZ,
+                             commanding=True, output_moving=False)
+        if result.exhausted:
+            break
+    assert result.exhausted
+    assert result.genuinely_wedged, "surrounded pose was not reported as wedged"
+    assert result.reason == "genuinely_wedged"
+
+
+def test_granted_but_ineffective_is_not_reported_as_wedged():
+    """The mirror image, and the one that matters for blame: if the supervisor let us
+    move and the manoeuvres simply did not free us, that is NOT the room having us
+    surrounded, and calling it wedged would hide a real ladder or odometry problem."""
+    ladder = StallLadder()
+    result = None
+    for i in range(_cycles(40)):
+        # Permitted throughout, but the robot never actually goes anywhere.
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=i / HZ,
+                             commanding=True, output_moving=True)
+        if result.exhausted:
+            break
+    assert result.exhausted
+    assert not result.genuinely_wedged
+    assert result.reason == "all_rungs_ineffective"
