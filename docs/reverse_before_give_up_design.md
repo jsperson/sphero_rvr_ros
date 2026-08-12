@@ -15,27 +15,30 @@ Every number below is cited to that run's artifacts or to a line of code.
 The obvious reading of Scott's rule is "add a reverse to the give-up path". **The
 give-up path already has one, it already fired, and it failed in two milliseconds.**
 
-From the mission-2 log, the explorer's own recovery running exactly where it should:
+From the mission-2 log — **one attempt, both nodes, interleaved by their own
+timestamps** (the first draft of this note quoted an explorer block from attempt 2 next
+to a behaviour-server block from an earlier trigger four seconds away, which is a
+citation splice and was caught in review; the nodes agree to the millisecond, there is
+no clock skew, and the claim is unchanged once properly anchored):
 
 ```
-12:55:49.343  4 target(s) left but none plannable from here
-              (0 rejected on CLEARANCE, 4 on the PLANNER) — unsticking (attempt 1/4)
-12:55:49.368  unstick: back up did not finish, trying the next
-12:55:49.592  unstick: turn toward the target did not finish, trying the next
-12:55:49.594  unstick: nothing worked from this pose
+1786557349.343  coverage_explorer   4 target(s) left but none plannable from here
+                                    (0 CLEARANCE, 4 PLANNER) — unsticking (attempt 1/4)
+1786557349.349  behavior_server     Running backup
+1786557349.352  behavior_server     Collision Ahead - Exiting DriveOnHeading   <-- 3 ms
+1786557349.352  behavior_server     backup failed
+1786557349.368  coverage_explorer   unstick: back up did not finish, trying the next
+1786557349.371  behavior_server     Running spin
+1786557349.571  behavior_server     Collision Ahead - Exiting Spin
+1786557349.571  behavior_server     spin failed
+1786557349.592  coverage_explorer   unstick: turn toward the target did not finish
+1786557349.594  coverage_explorer   unstick: nothing worked from this pose
 ```
 
-Four attempts, all four the same, the whole sequence over in 250 ms. What happened
-inside those 25 ms is in the behaviour server's own words:
-
-```
-12:55:45.424  behavior_server: Running backup
-12:55:45.426  behavior_server: Collision Ahead - Exiting DriveOnHeading      <-- 2 ms
-12:55:45.426  behavior_server: backup failed
-12:55:45.446  behavior_server: Running spin
-12:55:45.647  behavior_server: Collision Ahead - Exiting Spin
-12:55:45.647  behavior_server: spin failed
-```
+Backup refused **3 ms** after it was asked; the whole attempt — both behaviours —
+finished in **251 ms**. Five such episodes appear in the run (one before the give-up
+sequence, then attempts 1-4), every one identical, and the `backup failed` interval is
+2-4 ms in all five.
 
 At that moment the robot's own lidar reported **rear 0.781 m** — 3.1x the supervisor's
 `reverse_stop_distance_m` (0.25) — and it never dropped below 0.203 m across the 2465
@@ -149,18 +152,33 @@ inflation_radius       0.16   (lean_nav2.yaml, global costmap)
 robot_radius           0.14   (lean_nav2.yaml)
 ```
 
-A pose is refused while the robot's own body overlaps lethal-or-inflated cost. The mark
-is lethal out to 0.14 m from its centre and inflated out to 0.14 + 0.16 = **0.30 m**.
-So an escape that travels **0.30 m** takes a robot standing on top of its own mark to a
-pose whose centre is outside that mark's inflated field:
+Stated precisely, because the first draft blurred two different radii and review caught
+it. A mark is planted `footprint_front_m` **0.11 m ahead of the robot's centre** and is
+a lethal disc of radius 0.14 m — so at the instant of planting the robot's own centre
+is 0.11 m from the disc centre, i.e. **inside its own lethal mark**. From there:
+
+| what has to become true | centre-to-mark distance | reverse needed |
+|---|---|---|
+| footprint no longer overlaps lethal (inscribed) | `mark_radius + robot_radius` = **0.28 m** | 0.17 m |
+| cost fully free of that mark's inflation | `mark_radius + inflation_radius` = **0.30 m** | 0.19 m |
 
 ```
-escape_distance = freeze_mark_radius_m + inflation_radius = 0.14 + 0.16 = 0.30 m
+escape_distance_m = mark_radius + inflation_radius = 0.14 + 0.16 = 0.30 m
 ```
 
-That number is not a coincidence with the project's existing "0.30 m minimum start
-clearance" figure — it is the same geometry read from the other side, which is the
-strongest evidence available that it is the robot's own scale and not this room's.
+0.30 m of reverse puts the centre 0.41 m from the mark — clear of the inscribed zone by
+0.13 m and of the inflated zone by 0.11 m. The margin is deliberate: it is one escape's
+worth of slack against odometry error, not a second threshold.
+
+**And one escape does NOT necessarily exit the field.** Mission 2's trap was five marks
+inside about a metre; reversing away from one can move toward another, and a single
+0.30 m escape has no guarantee of finding free cost. That is not papered over here —
+it is precisely why the design re-runs candidate planning from the new pose and why the
+escape budget is monotonic (§3): the loop is *escape, re-plan, and if it still does not
+plan, escape again from somewhere new, up to four times, then report honestly*.
+Convergence is bounded by the counter, not asserted by the geometry. A design that
+claimed one reverse always clears a five-mark field would be claiming something this
+run's evidence does not support.
 
 **Time bound:** 0.30 m at 0.10 m/s is 3.0 s of granted motion, which is exactly
 `rung_budget_s`. The escape uses that same budget as its ceiling so a refused or
@@ -170,14 +188,20 @@ ineffective escape cannot outlive one rung's worth of time.
 
 ## 5. The seam: what the controller publishes
 
-New service (or action) on the controller — **request/response, not a topic pair**,
-because the explorer must know when the escape ENDED, and a topic gives it only when
-something was said:
+**It is an ACTION, and that is a decision, not a menu.** A `Trigger` service whose
+handler drives for up to 3 s would run that loop inside the controller's executor
+callback, starving the control loop, the scan subscription and the motor-output
+subscription for the duration — the D22 executor-starvation family, in a node whose
+entire job is to publish at 10 Hz. rclpy has no clean deferred service response, so a
+service that "only initiates" has to fake completion through a second channel, which is
+the topic-pair the explorer must not have to interpret. An action gives exactly the
+right shape: goal, feedback, terminal result, cancellation, and a server that runs in
+its own callback group without blocking the control loop.
 
 ```
-/decisive_controller/escape_in_place   (std_srvs/Trigger, or a small custom srv)
-  response.success  = the escape achieved the requested change of situation
-  response.message  = one of:
+/decisive_controller/escape_in_place   (nav2_msgs/action/BackUp reused, or a small
+                                        custom action — see below)
+  result.outcome = one of:
       cleared        moved >= escape_distance_m, or the ladder's changed-situation
                      criterion was met (lateral / heading), with the distance achieved
       refused        the supervisor zeroed every cycle (rear blocked) — reported with
@@ -190,7 +214,15 @@ The explorer logs and records whichever fact came back. It does not measure the
 outcome itself; that is the seam rule (`_open_bearing`'s `None` fix, one batch ago, is
 the precedent).
 
-**Why a service and not a ladder rung:** there is no active goal at this moment — no
+**`declined` IS A LOGIC ERROR, not a retry condition.** In the designed flow the
+explorer only ever asks while it is idle with no goal outstanding, so a `declined` means
+one of the two components is wrong about the other's state — exactly the class of thing
+that hides for weeks if it is swallowed. It must be logged at WARN with both sides'
+view, counted as a FAILED escape against the monotonic budget, and never silently
+retried. A quiet retry loop here would rediscover the give-up livelock from the other
+direction.
+
+**Why an action and not a ladder rung:** there is no active goal at this moment — no
 `follow_path`, no execute loop, so no ladder. The controller's escape entry point must
 work when it is otherwise idle. This is also why the escape cannot simply be "start a
 goal and let the ladder handle it": planning is what already failed.
@@ -207,6 +239,33 @@ ladder's job during a goal, and duplicating it here is a second author for one m
 which is the failure the ladder was created to end. The explorer, seeing `frozen`,
 records the mark and gives up honestly — a rover boxed both front and back has genuinely
 run out of room, and saying so is the right outcome.
+
+**AND THE MARK WOULD GO ON THE WRONG SIDE — a shipped defect this design would
+otherwise walk into.** `_freeze_mark_pose` (`decisive_controller_node.py:481`) projects
+the mark `footprint_front_m` along `robot_yaw`, unconditionally:
+
+```python
+return (robot_x + self._footprint_front_m * math.cos(robot_yaw),
+        robot_y + self._footprint_front_m * math.sin(robot_yaw))
+```
+
+For a freeze during a REVERSE that plants a lethal disc **0.11 m in FRONT** of a robot
+whose obstacle is BEHIND it: the real obstacle goes unmarked, and 0.22 m of clear floor
+ahead is poisoned — deepening the very unplannability trap this design exists to break.
+
+**Audit: can today's shipped ladder hit it? No — and the reason is worth stating,
+because it is why this has never been seen.** A freeze is classified only in
+`StallLadder._begin`, and `step()` returns `_run_rung(...)` immediately whenever a rung
+is active, so no freeze can ever be classified while the ladder is commanding a reverse.
+At `_begin` the commanded motion is the controller's own drive command, which is never
+negative. Across gauntlet missions 1 and 2 (9 and 5 freeze events) not one was
+classified mid-reverse. The defect is **latent in shipped code and becomes reachable the
+moment an escape reverses on its own** — the same shape as D32/D33, where step 1's
+ordering fix made a dormant defect live.
+
+**Fix, in this same diff:** the mark follows the COMMANDED MOTION DIRECTION — leading
+edge for forward, trailing edge (`-footprint_rear_m` along yaw) for reverse. Pinned by
+its own revert-proof (§8.7), which fails against HEAD.
 
 **(b) Lifecycle interaction.** The escape runs when no goal is active, but the explorer
 could send a new goal the instant planning succeeds afterwards. The rule from D34
@@ -266,6 +325,14 @@ field shape prevents.
 6. `the_explorer_still_publishes_no_velocity` — structural: no `Twist` publisher in
    `coverage_explorer_node.py`, asserted by source scan, as `test_ros_safe_surfaces`
    already does for other nodes.
+7. `a_reverse_freeze_marks_behind_the_robot` (R1) — a freeze while the commanded motion
+   is negative must place the mark on the TRAILING edge, behind the footprint. **Fails
+   against HEAD**, which places it 0.11 m in front along `robot_yaw` regardless of
+   direction. Paired negative: a forward freeze still marks the leading edge, so the
+   D25 leading-edge correction is preserved rather than traded away.
+8. `declined_is_counted_and_logged_not_retried` (R5) — an escape requested while the
+   controller is mid-goal returns `declined`, is logged at WARN, spends one unit of the
+   monotonic budget, and does not loop.
 
 ---
 
@@ -274,11 +341,18 @@ field shape prevents.
 * It does not touch the stall ladder. The ladder was invoked nine times in mission 2
   and every escape it ran cleared; it is not the defect.
 * It does not touch `collision_stop.py`, the camera brake, or the low-obstacle path.
-* It does not make `behavior_server` work. Recommendation: once this lands, the
-  BackUp/Spin behaviours should be **removed from the explorer's vocabulary entirely**
-  — they have now failed in both of the situations they exist for (D16's spin refusal,
-  and this), and a recovery that cannot run is worse than no recovery because it
-  consumes the branch that would otherwise reach a working one.
+* It does not make `behavior_server` work. **Approved at review: BackUp/Spin leave the
+  explorer's vocabulary in this same diff** — they have now failed in both of the
+  situations they exist for (D16's spin refusal, and this), and a recovery that cannot
+  run is worse than no recovery because it consumes the branch that would otherwise
+  reach a working one. Call-site audit, so "removed" means removed: the ONLY
+  construction of those clients in the repo is `coverage_explorer_node.py:283-284`
+  (`ActionClient(self, BackUp, "backup")`, `ActionClient(self, Spin, "spin")`).
+  `task_node.py`, `task_client.py` and `vlm_explorer_node.py` contain no BackUp/Spin
+  client (the one grep hit in `task_client.py` is the word "Spin" in a comment). So
+  deleting those two clients takes Nav2 behaviours out of this robot's motion path
+  entirely; `behavior_server` itself stays in the launch for now, unused, and retiring
+  it from the launch is a separate cleanup.
 * It does not change the freeze-mark mechanism, though it interacts with it. Whether
   marks should decay faster, or be suppressed under the robot's own footprint, is a
   real question this run raises and a separate one.
