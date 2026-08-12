@@ -166,3 +166,90 @@ def test_the_mark_follows_the_heading_not_the_world_axes():
     rev = freeze_mark_pose(x, y, yaw, 0.11, 0.16, reversing=True)
     assert fwd[1] == pytest.approx(0.11, abs=1e-9) and abs(fwd[0]) < 1e-9
     assert rev[1] == pytest.approx(-0.16, abs=1e-9) and abs(rev[0]) < 1e-9
+
+
+# --------------------------------------------------- F-A: the freeze predicate rolls
+
+def test_a_creeping_pinned_reverse_is_still_a_freeze():
+    """F-A, and it is mission 1's own measurement.
+
+    A rover pinned against something invisible does not sit perfectly still: 13
+    recorded straight-reverse windows against a blind contact, supervisor granting
+    79% of cycles, achieved a MEAN of 0.086 m — nearly 3x `progress_epsilon_m` 0.03.
+    A freeze test that compares TOTAL travel since the escape began therefore reads
+    "we are moving" for the whole escape and never fires, in exactly the case the
+    escape exists for: no mark is planted behind the obstacle and the seam publishes
+    `refused` while the supervisor was in fact permitting motion.
+
+    The rule has to be the ladder's rolling one. Fails against the cumulative version.
+    """
+    from sphero_rvr_core.decisive_control import WindowedFreezeMonitor
+
+    mon = WindowedFreezeMonitor(window_cycles=20, expected_per_cycle_m=0.01)
+    # 0.086 m per 3 s window at 10 Hz = 0.0029 m per cycle against a commanded
+    # 0.01 m per cycle: 29% delivered, exactly the signature the recorder caught.
+    x = 0.0
+    fired_at = None
+    for i in range(60):
+        x -= 0.086 / 30.0
+        if mon.update(x, 0.0, output_moving=True):
+            fired_at = i
+            break
+    assert fired_at is not None, (
+        "a pinned, creeping, PERMITTED reverse was never classified as a freeze — "
+        "the mark goes unplanted and the outcome lies about what happened")
+    assert fired_at < 30, f"took {fired_at} cycles to notice; the window is 20"
+
+    # AND IT MUST KEEP SAYING SO. This is what separates a SLIDING window from a
+    # measurement taken since the escape began: cumulative travel grows without
+    # bound, so a cumulative test eventually passes its own bar and reports the pin
+    # as motion again — 0.0029 m/cycle crosses 50% of a 0.19 m window budget at about
+    # cycle 33, which is inside a 6 s escape. The rover is still pinned; only the
+    # arithmetic moved on.
+    for _ in range(80):
+        x -= 0.086 / 30.0
+        assert mon.update(x, 0.0, output_moving=True), (
+            "the classifier stopped calling a still-pinned rover frozen — the window "
+            "is not sliding")
+
+
+def test_a_genuinely_moving_reverse_is_never_a_freeze():
+    """The paired negative: an escape that is actually backing out must not be
+    reported as frozen, or every successful escape plants a phantom mark behind it."""
+    from sphero_rvr_core.decisive_control import WindowedFreezeMonitor
+
+    mon = WindowedFreezeMonitor(window_cycles=20, expected_per_cycle_m=0.01)
+    x = 0.0
+    for _ in range(120):                      # 0.10 m/s at 10 Hz = 0.01 m per cycle
+        x -= 0.01
+        assert not mon.update(x, 0.0, output_moving=True), (
+            "a reverse travelling at the commanded speed was called a freeze")
+
+
+def test_a_refused_reverse_is_not_a_freeze_either():
+    """Refused is not frozen: if the supervisor is zeroing us, the stall is explained
+    and there is nothing invisible to mark. Same distinction the ladder draws."""
+    from sphero_rvr_core.decisive_control import WindowedFreezeMonitor
+
+    mon = WindowedFreezeMonitor(window_cycles=20, expected_per_cycle_m=0.01)
+    for _ in range(120):
+        assert not mon.update(0.0, 0.0, output_moving=False)
+
+
+def test_a_supervisor_SLOWED_reverse_is_not_a_freeze():
+    """The margin that makes the rate test safe, asserted rather than asserted-at.
+
+    The supervisor legitimately scales a granted command down -- 0.70 in the lidar
+    SLOW band, 0.60 for the camera's. A rover delivering 60% of what it asked for is
+    being throttled, not pinned, and calling that a freeze would plant phantom marks
+    every time the escape passed near anything. The pin delivered 29%; the threshold
+    sits at 50%, between the two on purpose.
+    """
+    from sphero_rvr_core.decisive_control import WindowedFreezeMonitor
+
+    mon = WindowedFreezeMonitor(window_cycles=20, expected_per_cycle_m=0.01)
+    x = 0.0
+    for _ in range(120):
+        x -= 0.01 * 0.60                      # the slowest legitimate scaling
+        assert not mon.update(x, 0.0, output_moving=True), (
+            "a supervisor-SLOWED reverse was classified as a freeze")

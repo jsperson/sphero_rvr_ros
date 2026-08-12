@@ -44,6 +44,7 @@ from sphero_rvr_core.decisive_control import (
     compute_drive_command,
     corridor_blocker,
     freeze_mark_pose,
+    WindowedFreezeMonitor,
     heading_error_to_point,
     select_target_point,
 )
@@ -109,6 +110,15 @@ class DecisiveControllerNode(Node):
         # escape's worth of slack against odometry error, not a second threshold.
         # Pinned against config drift by tests/test_escape_geometry.py.
         self.declare_parameter("give_up_escape_distance_m", 0.30)
+        # F-B. The escape's time ceiling, and why it is NOT rung_budget_s (3.0) as the
+        # design note first said. 0.30 m at 0.10 m/s is 3.0 s of GRANTED motion at full
+        # commanded speed -- so a 3.0 s ceiling reports `refused` on any escape the
+        # supervisor merely SLOWS, which it does routinely inside the SLOW band. The
+        # slip argument the `cleared` test rests on survives the longer window with
+        # room: a pinned reverse creeps 0.086 m per 3 s window (mission 1, measured),
+        # so 6 s of pure slip reaches ~0.17 m against a 0.30 m bar. Both sides send and
+        # default to this same number; tests/test_escape_geometry.py pins the margin.
+        self.declare_parameter("give_up_escape_timeout_s", 6.0)
         self.declare_parameter("ladder_reverse_speed_mps", 0.10)
         self.declare_parameter("ladder_forward_speed_mps", 0.10)
         self.declare_parameter("ladder_pivot_rate_rad_s", 0.40)
@@ -154,6 +164,7 @@ class DecisiveControllerNode(Node):
             pivot_rate_rad_s=float(_p("ladder_pivot_rate_rad_s").value),
         )
         self._escape_distance_m = float(_p("give_up_escape_distance_m").value)
+        self._escape_timeout_s = float(_p("give_up_escape_timeout_s").value)
         self._avoid_enable = bool(_p("avoid_enable").value)
         self._avoid_config = AvoidanceConfig(
             engage_m=float(_p("avoid_engage_m").value),
@@ -659,6 +670,12 @@ class DecisiveControllerNode(Node):
                 "it believes nothing is running, so this is a disagreement about "
                 "state, not a routine refusal.")
             return GoalResponse.REJECT
+        # CLAIMED HERE, not in the execute callback. rclpy always executes an accepted
+        # goal, but not instantly -- and a follow_path arriving in that gap would slip
+        # past _follow_path_goal_callback's guard and start driving against an escape
+        # that is about to. The guard has to be armed by the ACCEPT, not by the first
+        # line of the work.
+        self._escape_active = True
         return GoalResponse.ACCEPT
 
     def _execute_escape(self, goal_handle):
@@ -679,7 +696,7 @@ class DecisiveControllerNode(Node):
         want = abs(float(req.target.x)) or self._escape_distance_m
         speed = abs(float(req.speed)) or self._ladder_config.reverse_speed_mps
         allowance = req.time_allowance.sec + req.time_allowance.nanosec * 1e-9
-        deadline = time.monotonic() + (allowance or self._ladder_config.rung_budget_s)
+        deadline = time.monotonic() + (allowance or self._escape_timeout_s)
         period = 1.0 / self._frequency if self._frequency > 0 else 0.1
 
         start = self._robot_pose_in(self._odom_frame_for_escape())
@@ -687,11 +704,18 @@ class DecisiveControllerNode(Node):
             self._stop()
             result.error_code = BackUp.Result.TF_ERROR
             result.error_msg = format_outcome(REFUSED, "no TF for the start pose")
+            self._escape_active = False      # claimed at ACCEPT; release it here too
             goal_handle.abort()
             return result
 
-        self._escape_active = True
-        window = moved_cycles = 0
+        # F-A. The freeze predicate is WINDOWED, matching the ladder's, because a
+        # pinned reverse still creeps: mission 1 measured 0.086 m of travel per
+        # straight-reverse window against a blind contact, nearly 3x
+        # progress_epsilon_m. A cumulative test would read that as motion and never
+        # fire, in exactly the case this escape exists for.
+        freeze = WindowedFreezeMonitor(
+            window_cycles=self._ladder_config.suppressed_cycles,
+            expected_per_cycle_m=speed * period)
         travelled = 0.0
         try:
             while rclpy.ok() and time.monotonic() < deadline:
@@ -716,20 +740,18 @@ class DecisiveControllerNode(Node):
                 twist = Twist()
                 twist.linear.x = -float(speed)
                 self._cmd_pub.publish(twist)
-                window += 1
-                if self._output_moving():
-                    moved_cycles += 1
                 time.sleep(period)
 
                 # FREEZE: permitted for most of the window and still going nowhere.
-                # Same classifier the ladder uses, and the same response -- mark it
-                # and stop. The mark goes on the TRAILING edge, because the obstacle
-                # is behind us; marking the leading edge here would plant a lethal
-                # disc on the clear floor ahead and deepen the very trap this escape
+                # Same classifier the ladder uses -- literally the same rolling rule,
+                # not a similar-sounding one -- and the same response: mark it and
+                # stop. The mark goes on the TRAILING edge, because the obstacle is
+                # behind us; marking the leading edge here would plant a lethal disc
+                # on the clear floor ahead and deepen the very trap this escape
                 # exists to break.
-                stalled = travelled < self._ladder_config.progress_epsilon_m
-                if (window >= self._ladder_config.suppressed_cycles and stalled
-                        and moved_cycles * 2 >= window and pose is not None):
+                frozen = pose is not None and freeze.update(
+                    pose[0], pose[1], self._output_moving())
+                if frozen:
                     self._stop()
                     fx, fy = self._freeze_mark_pose(
                         pose[0], pose[1], pose[2], reversing=True)

@@ -1,6 +1,7 @@
 # Design note — reverse before giving up
 
-**Status: design only. No code.** Written 2026-08-12 after gauntlet mission 2
+**Status: BUILT — `5fe3b24` and its follow-up, with §4/§6(a)/§6(d) amended at
+implementation (F-A/F-B/F-C, marked inline).** Written 2026-08-12 after gauntlet mission 2
 (`run_20260812_125305`), which ended `INCOMPLETE_NO_PLANNABLE_TARGETS` with 0.78 m of
 clear floor behind it. Scott, standing over it: *"This one is reasonably
 understandable - except that in it's current spot it could have just backed up. New
@@ -59,7 +60,7 @@ So the mechanism is a closed loop of the robot's own making:
   touch something invisible  ->  plant a freeze mark  ->  mark inflates over the robot
         ^                                                            |
         |                                                            v
-   nothing plans  <-  planner refuses 96/96  <-  every escape behaviour refuses (2 ms)
+   nothing plans  <-  planner refuses 96/96  <-  every escape behaviour refuses (3 ms)
 ```
 
 **The lesson is not "add a reverse". It is that the escape is asking the wrong
@@ -78,7 +79,7 @@ decided the mission.
 
 **D36 registered:** *the explorer's unstick is invoked correctly and executes nothing,
 because Nav2's BackUp/Spin collision-check the costmap the rover's own freeze marks
-have made lethal — refusing in 2 ms with 0.78 m of measured clear floor behind.*
+have made lethal — refusing in 3 ms with 0.78 m of measured clear floor behind.*
 
 ---
 
@@ -102,7 +103,7 @@ Nothing about the stall ladder changes. It is not the component that failed.
 | Rule | How it is honoured |
 |---|---|
 | The explorer does not publish velocity | It publishes a **request**; the controller is the only node that ever writes `cmd_vel`. Verifiable by diffstat: no publisher of `Twist` is added to `coverage_explorer_node.py`. |
-| Assert, don't infer, at seams | The controller publishes the escape's **outcome** (`granted`/`refused`/`freeze`/`cleared`, plus distance achieved). The explorer never times a behaviour and never infers success from a pose delta it measured itself. |
+| Assert, don't infer, at seams | The controller publishes the escape's **outcome** (`cleared`/`refused`/`frozen`/`declined`, plus the distance achieved). The explorer never times a behaviour and never infers success from a pose delta it measured itself. |
 | Safety path untouched | Zero lines of `collision_stop.py`, the camera brake, or the low-obstacle detector. The escape is an ordinary command the supervisor gates like any other. Empty diffstat, verified. |
 | No room-specific constants | The escape distance is derived from the costmap geometry that traps the robot (§4). |
 | No new recovery layer | This REPLACES the body of `_unstick`; it does not add a parallel mechanism. `behavior_server` stops being asked to move this robot. |
@@ -180,9 +181,15 @@ Convergence is bounded by the counter, not asserted by the geometry. A design th
 claimed one reverse always clears a five-mark field would be claiming something this
 run's evidence does not support.
 
-**Time bound:** 0.30 m at 0.10 m/s is 3.0 s of granted motion, which is exactly
-`rung_budget_s`. The escape uses that same budget as its ceiling so a refused or
-ineffective escape cannot outlive one rung's worth of time.
+**Time bound (AMENDED, F-B):** 0.30 m at 0.10 m/s is 3.0 s of motion *granted at full
+commanded speed*, and the first draft made `rung_budget_s` (3.0) the ceiling on that
+basis. That is too tight in practice: the supervisor routinely SLOWS rather than
+refuses inside its slow band, so a 3.0 s ceiling would report `refused` for escapes
+that were working. The ceiling is `give_up_escape_timeout_s` = **6.0 s**, one named
+parameter that the controller defaults to and the explorer sends, so the two cannot
+drift. The cost is bookkept in §6(d): it doubles the slip budget the `cleared` test
+tolerates, from ~0.086 m to ~0.17 m against a 0.30 m bar — still a 1.8x margin, and
+re-derivable if anyone raises the timeout again.
 
 ---
 
@@ -233,7 +240,13 @@ goal and let the ladder handle it": planning is what already failed.
 
 **(a) The reverse itself freezes — blind contact behind.** The controller's freeze
 classifier is the same one the ladder uses: permitted output, no motion, for the
-window. The escape must then do exactly what the ladder does — **mark it and stop**,
+window. **Literally the same rolling rule** (`WindowedFreezeMonitor`, sharing the
+ladder's reference-remark semantics) rather than a similar-sounding one — the first
+implementation compared TOTAL travel since the escape began against
+`progress_epsilon_m` 0.03, which never fires against a real blind contact, because a
+pinned reverse creeps 0.086 m per window (mission 1, measured). That version would
+have reported `refused` while the supervisor was permitting motion, and planted no
+mark, in precisely the case this feature exists for. The escape must then do exactly what the ladder does — **mark it and stop**,
 returning `frozen`. It must NOT escalate into arcs and pivots on its own: that is the
 ladder's job during a goal, and duplicating it here is a second author for one motion,
 which is the failure the ladder was created to end. The explorer, seeing `frozen`,
@@ -279,10 +292,28 @@ unstick (F5).
 **(c) The escape succeeds and planning still fails.** Expected, and not a bug: report
 `NO_PLANNABLE_TARGETS` with the new field below. Four such cycles end the mission.
 
-**(d) Odometry lies about the distance.** The escape's own judgement uses the ladder's
-changed-situation criterion, which is deliberately not a raw odometry distance. A
-0.30 m reverse that odometry claims and the room does not corroborate would be caught
-the same way rung 1's 0.12 m false success was.
+**(d) Odometry lies about the distance.** AMENDED AT IMPLEMENTATION (F-C), because
+the first version of this clause promised something that would break the feature.
+
+The clause said the escape would be judged by the ladder's changed-situation criterion
+"deliberately not a raw odometry distance". That criterion is *lateral displacement or
+heading change*, and it exists to reject exactly what this escape deliberately does:
+travel in a straight line along the axis it is facing. Applied here it would refuse to
+credit every successful escape ever made. The ladder is asking "did the stall
+situation change"; this escape is asking "am I out of my own mark's inflation", and
+the honest answer to the second one IS a distance.
+
+So `cleared` is raw odometry travel >= `escape_distance_m`, and the reason that is safe
+is measured rather than assumed: **a pinned reverse creeps.** Mission 1, 13 straight
+reverse windows against a blind contact with the supervisor granting 79% of cycles,
+mean travel achieved **0.086 m per 3 s window** — so fabricating 0.30 m out of slip
+takes about 10 s of continuous slipping, and the escape is bounded at
+`give_up_escape_timeout_s` **6.0 s** (~0.17 m of pure creep, a 1.8x margin). That bound
+is load-bearing for this clause, which is why it lives in a named parameter that both
+nodes send and default to, rather than in whichever number each side happened to pick.
+
+If the timeout is ever raised, this margin has to be re-derived: at 10 s the slip
+budget reaches the bar and `cleared` stops meaning anything.
 
 **(e) The rover reverses into unmapped space and the map worsens.** Accepted: 0.30 m is
 under one robot length, the supervisor gates the whole of it, and SLAM sees the same
@@ -311,7 +342,7 @@ field shape prevents.
    candidates, 96 planner rejections, rear 0.781 m clear, freeze marks at the five
    recorded positions. The explorer must REQUEST an escape and the controller must
    COMMAND a reverse. **Fails against `b684515`**, where the request goes to
-   `behavior_server` and returns `backup failed` in 2 ms.
+   `behavior_server` and returns `backup failed` in 3 ms.
 2. `a_refused_reverse_is_reported_as_refused_not_as_success` — supervisor zeroes every
    cycle (`rear_hold`); the explorer must record `refused` and give up honestly rather
    than replan into the same trap.

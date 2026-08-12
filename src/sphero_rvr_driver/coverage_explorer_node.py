@@ -127,6 +127,11 @@ class CoverageExplorerNode(Node):
         # if a config change makes 0.30 m too short to escape a mark.
         self.declare_parameter("escape_distance_m", 0.30)
         self.declare_parameter("escape_speed_mps", 0.10)
+        # Sent to the controller as the action's time_allowance, and equal to the
+        # controller's own give_up_escape_timeout_s default. 0.30 m at 0.10 m/s is
+        # 3.0 s of motion granted at FULL speed; the supervisor routinely SLOWS
+        # rather than refuses, so a 3.0 s ceiling would report `refused` for escapes
+        # that were working. Design note §4/§6(d) carries the slip-margin cost.
         self.declare_parameter("escape_timeout_s", 6.0)
         self.declare_parameter("unstick_backup_m", 0.25)
         self.declare_parameter("unstick_spin_rad", 1.57)
@@ -1080,13 +1085,15 @@ class CoverageExplorerNode(Node):
             self._record_escape("unrecognised")
             return False
         self._record_escape(outcome)
-        travelled = getattr(result.result, "total_elapsed_time", None)
         if outcome == ESCAPE_CLEARED:
             self.get_logger().info(f"escape: backed out — {detail}")
             return True
+        # Everything else means we are still where we were. DECLINED cannot reach
+        # here (a decline is a goal REJECTION, handled above), so this is `refused`
+        # or `frozen`: the way out is blocked too, and the mission ends honestly.
         self.get_logger().warn(
             f"escape did not free us ({outcome}: {detail}) — the way out is blocked "
-            "too" if outcome != ESCAPE_DECLINED else "escape declined")
+            "too")
         return False
 
     def _record_escape(self, outcome):

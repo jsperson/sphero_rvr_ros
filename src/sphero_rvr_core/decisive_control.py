@@ -549,3 +549,63 @@ def freeze_mark_pose(x, y, yaw, front_m, rear_m, reversing=False):
     """
     reach = -float(rear_m) if reversing else float(front_m)
     return (x + reach * math.cos(yaw), y + reach * math.sin(yaw))
+
+
+class WindowedFreezeMonitor:
+    """"Permitted, and going nowhere NEAR fast enough" -- over a sliding window.
+
+    Getting this predicate right took three tries, and the two rejected ones are worth
+    keeping because both sound correct:
+
+    1. **Total travel since the escape began < epsilon.** Wrong, and wrong in exactly
+       the field case: a rover pinned against something invisible CREEPS. Mission 1
+       (2026-08-12), 13 straight-reverse windows against a blind contact with the
+       supervisor granting 79% of cycles, achieved a mean of **0.086 m** -- nearly 3x
+       `progress_epsilon_m`. The cumulative test reads that as motion forever.
+
+    2. **The stall ladder's rolling rule** (a reference pose re-marked whenever
+       progress >= epsilon). Also wrong here, and this one was a review instruction I
+       followed and then measured: that same 0.086 m per 3 s is 2.9 mm per cycle, so
+       the reference re-marks every ~11 cycles and the 20-cycle window never completes.
+       The ladder is not wrong for the ladder -- it asks "did we get anywhere at all",
+       and it classifies its freezes from a STANDING START, where creep has not begun.
+       The escape asks a different question while already moving, so it needs its own
+       predicate rather than a borrowed one.
+
+    3. **Achieved travel against what the COMMAND should have achieved** -- this. The
+       supervisor is permitting motion, we know what we asked for, and the honest
+       question is whether the wheels are delivering it. Mission 1's pin delivered 29%
+       of commanded (0.086 m of an asked-for 0.30 m in 3 s). The supervisor's own
+       slowest legitimate scaling is 0.60 (camera SLOW band; lidar's is 0.70), so
+       anything below **50%** of commanded is neither full speed nor a scaled grant --
+       it is the tracks turning without the robot moving.
+
+    Sliding, not reference-remarked: a window that resets on partial progress is how
+    (2) hid a steady creep from itself.
+    """
+
+    def __init__(self, window_cycles: int, expected_per_cycle_m: float,
+                 min_fraction: float = 0.5):
+        self._window = max(2, int(window_cycles))
+        self._expected = abs(float(expected_per_cycle_m))
+        self._min_fraction = float(min_fraction)
+        self._poses: list = []
+        self._permitted: list = []
+
+    def update(self, x: float, y: float, output_moving: bool) -> bool:
+        """One control cycle. True when this is a freeze: the supervisor permitted
+        motion for most of the window and the robot delivered a fraction of it."""
+        self._poses.append((x, y))
+        self._permitted.append(bool(output_moving))
+        if len(self._poses) > self._window:
+            self._poses.pop(0)
+            self._permitted.pop(0)
+        if len(self._poses) < self._window:
+            return False
+        achieved = math.hypot(self._poses[-1][0] - self._poses[0][0],
+                              self._poses[-1][1] - self._poses[0][1])
+        expected = self._expected * (self._window - 1)
+        permitted = sum(1 for p in self._permitted if p)
+        return (expected > 0.0
+                and permitted * 2 >= len(self._permitted)
+                and achieved < self._min_fraction * expected)
