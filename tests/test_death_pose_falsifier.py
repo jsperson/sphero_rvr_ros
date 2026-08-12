@@ -152,6 +152,116 @@ def test_the_margin_is_stated_not_assumed():
         "the reconstruction's own error and the raw scan must be re-captured")
 
 
+def _rotated_death_pose_scan(stamp=NOW):
+    """The same room, seen after the rover has pivoted onto the open bearing."""
+    rotated = {}
+    for deg, r in DEATH_POSE_PROFILE.items():
+        moved = int(round(((deg - OPEN_BEARING_DEG + 180) % 360 - 180) / 15.0)) * 15
+        if moved == 180:
+            moved = -180
+        rotated[moved] = min(rotated.get(moved, 99.0), r)
+    for deg in DEATH_POSE_PROFILE:
+        rotated.setdefault(deg, 6.0)
+    inc = 2.0 * math.pi / COUNT
+    ranges = []
+    for i in range(COUNT):
+        bearing = math.degrees(-math.pi + i * inc)
+        bucket = int(round(bearing / 15.0)) * 15
+        if bucket == 180:
+            bucket = -180
+        ranges.append(rotated[bucket])
+    return ScanInput(
+        ranges=tuple(ranges), angle_min=-math.pi, angle_increment=inc,
+        range_min=0.05, range_max=8.0, stamp=stamp, received_at=stamp,
+        frame_id="laser", transform_to_base=Transform2D())
+
+
+def test_the_death_pose_escapes():
+    """REVERT-PROOF 6 -- the whole of Part Two, at the pose that motivated it.
+
+    The falsifier above asked whether the supervisor WOULD have granted the pivot.
+    This asks whether the ladder now COMMANDS it, and it takes every command from the
+    ladder itself through the real supervisor on the deployed config:
+
+      * the stall is lidar-visible (the supervisor is refusing us) and the gap search
+        reports -71.4 deg -> the first escape is a pivot toward the gap, not a reverse;
+      * the supervisor grants that pivot;
+      * the pivot ends when the gap reaches the nose -- judged by the room, since the
+        driver self-regulates a pivot at ~5x the rate the wheel-yaw guard believes
+        possible (D32);
+      * the rover re-stalls at the same spot, and the ladder RESUMES at the drive-out
+        rather than starting over with a reverse;
+      * the supervisor grants the drive-out too.
+
+    Against HEAD every one of those five is false: the first escape is a straight
+    reverse, it is credited after 0.12 m, and the second stall reverses again.
+    """
+    from sphero_rvr_core.stall_ladder import (
+        DRIVE_OPEN, PIVOT_OPEN, LadderConfig, StallLadder)
+
+    cfg = deployed_config()
+    ladder_cfg = LadderConfig()
+    ladder = StallLadder(ladder_cfg)
+    bearing = math.radians(OPEN_BEARING_DEG)
+    hz, t = 10.0, 0.0
+
+    escape = None
+    for i in range(int(20 * hz)):
+        t = i / hz
+        escape = ladder.step(x=0.428, y=-0.482, yaw=math.radians(-135.1), now=t,
+                             commanding=True, output_moving=False,
+                             open_bearing_rad=bearing)
+        if escape.action == "rung":
+            break
+    assert escape.rung == PIVOT_OPEN, (
+        f"the ladder opened with {escape.rung} at the pose where its own lidar "
+        "reported 2.07 m of open floor 71 deg to the right")
+    assert escape.angular_z < 0.0, "pivoted away from the gap"
+
+    sup = CollisionStopSupervisor(cfg, now=NOW)
+    sup.update_scan(death_pose_scan(), now=NOW)
+    granted = sup.apply_command(
+        TwistCommand(escape.linear_x, escape.angular_z), now=NOW)
+    assert abs(granted.output.angular_z) > 0.0, (
+        f"the supervisor refused the ladder's pivot "
+        f"({granted.state.value}/{granted.reason})")
+
+    # The body turns at the driver's measured rate and the gap comes to the nose.
+    cleared = None
+    for i in range(1, int(20 * hz)):
+        bearing = min(0.0, bearing + 2.9 / hz)
+        cleared = ladder.step(x=0.428, y=-0.482, yaw=math.radians(-135.1),
+                              now=t + i / hz, commanding=True, output_moving=True,
+                              open_bearing_rad=bearing)
+        if cleared.reason.endswith("_cleared"):
+            t = t + i / hz
+            break
+    assert cleared.reason == f"{PIVOT_OPEN}_cleared", (
+        "the pivot never ended: at the measured rate it would still be spinning when "
+        "its budget expired, ~500 deg past the gap it was aiming at")
+    assert abs(bearing) <= ladder_cfg.pivot_target_tolerance_rad
+
+    # Same spot, stalled again: the ladder must go UP, to the drive-out.
+    drive = None
+    for i in range(1, int(20 * hz)):
+        drive = ladder.step(x=0.428, y=-0.482, yaw=math.radians(-135.1),
+                            now=t + 0.1 + i / hz, commanding=True,
+                            output_moving=False, open_bearing_rad=bearing)
+        if drive.action == "rung":
+            break
+    assert drive.rung == DRIVE_OPEN, (
+        f"the second stall ran {drive.rung} — without escalation memory the rover "
+        "pivots, hands back, drives into the same corner and pivots again")
+    assert drive.linear_x > 0.0
+
+    sup2 = CollisionStopSupervisor(cfg, now=NOW)
+    sup2.update_scan(_rotated_death_pose_scan(), now=NOW)
+    out = sup2.apply_command(TwistCommand(drive.linear_x, drive.angular_z), now=NOW)
+    assert out.output.linear_x > 0.0, (
+        f"the supervisor refused the ladder's drive-out "
+        f"({out.state.value}/{out.reason}) — pivoting there would strand it")
+
+
 def test_driving_out_along_the_open_bearing_is_also_granted():
     """Rung 4 follows rung 3, so the escape is only real if the drive-out is granted
     too. Checked at the ladder's own forward speed, not cruise."""

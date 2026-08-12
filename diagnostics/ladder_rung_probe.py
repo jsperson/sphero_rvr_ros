@@ -181,10 +181,12 @@ def make_supervisor(sc, latch):
 def rung_commands(cfg=LadderConfig(), open_bearing=1.0):
     """The exact commands the ladder emits, taken from the ladder itself."""
     out = {}
-    for i, rung in enumerate(RUNG_ORDER):
+    for rung in RUNG_ORDER:
         ladder = StallLadder(cfg)
-        ladder._rung_index = i          # probe the rung directly, not via 12 s of clock
-        out[rung] = ladder._rung_command(open_bearing)
+        # Ask for each rung's command directly rather than spending 12 s of simulated
+        # clock climbing to it. The ladder no longer indexes rungs by position (the
+        # order depends on the stall's cause now), so the rung is named, not numbered.
+        out[rung] = ladder._rung_command(rung, open_bearing)
     return out
 
 

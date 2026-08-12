@@ -11,8 +11,15 @@ a mission.
 This module owns the replacement contract:
 
   * ONE predicate for "we are not getting anywhere", covering every cause.
-  * ONE escalating sequence of escapes, tried in order until one WORKS.
+  * ONE escalating sequence of escapes, ORDERED BY THE STALL'S CAUSE, tried until one
+    WORKS -- where "works" means the situation CHANGED, not that the robot moved.
+  * The ladder REMEMBERS: a second stall in the same place resumes at the next rung,
+    and the budget bounds complete traversals rather than repeats of rung 1.
   * A failure is counted ONCE PER EXHAUSTED LADDER, never once per refused action.
+
+Version 2 (docs/turning_batch_design.md PART TWO) exists because version 1 danced: two
+missions, 39 invocations, every one of them a 0.12 m straight reverse credited as an
+escape, and rung 3 -- the pivot toward open floor -- never ran on hardware at all.
 
 Pure core: no ROS, no scan parsing, no motion. The caller supplies pose, yaw, what it
 commanded, what the supervisor actually emitted, and which bearing is most open; this
@@ -24,29 +31,29 @@ from typing import Optional
 import math
 
 
-# Rungs in escalation order. Each is an ordinary drive command through the existing
+# The four escapes. Each is an ordinary drive command through the existing
 # supervisor -- deliberately NOT a Nav2 behaviour, because decisive mode removes the
 # local costmap that behavior_server's Spin gate reads (D16).
 REVERSE_STRAIGHT = "reverse_straight"
 REVERSE_ARC = "reverse_arc"
 PIVOT_OPEN = "pivot_open"
 DRIVE_OPEN = "drive_open"
-RUNG_ORDER = (REVERSE_STRAIGHT, REVERSE_ARC, PIVOT_OPEN, DRIVE_OPEN)
 
-# F6. A rung used to be judged by the axis its REQUEST implied, which is wrong in the
-# one geometry that motivated rung 2: under `rear_hold` the supervisor refuses the
-# linear half of a reverse arc and passes the ANGULAR through, so what actually
-# reaches the motors is a pure rotation -- judged by POSITION it can never be
-# credited, burns its full budget, and (before F1) that wasted time was fatal.
+# ORDER IS CONDITIONED ON THE STALL'S CAUSE (design note PART TWO §9A).
 #
-# So progress is judged on EITHER axis. The rung asked for something; the supervisor
-# decided what we actually got; the only honest question is whether we moved.
-_RUNG_PROGRESS = {
-    REVERSE_STRAIGHT: "either",
-    REVERSE_ARC: "either",
-    PIVOT_OPEN: "yaw",
-    DRIVE_OPEN: "either",
-}
+# Reverse-first was designed for BLIND CONTACT, where nothing sees the obstacle and
+# the path we came in on is the only route known to be clear (D25). It is the wrong
+# first move for a stall whose cause a sensor can name: two missions, 39 invocations,
+# every one of them starting at straight reverse, and rung 3 -- the pivot toward open
+# floor -- never ran on hardware at all. At the second mission's death pose the
+# rover's own lidar reported 2.07 m of open floor at -60 deg while it gave up five
+# times in a row (§7.2).
+#
+# The two causes are distinguishable at the moment the ladder begins: the freeze vote
+# (`output_moving` majority) already separates "the supervisor refused us, so a gate
+# can see something" from "we were permitted to move and did not, so nothing can".
+RUNG_ORDER = (REVERSE_STRAIGHT, REVERSE_ARC, PIVOT_OPEN, DRIVE_OPEN)
+VISIBLE_RUNG_ORDER = (PIVOT_OPEN, DRIVE_OPEN, REVERSE_ARC, REVERSE_STRAIGHT)
 
 
 @dataclass(frozen=True)
@@ -80,23 +87,67 @@ class LadderConfig:
     # --- anti-livelock budgets -------------------------------------------------
     # A rung gets this long to prove itself before we escalate.
     rung_budget_s: float = 3.0
-    # A ladder that ESCAPES and then re-stalls on the same goal is thrash-with-motion:
-    # bounded nowhere without this. Two attempts, then the goal is genuinely bad.
-    max_invocations_per_goal: int = 2
+    # BOUNDS COMPLETE LADDER TRAVERSALS, not repeats of one escape. This used to be
+    # `max_invocations_per_goal = 2`, and with every stall restarting at rung 1 (see
+    # the escalation memory below) two invocations bought the goal two identical
+    # reverses and an abort -- 39 field invocations, not one of which reached rung 3.
+    # One traversal now means every rung gets one honest attempt on this goal, and a
+    # goal's total escape time stays bounded at roughly 4 x rung_budget_s.
+    max_ladder_traversals_per_goal: int = 1
+    # Escalation memory is per STALL REGION: if the rover genuinely got somewhere
+    # between two stalls, the second one is a new problem and deserves the whole
+    # ladder again. `robot_radius` (0.14, lean_nav2.yaml:96) is the robot's own scale,
+    # and it separates the recorded populations with room to spare -- across both
+    # gauntlet runs, consecutive invocations at the SAME stall are <= 0.107 m apart
+    # (27 of 40) and every genuinely different place is >= 0.278 m away.
+    inter_stall_progress_m: float = 0.14
 
     # --- rung commands ---------------------------------------------------------
     reverse_speed_mps: float = 0.10
     forward_speed_mps: float = 0.10
     pivot_rate_rad_s: float = 0.40
-    # How far a successful escape must travel / turn before we call it cleared.
-    # 0.12 m, NOT the 0.5 m the design note quoted for rung 4: 0.5 m is a distance to
-    # travel INTO open space once free, while this is the threshold at which a rung
-    # has demonstrably broken the stall. Conflating them would keep a working escape
-    # running four times too long -- and under a rung budget, never credit it at all.
-    escape_distance_m: float = 0.12
     # How hard rung 4 steers toward the open bearing (rad/s per rad of bearing).
     drive_open_arc_gain: float = 0.5
-    escape_yaw_rad: float = 0.35
+
+    # --- clearance: a rung clears only if the SITUATION CHANGED (§9B) -----------
+    # Distance travelled is not change. `escape_distance_m` (0.12 m of any motion)
+    # used to be the whole test, and run 20260811_211237 shows what it credits: 14
+    # invocations, 14 straight reverses of 0.105-0.130 m, every one credited as an
+    # escape, and 14 re-stalls within 12 s a median of 0.033 m from where the escape
+    # began. Median fraction of that travel that was AXIAL: 100.0%. The rover backed
+    # up 12 cm and rolled forward onto the same floor, and the ladder called it a win
+    # twice per goal until the budget ran out. Scott: "backing up and rolling forward
+    # shouldn't clear the ladder."
+    #
+    # So the test is a change that driving forward again cannot undo, and both
+    # thresholds come from the robot and the DEPLOYED supervisor config:
+    #
+    #   * 30 deg of net heading change -- `front_stop_min/max_angle_deg` +-30
+    #     (config/collision_stop.yaml:40-41) is the half-sector of the gate that
+    #     stopped us, so it is exactly the turn that moves a dead-ahead blocker out
+    #     of it.
+    #   * 0.14 m of LATERAL displacement -- `robot_radius` (lean_nav2.yaml:96), the
+    #     shift that moves the footprint's swath off the blocker. Lateral means
+    #     perpendicular to the heading we stalled on; axial travel counts for
+    #     nothing, which is the whole point.
+    #
+    # Measured against both gauntlet runs' complete populations: this credits 0 of
+    # the 14 dance episodes and 0 of gauntlet 1's 28, where the distance test credits
+    # all 14. Max lateral over those 14: 0.006 m. Max net heading: 6.5 deg.
+    escape_yaw_rad: float = 0.524
+    escape_lateral_m: float = 0.14
+    # THE PIVOT RUNG IS CREDITED BY THE LIDAR, NOT BY WHEEL ODOMETRY. Its job is to
+    # point the nose at the gap, so its clear test is "the open bearing has shrunk
+    # into this tolerance", measured against the room by the scan the caller hands in
+    # -- a rotation the tracks only pretended to make does not move the room.
+    #
+    # Derived: the driver ignores commanded pivot magnitude and self-regulates at a
+    # measured 2.90 rad/s median (D32), so one cycle of the 10 Hz control loop is
+    # ~0.29 rad and one cycle is the smallest command this stack can issue. With the
+    # 1.5x margin the batch already adopted for the same reason (design note §2's
+    # "~0.37 rad angular resolution" ruling) that is 0.435 -> 0.45 rad. A tolerance
+    # below that floor cannot be regulated at 10 Hz; the loop overshoots and hunts.
+    pivot_target_tolerance_rad: float = 0.45
 
 
 @dataclass(frozen=True)
@@ -125,12 +176,20 @@ class LadderResult:
     # the ladder when the honest answer is that the room had it surrounded. Same
     # honest-reporting rule as D24's UNKNOWN vs zero remaining candidates.
     genuinely_wedged: bool = False
-    # Set when the ladder declined to act because this goal's invocation budget was
+    # Set when the ladder declined to act because this goal's escape budget was
     # already spent: NOTHING was tried, so nothing was permitted or refused. The
     # third state. Collapsing it into "ineffective" made the controller report that
     # the rover had been permitted to move and it had not helped -- blaming the
     # ROBOT for trying when it never tried. Five such lines in gauntlet run
     # 20260811_103337, against a recorder showing zero commands and one pose.
+    #
+    # It should now be RARE. Under the old per-invocation budget it was the ONLY
+    # exhaustion either gauntlet mission ever reported (7 of 7 and 12 of 12), because
+    # two invocations of a false-succeeding rung 1 spent the budget without ever
+    # escalating. With a traversal budget, a goal is only refused an escape after
+    # every rung has actually been tried, so `all_rungs_ineffective` and
+    # `genuinely_wedged` -- the two outcomes that say something diagnostic about the
+    # room -- become the normal way a ladder ends.
     budget_exhausted: bool = False
 
 
@@ -142,7 +201,7 @@ class StallLadder:
     """Detects no-progress from any cause and escalates through the escapes.
 
     One instance per goal. The caller constructs a fresh one (or calls `reset_goal`)
-    when a new goal begins, because the invocation budget is per goal.
+    when a new goal begins, because the escape budget is per goal.
     """
 
     def __init__(self, config: Optional[LadderConfig] = None):
@@ -153,16 +212,23 @@ class StallLadder:
     def reset_goal(self):
         self._invocations = 0
         self._clear_monitor()
-        self._rung_index = None
-        self._rung_started = None
-        self._rung_ref = None
+        self._end_rung()
+        self._forget_escalation()
+        self._last_begin_xy = None
+
+    def _forget_escalation(self):
+        """Start the ladder over at the bottom: every rung untried, budget renewed.
+
+        Only two things may do this -- a genuinely new goal (`reset_goal`, driven by
+        the explorer's goal_generation) and genuine progress between two stalls.
+        """
+        self._tried = []
+        self._traversals = 0
         self._any_rung_moved = False
-        self._rung_yaw = 0.0
-        self._rung_last_yaw = None
-        self._rung_last_t = None
+        self._order = RUNG_ORDER
 
     def abandon_rung(self):
-        """Drop any rung in progress, keeping the per-goal invocation budget.
+        """Drop any rung in progress, keeping the per-goal escape budget AND memory.
 
         F10. The ladder deliberately PERSISTS across a same-destination replan (see
         the controller: bt_navigator replans ~1 Hz, and resetting there would clear
@@ -170,11 +236,22 @@ class StallLadder:
         goal that ends while rung 3 is running would leave the next execute loop
         resuming someone else's escape, with a stale reference pose and a stale
         clock. Called when a goal ends for any reason -- arrived, aborted, cancelled.
+
+        The escalation memory deliberately survives: the rung that was interrupted
+        has still been TRIED, and forgetting that is how a lifecycle event turns into
+        an infinite loop of rung 1 (D34's mechanism, in the register).
         """
-        self._rung_index = None
+        self._end_rung()
+        self._clear_monitor()
+
+    def _end_rung(self):
+        self._rung = None
         self._rung_started = None
         self._rung_ref = None
-        self._clear_monitor()
+        self._rung_yaw = 0.0
+        self._rung_last_yaw = None
+        self._rung_last_t = None
+        self._rung_bearing_ref = None
 
     def _clear_monitor(self):
         self._ref = None
@@ -191,16 +268,21 @@ class StallLadder:
 
     @property
     def active(self) -> bool:
-        return self._rung_index is not None
+        return self._rung is not None
 
     @property
     def invocations(self) -> int:
         return self._invocations
 
+    @property
+    def tried_rungs(self) -> tuple:
+        """Which escapes this goal has already had, in the order it had them."""
+        return tuple(self._tried)
+
     # ------------------------------------------------------------------ main entry
     def step(self, *, x: float, y: float, yaw: float, now: float,
              commanding: bool, output_moving: bool,
-             open_bearing_rad: float = 0.0) -> LadderResult:
+             open_bearing_rad: Optional[float] = None) -> LadderResult:
         """One control cycle.
 
         `commanding`    -- the controller wants to move (its command is non-zero).
@@ -208,9 +290,17 @@ class StallLadder:
                            between these two is the whole point: on 2026-08-10 they
                            disagreed for 14 straight seconds and only the second one
                            was telling the truth.
-        `open_bearing_rad` -- bearing of the most open direction, robot frame, for the
-                           pivot and drive rungs. Supplied by the caller because this
-                           module does not parse scans.
+        `open_bearing_rad` -- bearing of the most open direction, ROBOT frame, or
+                           **None when the caller does not know one**. Supplied by the
+                           caller because this module does not parse scans.
+
+        NONE IS NOT ZERO, and the caller must not collapse them. Zero means "the way
+        out is dead ahead"; None means "no scan, stale scan, or no TF to place it
+        with". The controller used to return 0.0 for both, so the ladder inferred a
+        bearing it had never been given -- and this module now decides the ESCAPE
+        ORDER from that value, which is precisely the seam where inferring another
+        component's state has cost this project three mission-killers. Unknown falls
+        back to reverse-first, the order that needs no bearing at all.
         """
         cfg = self._cfg
 
@@ -297,6 +387,41 @@ class StallLadder:
         self._window = 0
         self._out_moving = 0
 
+    def _order_for(self, freeze, open_bearing):
+        """Which escape sequence this stall's CAUSE calls for (§9A).
+
+        Pivot-first needs two things to be true: a gate can see what stopped us (so
+        the entry path is not our only known-clear route), and there is somewhere to
+        turn TO. A bearing already inside the pivot tolerance is not somewhere to turn
+        to -- the gap is dead ahead and pivoting toward it is a no-op -- and an
+        unknown bearing is not one either.
+
+        A FREEZE OVERRIDES EVERYTHING, including a traversal already in progress: the
+        moment nothing can explain our immobility, the retreats come first again, and
+        the rung that drives FORWARD must not be reached while an untried retreat
+        exists. Otherwise a traversal keeps the plan it started with -- the pivot's
+        whole point is that the drive-out follows it, and re-deriving the order after
+        the pivot has swung the gap to the nose would answer "nothing to pivot to,
+        start again with a reverse", undoing the escape it just completed.
+        """
+        if freeze:
+            return RUNG_ORDER
+        if self._tried:
+            return self._order
+        if open_bearing is None:
+            return RUNG_ORDER
+        if abs(open_bearing) <= self._cfg.pivot_target_tolerance_rad:
+            return RUNG_ORDER
+        return VISIBLE_RUNG_ORDER
+
+    def _next_rung(self, order):
+        """The first escape in `order` this goal has not had yet, or None if all four
+        have been tried -- which is what completes a traversal."""
+        for rung in order:
+            if rung not in self._tried:
+                return rung
+        return None
+
     def _begin(self, now, x, y, yaw, open_bearing, reason):
         cfg = self._cfg
         # A FREEZE is "we were allowed to drive for most of this window and still did
@@ -304,26 +429,54 @@ class StallLadder:
         # there is nothing invisible to report.
         freeze = self._window > 0 and self._out_moving * 2 >= self._window
         self._invocations += 1
-        if self._invocations > cfg.max_invocations_per_goal:
-            # Escaped before and re-stalled on the same goal. The goal is the problem.
-            self._rung_index = None
+
+        # ESCALATION MEMORY, and the one thing that resets it. A second stall in the
+        # same place is the same problem and must resume where the last one left off
+        # (§9C); a second stall a real distance away is a NEW problem and gets the
+        # whole ladder again. Distance from the last stall is the honest test of which
+        # one happened -- and it is measured between the two stalls, never inside one
+        # rung, because 0.12 m of reverse inside a rung is exactly the motion that
+        # fooled the old clearance test.
+        if self._last_begin_xy is not None:
+            lx, ly = self._last_begin_xy
+            if math.hypot(x - lx, y - ly) >= cfg.inter_stall_progress_m:
+                self._forget_escalation()
+        self._last_begin_xy = (x, y)
+
+        # The cause is classified per STALL, and the order it chooses holds for as
+        # long as that stall's escapes keep running. Re-deciding mid-escalation would
+        # let a blind contact -- whose whole rationale is that the entry path is the
+        # only route known to be clear -- switch to a plan that drives FORWARD because
+        # the lidar happens to see a gap somewhere. The next stall re-derives it.
+        self._order = self._order_for(freeze, open_bearing)
+        rung = self._next_rung(self._order)
+        if rung is None or self._traversals >= cfg.max_ladder_traversals_per_goal:
+            # Every escape has already had its honest attempt on this goal. Nothing is
+            # tried here, so nothing is permitted or refused -- say exactly that.
+            self._end_rung()
             return LadderResult("exhausted", reason="ladder_budget_exhausted",
                                 exhausted=True, freeze=freeze,
                                 budget_exhausted=True)
-        self._rung_index = 0
+        self._start_rung(rung, now, x, y, yaw, open_bearing)
+        cmd = self._rung_command(rung, open_bearing)
+        return LadderResult("rung", cmd[0], cmd[1], rung,
+                            f"{reason}->{rung}", freeze=freeze)
+
+    def _start_rung(self, rung, now, x, y, yaw, open_bearing):
+        self._rung = rung
+        self._tried.append(rung)
         self._rung_started = now
         self._rung_ref = (x, y, yaw)
-        self._any_rung_moved = False
         self._rung_yaw = 0.0
         self._rung_last_yaw = None
         self._rung_last_t = None
-        cmd = self._rung_command(open_bearing)
-        return LadderResult("rung", cmd[0], cmd[1], RUNG_ORDER[0],
-                            f"{reason}->{RUNG_ORDER[0]}", freeze=freeze)
+        # Where the gap was when this rung started, so the pivot can be judged by how
+        # far the ROOM has moved rather than by how far the wheels claim to have
+        # turned.
+        self._rung_bearing_ref = open_bearing
 
-    def _rung_command(self, open_bearing):
+    def _rung_command(self, rung, open_bearing):
         cfg = self._cfg
-        rung = RUNG_ORDER[self._rung_index]
         if rung == REVERSE_STRAIGHT:
             return (-cfg.reverse_speed_mps, 0.0)
         if rung == REVERSE_ARC:
@@ -341,64 +494,84 @@ class StallLadder:
         # rover pushing into the thing that stopped it. Arcing also gives the rung a
         # chance under a latch, where straight forward is refused outright.
         turn = max(-cfg.pivot_rate_rad_s,
-                   min(cfg.pivot_rate_rad_s, open_bearing * cfg.drive_open_arc_gain))
+                   min(cfg.pivot_rate_rad_s,
+                       (open_bearing or 0.0) * cfg.drive_open_arc_gain))
         return (cfg.forward_speed_mps, turn)
+
+    def _situation_changed(self, x, y, yaw, now, open_bearing):
+        """Has this rung produced a change that driving forward again cannot undo?
+
+        Two measures, and no third. The rung asked for something; the supervisor
+        decided what actually reached the motors; the only honest question is whether
+        the ROBOT'S RELATIONSHIP TO WHAT STOPPED IT is different now.
+        """
+        cfg = self._cfg
+        rx, ry, ryaw = self._rung_ref
+
+        # SUSTAINED, RATE-SANE yaw only, signed. _run_rung once applied no rate filter
+        # at all, so a single slip burst mid-grind credited the pivot rung as
+        # "cleared" and handed control back while the rover was still pinned; and
+        # accumulating |step| credited ROCKING, a rover pinned against something
+        # compliant oscillating within the rate-sane band, "escaping" having turned
+        # nowhere. Net rotation is what an escape means.
+        if self._rung_last_yaw is not None and now > self._rung_last_t:
+            step = _wrap(yaw - self._rung_last_yaw)
+            if abs(step) / (now - self._rung_last_t) <= cfg.max_yaw_rate_rad_s:
+                self._rung_yaw += step
+        self._rung_last_yaw, self._rung_last_t = yaw, now
+
+        if self._rung == PIVOT_OPEN:
+            # THE PIVOT IS JUDGED BY THE ROOM, NOT BY THE WHEELS. Its purpose is to
+            # point the nose at the gap, so it is finished when the gap is in front of
+            # us -- and the amount we turned to get there is read off the bearing,
+            # which only a real body rotation can move. Wheel-odom yaw cannot serve
+            # here: the driver self-regulates a pivot at ~2.9 rad/s, five times the
+            # rate the grind filter calls physically possible (D32), so an
+            # accumulator-based test can never credit a real pivot and this rung would
+            # burn its whole budget spinning ~500 deg past the gap it was aiming at.
+            # D32 still owns the discriminator everywhere else; this rung simply does
+            # not ask the instrument that has the defect.
+            if open_bearing is None or self._rung_bearing_ref is None:
+                return False
+            turned = abs(self._rung_bearing_ref) - abs(open_bearing)
+            return (abs(open_bearing) <= cfg.pivot_target_tolerance_rad
+                    and turned >= cfg.escape_yaw_rad)
+
+        if abs(self._rung_yaw) >= cfg.escape_yaw_rad:
+            return True
+        # LATERAL displacement only: perpendicular to the heading we stalled on.
+        # Reversing down our own entry path and driving back up it is the dance, not
+        # an escape, and it is 100% axial by construction.
+        dx, dy = x - rx, y - ry
+        lateral = -dx * math.sin(ryaw) + dy * math.cos(ryaw)
+        return abs(lateral) >= cfg.escape_lateral_m
 
     def _run_rung(self, x, y, yaw, now, output_moving, open_bearing):
         cfg = self._cfg
         if output_moving:
             self._any_rung_moved = True
-        rung = RUNG_ORDER[self._rung_index]
-        rx, ry, ryaw = self._rung_ref
+        rung = self._rung
 
-        # Did this rung WORK? Ask the measure that matches what the rung does.
-        measure = _RUNG_PROGRESS[rung]
-        if measure in ("yaw", "either"):
-            # SUSTAINED, RATE-SANE yaw only. _run_rung applied no rate filter at all,
-            # so a single slip burst mid-grind credited the pivot rung as "cleared"
-            # and handed control back while the rover was still pinned. Accumulate
-            # only physically achievable per-cycle deltas.
-            # N3. SIGNED, then absolute at the end. Accumulating |step| credited
-            # rocking: a rover pinned against something compliant oscillates within
-            # the rate-sane band, banks unsigned steps, and "clears" the pivot rung in
-            # a second or two having turned nowhere -- burning an invocation and
-            # publishing pivot_open_cleared, which is telemetry that lies. Net
-            # rotation is what an escape means.
-            if self._rung_last_yaw is not None and now > self._rung_last_t:
-                step = _wrap(yaw - self._rung_last_yaw)
-                if abs(step) / (now - self._rung_last_t) <= cfg.max_yaw_rate_rad_s:
-                    self._rung_yaw += step
-            self._rung_last_yaw, self._rung_last_t = yaw, now
-            cleared = abs(self._rung_yaw) >= cfg.escape_yaw_rad
-        else:
-            cleared = False
-        if measure in ("position", "either"):
-            cleared = cleared or (math.hypot(x - rx, y - ry)
-                                  >= cfg.escape_distance_m)
-
-        if cleared:
-            self._rung_index = None
+        if self._situation_changed(x, y, yaw, now, open_bearing):
+            self._end_rung()
             self._clear_monitor()
             return LadderResult("drive", reason=f"{rung}_cleared")
 
         if now - self._rung_started >= cfg.rung_budget_s:
-            # Refused, or granted-but-ineffective. Both mean: try something else.
-            self._rung_index += 1
-            if self._rung_index >= len(RUNG_ORDER):
-                self._rung_index = None
+            # Refused, or granted-but-ineffective. Both mean: try something else --
+            # the next escape THIS STALL'S CAUSE has not had yet.
+            nxt = self._next_rung(self._order)
+            if nxt is None:
+                self._end_rung()
+                self._traversals += 1
                 wedged = not self._any_rung_moved
                 return LadderResult(
                     "exhausted",
                     reason=("genuinely_wedged" if wedged else "all_rungs_ineffective"),
                     exhausted=True, genuinely_wedged=wedged)
-            self._rung_started = now
-            self._rung_ref = (x, y, yaw)
-            self._rung_yaw = 0.0
-            self._rung_last_yaw = None
-            self._rung_last_t = None
-            nxt = RUNG_ORDER[self._rung_index]
-            cmd = self._rung_command(open_bearing)
+            self._start_rung(nxt, now, x, y, yaw, open_bearing)
+            cmd = self._rung_command(nxt, open_bearing)
             return LadderResult("rung", cmd[0], cmd[1], nxt, f"{rung}_failed->{nxt}")
 
-        cmd = self._rung_command(open_bearing)
+        cmd = self._rung_command(rung, open_bearing)
         return LadderResult("rung", cmd[0], cmd[1], rung, f"{rung}_running")

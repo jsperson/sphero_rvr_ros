@@ -15,7 +15,7 @@ import pytest
 from sphero_rvr_core.decisive_control import BackOffConfig, ProgressGuard
 from sphero_rvr_core.stall_ladder import (
     DRIVE_OPEN, PIVOT_OPEN, REVERSE_ARC, REVERSE_STRAIGHT, RUNG_ORDER,
-    LadderConfig, StallLadder,
+    VISIBLE_RUNG_ORDER, LadderConfig, StallLadder,
 )
 
 HZ = 20.0
@@ -131,16 +131,21 @@ def test_failure_is_counted_once_per_exhausted_ladder_not_per_refused_action():
 
 
 def test_a_working_rung_ends_the_ladder_without_a_failure():
-    """A successful escape is not a failure and must not tick anything."""
+    """A successful escape is not a failure and must not tick anything.
+
+    The escape here goes SIDEWAYS -- the supervisor granting the reverse an arc, or
+    the rover slipping off the thing it was against. Straight-back-and-forward is no
+    longer an escape and has its own test.
+    """
     ladder = StallLadder()
     cfg = LadderConfig()
-    x = 0.0
+    y = 0.0
     result = None
     for i in range(_cycles(10)):
         now = i / HZ
-        if ladder.active:            # the rung is driving us out
-            x += cfg.reverse_speed_mps / HZ
-        result = ladder.step(x=x, y=0.0, yaw=0.0, now=now,
+        if ladder.active:            # the rung is taking us off the approach line
+            y += cfg.reverse_speed_mps / HZ
+        result = ladder.step(x=0.0, y=y, yaw=0.0, now=now,
                              commanding=True, output_moving=ladder.active)
         if result.reason.endswith("_cleared"):
             break
@@ -151,22 +156,34 @@ def test_a_working_rung_ends_the_ladder_without_a_failure():
 # ------------------------------------------------------------ anti-livelock
 
 def test_repeated_escapes_on_one_goal_are_bounded():
-    """Escape-then-restall is thrash WITH motion, and is bounded nowhere without the
-    per-goal invocation budget."""
-    cfg = LadderConfig(max_invocations_per_goal=2)
+    """Escape-then-restall-in-the-same-place is thrash WITH motion, and is bounded
+    nowhere without the per-goal escape budget.
+
+    Every rung "succeeds" here -- the rover slides 0.14 m off its approach line, the
+    ladder credits it, and then the rover ends up right back where it stalled. That is
+    the field signature (run 211237: 14 escapes, 14 re-stalls, median 0.033 m from
+    where the escape started), so the budget must run out rather than the ladder
+    handing back forever.
+    """
+    cfg = LadderConfig()
     ladder = StallLadder(cfg)
-    x, now, exhausted = 0.0, 0.0, False
-    for _ in range(_cycles(120)):
+    y, now, exhausted = 0.0, 0.0, False
+    for _ in range(_cycles(300)):
         if ladder.active:
-            x += cfg.reverse_speed_mps / HZ      # every rung succeeds...
-        result = ladder.step(x=x, y=0.0, yaw=0.0, now=now,
+            y += cfg.reverse_speed_mps / HZ      # every rung succeeds...
+        else:
+            y = 0.0                              # ...and we end up back at the stall
+        result = ladder.step(x=0.0, y=y, yaw=0.0, now=now,
                              commanding=True, output_moving=ladder.active)
         if result.exhausted:
             exhausted = True
             break
         now += 1.0 / HZ
     assert exhausted, "a goal that escapes and re-stalls forever was never bounded"
-    assert ladder.invocations > cfg.max_invocations_per_goal
+    assert result.budget_exhausted, (
+        "the bound fired, but as the wrong outcome -- every rung had been tried")
+    assert set(ladder.tried_rungs) == set(RUNG_ORDER), (
+        f"the budget ran out before every escape had been tried: {ladder.tried_rungs}")
 
 
 def test_grind_yaw_does_not_count_as_progress():
@@ -205,24 +222,31 @@ def test_not_commanding_never_triggers_the_ladder():
         assert result.action == "drive"
 
 
-def test_pivot_rung_is_judged_by_yaw_not_distance():
-    """A pivot moves no distance by design. Judging it by position would mark a
-    perfectly good escape as ineffective and escalate past it."""
+def test_pivot_rung_is_judged_by_where_the_gap_is_not_by_distance():
+    """A pivot moves no distance by design, so position cannot judge it -- and wheel
+    yaw must not, because the driver self-regulates a pivot at ~2.9 rad/s, five times
+    the rate the grind filter calls physically possible (D32). What judges it is the
+    ROOM: the gap comes round to the nose as the body turns.
+    """
     cfg = LadderConfig()
     ladder = StallLadder(cfg)
-    now, yaw, reached_pivot = 0.0, 0.0, False
+    now, bearing, reached_pivot = 0.0, 1.2, False
     for _ in range(_cycles(60)):
-        result = ladder.step(x=0.0, y=0.0, yaw=yaw, now=now,
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now,
                              commanding=True, output_moving=True,
-                             open_bearing_rad=1.0)
+                             open_bearing_rad=bearing)
         if result.rung == PIVOT_OPEN:
             reached_pivot = True
-            yaw += cfg.pivot_rate_rad_s / HZ     # turning nicely, going nowhere
+            # The body turns toward the gap at the driver's real rate; the wheel-yaw
+            # this test never advances would be rejected by the rate filter anyway.
+            bearing = max(0.0, bearing - 2.9 / HZ)
         if reached_pivot and result.reason.endswith("_cleared"):
             assert result.reason == f"{PIVOT_OPEN}_cleared"
+            assert bearing <= cfg.pivot_target_tolerance_rad, (
+                "the pivot was credited before the gap was in front of the robot")
             return
         now += 1.0 / HZ
-    pytest.fail("a turning-but-stationary pivot rung was never credited as working")
+    pytest.fail("a pivot that brought the gap to the nose was never credited")
 
 
 def test_pivot_turns_toward_the_open_bearing():
@@ -399,13 +423,18 @@ def test_f4_real_chair_pin_burst_does_not_mask_the_stall():
 
 def test_f4_a_slip_burst_does_not_credit_the_pivot_rung():
     """_run_rung applied no rate filter at all, so one slip burst mid-grind marked
-    the pivot rung 'cleared' and handed control back with the rover still pinned."""
+    the pivot rung 'cleared' and handed control back with the rover still pinned.
+
+    The bearing is held STATIC throughout, which is the physical claim: tracks
+    slipping against a pin do not turn the body, so the room does not move.
+    """
     cfg = LadderConfig()
     ladder = StallLadder(cfg)
     now, yaw, in_pivot = 0.0, 0.0, False
     for i in range(_cycles(60)):
         result = ladder.step(x=0.0, y=0.0, yaw=yaw, now=now,
-                             commanding=True, output_moving=True)
+                             commanding=True, output_moving=True,
+                             open_bearing_rad=1.2)
         if result.rung == PIVOT_OPEN and result.action == "rung":
             in_pivot = True
             # A single impossible burst, then pinned again — the grind signature.
@@ -501,8 +530,10 @@ def test_n3_rocking_does_not_fake_clear_the_pivot_rung():
     swing = math.radians(1.5)
     assert swing * HZ < LadderConfig().max_yaw_rate_rad_s, "oscillation must be rate-sane"
     for i in range(_cycles(60)):
+        # Rocking does not turn the body, so the gap stays exactly where it was.
         result = ladder.step(x=0.0, y=0.0, yaw=yaw, now=now,
-                             commanding=True, output_moving=True)
+                             commanding=True, output_moving=True,
+                             open_bearing_rad=1.2)
         if result.rung == PIVOT_OPEN and result.action == "rung":
             in_pivot = True
             yaw += swing if (i // 2) % 2 == 0 else -swing   # rocking, net zero
@@ -512,16 +543,20 @@ def test_n3_rocking_does_not_fake_clear_the_pivot_rung():
 
 
 def test_n3_genuine_rotation_still_clears_the_pivot_rung():
-    """Paired negative: signed accumulation must not stop crediting a real turn."""
+    """Paired negative: rejecting rocking must not stop crediting a real turn.
+
+    A real turn moves the room, so the bearing to the gap closes as the body swings.
+    """
     cfg = LadderConfig()
     ladder = StallLadder(cfg)
-    now, yaw, in_pivot = 0.0, 0.0, False
+    now, bearing, in_pivot = 0.0, -1.2, False
     for _ in range(_cycles(60)):
-        result = ladder.step(x=0.0, y=0.0, yaw=yaw, now=now,
-                             commanding=True, output_moving=True)
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now,
+                             commanding=True, output_moving=True,
+                             open_bearing_rad=bearing)
         if result.rung == PIVOT_OPEN and result.action == "rung":
             in_pivot = True
-            yaw += cfg.pivot_rate_rad_s / HZ
+            bearing = min(0.0, bearing + cfg.pivot_rate_rad_s / HZ)
         if in_pivot and result.reason == f"{PIVOT_OPEN}_cleared":
             return
         now += 1.0 / HZ
@@ -538,32 +573,377 @@ def test_budget_spent_reports_as_itself_not_as_ineffective():
     genuinely_wedged=False, which made the controller log "we WERE permitted to move
     and it did not help": blaming the ROBOT for trying when it never tried. The
     recorder for that window shows zero commands, zero output and one pose.
+
+    Under the traversal budget this state is RARER but not gone: it is what a stall
+    gets once every escape on this goal has already had its honest attempt.
     """
-    cfg = LadderConfig(max_invocations_per_goal=1)
+    cfg = LadderConfig()
     ladder = StallLadder(cfg)
-    x, now, first = 0.0, 0.0, None
-    for _ in range(_cycles(40)):
-        if ladder.active:
-            x += cfg.reverse_speed_mps / HZ
-        first = ladder.step(x=x, y=0.0, yaw=0.0, now=now,
-                            commanding=True, output_moving=ladder.active)
+    now, result = 0.0, None
+    for _ in range(_cycles(40)):                 # one full traversal, nothing works
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now,
+                             commanding=True, output_moving=True)
         now += 1.0 / HZ
-        if first.exhausted:
+        if result.exhausted:
             break
-    assert first.exhausted and first.reason == "ladder_budget_exhausted"
-    assert first.budget_exhausted, "budget-spent did not report as itself"
-    assert not first.genuinely_wedged
-    # And it emitted NOTHING on the way there -- the field's zero-command signature.
-    ladder2 = StallLadder(cfg)
-    ladder2._invocations = cfg.max_invocations_per_goal
+    assert result.exhausted and result.reason == "all_rungs_ineffective", (
+        "a traversal in which every rung was tried must report what it found")
+
+    # The NEXT stall on the same goal is the budget-spent case, and it must emit
+    # nothing at all -- the field's zero-command signature.
     cmds = []
-    for i in range(_cycles(5)):
-        r = ladder2.step(x=0.0, y=0.0, yaw=0.0, now=i / HZ,
-                         commanding=True, output_moving=False)
+    for _ in range(_cycles(10)):
+        r = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now,
+                        commanding=True, output_moving=False)
+        now += 1.0 / HZ
         if r.action == "rung":
             cmds.append(r)
         if r.exhausted:
-            assert r.budget_exhausted
+            assert r.reason == "ladder_budget_exhausted"
+            assert r.budget_exhausted, "budget-spent did not report as itself"
+            assert not r.genuinely_wedged
             assert not cmds, "a rung was emitted despite the budget being spent"
             return
     pytest.fail("never exhausted")
+
+
+# ============================================================================
+# PART TWO -- THE DANCE. Revert-proofs 1-4 of docs/turning_batch_design.md §11.
+#
+# Two missions, 39 ladder invocations, every one of them starting at straight
+# reverse, and rung 3 -- the pivot toward open floor -- never once ran on hardware.
+# At the second mission's death pose the rover's own lidar reported 2.07 m of open
+# floor 71 deg to its right while it gave up five times in a row.
+# ============================================================================
+
+# THE 14 EPISODES of run 20260811_211237, measured from its recorder.
+#
+# Rung windows were taken from the RECORDER, not the log: rung 1 commands exactly
+# (-0.10, 0.00), a signature nothing else in this stack emits, so a contiguous run of
+# those rows IS the rung. (travel, lateral, net heading) per episode, where lateral is
+# perpendicular to the heading the rover stalled on. The whole population is inlined
+# rather than summarised, because the claim being pinned is about ALL of them.
+DANCE_EPISODES = [
+    # travel_m, lateral_m, dyaw_deg
+    (0.105, 0.004, +4.1), (0.106, 0.004, -4.4), (0.123, 0.000, -0.2),
+    (0.119, 0.001, -1.1), (0.108, 0.003, -4.9), (0.125, 0.004, +3.2),
+    (0.112, 0.001, +0.8), (0.110, 0.005, -4.7), (0.112, 0.004, +2.4),
+    (0.130, 0.006, -6.5), (0.119, 0.000, -0.2), (0.111, 0.000, +0.0),
+    (0.120, 0.001, -0.4), (0.115, 0.005, +3.8),
+]
+
+
+def _stall_until_rung(ladder, *, x=0.0, y=0.0, yaw=0.0, t0=0.0,
+                      output_moving=False, bearing=None, hz=HZ):
+    """Drive the no-progress predicate until a rung fires. Returns (result, now)."""
+    for i in range(_cycles(20, hz)):
+        now = t0 + i / hz
+        result = ladder.step(x=x, y=y, yaw=yaw, now=now, commanding=True,
+                             output_moving=output_moving, open_bearing_rad=bearing)
+        if result.action in ("rung", "exhausted"):
+            return result, now
+    pytest.fail("the ladder never triggered")
+
+
+def test_visible_stall_pivots_first():
+    """REVERT-PROOF 1. A stall the sensors can explain, with a gap to turn toward,
+    must PIVOT first -- not reverse.
+
+    The death pose, exactly: the supervisor refusing every command (so the freeze vote
+    says "a gate can see it") and the controller's own gap search reporting -71.4 deg.
+    Against HEAD this returns reverse_straight, as it did 39 times in the field.
+    """
+    ladder = StallLadder()
+    result, _ = _stall_until_rung(ladder, output_moving=False,
+                                  bearing=math.radians(-71.4))
+    assert result.rung == PIVOT_OPEN, (
+        f"a lidar-visible stall with 2 m of open floor at -71 deg opened with "
+        f"{result.rung} — this is the dance")
+    assert result.angular_z < 0.0, "pivoted away from the gap"
+    assert result.linear_x == 0.0, "a pivot must not acquire translation"
+
+
+def test_blind_contact_still_reverses_first():
+    """REVERT-PROOF 2. The pairing test that stops proof 1 from breaking D25.
+
+    A freeze -- the supervisor permitted motion and the rover did not move -- means
+    NOTHING can see what stopped us. The path we came in on is then the only route
+    known to be clear, and reverse-first is preserved exactly, gap or no gap.
+    """
+    ladder = StallLadder()
+    result, _ = _stall_until_rung(ladder, output_moving=True,
+                                  bearing=math.radians(-71.4))
+    assert result.freeze, "setup failed: this stall was not classified as a freeze"
+    assert result.rung == REVERSE_STRAIGHT, (
+        f"a blind contact opened with {result.rung} instead of backing out along the "
+        "entry path — D25's rationale is gone")
+
+
+def test_an_unknown_bearing_reverses_rather_than_guessing():
+    """The seam, asserted from the consumer's side: 'no bearing' is not 'dead ahead'.
+
+    The controller answers None when the scan is stale or unplaceable. Pivoting toward
+    a bearing nobody measured is exactly the class of mistake this project keeps
+    paying for, so an unknown bearing takes the order that needs no bearing.
+    """
+    ladder = StallLadder()
+    result, _ = _stall_until_rung(ladder, output_moving=False, bearing=None)
+    assert result.rung == REVERSE_STRAIGHT
+
+
+def test_a_gap_already_dead_ahead_is_not_somewhere_to_pivot_to():
+    """The other half of the same guard: a bearing inside the pivot tolerance is not a
+    turn worth making, and pivoting 'toward' it would be a no-op that burns a rung."""
+    ladder = StallLadder()
+    cfg = LadderConfig()
+    result, _ = _stall_until_rung(
+        ladder, output_moving=False,
+        bearing=cfg.pivot_target_tolerance_rad * 0.5)
+    assert result.rung == REVERSE_STRAIGHT
+
+
+def test_a_reverse_that_changes_nothing_does_not_clear():
+    """REVERT-PROOF 3. Scott: "backing up and rolling forward shouldn't clear the
+    ladder."
+
+    Replays all 14 rung-1 episodes of run 20260811_211237. Every one of them backed
+    straight down its own approach line -- median 100.0% of the travel axial, max
+    lateral 0.006 m, max net heading 6.5 deg -- and every one was credited, handing the
+    rover back to the same approach: 14 re-stalls within 12 s, a median of 0.033 m from
+    where the escape began.
+
+    Against HEAD (`escape_distance_m` 0.12, any direction) episodes 3, 6, 10 and 13
+    clear on this recorder data alone, so this test fails there; in the field, where
+    the ladder read TF rather than the recorder's odom, the log shows it credited all
+    fourteen (14 invocations, zero `_failed->` escalations).
+    """
+    cfg = LadderConfig()
+    for n, (travel, lateral, dyaw_deg) in enumerate(DANCE_EPISODES, 1):
+        ladder = StallLadder(cfg)
+        result, now = _stall_until_rung(ladder, output_moving=False)
+        assert result.rung == REVERSE_STRAIGHT
+        # The rung runs: the rover backs down its own approach line. Heading here is
+        # 0, so axial is x and lateral is y.
+        cycles = _cycles(cfg.rung_budget_s * 0.9)
+        for i in range(1, cycles + 1):
+            frac = i / cycles
+            r = ladder.step(x=-travel * frac, y=lateral * frac,
+                            yaw=math.radians(dyaw_deg) * frac,
+                            now=now + i / HZ, commanding=True, output_moving=True,
+                            open_bearing_rad=None)
+            assert not r.reason.endswith("_cleared"), (
+                f"episode {n}: {travel:.3f} m of straight reverse ({lateral:.3f} m "
+                f"lateral, {dyaw_deg:+.1f} deg) was credited as an escape")
+
+
+def test_a_long_straight_reverse_still_changes_nothing():
+    """The part of proof 3 the RECORDED episodes cannot prove, stated separately
+    rather than smuggled in.
+
+    Every one of the 14 field episodes travelled 0.105-0.130 m, all of it axial -- so
+    they are rejected by the 0.14 m threshold alone, and they would be rejected even
+    by a criterion that counted displacement in ANY direction. A mutation run proved
+    exactly that: replacing the lateral test with a total-displacement test left the
+    replay green. The claim that AXIAL TRAVEL COUNTS FOR NOTHING therefore needs a
+    case the recording does not contain -- and the new code produces one, because a
+    rung 1 that is no longer credited early now runs its full budget: 3.0 s at
+    0.10 m/s is 0.30 m of straight reverse, more than twice the threshold, and it
+    still leaves the rover facing the same obstacle on the same line.
+    """
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    result, now = _stall_until_rung(ladder, output_moving=False)
+    assert result.rung == REVERSE_STRAIGHT
+    x = 0.0
+    for i in range(1, _cycles(cfg.rung_budget_s) + 1):
+        x -= cfg.reverse_speed_mps / HZ          # straight back, heading 0
+        r = ladder.step(x=x, y=0.0, yaw=0.0, now=now + i / HZ, commanding=True,
+                        output_moving=True, open_bearing_rad=None)
+        assert not r.reason.endswith("_cleared"), (
+            f"{abs(x):.2f} m of straight reverse was credited as an escape")
+    assert abs(x) >= 2 * cfg.escape_lateral_m, (
+        f"the reverse under test only reached {abs(x):.2f} m — not long enough to "
+        "distinguish a lateral test from a distance test")
+
+
+def test_a_bearing_that_goes_unknown_cannot_credit_a_pivot():
+    """The seam again, where it actually bites: the pivot is credited by comparing
+    two lidar bearings, so a bearing that stops existing must stop the comparison.
+
+    Coercing an absent bearing to 0.0 -- the controller's old behaviour -- reads as
+    "the gap is dead ahead now", which is indistinguishable from a completed pivot
+    and would credit an escape the robot never made.
+    """
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    now, in_pivot = 0.0, False
+    for _ in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now, commanding=True,
+                             output_moving=True,
+                             open_bearing_rad=(None if in_pivot else 1.2))
+        if result.rung == PIVOT_OPEN and result.action == "rung":
+            in_pivot = True          # the scan goes stale the moment we start turning
+        assert not (in_pivot and result.reason == f"{PIVOT_OPEN}_cleared"), (
+            "a pivot was credited off a bearing the caller said it did not have")
+        now += 1.0 / HZ
+
+
+def test_second_stall_resumes_at_the_next_rung():
+    """REVERT-PROOF 4. Two stalls on one goal must reach rung 2.
+
+    `_begin` used to set the rung index to 0 unconditionally, so the second stall on a
+    goal ran rung 1 AGAIN. With a rung 1 that false-succeeds, that made rungs 2-4
+    unreachable by construction -- which is why 39 field invocations produced zero
+    escalations past the first rung.
+    """
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+
+    # Stall one: rung 1 fires and "works" -- the rover slides off its approach line.
+    first, now = _stall_until_rung(ladder, output_moving=False)
+    assert first.rung == REVERSE_STRAIGHT
+    y = 0.0
+    for i in range(1, _cycles(5)):
+        y = min(cfg.escape_lateral_m, y + cfg.reverse_speed_mps / HZ)
+        r = ladder.step(x=0.0, y=y, yaw=0.0, now=now + i / HZ,
+                        commanding=True, output_moving=True, open_bearing_rad=None)
+        if r.reason.endswith("_cleared"):
+            now = now + i / HZ
+            break
+    else:
+        pytest.fail("setup failed: rung 1 never cleared")
+
+    # ...and the rover ends up back where it stalled, which is what the field shows.
+    second, _ = _stall_until_rung(ladder, t0=now + 0.1, output_moving=False)
+    assert second.rung == REVERSE_ARC, (
+        f"the second stall on this goal ran {second.rung} again — the ladder has no "
+        "memory and rungs 2-4 stay unreachable")
+    assert ladder.tried_rungs == (REVERSE_STRAIGHT, REVERSE_ARC)
+
+
+def test_real_progress_between_stalls_earns_the_whole_ladder_again():
+    """The paired negative for proof 4: memory is per stall REGION, not per goal.
+
+    A stall 0.6 m from the last one is a different problem, and starting it half way
+    up the ladder would skip the retreats for no reason. The threshold is the robot's
+    own radius, and the recorded populations sit either side of it with room to spare:
+    across both gauntlet runs, consecutive invocations at the SAME stall are at most
+    0.107 m apart and every genuinely different place is at least 0.278 m away.
+    """
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    first, now = _stall_until_rung(ladder, output_moving=False)
+    assert first.rung == REVERSE_STRAIGHT
+    ladder.abandon_rung()
+    second, _ = _stall_until_rung(ladder, x=0.6, t0=now + 1.0, output_moving=False)
+    assert second.rung == REVERSE_STRAIGHT, (
+        "a stall 0.6 m away inherited the last stall's escalation")
+
+
+def test_the_budget_bounds_complete_traversals_not_repeats_of_rung_one():
+    """§9's budget ruling, as an executable fact.
+
+    Under the old per-invocation budget, two invocations of a false-succeeding rung 1
+    spent a goal's entire escape allowance on two identical reverses: 39 field
+    invocations, every exhaustion `budget_exhausted`, zero `all_rungs_ineffective`.
+    A goal must now get every rung once before it can be refused an escape.
+    """
+    cfg = LadderConfig()
+    assert cfg.max_ladder_traversals_per_goal == 1
+    ladder = StallLadder(cfg)
+    now, result, rungs = 0.0, None, []
+    for _ in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now,
+                             commanding=True, output_moving=True)
+        if result.action == "rung" and result.rung not in rungs:
+            rungs.append(result.rung)
+        if result.exhausted:
+            break
+        now += 1.0 / HZ
+    assert rungs == list(RUNG_ORDER), f"a goal was refused escapes it never had: {rungs}"
+    assert result.reason == "all_rungs_ineffective"
+    assert not result.budget_exhausted
+
+
+def test_a_visible_stall_walks_its_own_order_not_the_blind_one():
+    """Ordering is a whole SEQUENCE, not just a first move: after the pivot comes the
+    drive out along the bearing, and the retreats stay available behind them."""
+    ladder = StallLadder()
+    now, rungs = 0.0, []
+    for _ in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now, commanding=True,
+                             output_moving=False, open_bearing_rad=math.radians(-71.4))
+        if result.action == "rung" and result.rung not in rungs:
+            rungs.append(result.rung)
+        if result.exhausted:
+            break
+        now += 1.0 / HZ
+    assert rungs == list(VISIBLE_RUNG_ORDER), f"visible stall walked {rungs}"
+
+
+def test_a_pivot_that_never_turned_is_not_credited():
+    """The other half of the pivot's clear test: BEING pointed at a gap is not the
+    same as having TURNED to point at one.
+
+    A traversal that reaches the pivot rung with the gap already ahead -- a blind
+    contact, say, whose lidar can see straight past whatever is physically holding the
+    wheels -- would otherwise clear the rung on its first cycle having commanded
+    nothing, hand back, and re-stall against the same invisible thing.
+    """
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    now, in_pivot = 0.0, False
+    for _ in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now, commanding=True,
+                             output_moving=True,      # freeze -> blind order
+                             open_bearing_rad=0.1)    # already inside the tolerance
+        if result.rung == PIVOT_OPEN and result.action == "rung":
+            in_pivot = True
+        assert not (in_pivot and result.reason == f"{PIVOT_OPEN}_cleared"), (
+            "the pivot rung was credited without the room having moved at all")
+        now += 1.0 / HZ
+
+
+def test_a_freeze_part_way_through_a_visible_traversal_retreats_again():
+    """The cause can CHANGE between two stalls on one goal, and the dangerous
+    direction is visible -> blind.
+
+    A traversal that opened with the pivot has the drive-out queued next. If the very
+    next stall is a freeze -- nothing explains our immobility, so something is
+    physically there that no sensor sees -- resuming that plan would power the rover
+    forward into it. A freeze re-opens the retreats, whatever the traversal intended.
+    """
+    ladder = StallLadder()
+    first, now = _stall_until_rung(ladder, output_moving=False,
+                                   bearing=math.radians(-71.4))
+    assert first.rung == PIVOT_OPEN
+    ladder.abandon_rung()
+    second, _ = _stall_until_rung(ladder, t0=now + 0.1, output_moving=True,
+                                  bearing=math.radians(-71.4))
+    assert second.freeze, "setup failed: the second stall was not a freeze"
+    assert second.rung == REVERSE_STRAIGHT, (
+        f"a blind contact resumed at {second.rung} — the escalation memory carried a "
+        "plan made when a sensor could still explain the stall")
+
+
+def test_a_blind_contact_never_escalates_into_driving_forward_first():
+    """The safety-relevant half of ordering, stated on its own.
+
+    Whatever the lidar can see, a stall where nothing explains the immobility must try
+    both retreats before it powers forward -- driving into an obstacle no sensor can
+    detect is the one escape that makes contact worse.
+    """
+    ladder = StallLadder()
+    now, rungs = 0.0, []
+    for _ in range(_cycles(60)):
+        result = ladder.step(x=0.0, y=0.0, yaw=0.0, now=now, commanding=True,
+                             output_moving=True,  # permitted, immobile -> freeze
+                             open_bearing_rad=math.radians(-71.4))
+        if result.action == "rung" and result.rung not in rungs:
+            rungs.append(result.rung)
+        if result.exhausted:
+            break
+        now += 1.0 / HZ
+    assert rungs.index(DRIVE_OPEN) > rungs.index(REVERSE_STRAIGHT)
+    assert rungs.index(DRIVE_OPEN) > rungs.index(REVERSE_ARC)
+    assert rungs == list(RUNG_ORDER)
