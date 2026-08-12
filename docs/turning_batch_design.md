@@ -752,3 +752,201 @@ it rather than have a peer infer it.
 4. **Session length** — segments A–E total ~15 min of motion. Segment D costs two driver
    restarts. If the session must be shorter, D is the one to cut, and item 2 then defaults
    to option (a) without further discussion.
+
+---
+
+# PART TWO — THE DANCE (v2 design, added 2026-08-11 night)
+
+Written after gauntlet 1 flew twice on one evening. **Design only; nothing here is
+implemented.** Evidence is two runs' artifacts plus four statements from Scott, and
+every claim below is cited to a row, a log line, or a line of code.
+
+## 7. What the second flight measured
+
+Run `20260811_211237` on `1df94fc`, mission 21:17:40 → 21:19:48 (128 s wall clock).
+Outcome `ABORTED_GOALS_KEEP_FAILING`, 6.103 m², 10 goals, 2 succeeded, 7 aborted,
+**zero freezes, zero contact**. The revert's field exam did not happen — nothing
+sustained an escape, because nothing triggered one.
+
+**The steering law flew observably for the first time** (`avoid_offset`, `1df94fc`):
+non-zero in **740 of 3913 rows (19%)**, peak |offset| **0.33 rad** — the cap, reached
+repeatedly. It engages, it leans hard, and it did not prevent the abort cascade.
+
+### 7.1 The dance, in log form
+
+Every one of the seven aborts is the same 17-second cycle, without variation:
+
+```
++38s  coverage goal -> cell (65, 58)
++40s  ladder: position_and_yaw_stalled->reverse_straight (-0.10, +0.00)   [invocation 1]
++41s  ladder: reverse_straight_running                                    ... clears
++48s  ladder: output_suppressed->reverse_straight (-0.10, +0.00)          [invocation 2]
++49s  ladder: reverse_straight_running                                    ... clears
++53s  this goal's escape budget was already spent -> ABORTED
++53s  coverage goal -> cell (57, 69)                                      [and again]
+```
+
+| | run 211237 |
+|---|---|
+| ladder invocations | 14 |
+| of which started at `reverse_straight` | **14 (all of them)** |
+| rungs 2, 3, 4 reached | **0** |
+| exhaustions | 7, **every one `budget_exhausted`** |
+| `all_rungs_ineffective` / `genuinely_wedged` | 0 / 0 |
+
+Same shape as run 114626 (25 invocations, all `budget_exhausted`). Two missions,
+39 invocations, and the ladder has never once reached rung 3 in the field.
+
+### 7.2 The capstone: it could see the way out
+
+Scott, at the death pose: *"A 45 degree pivot to the right and the rover had the
+entire north side of the room to explore."*
+
+Verified against the robot's own lidar, at that exact pose, through the controller's
+real gap search (the rover had not moved since it gave up; scan captured live, TF
+read from TF):
+
+```
+OPEN BEARING at the death pose: -71.4 deg   (base frame, 0 = nose, + = left)
+
+  -60 deg: 2.07 m  ████████████████        the way out
+  -45 deg: 1.88 m  ███████████████
+  -30 deg: 1.89 m  ███████████████
+   +0 deg: 0.90 m  ███████                 dead ahead, closing
+  +30 deg: 0.28 m  ██                      hard against something
+  +90 deg: 0.37 m  ██
+ +150 deg: 0.30 m  ██
+```
+
+**The mission ended on five consecutive give-ups while the rover's own sensor was
+reporting two metres of open floor 60–70° to its right.** The escape that would have
+used that bearing is rung 3, `pivot_open`, which reads `_open_bearing` — machinery
+that exists, is TF-correct and circular-searched, and has never run on hardware.
+Scott's "45° right" and the lidar's −71° are the same finding from two instruments.
+
+## 8. Three mechanisms, one dance
+
+### 8.1 Rung 1 false-succeeds, and eats the budget
+
+`escape_distance_m` is 0.12 m. Straight reverse is granted almost everywhere (the
+camera never brakes reverse; `rear_hold` only fires inside 0.25 m). So rung 1 backs
+up 12 cm, is credited as **cleared**, hands control back — and the controller drives
+the same path to the same spot at the same angle. Nothing about the situation
+changed, and one of the goal's two invocations is gone.
+
+**A rung that returns you to your own starting problem has not escaped anything.**
+
+### 8.2 Every stall restarts the ladder at rung 1
+
+`StallLadder._begin` sets `self._rung_index = 0` unconditionally
+(`stall_ladder.py:313`). So the second stall on a goal runs rung 1 *again*, not
+rung 2. With 8.1, rungs 2–4 are **unreachable by construction** whenever rung 1
+false-succeeds: two invocations, two identical reverses, abort. That is Scott's
+question — *"when it's going up the failure ladder, how does it get down?"* — and the
+answer today is that it never goes up at all.
+
+### 8.3 The escape order is wrong for the cause
+
+Reverse-first was designed for **blind contact**, where the entry path is the only
+route known to be clear (D25, and it is right there). It is the wrong first move for
+a **lidar-visible** stall, where the sensor can name a bearing with two metres behind
+it. Scott has now said this three ways: *"straight back then pivot to an open area
+would be better"* (08-10), *"lidar stops should be an easy turn away"* (08-11
+morning), *"should probably pivot more and use lidar to see where the open space is"*
+(08-11 night).
+
+## 9. The fix, in three composed parts
+
+**(A) Ordering conditioned on stall-cause visibility.** When the stall cause is
+lidar-visible geometry — a front/trajectory gate acting with a real sector return —
+the first rung becomes **pivot toward `_open_bearing`**, then drive out along it.
+Straight reverse drops to the **blind-contact path only**: freeze-classified stalls,
+where nothing sees the obstacle and the entry path is the sole known-clear route.
+The two causes are already distinguishable at the moment the ladder begins — the
+freeze vote (`output_moving` majority) is exactly that discriminator, and it is
+already computed.
+
+**(B) A rung clears only if the situation CHANGED.** Distance travelled is not
+change. Candidate criteria, to be decided by measurement rather than taste: the
+blocking bearing must have moved out of the corridor, or the heading must differ by
+more than the deadband, or the gate that fired must no longer be firing. Pairing
+pivot+drive-out as a single escape unit (rather than two rungs) is worth designing
+against the same evidence, because half a pivot is not an escape either.
+
+**(C) Escalation memory within a goal.** A repeat invocation resumes at
+**(last rung + 1)**, not rung 1. Reset only on a genuine goal change — the
+`goal_generation` signal already provides that boundary (`aff5819`, `812a8a2`) — or
+on real progress between stalls.
+
+**The interaction (C) forces, stated deliberately rather than discovered later:**
+`max_invocations_per_goal` (2) currently bounds *repeats of the same escape*. With
+memory it would bound *total ladder passes*, which is a different and much tighter
+thing — 2 passes with memory means rungs 1–2 then 3–4 and done, where today it means
+rung 1 twice. The budget must be re-derived for the new meaning, not inherited: my
+recommendation is that the invocation budget becomes a bound on **complete ladder
+traversals** (default 1, i.e. every rung gets one honest attempt per goal) with the
+existing per-rung `rung_budget_s` unchanged, so a goal's total escape time stays
+bounded at roughly 4 × 3 s rather than growing.
+
+## 10. The steering law's own v2 question: an arc-aware corridor
+
+Scott: *"It backs up and rolls forward a lot when it's at a sharp angle to a lidar
+object."* Tested against `avoid_offset` on the population that matters — rows where
+the rover was commanding and the supervisor zeroed it:
+
+| supervisor reason | zeroed time | `avoid_offset == 0` |
+|---|---|---|
+| `front_slow` | 7.7 s | **97%** |
+| `reset_required` (latched front stop) | 30.5 s | 27% |
+
+Two different findings, and they need different fixes:
+
+- **`front_slow` with no lean at all.** The steering corridor is a straight swath
+  (`|r·sin β| ≤ 0.18`); the gate is an angular sector (±35°). Those disagree by
+  construction, and the disagreement grows with range: the corridor admits ±28° at
+  0.38 m but only **±11.5° at 0.90 m**, where engagement begins. An obstacle at 20°
+  and 0.8 m is invisible to the steering law and squarely inside the gate. **Scott's
+  sharp-angle observation, confirmed, with the number.** Fix: test the corridor
+  against the **arc actually commanded** (the camera brake already does exactly this
+  — `swept_path_obstacle`), or at minimum widen the angular admittance to cover the
+  gate's sector.
+- **`reset_required` with the law leaning hard (73% of rows).** Once the front stop
+  *latches*, forward is zeroed no matter how the heading leans — only a pure pivot
+  clears it (`collision_stop.py:906`, pivot-only escape). Steering is structurally
+  powerless after a latch. **This is not a steering bug; it is the strongest argument
+  for (A):** the rover was leaning toward the exit and could not use it, because the
+  only motion the supervisor would grant at that moment was the pivot the ladder had
+  not reached.
+
+## 11. Deletions, non-goals, revert-proofs (Part Two)
+
+**DELETED / CHANGED:** rung 1's unconditional primacy (`RUNG_ORDER` becomes
+cause-conditioned); `_rung_index = 0` on re-invocation (`stall_ladder.py:313`);
+`escape_distance_m` as the sole clearance test; `max_invocations_per_goal`'s current
+meaning (re-derived, see §9).
+
+**EXPLICITLY NOT BUILDING:** any change to `collision_stop.py` or the camera brake
+(the safety path stays untouched, as in Part One); a new recovery layer beside the
+ladder; re-tuning distances; re-introducing arrival-at-coverage-radius (D34, reverted
+— its return has its own conditions, §1.5 and the D34 ruling).
+
+**REVERT-PROOFS, all replaying tonight's artifacts:**
+1. `visible_stall_pivots_first` — a stall with a lidar-visible cause and a known open
+   bearing runs `pivot_open` as its first rung. Fails against HEAD (always rung 1).
+2. `blind_contact_still_reverses_first` — a freeze-classified stall keeps
+   reverse-first. The pairing test that stops (A) from breaking D25.
+3. `a_reverse_that_changes_nothing_does_not_clear` — replay run 211237's rung-1
+   episodes: 0.12 m of reverse returning to the same bearing must NOT credit the
+   rung. Fails against HEAD, which credits all 14.
+4. `second_stall_resumes_at_the_next_rung` — two stalls on one goal reach rung 2.
+   Fails against HEAD (`_rung_index = 0`).
+5. `oblique_blocker_inside_the_gate_gets_a_lean` — a blocker at 20° and 0.80 m, which
+   trips `front_slow` and today produces `avoid_offset` 0.
+6. `the_death_pose_escapes` — the §7.2 scan, at that pose: the ladder must command a
+   pivot toward −71° and drive out. The whole batch in one test.
+
+**What would falsify this design:** if a graded replay of the death pose shows the
+supervisor refusing the pivot too (the corner-radius gate at 0.28 m on the left),
+then ordering is not enough and the honest answer is that the rover was genuinely
+boxed at that pose — in which case the finding moves to prevention (never park
+there) rather than escape. That check runs first, before anything is built.
