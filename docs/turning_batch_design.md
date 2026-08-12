@@ -771,6 +771,7 @@ or a line of code.
 | §9(B) a rung clears only if the situation changed | **BUILT.** Net heading ≥ 30° (`front_stop` half-sector) or LATERAL displacement ≥ 0.14 m (`robot_radius`); axial travel counts for nothing. Credits 0 of the 14 recorded episodes, where the deleted distance test credits all 14. |
 | §9(B) the pivot's own clear test | **BUILT, and not as designed here:** the pivot is credited by the LIDAR (the gap's bearing shrinking into 0.45 rad), not by wheel yaw, because D32's rate filter can never credit a real pivot — see the build correction below. |
 | §9(C) escalation memory + re-derived budget | **BUILT.** A goal remembers which escapes it has had; the budget bounds COMPLETE TRAVERSALS (default 1); memory resets on `goal_generation` or ≥ 0.14 m between stalls. |
+| §9(C) outer bound (added at review) | **BUILT.** `max_total_traversals_per_goal` 4, counted monotonically across every memory reset — see BC8. |
 | §10 arc-aware corridor (steering law v2) | design only — build step 2. |
 | §11 revert-proofs 1, 2, 3, 4, 6 | **BUILT**, each demonstrated failing against `2d49a1e`; proof 5 belongs to step 2. |
 
@@ -799,6 +800,20 @@ with a total-displacement test left the replay green. The axial-counts-for-nothi
 claim is carried by a separate case the recording does not contain — a rung 1 running
 its full budget, 0.30 m of straight reverse — which the new code produces routinely
 now that rung 1 is no longer credited early.
+
+**BUILD CORRECTION BC8 — "bounded per goal" stopped being literally true, and is
+again.** §9(C)'s reset rule renews the traversal budget whenever the rover makes
+genuine progress between stalls, which is right — a stall 0.6 m from the last one is a
+different problem — but it means the per-region budget bounds nothing at the goal
+level: escape, drive 0.2 m, stall, escape, forever, without ever thrashing in one
+place. The reset rule STANDS as measured (the recorded populations separate at 0.107 m
+vs 0.278 m, three times cleaner begin-to-begin than end-of-escape-to-next-stall). The
+bound is added alongside it and stated rather than buried:
+`max_total_traversals_per_goal` **4**, counted monotonically across every reset the
+ladder can perform on itself, cleared only by a genuinely new goal. Four complete
+ladders in four different places on one goal is a verdict on the GOAL — the explorer
+suppresses that cell and picks another — and it is reported as itself
+(`goal_traversal_ceiling`), never as a rung that failed.
 
 **BUILD CORRECTION BC7 — the seam.** `_open_bearing()` answered `0.0` for "no scan",
 "stale scan" and "the way out is dead ahead" alike. §9(A) decides the escape ORDER

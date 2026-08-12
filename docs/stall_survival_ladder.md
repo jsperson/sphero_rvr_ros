@@ -202,7 +202,10 @@ and wrong about three things, all fixed in `docs/turning_batch_design.md` PART T
    wheel yaw, which the driver's real pivot rate makes uncreditable (D32).
 3. **The ladder remembers.** A second stall in the same place resumes at the next
    untried rung instead of restarting at rung 1, and the anti-livelock budget bounds
-   COMPLETE TRAVERSALS (default 1) rather than repeats of one escape.
+   COMPLETE TRAVERSALS (default 1) rather than repeats of one escape. That budget is
+   per stall REGION and renews on genuine progress, so a second, monotonic bound —
+   four complete ladders per goal, cleared only by a new goal — is what keeps "a stall
+   may end a goal only after every escape was tried" a *bounded* contract.
 
 Rung 4's "0.5 m" above was never the implementation and is not the contract: the drive
 rung arcs toward the open bearing under the same rung budget as every other rung.

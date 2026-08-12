@@ -90,6 +90,10 @@ class DecisiveControllerNode(Node):
         # PART TWO §9). Renamed rather than re-tuned: the old name would have carried
         # a deployed value that means something entirely different now.
         self.declare_parameter("max_ladder_traversals_per_goal", 1)
+        # The OUTER bound: complete ladders per goal counted across every escalation
+        # reset. The traversal budget above is per stall region and renews whenever
+        # the rover genuinely gets somewhere, so without this a goal is not bounded.
+        self.declare_parameter("max_total_ladder_traversals_per_goal", 4)
         self.declare_parameter("ladder_reverse_speed_mps", 0.10)
         self.declare_parameter("ladder_forward_speed_mps", 0.10)
         self.declare_parameter("ladder_pivot_rate_rad_s", 0.40)
@@ -128,6 +132,8 @@ class DecisiveControllerNode(Node):
             rung_budget_s=float(_p("rung_budget_s").value),
             max_ladder_traversals_per_goal=int(
                 _p("max_ladder_traversals_per_goal").value),
+            max_total_traversals_per_goal=int(
+                _p("max_total_ladder_traversals_per_goal").value),
             reverse_speed_mps=float(_p("ladder_reverse_speed_mps").value),
             forward_speed_mps=float(_p("ladder_forward_speed_mps").value),
             pivot_rate_rad_s=float(_p("ladder_pivot_rate_rad_s").value),
@@ -690,7 +696,20 @@ class DecisiveControllerNode(Node):
                     # were permitted to move and it did not help, which IS worth
                     # hunting. Reporting both as "aborted" is how a stack bug hides
                     # behind a tight room, and vice versa.
-                    if ladder_result.budget_exhausted:
+                    if ladder_result.reason == "goal_traversal_ceiling":
+                        # A DIFFERENT FACT from the budget message below, and it must
+                        # not borrow its wording: nothing was refused and nothing
+                        # failed here. The rover escaped this goal's stalls the full
+                        # number of times allowed and kept finding new ones, which is
+                        # a verdict on the goal.
+                        self.get_logger().warn(
+                            "decisive_controller: this goal has now run "
+                            f"{self._ladder_config.max_total_traversals_per_goal} "
+                            "complete escape ladders in different places and keeps "
+                            "stalling somewhere new. Aborting the GOAL — the escapes "
+                            "worked; the destination is the problem."
+                        )
+                    elif ladder_result.budget_exhausted:
                         self.get_logger().warn(
                             "decisive_controller: this goal's escape budget was "
                             "already spent — NOTHING was tried on this goal, so "

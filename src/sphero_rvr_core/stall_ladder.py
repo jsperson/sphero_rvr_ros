@@ -101,6 +101,19 @@ class LadderConfig:
     # gauntlet runs, consecutive invocations at the SAME stall are <= 0.107 m apart
     # (27 of 40) and every genuinely different place is >= 0.278 m away.
     inter_stall_progress_m: float = 0.14
+    # THE OUTER BOUND, stated rather than hidden. `max_ladder_traversals_per_goal` is
+    # a budget per STALL REGION, and the reset above renews it whenever the rover
+    # genuinely gets somewhere -- so on its own it does not bound a goal at all: a
+    # rover that escapes, drives 0.2 m, stalls again and escapes again could do that
+    # forever without ever thrashing in one place. This counts complete traversals
+    # MONOTONICALLY over the whole goal, across every reset, and it is the thing that
+    # keeps "a stall may end a goal only after every escape has been tried" a bounded
+    # contract rather than an unbounded one.
+    #
+    # Four distinct-place full ladders on one goal means the GOAL is cursed, not the
+    # rover. Aborting it then costs nothing real -- the explorer suppresses that cell
+    # and picks another -- and it is reported as itself, not as a rung that failed.
+    max_total_traversals_per_goal: int = 4
 
     # --- rung commands ---------------------------------------------------------
     reverse_speed_mps: float = 0.10
@@ -215,6 +228,9 @@ class StallLadder:
         self._end_rung()
         self._forget_escalation()
         self._last_begin_xy = None
+        # Deliberately NOT in _forget_escalation: this one survives every reset the
+        # ladder can perform on itself, and only a genuinely new goal clears it.
+        self._total_traversals = 0
 
     def _forget_escalation(self):
         """Start the ladder over at the bottom: every rung untried, budget renewed.
@@ -448,6 +464,14 @@ class StallLadder:
         # let a blind contact -- whose whole rationale is that the entry path is the
         # only route known to be clear -- switch to a plan that drives FORWARD because
         # the lidar happens to see a gap somewhere. The next stall re-derives it.
+        if self._total_traversals >= cfg.max_total_traversals_per_goal:
+            # Four complete ladders in four different places on ONE goal. The rover
+            # has been escaping successfully and stalling again somewhere else every
+            # time, which is a statement about the goal, not about the escapes.
+            self._end_rung()
+            return LadderResult("exhausted", reason="goal_traversal_ceiling",
+                                exhausted=True, freeze=freeze, budget_exhausted=True)
+
         self._order = self._order_for(freeze, open_bearing)
         rung = self._next_rung(self._order)
         if rung is None or self._traversals >= cfg.max_ladder_traversals_per_goal:
@@ -564,6 +588,7 @@ class StallLadder:
             if nxt is None:
                 self._end_rung()
                 self._traversals += 1
+                self._total_traversals += 1
                 wedged = not self._any_rung_moved
                 return LadderResult(
                     "exhausted",

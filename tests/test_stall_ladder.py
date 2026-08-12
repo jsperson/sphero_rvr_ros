@@ -865,6 +865,83 @@ def test_the_budget_bounds_complete_traversals_not_repeats_of_rung_one():
     assert not result.budget_exhausted
 
 
+def _one_full_traversal(ladder, cfg, x, t0):
+    """Stall at (x, 0), run every rung, let none of them work. Returns the result on
+    the cycle the ladder gives up and the time it happened."""
+    for i in range(_cycles(60)):
+        now = t0 + i / HZ
+        r = ladder.step(x=x, y=0.0, yaw=0.0, now=now, commanding=True,
+                        output_moving=True, open_bearing_rad=None)
+        if r.exhausted:
+            return r, now
+    pytest.fail("a full traversal never exhausted")
+
+
+def test_a_goal_that_keeps_stalling_somewhere_new_is_still_bounded():
+    """THE OUTER BOUND, and the reason it has to exist.
+
+    `max_ladder_traversals_per_goal` is a budget per STALL REGION: the escalation
+    memory resets whenever the rover genuinely gets somewhere, and the budget resets
+    with it. That is the right rule -- a stall 0.6 m from the last one is a different
+    problem -- but on its own it bounds nothing at the goal level, because a rover
+    that escapes, drives 0.2 m, stalls again and escapes again can repeat that
+    forever without ever thrashing in one place.
+
+    So complete traversals are ALSO counted monotonically across every reset. Four
+    full ladders in four different places on one goal is a verdict on the goal, and
+    the fifth stall is refused honestly rather than escaped a fifth time.
+    """
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    t, x = 0.0, 0.0
+    for n in range(cfg.max_total_traversals_per_goal):
+        r, t = _one_full_traversal(ladder, cfg, x, t + 1.0)
+        assert r.reason == "all_rungs_ineffective", (
+            f"traversal {n + 1} ended as {r.reason} — this test is not measuring "
+            "what it claims")
+        x += 0.6                      # escaped, drove on, stalled somewhere new
+
+    r, _ = _one_full_traversal(ladder, cfg, x, t + 1.0)
+    assert r.reason == "goal_traversal_ceiling", (
+        f"a goal that has had {cfg.max_total_traversals_per_goal} complete ladders "
+        f"in different places got another one ({r.reason}) — 'bounded per goal' is "
+        "not true")
+    assert r.exhausted and r.budget_exhausted
+    assert not r.genuinely_wedged
+
+
+def test_the_outer_bound_does_not_touch_a_goal_that_recovers():
+    """The paired negative. The ceiling must be unreachable in ordinary operation:
+    three full ladders in three places, then a normal stall, must still get escapes.
+    """
+    cfg = LadderConfig()
+    assert cfg.max_total_traversals_per_goal == 4
+    ladder = StallLadder(cfg)
+    t, x = 0.0, 0.0
+    for _ in range(cfg.max_total_traversals_per_goal - 1):
+        _, t = _one_full_traversal(ladder, cfg, x, t + 1.0)
+        x += 0.6
+    result, _ = _stall_until_rung(ladder, x=x, t0=t + 1.0, output_moving=False)
+    assert result.action == "rung" and result.rung == REVERSE_STRAIGHT, (
+        f"the fourth stall on this goal was refused an escape ({result.reason}) — "
+        "the outer bound is set so tight it fires during normal recovery")
+
+
+def test_a_new_goal_clears_the_outer_bound():
+    """It is a bound on the GOAL, so the goal boundary is what clears it -- the same
+    `goal_generation` signal that already owns every other per-goal reset."""
+    cfg = LadderConfig()
+    ladder = StallLadder(cfg)
+    t, x = 0.0, 0.0
+    for _ in range(cfg.max_total_traversals_per_goal):
+        _, t = _one_full_traversal(ladder, cfg, x, t + 1.0)
+        x += 0.6
+    ladder.reset_goal()
+    result, _ = _stall_until_rung(ladder, x=x, t0=t + 1.0, output_moving=False)
+    assert result.action == "rung", (
+        "a brand new goal inherited the last one's traversal ceiling")
+
+
 def test_a_visible_stall_walks_its_own_order_not_the_blind_one():
     """Ordering is a whole SEQUENCE, not just a first move: after the pivot comes the
     drive out along the bearing, and the retreats stay available behind them."""
