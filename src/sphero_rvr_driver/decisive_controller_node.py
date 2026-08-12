@@ -86,7 +86,10 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("max_yaw_rate_rad_s", 0.6)
         self.declare_parameter("suppressed_cycles", 20)
         self.declare_parameter("rung_budget_s", 3.0)
-        self.declare_parameter("max_ladder_invocations_per_goal", 2)
+        # COMPLETE LADDER TRAVERSALS, not repeats of one escape (turning_batch_design
+        # PART TWO §9). Renamed rather than re-tuned: the old name would have carried
+        # a deployed value that means something entirely different now.
+        self.declare_parameter("max_ladder_traversals_per_goal", 1)
         self.declare_parameter("ladder_reverse_speed_mps", 0.10)
         self.declare_parameter("ladder_forward_speed_mps", 0.10)
         self.declare_parameter("ladder_pivot_rate_rad_s", 0.40)
@@ -123,8 +126,8 @@ class DecisiveControllerNode(Node):
             max_yaw_rate_rad_s=float(_p("max_yaw_rate_rad_s").value),
             suppressed_cycles=int(_p("suppressed_cycles").value),
             rung_budget_s=float(_p("rung_budget_s").value),
-            max_invocations_per_goal=int(
-                _p("max_ladder_invocations_per_goal").value),
+            max_ladder_traversals_per_goal=int(
+                _p("max_ladder_traversals_per_goal").value),
             reverse_speed_mps=float(_p("ladder_reverse_speed_mps").value),
             forward_speed_mps=float(_p("ladder_forward_speed_mps").value),
             pivot_rate_rad_s=float(_p("ladder_pivot_rate_rad_s").value),
@@ -446,15 +449,23 @@ class DecisiveControllerNode(Node):
                           1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def _open_bearing(self):
-        """Base-frame bearing of the widest gap, or 0.0 (straight) when stale.
+        """Base-frame bearing of the widest gap, or **None when we do not have one**.
 
         Stale-bounded because steering toward a remembered gap after the rover has
         turned is how an escape drives into a wall it already passed.
+
+        NONE, NOT 0.0. This used to answer 0.0 for "no scan yet", "scan too old" and
+        "the way out is dead ahead" alike, and every consumer had to guess which one
+        it meant. The ladder now DECIDES ITS ESCAPE ORDER from this value -- pivot
+        toward the gap when a gap is known, reverse out along the entry path when it
+        is not -- so a fabricated dead-ahead bearing would send the rover pivoting
+        toward a direction nothing measured. The owner of the fact publishes the fact,
+        including its absence.
         """
         with self._scan_lock:
             if (self._open_bearing_at is None
                     or time.monotonic() - self._open_bearing_at > self._open_bearing_max_age_s):
-                return 0.0
+                return None
             return self._open_bearing_rad
 
     def _output_moving(self):
