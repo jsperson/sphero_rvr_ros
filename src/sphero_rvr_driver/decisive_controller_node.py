@@ -708,11 +708,16 @@ class DecisiveControllerNode(Node):
             goal_handle.abort()
             return result
 
-        # F-A. The freeze predicate is WINDOWED, matching the ladder's, because a
-        # pinned reverse still creeps: mission 1 measured 0.086 m of travel per
-        # straight-reverse window against a blind contact, nearly 3x
-        # progress_epsilon_m. A cumulative test would read that as motion and never
-        # fire, in exactly the case this escape exists for.
+        # F-A. The freeze predicate is COMMANDED-VS-ACHIEVED over a sliding window,
+        # and DELIBERATELY NOT the ladder's rule -- the ladder's was tried, measured
+        # and rejected (both rejected versions are recorded in
+        # WindowedFreezeMonitor's docstring, which is the authority here). The short
+        # of it: a pinned reverse creeps 0.086 m per 3 s window, which is 2.9 mm per
+        # cycle, so a cumulative test reads it as motion forever and the ladder's
+        # reference-remarking rolling test never completes a window. What separates a
+        # pin from a working escape is the FRACTION of the commanded distance the
+        # wheels actually deliver: 29% pinned, >= 60% when the supervisor is merely
+        # slowing us.
         freeze = WindowedFreezeMonitor(
             window_cycles=self._ladder_config.suppressed_cycles,
             expected_per_cycle_m=speed * period)
@@ -742,13 +747,14 @@ class DecisiveControllerNode(Node):
                 self._cmd_pub.publish(twist)
                 time.sleep(period)
 
-                # FREEZE: permitted for most of the window and still going nowhere.
-                # Same classifier the ladder uses -- literally the same rolling rule,
-                # not a similar-sounding one -- and the same response: mark it and
-                # stop. The mark goes on the TRAILING edge, because the obstacle is
-                # behind us; marking the leading edge here would plant a lethal disc
-                # on the clear floor ahead and deepen the very trap this escape
-                # exists to break.
+                # FREEZE: permitted for most of the window, and delivering a
+                # fraction of what we asked for. The RESPONSE is the ladder's --
+                # mark it and stop -- but the PREDICATE is this escape's own (see
+                # WindowedFreezeMonitor); assuming the two share a rule is the
+                # misreading that cost this feature a version. The mark goes on the
+                # TRAILING edge, because the obstacle is behind us; marking the
+                # leading edge here would plant a lethal disc on the clear floor
+                # ahead and deepen the very trap this escape exists to break.
                 frozen = pose is not None and freeze.update(
                     pose[0], pose[1], self._output_moving())
                 if frozen:

@@ -238,15 +238,24 @@ goal and let the ladder handle it": planning is what already failed.
 
 ## 6. Failure modes, honestly
 
-**(a) The reverse itself freezes — blind contact behind.** The controller's freeze
-classifier is the same one the ladder uses: permitted output, no motion, for the
-window. **Literally the same rolling rule** (`WindowedFreezeMonitor`, sharing the
-ladder's reference-remark semantics) rather than a similar-sounding one — the first
-implementation compared TOTAL travel since the escape began against
-`progress_epsilon_m` 0.03, which never fires against a real blind contact, because a
-pinned reverse creeps 0.086 m per window (mission 1, measured). That version would
-have reported `refused` while the supervisor was permitting motion, and planted no
-mark, in precisely the case this feature exists for. The escape must then do exactly what the ladder does — **mark it and stop**,
+**(a) The reverse itself freezes — blind contact behind.** The RESPONSE is the
+ladder's; the PREDICATE is this escape's own, and conflating the two cost this feature
+two implementations (`WindowedFreezeMonitor`, whose docstring records both rejected
+versions).
+
+* v1 compared TOTAL travel since the escape began against `progress_epsilon_m` 0.03.
+  Never fires against a real blind contact: a pinned reverse creeps 0.086 m per window
+  (mission 1, measured), so it reads as motion forever.
+* v2 was the ladder's own rolling rule, prescribed at review and implemented. Also
+  never fires: 0.086 m per 3 s is 2.9 mm per cycle, the ladder re-marks its reference
+  whenever progress ≥ epsilon, so the reference resets every ~11 cycles and the
+  20-cycle window never completes. The ladder is not wrong for the ladder — it
+  classifies freezes from a STANDING START, where creep has not begun.
+* v3, shipped: achieved travel over a SLIDING window against what the COMMAND should
+  have delivered. A pin delivers 29% of commanded; the supervisor's slowest legitimate
+  scaling is 0.60; the threshold is 0.50, between the two deliberately.
+
+Whichever fires, the escape must then do exactly what the ladder does — **mark it and stop**,
 returning `frozen`. It must NOT escalate into arcs and pivots on its own: that is the
 ladder's job during a goal, and duplicating it here is a second author for one motion,
 which is the failure the ladder was created to end. The explorer, seeing `frozen`,
