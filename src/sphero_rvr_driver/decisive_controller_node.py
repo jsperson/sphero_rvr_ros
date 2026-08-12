@@ -28,7 +28,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from nav2_msgs.action import FollowPath
+from nav2_msgs.action import BackUp, FollowPath
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import Bool, Float32, Int32, String
@@ -43,8 +43,12 @@ from sphero_rvr_core.decisive_control import (
     camera_points_to_polar,
     compute_drive_command,
     corridor_blocker,
+    freeze_mark_pose,
     heading_error_to_point,
     select_target_point,
+)
+from sphero_rvr_core.escape_outcome import (
+    CLEARED, FROZEN, REFUSED, format_outcome,
 )
 
 
@@ -94,6 +98,17 @@ class DecisiveControllerNode(Node):
         # reset. The traversal budget above is per stall region and renews whenever
         # the rover genuinely gets somewhere, so without this a goal is not bounded.
         self.declare_parameter("max_total_ladder_traversals_per_goal", 4)
+        # THE GIVE-UP ESCAPE'S DISTANCE, derived from the trap rather than chosen.
+        # A freeze mark is a lethal disc of freeze_mark_radius_m (0.14) planted
+        # footprint_front_m (0.11) ahead of the robot's centre -- so at the moment of
+        # planting the centre is INSIDE its own mark. Getting the footprint out of the
+        # inscribed zone needs mark_radius + robot_radius = 0.28 m of centre-to-mark
+        # separation (0.17 m of reverse); getting clear of the mark's inflation needs
+        # mark_radius + inflation_radius = 0.30 m (0.19 m of reverse). Commanding
+        # 0.30 m leaves 0.11 m of margin on the harder of the two, which is one
+        # escape's worth of slack against odometry error, not a second threshold.
+        # Pinned against config drift by tests/test_escape_geometry.py.
+        self.declare_parameter("give_up_escape_distance_m", 0.30)
         self.declare_parameter("ladder_reverse_speed_mps", 0.10)
         self.declare_parameter("ladder_forward_speed_mps", 0.10)
         self.declare_parameter("ladder_pivot_rate_rad_s", 0.40)
@@ -138,6 +153,7 @@ class DecisiveControllerNode(Node):
             forward_speed_mps=float(_p("ladder_forward_speed_mps").value),
             pivot_rate_rad_s=float(_p("ladder_pivot_rate_rad_s").value),
         )
+        self._escape_distance_m = float(_p("give_up_escape_distance_m").value)
         self._avoid_enable = bool(_p("avoid_enable").value)
         self._avoid_config = AvoidanceConfig(
             engage_m=float(_p("avoid_engage_m").value),
@@ -177,6 +193,13 @@ class DecisiveControllerNode(Node):
         self._out_lock = threading.Lock()
         self._out_moving = False
         self.create_subscription(Twist, "cmd_vel_motor", self._on_motor_out, 10)
+        # The supervisor's OWN word for why it did what it did. Read-only, and used
+        # for exactly one thing: when an escape runs out of time, the report says
+        # `supervisor: rear_hold` rather than this node's guess about why. Assert,
+        # don't infer -- the component that made the decision names it.
+        self._last_supervisor_reason = "unknown"
+        self.create_subscription(
+            String, "/collision_stop/state", self._on_supervisor_state, 10)
         # Which way is open, for the ladder's pivot and drive rungs. The ladder core
         # stays pure -- it does not parse scans -- so the bearing is computed here and
         # handed in.
@@ -218,11 +241,17 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("freeze_mark_radius_m", 0.14)
         self.declare_parameter("freeze_mark_disc_points", 12)
         self.declare_parameter("footprint_front_m", 0.11)
+        # The footprint is NOT symmetric (0.11 front, 0.16 rear as deployed), and a
+        # freeze while reversing has to be marked on the trailing edge — see
+        # freeze_mark_pose.
+        self.declare_parameter("footprint_rear_m", 0.16)
         self._mark_radius_m = float(self.get_parameter("freeze_mark_radius_m").value)
         self._mark_disc_points = int(
             self.get_parameter("freeze_mark_disc_points").value)
         self._footprint_front_m = float(
             self.get_parameter("footprint_front_m").value)
+        self._footprint_rear_m = float(
+            self.get_parameter("footprint_rear_m").value)
         self._freeze_marks = FreezeMarkSet(
             ttl_s=float(self.get_parameter("freeze_mark_ttl_s").value),
             merge_radius_m=float(self.get_parameter("freeze_mark_merge_radius_m").value),
@@ -271,11 +300,42 @@ class DecisiveControllerNode(Node):
             FollowPath,
             "follow_path",
             execute_callback=self._execute,
-            goal_callback=lambda _goal: GoalResponse.ACCEPT,
+            goal_callback=self._follow_path_goal_callback,
+            cancel_callback=lambda _goal: CancelResponse.ACCEPT,
+            callback_group=self._callback_group,
+        )
+        # THE GIVE-UP ESCAPE (docs/reverse_before_give_up_design.md). The explorer
+        # asks for this when it is about to end a mission because nothing plans from
+        # where the rover is standing -- mission 2 on 2026-08-12 ended that way with
+        # 0.78 m of measured clear floor behind it, because the escape it did try went
+        # through nav2_behaviors, whose costmap collision check refused in 3 ms while
+        # the lidar said go.
+        #
+        # An ACTION rather than a service: this drives for up to a few seconds, and a
+        # service handler doing that inside the executor would starve this node's 10 Hz
+        # control loop and its scan/motor subscriptions. BackUp is borrowed as the
+        # transport because its goal is exactly this shape (target point, speed, time
+        # allowance) and its result carries the free-text `error_msg` the outcome
+        # vocabulary rides in (sphero_rvr_core.escape_outcome).
+        self._escape_active = False
+        self._escape_server = ActionServer(
+            self,
+            BackUp,
+            "~/escape_in_place",
+            execute_callback=self._execute_escape,
+            goal_callback=self._escape_goal_callback,
             cancel_callback=lambda _goal: CancelResponse.ACCEPT,
             callback_group=self._callback_group,
         )
         self.get_logger().info("decisive_controller ready (follow_path)")
+
+    def _on_supervisor_state(self, msg):
+        """Keep the supervisor's latest `reason=` token, verbatim."""
+        for field in (msg.data or "").split():
+            if field.startswith("reason="):
+                with self._out_lock:
+                    self._last_supervisor_reason = field[len("reason="):] or "unknown"
+                return
 
     def _on_motor_out(self, msg):
         """Track whether the SUPERVISOR is currently letting us drive.
@@ -478,20 +538,16 @@ class DecisiveControllerNode(Node):
         with self._out_lock:
             return self._out_moving
 
-    def _freeze_mark_pose(self, robot_x, robot_y, robot_yaw):
-        """Where the mark goes: the frozen footprint's LEADING EDGE, not the centre.
+    def _freeze_mark_pose(self, robot_x, robot_y, robot_yaw, reversing=False):
+        """Where the mark goes — the edge that was driving INTO the obstacle.
 
-        Implementation drift, found on 2026-08-11 and corrected against the approved
-        design (design_d25_freeze.md, now committed to docs/): the mark was stamped at
-        the robot's centre, so every mark sat `footprint_front_m` (0.11 m deployed)
-        BEHIND the obstacle it marked, along the approach heading. The costmap got a
-        point where the robot was standing rather than where the thing it hit was --
-        so an approach from a slightly different angle reached the same physical
-        object without ever crossing a mark. That is part of the contact-by-contact
-        face-walking seen in gauntlet run 20260811_093818 against Scott's chair.
+        Geometry and the reasoning for both edges live in
+        `sphero_rvr_core.decisive_control.freeze_mark_pose`; `reversing` is the sign
+        of the COMMAND, passed in by the caller, never inferred here.
         """
-        return (robot_x + self._footprint_front_m * math.cos(robot_yaw),
-                robot_y + self._footprint_front_m * math.sin(robot_yaw))
+        return freeze_mark_pose(
+            robot_x, robot_y, robot_yaw,
+            self._footprint_front_m, self._footprint_rear_m, reversing)
 
     def _record_freeze(self, x, y, now):
         """A place the robot proved it could not pass. Publish it as an event and
@@ -572,6 +628,136 @@ class DecisiveControllerNode(Node):
 
     def _stop(self):
         self._cmd_pub.publish(Twist())
+
+    # ------------------------------------------------------------ the give-up escape
+    def _follow_path_goal_callback(self, _goal):
+        """A goal must NOT start while an escape is in flight.
+
+        D34's lesson, applied to the lifecycle this batch adds: a `follow_path`
+        arriving mid-escape would leave two authors writing cmd_vel, and the escape --
+        which exists precisely because planning had failed -- would be silently
+        destroyed by the first thing that plans again. bt_navigator retries a rejected
+        goal within a second, and the escape is bounded at a few seconds, so rejecting
+        costs a retry rather than a mission.
+        """
+        if self._escape_active:
+            self.get_logger().warn(
+                "follow_path REJECTED: a give-up escape is in flight. The escape "
+                "finishes first; retry.")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _escape_goal_callback(self, _goal):
+        """Accept only when this node is genuinely idle."""
+        with self._goal_lock:
+            busy = self._active_goal_handle is not None
+        if busy or self._escape_active or self._ladder.active:
+            self.get_logger().warn(
+                "escape_in_place REJECTED — the controller is not idle "
+                f"(goal_active={busy}, escape_active={self._escape_active}, "
+                f"ladder_active={self._ladder.active}). The explorer only asks when "
+                "it believes nothing is running, so this is a disagreement about "
+                "state, not a routine refusal.")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _execute_escape(self, goal_handle):
+        """Back out of a place where nothing plans, and report WHAT HAPPENED.
+
+        One straight reverse through the supervisor, exactly like ladder rung 1 --
+        never a Nav2 behaviour, because the costmap those consult is the thing the
+        rover's own freeze marks have made lethal (D36). The supervisor reads the live
+        lidar and is the sole arbiter, so this cannot reverse into anything.
+
+        Deliberately NOT an escalating ladder. If the way out is blocked too, this
+        says so and stops; growing arcs and pivots here would put a second author on
+        the same motion, which is the failure the stall ladder exists to have ended.
+        """
+        result = BackUp.Result()
+        feedback = BackUp.Feedback()
+        req = goal_handle.request
+        want = abs(float(req.target.x)) or self._escape_distance_m
+        speed = abs(float(req.speed)) or self._ladder_config.reverse_speed_mps
+        allowance = req.time_allowance.sec + req.time_allowance.nanosec * 1e-9
+        deadline = time.monotonic() + (allowance or self._ladder_config.rung_budget_s)
+        period = 1.0 / self._frequency if self._frequency > 0 else 0.1
+
+        start = self._robot_pose_in(self._odom_frame_for_escape())
+        if start is None:
+            self._stop()
+            result.error_code = BackUp.Result.TF_ERROR
+            result.error_msg = format_outcome(REFUSED, "no TF for the start pose")
+            goal_handle.abort()
+            return result
+
+        self._escape_active = True
+        window = moved_cycles = 0
+        travelled = 0.0
+        try:
+            while rclpy.ok() and time.monotonic() < deadline:
+                if goal_handle.is_cancel_requested:
+                    self._stop()
+                    goal_handle.canceled()
+                    result.error_msg = format_outcome(REFUSED, "cancelled")
+                    return result
+                pose = self._robot_pose_in(self._odom_frame_for_escape())
+                if pose is not None:
+                    travelled = math.hypot(pose[0] - start[0], pose[1] - start[1])
+                    feedback.distance_traveled = float(travelled)
+                    goal_handle.publish_feedback(feedback)
+                    if travelled >= want:
+                        self._stop()
+                        result.error_code = BackUp.Result.NONE
+                        result.error_msg = format_outcome(
+                            CLEARED, f"{travelled:.3f} m")
+                        goal_handle.succeed()
+                        return result
+
+                twist = Twist()
+                twist.linear.x = -float(speed)
+                self._cmd_pub.publish(twist)
+                window += 1
+                if self._output_moving():
+                    moved_cycles += 1
+                time.sleep(period)
+
+                # FREEZE: permitted for most of the window and still going nowhere.
+                # Same classifier the ladder uses, and the same response -- mark it
+                # and stop. The mark goes on the TRAILING edge, because the obstacle
+                # is behind us; marking the leading edge here would plant a lethal
+                # disc on the clear floor ahead and deepen the very trap this escape
+                # exists to break.
+                stalled = travelled < self._ladder_config.progress_epsilon_m
+                if (window >= self._ladder_config.suppressed_cycles and stalled
+                        and moved_cycles * 2 >= window and pose is not None):
+                    self._stop()
+                    fx, fy = self._freeze_mark_pose(
+                        pose[0], pose[1], pose[2], reversing=True)
+                    self._record_freeze(fx, fy, time.monotonic())
+                    result.error_code = BackUp.Result.UNKNOWN
+                    result.error_msg = format_outcome(
+                        FROZEN, f"marked ({fx:.2f},{fy:.2f}) behind us")
+                    goal_handle.abort()
+                    return result
+        finally:
+            self._stop()
+            self._escape_active = False
+
+        # Out of time. Whether that is "refused" or "it moved a little" is the
+        # supervisor's fact to state, not ours to guess -- so quote its own reason.
+        with self._out_lock:
+            reason = self._last_supervisor_reason
+        result.error_code = BackUp.Result.COLLISION_AHEAD
+        result.error_msg = format_outcome(
+            REFUSED, f"{travelled:.3f} m in {allowance:.1f} s; supervisor: {reason}")
+        goal_handle.abort()
+        return result
+
+    def _odom_frame_for_escape(self):
+        """The escape measures its own travel in odom: it is a short, local move, and
+        map->odom shifting under a 3 s manoeuvre is the mistake the arrival-orientation
+        design already ruled on."""
+        return "odom"
 
     def _execute(self, goal_handle):
         path = goal_handle.request.path
@@ -687,7 +873,14 @@ class DecisiveControllerNode(Node):
                     # POINT, not a mission failure. Mark it for the planner — and keep
                     # running the ladder, because discovering an invisible obstacle
                     # does not excuse us from escaping it.
-                    fx, fy = self._freeze_mark_pose(robot_x, robot_y, robot_yaw)
+                    # reversing=False stated rather than defaulted: a freeze is
+                    # classified only when no rung is running, where the commanded
+                    # motion is this controller's own drive command and never
+                    # negative. If that ever stops being true, this call is the line
+                    # that has to change with it.
+                    fx, fy = self._freeze_mark_pose(
+                        robot_x, robot_y, robot_yaw,
+                        reversing=(command.linear_mps < 0.0))
                     self._record_freeze(fx, fy, now_s)
                 if ladder_result.exhausted:
                     # Say WHICH kind of dead end this was. "Genuinely wedged" means

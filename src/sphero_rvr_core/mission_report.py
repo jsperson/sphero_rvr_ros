@@ -56,6 +56,8 @@ def build_report(
     remaining_candidates=0,
     map_files=None,
     freeze_marks=None,
+    escape_events=None,
+    escape_poses=None,
 ):
     """The end-of-mission summary, as a plain dict ready to serialize.
 
@@ -99,8 +101,28 @@ def build_report(
         # mechanism; the publisher's TTL bounds this list and what is published,
         # not the grid.
         "freeze_marks": list(freeze_marks or []),
+        # THE GIVE-UP ESCAPES: what was attempted when nothing would plan, and how
+        # each one turned out. EVENTS AND DISTINCT PLACES, separately and on purpose.
+        # Mission 1 on 2026-08-12 reported `freeze_marks: 9` for six distinct
+        # positions and its own author read that as nine obstacles an hour later --
+        # a count of events reads as a count of places unless the report says which
+        # it is (D35). `outcomes` is a histogram over the escape_outcome vocabulary,
+        # so a run that never escaped and a run whose escapes were all declined are
+        # not the same empty-looking line.
+        "give_up_escapes": {
+            "attempted": len(list(escape_events or [])),
+            "outcomes": _histogram(escape_events or []),
+            "distinct_poses": len({tuple(p) for p in (escape_poses or [])}),
+        },
         "map_files": list(map_files or []),
     }
+
+
+def _histogram(items):
+    out = {}
+    for item in items:
+        out[item] = out.get(item, 0) + 1
+    return out
 
 
 def occupancy_grid_to_pgm(data, width, height, occupied_at=65, free_at=25):

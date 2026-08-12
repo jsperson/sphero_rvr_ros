@@ -19,6 +19,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TASK_NODE = REPO_ROOT / "src" / "sphero_rvr_driver" / "task_node.py"
 TASK_CLIENT = REPO_ROOT / "src" / "sphero_rvr_driver" / "task_client.py"
+EXPLORER = REPO_ROOT / "src" / "sphero_rvr_driver" / "coverage_explorer_node.py"
 
 
 def _executable_body(text: str) -> str:
@@ -134,3 +135,31 @@ def test_task_client_carries_no_provider_sdk():
     for forbidden in ("import openai", "import anthropic", "from openai",
                       "from anthropic", "mcp"):
         assert forbidden not in body.lower()
+
+
+def test_the_explorer_asks_for_the_give_up_escape_and_never_drives_it():
+    """REVERT-PROOF 6 (docs/reverse_before_give_up_design.md).
+
+    The give-up escape moved from nav2_behaviors into the decisive controller, and
+    the shortest path from "the explorer needs the rover to back up" to a working
+    rover is for the explorer to publish a Twist itself. That would put a second
+    author on cmd_vel — the failure the whole controller/supervisor split exists to
+    prevent — and it would bypass the collision supervisor entirely.
+
+    So the boundary is asserted structurally, here, where it runs without ROS: the
+    explorer may ASK (an action client) and must never DRIVE.
+    """
+    body = _executable_body(EXPLORER.read_text())
+    assert "Twist" not in body
+    assert "cmd_vel" not in body
+    # NOTE, deliberately narrower than the task node's rule above: this node DOES
+    # import geometry_msgs.PoseStamped, because sending NavigateToPose a destination
+    # is its job. Banning the package here would be cargo-culting the task node's
+    # boundary rather than stating this one. The property that matters is that it
+    # never expresses a VELOCITY.
+    assert "PoseStamped" in body, "the explorer stopped sending poses entirely?"
+    # And it must still be ASKING someone: a boundary satisfied by deleting the
+    # escape entirely would pass every assertion above.
+    assert "escape_in_place" in body, (
+        "the explorer no longer requests the give-up escape at all — the boundary "
+        "holds, but the rover is back to giving up without trying to move")

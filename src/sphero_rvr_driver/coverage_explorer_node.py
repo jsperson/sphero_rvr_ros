@@ -36,7 +36,10 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
-from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose, Spin
+from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose
+from sphero_rvr_core.escape_outcome import (
+    CLEARED as ESCAPE_CLEARED, DECLINED as ESCAPE_DECLINED, parse_outcome,
+)
 from std_msgs.msg import Bool, Int32, String
 from std_srvs.srv import Trigger
 import tf2_ros
@@ -117,6 +120,14 @@ class CoverageExplorerNode(Node):
         # ending the mission -- planning is done from the live pose, so this is
         # usually about where the rover is standing, not about the room.
         self.declare_parameter("max_unstick_attempts", 4)
+        # The give-up escape. Distance is derived in the controller from the
+        # freeze-mark geometry that traps the rover (mark_radius 0.14 +
+        # inflation_radius 0.16); it is repeated here only as the request,
+        # and tests/test_escape_geometry.py fails in CI if the two drift or
+        # if a config change makes 0.30 m too short to escape a mark.
+        self.declare_parameter("escape_distance_m", 0.30)
+        self.declare_parameter("escape_speed_mps", 0.10)
+        self.declare_parameter("escape_timeout_s", 6.0)
         self.declare_parameter("unstick_backup_m", 0.25)
         self.declare_parameter("unstick_spin_rad", 1.57)
         self.declare_parameter("unstick_timeout_s", 12.0)
@@ -178,6 +189,16 @@ class CoverageExplorerNode(Node):
         self._min_goal_distance_m = float(
             self.get_parameter("min_goal_distance_m").value)
         self._max_unstick = int(self.get_parameter("max_unstick_attempts").value)
+        self._escape_distance_m = float(
+            self.get_parameter("escape_distance_m").value)
+        self._escape_speed_mps = float(
+            self.get_parameter("escape_speed_mps").value)
+        self._escape_timeout_s = float(
+            self.get_parameter("escape_timeout_s").value)
+        # Escape bookkeeping for the report: every event, and the distinct
+        # places they happened.
+        self._escape_events = []
+        self._escape_poses = []
         self._unstick_backup_m = float(self.get_parameter("unstick_backup_m").value)
         self._unstick_spin_rad = float(self.get_parameter("unstick_spin_rad").value)
         self._unstick_timeout_s = float(self.get_parameter("unstick_timeout_s").value)
@@ -280,8 +301,16 @@ class CoverageExplorerNode(Node):
         self._planner = ActionClient(
             self, ComputePathToPose, "compute_path_to_pose", callback_group=cbg
         )
-        self._backup = ActionClient(self, BackUp, "backup", callback_group=cbg)
-        self._spin = ActionClient(self, Spin, "spin", callback_group=cbg)
+        # THE GIVE-UP ESCAPE, asked of the CONTROLLER (docs/reverse_before_give_up
+        # _design.md). This replaces nav2_behaviors' backup and spin, which were
+        # invoked correctly here and executed nothing: their collision check reads the
+        # costmap that this rover's own freeze marks have made lethal, so on
+        # 2026-08-12 they refused in 3 ms with 0.78 m of measured clear floor behind
+        # (D36). The controller escapes through the collision supervisor instead,
+        # which reads the live lidar -- the same reason the stall ladder's rungs are
+        # ordinary drive commands and not Nav2 behaviours (D16).
+        self._escape = ActionClient(
+            self, BackUp, "/decisive_controller/escape_in_place", callback_group=cbg)
         # Latched: the report is a one-shot event, and anything subscribing after the
         # mission ends (which is most things) must still receive it.
         report_qos = QoSProfile(depth=1)
@@ -674,6 +703,8 @@ class CoverageExplorerNode(Node):
             remaining_candidates=remaining,
             map_files=files,
             freeze_marks=list(self._freeze_marks),
+            escape_events=list(self._escape_events),
+            escape_poses=list(self._escape_poses),
         )
         self._report_pub.publish(String(data=json.dumps(report)))
         self.get_logger().info(f"mission report -> {json.dumps(report)}")
@@ -968,76 +999,105 @@ class CoverageExplorerNode(Node):
                 self._goals_succeeded += 1
                 self._consecutive_failures = 0
                 self._consecutive_freezes = 0
-                self._unstick_attempts = 0
+                # THE ESCAPE BUDGET IS NOT REFILLED HERE. It used to be, and under the
+                # old Nav2 escape that was harmless because the escape never did
+                # anything. Now that the escape MOVES the rover, refilling on a
+                # succeeded goal is what turns escape-replan-succeed-stick-again into
+                # an unbounded loop: four full escapes per mission is the bound, and a
+                # rover that needs a fifth is telling us about the room. Same shape as
+                # the ladder's max_total_traversals_per_goal.
 
     def _unstick(self, toward=None):
-        """Physically change where the rover is standing, then let selection retry.
+        """Ask the CONTROLLER to back us out, then let selection retry.
 
-        Uses Nav2's own behaviours rather than driving anything directly: back up a
-        little, and if that is refused (rear blocked) spin instead. Both go through
-        the collision supervisor like every other motion, so this cannot reverse into
-        something. A pose change is what makes previously-unplannable targets
-        plannable, which is why this belongs here and not in a recovery BT that only
-        runs while a goal is active -- there is no active goal at this point.
+        A pose change is what makes previously-unplannable targets plannable, and
+        planning is done from the live pose -- so a rover parked in inflation fails
+        every goal no matter how open the map is. Measured after one such stop: the
+        sole remaining target replied PATH in 7 ms once the rover had moved.
+
+        This used to call nav2_behaviors' backup and spin directly. They were invoked
+        correctly and did nothing: on 2026-08-12 they refused in 3 ms, five episodes
+        out of five, because their collision check reads the global costmap -- which
+        this rover's own five freeze marks had made lethal underneath it -- while the
+        lidar reported 0.78 m of clear floor behind, 3.1x the supervisor's own reverse
+        gate. The mission ended NO_PLANNABLE_TARGETS sitting on floor it could have
+        backed onto (D36).
+
+        So the escape is asked of the controller, which drives it through the
+        collision supervisor on live lidar. THIS NODE STILL PUBLISHES NO VELOCITY: it
+        sends a request and consumes the fact that comes back.
         """
-        # Back straight out ONCE. After that, TURN -- and turn toward the ground we
-        # are actually trying to reach, not a fixed direction. Repeating a straight
-        # reverse is what Scott watched it do: "still doing the straight back and
-        # straight forward thing... if it gets stuck straight back then pivot to an
-        # open area would be better." Backing up alone barely changes what the planner
-        # can see; a heading change opens a different set of routes entirely.
-        if self._unstick_attempts <= 1:
-            order = (
-                (self._backup, self._backup_goal(), "back up"),
-                (self._spin, self._spin_goal(toward), "turn toward the target"),
-            )
-        else:
-            order = (
-                (self._spin, self._spin_goal(toward), "turn toward the target"),
-                (self._backup, self._backup_goal(), "back up"),
-            )
-        for client, goal, what in order:
-            if self._mission_done or self._stop_requested():
-                # F5. mission/stop must abandon an unstick, not let it finish. Each
-                # behaviour can run for unstick_timeout_s, so without this the rover
-                # keeps manoeuvring for many seconds after the operator stopped the
-                # mission -- which is exactly when someone is walking toward it.
-                self.get_logger().info("unstick abandoned — mission stopped")
-                return False
-            if not client.wait_for_server(timeout_sec=1.0):
-                continue
-            deadline = time.monotonic() + self._unstick_timeout_s
-            handle = self._await(client.send_goal_async(goal), deadline,
-                                 stop_aware=True)
-            if handle is None or not handle.accepted:
-                self.get_logger().info(f"unstick: {what} refused, trying the next")
-                continue
-            if self._stop_requested():
-                # Stopped while this behaviour was accepted and running: cancel it
-                # rather than waiting out its deadline.
-                handle.cancel_goal_async()
-                self.get_logger().info(f"unstick: {what} cancelled — mission stopped")
-                return False
-            result = self._await(handle.get_result_async(), deadline,
-                                 stop_aware=True)
-            if result is None:
-                # Timed out here does NOT mean finished there. The behaviour is
-                # still executing -- a BackUp against something only the supervisor
-                # can see never advances and never ends on its own (time_allowance
-                # is our only server-side deadline, and it equals this one) -- and
-                # sending the next behaviour on top of it means two Nav2 servers
-                # driving /cmd_vel at once. Cancel, and give the cancel a moment to
-                # actually stop the behaviour before anything else is sent.
-                handle.cancel_goal_async()
-                self._await(handle.get_result_async(), time.monotonic() + 2.0)
-                self.get_logger().info(f"unstick: {what} timed out — cancelled")
-                continue
-            if result.status == GoalStatus.STATUS_SUCCEEDED:
-                self.get_logger().info(f"unstick: {what} done")
-                return True
-            self.get_logger().info(f"unstick: {what} did not finish, trying the next")
-        self.get_logger().warn("unstick: nothing worked from this pose")
+        if self._mission_done or self._stop_requested():
+            self.get_logger().info("escape abandoned — mission stopped")
+            return False
+        if not self._escape.wait_for_server(timeout_sec=1.0):
+            self.get_logger().warn(
+                "escape UNAVAILABLE: no /decisive_controller/escape_in_place server. "
+                "The rover cannot back out of an unplannable pose; ending honestly "
+                "rather than pretending it tried.")
+            self._record_escape("unavailable")
+            return False
+
+        goal = BackUp.Goal()
+        goal.target.x = float(self._escape_distance_m)   # BackUp: +x is backwards
+        goal.speed = float(self._escape_speed_mps)
+        goal.time_allowance = Duration(seconds=self._escape_timeout_s).to_msg()
+
+        deadline = time.monotonic() + self._escape_timeout_s + 2.0
+        handle = self._await(self._escape.send_goal_async(goal), deadline,
+                             stop_aware=True)
+        if handle is None or not handle.accepted:
+            # DECLINED is a logic error, not a routine refusal: this node only asks
+            # while it is idle with no goal outstanding, so a rejection means the two
+            # nodes disagree about who is driving. Loud, counted, never retried in a
+            # loop -- a quiet retry here rebuilds the give-up livelock from the other
+            # side.
+            self.get_logger().warn(
+                "escape DECLINED by the controller — it says it is not idle while "
+                "this node believes it is. That is a state disagreement between the "
+                "two, not a blocked rover; counting it as a failed escape.")
+            self._record_escape(ESCAPE_DECLINED)
+            return False
+        if self._stop_requested():
+            handle.cancel_goal_async()
+            self.get_logger().info("escape cancelled — mission stopped")
+            return False
+
+        result = self._await(handle.get_result_async(), deadline, stop_aware=True)
+        if result is None:
+            handle.cancel_goal_async()
+            self._await(handle.get_result_async(), time.monotonic() + 2.0)
+            self.get_logger().warn("escape timed out client-side — cancelled")
+            self._record_escape("timeout")
+            return False
+
+        outcome, detail = parse_outcome(getattr(result.result, "error_msg", ""))
+        if outcome is None:
+            # Never coerce an unknown answer into a known one: it means the controller
+            # is running code this node has not seen.
+            self.get_logger().warn(
+                f"escape returned an outcome this node does not know: {detail!r}")
+            self._record_escape("unrecognised")
+            return False
+        self._record_escape(outcome)
+        travelled = getattr(result.result, "total_elapsed_time", None)
+        if outcome == ESCAPE_CLEARED:
+            self.get_logger().info(f"escape: backed out — {detail}")
+            return True
+        self.get_logger().warn(
+            f"escape did not free us ({outcome}: {detail}) — the way out is blocked "
+            "too" if outcome != ESCAPE_DECLINED else "escape declined")
         return False
+
+    def _record_escape(self, outcome):
+        """Events AND distinct poses, per the D35 lesson: mission 1's report said
+        `freeze_marks: 9` for six places and its own author read it as nine
+        obstacles."""
+        with self._lock:
+            self._escape_events.append(outcome)
+            here = self._robot_world(self._map.header.frame_id or "map") if self._map else None
+            if here is not None:
+                self._escape_poses.append((round(here[0], 2), round(here[1], 2)))
 
     def _pose_clearance(self, wx, wy):
         """Clearance at a candidate pose, from the GLOBAL costmap.
@@ -1079,36 +1139,6 @@ class CoverageExplorerNode(Node):
 
     def _cell_world(self, cell, ox, oy, res):
         return cell_center_world(cell[0], cell[1], ox, oy, res)
-
-    def _backup_goal(self):
-        g = BackUp.Goal()
-        g.target.x = float(self._unstick_backup_m)   # BackUp treats +x as backwards
-        g.speed = 0.10
-        # Explicit server-side deadline. Left at 0, nav2 applies no time limit and a
-        # BackUp that cannot advance runs forever; our client-side _await timeout
-        # abandons it but does not stop it.
-        g.time_allowance = Duration(seconds=self._unstick_timeout_s).to_msg()
-        return g
-
-    def _spin_goal(self, toward=None):
-        """Turn toward `toward` (a map-frame point) when we know one, else a fixed
-        quarter turn. Turning toward the target we cannot currently plan to is the
-        move most likely to open a route to it -- a blind fixed spin is as likely to
-        face a wall."""
-        g = Spin.Goal()
-        g.target_yaw = float(self._unstick_spin_rad)
-        g.time_allowance = Duration(seconds=self._unstick_timeout_s).to_msg()
-        if toward is not None:
-            here = self._robot_world(self._map.header.frame_id or "map") if self._map else None
-            yaw = self._robot_yaw(self._map.header.frame_id or "map") if self._map else None
-            if here is not None and yaw is not None:
-                want = math.atan2(toward[1] - here[1], toward[0] - here[0])
-                delta = math.atan2(math.sin(want - yaw), math.cos(want - yaw))
-                # Commit to a real turn: a few degrees changes nothing, and Spin has
-                # to overcome the drivetrain's breakaway to move at all.
-                if abs(delta) >= 0.35:
-                    g.target_yaw = float(delta)
-        return g
 
     def _on_freeze(self, msg):
         """A freeze the controller detected. Held until an abort claims it."""

@@ -490,6 +490,7 @@ class FreezeMarkSet:
         self._merge_radius_m = float(merge_radius_m)
         self._marks: list = []
 
+
     def add(self, x: float, y: float, now: float) -> FreezeMark:
         """Record a freeze. Re-freezing within `merge_radius_m` refreshes the existing
         mark rather than stacking duplicates -- a rover that retries the same spot
@@ -522,3 +523,29 @@ class FreezeMarkSet:
 
     def __len__(self) -> int:
         return len(self._marks)
+
+
+def freeze_mark_pose(x, y, yaw, front_m, rear_m, reversing=False):
+    """Where a freeze mark goes: the edge of the footprint that was DRIVING INTO it.
+
+    The leading edge, not the centre: a mark at the centre sits `footprint_front_m`
+    behind the obstacle it marks along the approach heading, so the costmap gets a
+    point where the robot was standing rather than where the thing it hit was, and an
+    approach from a slightly different angle reaches the same object without ever
+    crossing a mark (the contact-by-contact face-walking of run 20260811_093818).
+
+    AND THE EDGE DEPENDS ON THE DIRECTION OF TRAVEL. `reversing` is the commanded
+    motion's sign, and it must be the COMMAND rather than anything inferred: a freeze
+    while backing out means the obstacle is BEHIND, and marking the front edge then
+    plants a lethal disc on clear floor ahead while leaving the real obstacle unmarked
+    -- poisoning the costmap in the one situation where the rover most needs the floor
+    ahead of it to stay plannable. Nothing in the shipped ladder can reach that case
+    (freezes are classified only when a rung is NOT running, where the command is
+    never negative), which is exactly why it survived: it becomes reachable the moment
+    an escape reverses on its own.
+
+    `rear_m` rather than `front_m` for the trailing edge, because this footprint is
+    not symmetric: 0.11 m front, 0.16 m rear as deployed.
+    """
+    reach = -float(rear_m) if reversing else float(front_m)
+    return (x + reach * math.cos(yaw), y + reach * math.sin(yaw))
