@@ -43,7 +43,7 @@ rclpy = pytest.importorskip("rclpy")
 
 from action_msgs.msg import GoalStatus  # noqa: E402
 from geometry_msgs.msg import PoseStamped, TransformStamped  # noqa: E402
-from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose, Spin  # noqa: E402
+from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose  # noqa: E402
 from nav_msgs.msg import OccupancyGrid  # noqa: E402
 from rclpy.action import ActionServer, CancelResponse, GoalResponse  # noqa: E402
 from rclpy.callback_groups import ReentrantCallbackGroup  # noqa: E402
@@ -80,7 +80,7 @@ class FakeWorld(Node):
         # --- scripting knobs ---
         self.plannable = lambda x, y: True     # ComputePathToPose verdict
         self.nav_mode = "succeed"              # "succeed" | "abort" | "hold"
-        self.behavior_mode = "hold"            # BackUp/Spin: "hold" | "succeed"
+        self.behavior_mode = "hold"            # the escape: "hold" | "succeed"
         # --- recordings ---
         self.pose = (0.0, 0.0)                 # teleported on nav succeed
         self.nav_goals = []                    # (t, x, y)
@@ -104,14 +104,15 @@ class FakeWorld(Node):
             cancel_callback=lambda gh: CancelResponse.ACCEPT,
             callback_group=cbg,
         )
+        # THE ESCAPE the explorer now asks for. It used to be nav2's "backup" and
+        # "spin"; those were invoked correctly on 2026-08-12 and executed nothing
+        # (D36), so the escape moved to the controller's own action and this harness
+        # has to fake the thing the explorer actually calls. The D10/D12 protections
+        # below are about ANY recovery motion holding while goals are pending, so
+        # they retarget rather than retire.
         self._backup_srv = ActionServer(
-            self, BackUp, "backup", self._make_behavior_execute("backup"),
-            goal_callback=lambda req: GoalResponse.ACCEPT,
-            cancel_callback=lambda gh: CancelResponse.ACCEPT,
-            callback_group=cbg,
-        )
-        self._spin_srv = ActionServer(
-            self, Spin, "spin", self._make_behavior_execute("spin"),
+            self, BackUp, "/decisive_controller/escape_in_place",
+            self._make_behavior_execute("escape"),
             goal_callback=lambda req: GoalResponse.ACCEPT,
             cancel_callback=lambda gh: CancelResponse.ACCEPT,
             callback_group=cbg,
@@ -201,9 +202,7 @@ class FakeWorld(Node):
                         time.sleep(0.02)
                     self.behavior_cancels.append((time.monotonic(), kind))
                     goal_handle.canceled()
-                if kind == "backup":
-                    return BackUp.Result()
-                return Spin.Result()
+                return BackUp.Result()
             finally:
                 rec[1] = time.monotonic()
         return execute
@@ -240,6 +239,7 @@ BASE_PARAMS = {
     "max_consecutive_failures": 3,
     "complete_after_empty_cycles": 3,
     "unstick_timeout_s": 1.0,
+    "escape_timeout_s": 1.0,
     "max_unstick_attempts": 2,
     "blocked_start_check": False,
     "save_map_on_end": False,
@@ -354,14 +354,21 @@ def test_d10_no_goal_while_a_recovery_behaviour_runs(stack):
 
 
 def test_d12_timed_out_behaviour_is_cancelled_before_the_next(stack):
-    """A held BackUp must be cancelled when its deadline passes, BEFORE Spin is
-    sent, and both behaviour goals must carry an explicit time_allowance."""
+    """A held escape must be cancelled when its deadline passes, BEFORE the next one
+    is sent, and every escape goal must carry an explicit time_allowance.
+
+    Retargeted 2026-08-12 with the escape itself: the old version watched nav2's
+    BackUp being cancelled before nav2's Spin was sent, two behaviours inside one
+    unstick. There is one escape per attempt now, so the same property is asserted
+    across two ATTEMPTS -- and it is the property that matters either way, because two
+    overlapping recovery motions is two authors on cmd_vel.
+    """
     stack.world.nav_mode = "hold"
     stack.world.behavior_mode = "hold"
     stack.world.plannable = lambda x, y: False   # force the unstick path
     stack.world.publish_map(make_map())
     assert wait_until(lambda: len(stack.world.behavior_goals) >= 2, 25.0), \
-        "second recovery behaviour never sent"
+        "second escape never sent"
     (t1, kind1, goal1), (t2, kind2, goal2) = stack.world.behavior_goals[:2]
     # The first behaviour was cancelled before the second was sent.
     cancels_before_second = [t for t, k in stack.world.behavior_cancels
@@ -373,7 +380,9 @@ def test_d12_timed_out_behaviour_is_cancelled_before_the_next(stack):
     # Explicit server-side deadline on every behaviour goal.
     for goal in (goal1, goal2):
         allowance = goal.time_allowance.sec + goal.time_allowance.nanosec * 1e-9
-        assert allowance == pytest.approx(BASE_PARAMS["unstick_timeout_s"], abs=0.01)
+        assert allowance == pytest.approx(BASE_PARAMS["escape_timeout_s"], abs=0.01), (
+            "the escape goal carries no explicit server-side deadline, so a held "
+            "escape would run until something else stopped it")
 
 
 def test_d24_give_up_report_states_the_true_remaining_target_count(stack):
