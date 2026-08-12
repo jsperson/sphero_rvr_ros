@@ -31,7 +31,7 @@ from geometry_msgs.msg import Twist
 from nav2_msgs.action import FollowPath
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
-from std_msgs.msg import Bool, Int32, String
+from std_msgs.msg import Bool, Float32, Int32, String
 import tf2_ros
 
 from sphero_rvr_core.stall_ladder import LadderConfig, StallLadder
@@ -244,6 +244,15 @@ class DecisiveControllerNode(Node):
         # case the ladder exists for. The controller owns recovery now, so it says so
         # out loud and the explorer holds off while a ladder is running.
         self._ladder_active_pub = self.create_publisher(Bool, "~/ladder_active", 10)
+        # THE STEERING LAW SAYS WHAT IT DID. On its first flight (2026-08-11
+        # gauntlet 1) the offset was computed and applied and published NOWHERE, so
+        # when the supervising session asked "was steering engaged before the stop?"
+        # the honest answer was that no artifact could say -- the law's own behaviour
+        # was unobservable in the recording it was flown to produce. Published every
+        # cycle including the zeros, because "it did not engage" is exactly as much
+        # of an answer as "it did", and a topic that only speaks when something
+        # happens cannot distinguish silence from absence.
+        self._avoid_offset_pub = self.create_publisher(Float32, "~/avoid_offset", 10)
         self.create_timer(0.5, self._publish_freeze_marks)
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -630,6 +639,8 @@ class DecisiveControllerNode(Node):
                         self._avoid_config,
                     )
                     heading_error = _wrap_angle(heading_error + self._avoid_offset_rad)
+                self._avoid_offset_pub.publish(
+                    Float32(data=float(self._avoid_offset_rad)))
 
                 command = compute_drive_command(heading_error, distance_to_goal, self._config)
 

@@ -7,7 +7,8 @@ written off. Anything that is not recorded may have to be repeated.
 
 Records to a CSV, one row per sample:
   t, state, reason, front, rear, left, right, cam_cloud_age, cam_nearest, cam_scale,
-  pivot_veto, cmd_vx, cmd_wz, out_vx, out_wz, odom_x, odom_y, odom_yaw_deg
+  pivot_veto, avoid_offset, cmd_vx, cmd_wz, out_vx, out_wz, odom_x, odom_y,
+  odom_yaw_deg
 
   * state/front/rear/... come from /collision_stop/state -- did the brake see it,
     and did it act?
@@ -15,6 +16,10 @@ Records to a CSV, one row per sample:
     to diagnose with: several different paths all report SLOW, and one of them
     zeroes a commanded pivot outright. Recording state without reason is what left
     run 20260810_185048 undiagnosable.
+  * avoid_offset is the STEERING LAW's own answer to "did you engage, and how
+    hard": the heading offset it applied this cycle, in radians, zeros included.
+    Gauntlet 1 flew it unobservable and the question "was it leaning before the
+    stop?" had no artifact that could answer -- so it is a column now.
   * cam_nearest / cam_scale say what the camera brake DID: scale 0.0 is the hard
     cut at 0.50 m that ended most of run 114626's goals, and cam_nearest is the
     range it cut at. Without them, "the lidar said SLOW but the motors got zero"
@@ -44,7 +49,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 
 DURATION = float(sys.argv[1]) if len(sys.argv) > 1 else 600.0
 OUT = sys.argv[2] if len(sys.argv) > 2 else None
@@ -89,12 +94,19 @@ class Recorder(Node):
         self.near = {k: "" for k in FIELDS}
         self.cmd = (0.0, 0.0)
         self.out = (0.0, 0.0)
+        # Initialised, not left to the first message: _sample() runs on a timer from
+        # the moment the node exists, and an un-set attribute here would raise inside
+        # the timer callback -- which in this node means the recording quietly stops
+        # while the mission carries on believing it is being recorded.
+        self.avoid_offset = 0.0
         self.odom = (0.0, 0.0)
         self.yaw = 0.0
         self.t0 = time.monotonic()
         self.create_subscription(String, "/collision_stop/state", self._on_state, 10)
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd, 10)
         self.create_subscription(Twist, "/cmd_vel_motor", self._on_out, 10)
+        self.create_subscription(
+            Float32, "/decisive_controller/avoid_offset", self._on_avoid, 10)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_timer(0.1, self._sample)   # 10 Hz is plenty and keeps files small
 
@@ -117,6 +129,9 @@ class Recorder(Node):
             # than fail, which is how a telemetry gap hides in plain sight.
             hit = re.search(rf"\b{k}=(true|false)\b", d)
             self.near[k] = hit.group(1) if hit else ""
+
+    def _on_avoid(self, m):
+        self.avoid_offset = m.data
 
     def _on_cmd(self, m):
         self.cmd = (m.linear.x, m.angular.z)
@@ -142,6 +157,7 @@ class Recorder(Node):
         self.w.writerow([
             round(time.monotonic() - self.t0, 2), self.state, self.reason,
             *[self.near[k] for k in FIELDS],
+            round(self.avoid_offset, 3),
             round(self.cmd[0], 3), round(self.cmd[1], 3),
             round(self.out[0], 3), round(self.out[1], 3),
             round(self.odom[0], 3), round(self.odom[1], 3),
@@ -154,7 +170,7 @@ def main():
     rclpy.init()
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["t", "state", "reason", *FIELDS,
+        w.writerow(["t", "state", "reason", *FIELDS, "avoid_offset",
                     "cmd_vx", "cmd_wz", "out_vx", "out_wz",
                     "odom_x", "odom_y", "odom_yaw_deg"])
         n = Recorder(w)
