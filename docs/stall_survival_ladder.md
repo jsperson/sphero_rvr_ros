@@ -182,6 +182,31 @@ one that runs has a single rung that the supervisor can veto outright.
 the contract change that makes "no single stall class ends a mission" true: a stall
 can only end a mission if *every* escape was tried and refused.
 
+### v2, 2026-08-11 night — what the field changed about this picture
+
+Two gauntlet missions flew this ladder: **39 invocations, every one of them starting
+at rung 1, and rungs 2–4 never reached.** The diagram above is right about the rungs
+and wrong about three things, all fixed in `docs/turning_batch_design.md` PART TWO
+(§9), which is the current design of record for this module:
+
+1. **The order is not fixed.** Reverse-first is the BLIND-CONTACT order (D25: the entry
+   path is the only route known to be clear when nothing can see the obstacle). When a
+   gate can see what stopped us and the lidar names a gap, the ladder pivots toward the
+   gap first and drives out along it. A freeze re-opens the retreats at any point.
+2. **"Refused or ineffective" was too generous.** A rung used to be credited for
+   0.12 m of travel in any direction, and 0.12 m of straight reverse returns the rover
+   to the same approach: 14 of 14 recorded escapes were credited, and 14 of 14
+   re-stalled a median of 0.033 m from where they started. A rung now clears only on a
+   change that driving forward again cannot undo — 30° of heading or 0.14 m of LATERAL
+   displacement — and the pivot rung is judged by the lidar bearing rather than by
+   wheel yaw, which the driver's real pivot rate makes uncreditable (D32).
+3. **The ladder remembers.** A second stall in the same place resumes at the next
+   untried rung instead of restarting at rung 1, and the anti-livelock budget bounds
+   COMPLETE TRAVERSALS (default 1) rather than repeats of one escape.
+
+Rung 4's "0.5 m" above was never the implementation and is not the contract: the drive
+rung arcs toward the open bearing under the same rung budget as every other rung.
+
 ---
 
 ## 3. The no-progress predicate

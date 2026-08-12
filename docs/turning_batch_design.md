@@ -1,6 +1,8 @@
 # Design note — the turning batch
 
-Four items, one contract. **Status: design only. Nothing here is implemented.**
+Four items, one contract. **Status: item 1 built (`fa34c3b`, `67f81ae`); items 2–4
+design only, gated on the bench session. PART TWO's build step 1 — the stall-ladder
+core — is built; see the status table there.**
 
 The contract every item is written against is the driver's *actual* pivot behaviour —
 **sign-only input, self-regulated rate** (§5, D32). Three of the four items have been
@@ -757,9 +759,52 @@ it rather than have a peer infer it.
 
 # PART TWO — THE DANCE (v2 design, added 2026-08-11 night)
 
-Written after gauntlet 1 flew twice on one evening. **Design only; nothing here is
-implemented.** Evidence is two runs' artifacts plus four statements from Scott, and
-every claim below is cited to a row, a log line, or a line of code.
+Written after gauntlet 1 flew twice on one evening. Evidence is two runs' artifacts
+plus four statements from Scott, and every claim below is cited to a row, a log line,
+or a line of code.
+
+**STATUS (updated 2026-08-11 night, build step 1):**
+
+| clause | state |
+|---|---|
+| §9(A) ordering conditioned on stall cause | **BUILT.** `VISIBLE_RUNG_ORDER` (pivot, drive-out, arc, reverse) when a gate can see the cause AND a gap is known outside the pivot tolerance; `RUNG_ORDER` otherwise. A freeze re-opens the retreats even mid-traversal. |
+| §9(B) a rung clears only if the situation changed | **BUILT.** Net heading ≥ 30° (`front_stop` half-sector) or LATERAL displacement ≥ 0.14 m (`robot_radius`); axial travel counts for nothing. Credits 0 of the 14 recorded episodes, where the deleted distance test credits all 14. |
+| §9(B) the pivot's own clear test | **BUILT, and not as designed here:** the pivot is credited by the LIDAR (the gap's bearing shrinking into 0.45 rad), not by wheel yaw, because D32's rate filter can never credit a real pivot — see the build correction below. |
+| §9(C) escalation memory + re-derived budget | **BUILT.** A goal remembers which escapes it has had; the budget bounds COMPLETE TRAVERSALS (default 1); memory resets on `goal_generation` or ≥ 0.14 m between stalls. |
+| §10 arc-aware corridor (steering law v2) | design only — build step 2. |
+| §11 revert-proofs 1, 2, 3, 4, 6 | **BUILT**, each demonstrated failing against `2d49a1e`; proof 5 belongs to step 2. |
+
+**BUILD CORRECTION BC5 — §9(A)'s pivot could not have stopped where §9(A) wanted it
+to.** Rung 3 commands `(0.0, ±0.40)`; the supervisor passes it; the driver then
+ignores commanded pivot magnitude and self-regulates at a measured **2.90 rad/s
+median** (D32). `_run_rung` credited yaw only for per-cycle steps at or under
+`max_yaw_rate_rad_s` 0.6, so at 10 Hz **every** cycle of a real pivot was rejected as
+impossible, `_rung_yaw` stayed at zero, and the rung could only ever end by burning
+its full 3 s budget — about **500°** of spin, past the 45–71° the capstone asks for.
+Invisible until now because rung 3 had never run; step 1 is exactly what makes it
+reachable. Ruling (supervising session): the pivot is judged by the ROOM — clear when
+the open bearing has shrunk by at least the change-of-situation angle AND now sits
+inside `pivot_target_tolerance_rad` 0.45 (derived: 2.90 rad/s × 0.1 s × 1.5 = 0.435,
+consistent with §2's ~0.37 rad angular-resolution floor). `rung_budget_s` stays as the
+hard backstop. This SIDESTEPS the wheel-odom yaw guard rather than fixing it — a
+rotation the tracks only pretended to make does not move the room — and item 3 still
+owns the discriminator everywhere else. D33 synergy, stated but not claimed closed:
+heading-target termination ends a real pivot in ~0.3–1.1 s at the measured rate, well
+inside the 2.0 s freeze window, which shrinks D33's reachable surface.
+
+**BUILD CORRECTION BC6 — the recorded episodes cannot prove the lateral/axial rule on
+their own.** All 14 travelled 0.105–0.130 m, so the 0.14 m threshold rejects them even
+if displacement is measured in ANY direction; a mutation replacing the lateral test
+with a total-displacement test left the replay green. The axial-counts-for-nothing
+claim is carried by a separate case the recording does not contain — a rung 1 running
+its full budget, 0.30 m of straight reverse — which the new code produces routinely
+now that rung 1 is no longer credited early.
+
+**BUILD CORRECTION BC7 — the seam.** `_open_bearing()` answered `0.0` for "no scan",
+"stale scan" and "the way out is dead ahead" alike. §9(A) decides the escape ORDER
+from that value and §11's proof 1 is specified as "visible cause AND a known open
+bearing", so the ambiguity became load-bearing. The controller now publishes absence
+(`None`) and the ladder falls back to reverse-first on an unknown bearing.
 
 ## 7. What the second flight measured
 
