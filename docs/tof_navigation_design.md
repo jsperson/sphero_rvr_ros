@@ -1079,6 +1079,24 @@ can. **The arithmetic was right every time; the operands were wrong.**
 That is the week's theme once more — one constant answering two questions — in its most
 expensive form yet, because here it nearly cancelled a batch that was sound.
 
+### 11.45 The state token — configuration, never capability
+
+`~/state` reports `rules=rule_a_only` or `rules=rule_a+b`, and the choice of vocabulary
+is the point. A capability word like `short_range` or `full` **drifts the moment a
+constant moves** — `short_range` would have been written during the retracted draft of
+11.2, when rule A's reach was believed redundant with the lidar, and it would still read
+`short_range` today after the correction that made it a real brake. The word would have
+outlived the reasoning that produced it, in a recording nobody could re-derive.
+
+A configuration word stays true by construction: `rule_a_only` describes which rules ran,
+which is a fact about the run rather than a claim about the robot. Report what IS and let
+the reader judge what it means (D35).
+
+**The gate lives on the DETECTOR, not on the consumer.** Rule B decides what it
+publishes; a consumer-side gate would leave the detector claiming obstacles nobody was
+permitted to act on, which is two components disagreeing about what is true — the seam
+class this project keeps paying for.
+
 ### 11.5 What the guard now guards
 
 `tests/test_tof_brake_derivation.py` no longer blocks the batch — the batch is not

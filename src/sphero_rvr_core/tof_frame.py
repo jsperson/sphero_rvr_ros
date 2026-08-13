@@ -150,6 +150,15 @@ class TofConfig:
     # pins it. Until then the node advertises rule B as UNPINNED on ~/state and it
     # carries no authority.
     disagreement_margin_m: float = 0.10
+    # RULE B IS GATED OFF UNTIL ITS MARGIN IS PINNED (bench item J, design 9.8). The
+    # gate lives on the DETECTOR rather than on the consumer, because rule B decides
+    # what it publishes and a consumer-side gate would leave the detector claiming
+    # obstacles nobody was allowed to act on -- two components disagreeing about what
+    # is true, which is the seam class this project keeps paying for.
+    #
+    # Rule A flies without J; rule B does not (design 11.3, 11.5). Flipping this is a
+    # config change accompanied by a "# RULE B PINNED BY:" citation, not a code change.
+    rule_b_enable: bool = False
     # Height of the lidar's scan plane. THE NODE OVERRIDES THIS FROM TF and this
     # default exists only so the pure core is runnable in a test -- geometry belongs to
     # TF, and a consumer that hardcodes a mounting height is the N1 defect wearing a
@@ -481,7 +490,7 @@ def lidar_disagreement(frame, cfg: TofConfig, column_min) -> list:
     and not a clearance. Rule B can only ADD obstacles, so its absence can only remove
     them; it cannot phantom-brake by being missing.
     """
-    if column_min is None:
+    if column_min is None or not cfg.rule_b_enable:
         return []
     out = []
     for row in range(ZONES):
@@ -604,6 +613,11 @@ class ObstacleDetector:
             "nearer_than_floor": near,                  # rule A, immediate
             "disagrees_this_frame": disagree,           # rule B, unconfirmed
             "confirmed_disagreement": sorted(confirmed),  # rule B, N-of-M
+            # CONFIGURATION-descriptive, never capability-descriptive. "rule_a_only"
+            # stays true whatever the constants do; a word like "short_range" would
+            # quietly become a lie the moment a threshold moved. Report what IS and let
+            # the reader judge what it means (D35).
+            "rules": "rule_a+b" if cfg.rule_b_enable else "rule_a_only",
             "background": "unavailable" if column_min is None else "ok",
             "rule_a_rows": rule_a_rows(cfg),
             "obstacles": sorted(set(near) | set(confirmed)),

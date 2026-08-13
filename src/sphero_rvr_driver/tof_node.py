@@ -112,6 +112,8 @@ class TofNode(Node):
         # item J exists to fix that. Until it does, ~/state says so on every line.
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("disagreement_margin_m", 0.10)
+        # Gated until bench item J pins the margin above. Rule A flies without J.
+        self.declare_parameter("rule_b_enable", False)
         # Matches the supervisor's own scan-staleness bound, deliberately: two different
         # answers to "is this scan usable" is two components disagreeing about reality.
         self.declare_parameter("max_scan_age_s", 0.30)
@@ -130,6 +132,7 @@ class TofNode(Node):
             floor_horizon_m=float(_p("floor_horizon_m").value),
             stop_distance_m=float(_p("stop_distance_m").value),
             disagreement_margin_m=float(_p("disagreement_margin_m").value),
+            rule_b_enable=bool(_p("rule_b_enable").value),
         )
         self._detector = ObstacleDetector(self._cfg)
 
@@ -349,9 +352,11 @@ class TofNode(Node):
             # Rule B's health, and its provenance. UNPINNED is not a warning about this
             # run -- it says the margin below has no recorded data behind it at all, and
             # stays until bench item J supplies some (design 9.8).
+            f"rules={result['rules'] if result else 'unknown'} "
             f"background={background} "
             f"lidar_plane_m={'None' if self._lidar_plane_m is None else round(self._lidar_plane_m, 4)} "
-            f"rule_b=UNPINNED margin_m={cfg.disagreement_margin_m} "
+            f"rule_b={'UNPINNED' if not cfg.rule_b_enable else 'pinned'} "
+            f"margin_m={cfg.disagreement_margin_m} "
             f"consumers=none_stage_i"
         )
         self._state_pub.publish(state)

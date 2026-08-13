@@ -491,8 +491,12 @@ def test_rule_b_needs_the_lidar_to_DISAGREE():
 
     A detector using absolute proximity instead would fire identically in all three,
     which is the failure this rule exists to avoid: braking at every wall.
+
+    OPTS IN EXPLICITLY. Rule B ships GATED OFF until bench item J pins its margin, so a
+    proof of rule B's logic has to enable it and say so -- inheriting the shipped default
+    would leave this quietly testing nothing the day the gate flipped either way.
     """
-    cfg = TofConfig()
+    cfg = dataclasses.replace(TofConfig(), rule_b_enable=True)
 
     def fires(background):
         det = ObstacleDetector(cfg)
@@ -534,7 +538,7 @@ def test_missing_scan_drops_rule_b_zones():
     directions: treating a missing scan as OPEN SPACE brakes on everything, and treating
     it as AGREEMENT brakes on nothing while looking healthy.
     """
-    cfg = TofConfig()
+    cfg = dataclasses.replace(TofConfig(), rule_b_enable=True)   # see the note above
     det = ObstacleDetector(cfg)
     result = det.update(TILT_BOX_050[0], None)
     assert result["disagrees_this_frame"] == []

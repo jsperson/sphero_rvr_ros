@@ -134,15 +134,65 @@ def test_rule_b_authority_requires_a_pinning_citation():
     enable = re.search(r"^\s*low_obstacle_brake_enable:\s*(\w+)", text, re.M)
     assert topic and enable
 
+    # The gate lives on the DETECTOR, not on this consumer -- rule B decides what it
+    # publishes, and a consumer-side gate would leave the detector claiming obstacles
+    # nobody may act on. So the citation is checked here and the gate itself in
+    # TofConfig, which is the thing that actually decides.
     if topic.group(1) == "/tof/obstacles" and enable.group(1) == "true":
         pinned = re.search(r"^\s*#\s*RULE B PINNED BY:", text, re.M)
-        gated = re.search(r"^\s*low_obstacle_rule_b_enable:\s*false", text, re.M)
-        assert pinned or gated, (
-            "the ToF has brake authority with rule B neither pinned nor explicitly "
-            "gated off. Rule A alone is fine to fly (design 11.3); rule B is not, while "
-            "its margin rests on no recorded data. Either run bench item J and cite the "
-            "capture as '# RULE B PINNED BY: ...', or set low_obstacle_rule_b_enable: "
-            "false and fly the short-range brake honestly")
+        assert pinned or not TofConfig().rule_b_enable, (
+            "the ToF has brake authority with rule B ENABLED and no pinning citation. "
+            "Rule A alone is fine to fly (design 11.3); rule B is not, while its margin "
+            "rests on no recorded data at all. Either run bench item J and cite the "
+            "capture as '# RULE B PINNED BY: ...' in this config, or leave "
+            "TofConfig.rule_b_enable False and fly rule A honestly")
+
+
+def test_the_shipped_gate_is_real_and_defaults_OFF():
+    """The guard above cites `rule_b_enable`. A guard that names a parameter nobody
+    implemented is worse than no guard: it reads as protection and enforces nothing.
+
+    That is the unreachable-recovery pattern in test form, and the first draft of this
+    file had exactly it -- the citation named a `low_obstacle_rule_b_enable` key that
+    existed in no config and no code.
+    """
+    cfg = TofConfig()
+    assert hasattr(cfg, "rule_b_enable"), "the gate the guard cites does not exist"
+    assert cfg.rule_b_enable is False, (
+        "rule B ships ENABLED. Its disagreement margin has never been measured against "
+        "a synchronised scan; bench item J is what changes that")
+
+    from sphero_rvr_core.tof_frame import lidar_disagreement
+    frame = [4000] * 64
+    for col in (2, 3, 4):
+        frame[3 * 8 + col] = 500                      # the recorded object, 0.50 m
+    assert lidar_disagreement(frame, cfg, [3.0] * 8) == [], (
+        "rule B produced obstacles while gated off -- the flag is declared but not "
+        "consulted, which is a gate in name only")
+    live = dataclasses.replace(cfg, rule_b_enable=True)
+    assert lidar_disagreement(frame, live, [3.0] * 8), (
+        "rule B produces nothing even when ENABLED, so the test above proves nothing")
+
+
+def test_the_state_token_describes_CONFIGURATION_not_capability():
+    """`rule_a_only` / `rule_a+b`, never `short_range` or `full`.
+
+    A capability word drifts the moment a constant moves -- "short_range" would have
+    been written when rule A's reach was believed to be redundant with the lidar, and
+    would still read "short_range" after the correction that made it a real brake. A
+    configuration word stays true by construction. Report what IS; let the reader judge
+    what it means.
+    """
+    from sphero_rvr_core.tof_frame import ObstacleDetector
+    gated = ObstacleDetector(TofConfig()).update([4000] * 64, None)
+    live = ObstacleDetector(dataclasses.replace(TofConfig(), rule_b_enable=True)).update(
+        [4000] * 64, None)
+    assert gated["rules"] == "rule_a_only"
+    assert live["rules"] == "rule_a+b"
+    for banned in ("short", "full", "degraded", "limited", "safe"):
+        assert banned not in gated["rules"] and banned not in live["rules"], (
+            f"the token contains the capability word {banned!r}; it will outlive the "
+            "numbers that made it true")
 
 
 def test_the_stop_distance_would_be_derived_not_chosen():

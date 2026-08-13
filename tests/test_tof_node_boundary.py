@@ -59,9 +59,13 @@ def test_rule_b_is_advertised_as_UNPINNED_on_the_state_topic():
     reason. Delete the word and this fails, which is the point.
     """
     body = _body(NODE.read_text())
-    assert "rule_b=UNPINNED" in body, (
-        "the state topic no longer advertises rule B as unpinned; if bench item J has "
-        "been run, cite the capture here and in design 9.8 rather than just dropping it")
+    assert "'UNPINNED' if not cfg.rule_b_enable" in body, (
+        "the state topic no longer advertises rule B as unpinned when it is gated; if "
+        "bench item J has been run, cite the capture in design 9.8 and in the deployed "
+        "config rather than just dropping the word")
+    assert "rules={result['rules']" in body, (
+        "the state line does not report WHICH RULES are live. A recording that cannot "
+        "say whether rule B was running can be misread as B-protected when it was not")
 
 
 def test_the_lidar_plane_height_comes_from_TF_not_a_constant():
