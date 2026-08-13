@@ -22,9 +22,11 @@ from fixtures.tof_recorded_frames import (  # noqa: E402
     TILT_WALL_060, TILT_WALL_060_ROWS, TILT_WALL_060_SENSOR_M, WALL_ONLY,
 )
 from sphero_rvr_core.tof_frame import (  # noqa: E402
+    _floor_reading_m,
     ObstacleDetector, TofConfig, expected_floor_m, floor_beyond_horizon,
     lidar_disagreement, nearer_than_floor, plausible_for_zone, rule_a_applies,
-    rule_a_rows, rule_b_applies, scan_min_by_column, unexpected_returns, valid_mm,
+    rule_a_rows, rule_b_applies, scan_min_by_column, tall_enough_to_matter,
+    unexpected_returns, valid_mm,
     zone_angles, zone_point, zone_ray,
 )
 
@@ -645,3 +647,113 @@ def test_rule_a_authority_is_INDEPENDENT_of_the_floor_horizon():
         assert rule_a_rows(moved) == rule_a_rows(cfg), (
             f"moving the VISIBILITY horizon to {horizon} changed rule A's authority "
             f"({rule_a_rows(moved)} vs {rule_a_rows(cfg)}); the two are still coupled")
+
+
+# ------------------------------------------- Scott's traversable-terrain height gate
+
+def test_a_mat_ridge_is_terrain_not_an_obstacle():
+    """Scott, 2026-08-13, verbatim: "Anything smaller than say 0.7\" should be ignored."
+
+    He named the artifact too -- the ridge of the mat his chair sits on, ~3/5 inch. A
+    detector that brakes for that turns every threshold strip and floor mat in the house
+    into a wall, and the rover drives over them without noticing.
+
+    The gate is asserted in BOTH directions, because a gate that only ever passes is
+    indistinguishable from no gate at all.
+    """
+    cfg = TofConfig()
+    floor_mm = int(_floor_reading_m(5, 3, cfg) * 1000)
+
+    # A 15 mm ridge: nearer than modelled floor, but terrain.
+    for height_m, verdict in ((0.005, False), (0.012, False), (0.015, False),
+                              (0.025, True), (0.050, True)):
+        reading = None
+        for mm in range(floor_mm, 100, -1):
+            p = zone_point(5, 3, mm, cfg)
+            if p and p[2] >= height_m:
+                reading = mm
+                break
+        assert reading is not None, f"no reading in row 5 reaches {height_m} m"
+        assert tall_enough_to_matter(5, 3, reading, cfg) is verdict, (
+            f"a return {height_m*1000:.0f} mm off the floor (reading {reading} mm) was "
+            f"judged {'terrain' if verdict else 'an obstacle'} -- the 18 mm gate is "
+            "not where the spec puts it")
+
+
+def test_the_height_gate_binds_on_BOTH_rules():
+    """A ridge is nearer than modelled floor AND invisible to the lidar, so it satisfies
+    rule A and rule B alike. Gating one would leave the other braking for the same mat.
+    """
+    cfg = TofConfig()
+    frame = [4000] * 64
+    # A 12 mm ridge across three adjacent columns of a rule-A row and a rule-B row.
+    for row in (5, 3):
+        for col in (2, 3, 4):
+            mm = None
+            for cand in range(int(_floor_reading_m(row, col, cfg) * 1000), 100, -1):
+                p = zone_point(row, col, cand, cfg)
+                if p and p[2] >= 0.012:
+                    mm = cand
+                    break
+            frame[row * 8 + col] = mm
+
+    assert not nearer_than_floor(frame, cfg), (
+        "rule A flagged a 12 mm ridge; the height gate is not applied to the floor "
+        "comparison")
+    assert not lidar_disagreement(frame, cfg, [3.0] * 8), (
+        "rule B flagged a 12 mm ridge against an open lidar background; the height gate "
+        "is not applied to the lidar comparison, so a mat still brakes the rover")
+
+    # ...and the SAME frame with a 60 mm object must still fire, or the test above is
+    # only proving the detector is broken.
+    for col in (2, 3, 4):
+        for cand in range(int(_floor_reading_m(5, col, cfg) * 1000), 100, -1):
+            p = zone_point(5, col, cand, cfg)
+            if p and p[2] >= 0.060:
+                frame[5 * 8 + col] = cand
+                break
+    assert nearer_than_floor(frame, cfg), (
+        "a 60 mm obstacle was gated out as terrain -- the gate is set far too high")
+
+
+def test_the_height_gate_is_NOT_redundant_with_the_floor_margin():
+    """The gate must bind on its OWN terms, and this proof exists because it did not.
+
+    Wired naively, deleting the 18 mm gate from either rule changed no test. The reason
+    is that `floor_margin_m = 0.12` already refuses anything shorter than 27-76 mm
+    depending on the row -- up to 4x Scott's spec. The margin was doing terrain
+    classification by accident.
+
+    That is the same confusion as `floor_horizon_m` making authority decisions: two
+    different questions answered by one constant, agreeing today and diverging later.
+    They diverge on a schedule we already know about -- the margin exists to cover
+    FLOOR-MODEL UNCERTAINTY and design 3.3 requires it to be RE-DERIVED once the
+    in-flight pitch envelope is measured. If that shrinks it, a stack relying on the
+    margin for terrain would silently start braking for mats, and the symptom would be
+    a rover that got MORE timid after the floor model got BETTER.
+
+    So the assertion is made where the two constants come apart.
+    """
+    cfg = TofConfig()
+    tight = dataclasses.replace(cfg, floor_margin_m=0.02)
+
+    frame = [4000] * 64
+    for col in (2, 3, 4):
+        for cand in range(int(_floor_reading_m(5, col, cfg) * 1000), 100, -1):
+            p = zone_point(5, col, cand, cfg)
+            if p and p[2] >= 0.012:                  # a 12 mm mat ridge
+                frame[5 * 8 + col] = cand
+                break
+
+    assert nearer_than_floor(frame, dataclasses.replace(tight, min_obstacle_height_m=0.0)), (
+        "with the margin tightened and the gate disabled, a 12 mm ridge is STILL not "
+        "flagged -- so this fixture cannot show the gate doing anything and the proof "
+        "below would be vacuous")
+    assert not nearer_than_floor(frame, tight), (
+        "with the margin tightened to 0.02 m the 12 mm ridge is flagged as an obstacle: "
+        "the 18 mm gate is not binding on its own, it was only ever hiding behind the "
+        "margin, and improving the floor model would start braking for floor mats")
+
+    assert not lidar_disagreement(frame, tight, [3.0] * 8), (
+        "same ridge, same tightened margin, against an open lidar background: rule B "
+        "flagged it, so the gate is not binding there either")

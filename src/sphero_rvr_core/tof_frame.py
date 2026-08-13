@@ -117,6 +117,30 @@ class TofConfig:
     # FUNCTION of this number and is published on ~/state rather than hardcoded.
     stop_distance_m: float = 0.45
 
+    # --- traversable terrain: what is NOT an obstacle ------------------------------
+    # SCOTT'S REQUIREMENT, 2026-08-13, verbatim: "Anything smaller than say 0.7\" should
+    # be ignored." A ridge that low is terrain the rover drives over, not an obstacle,
+    # and a detector that brakes for it turns every floor mat and threshold strip into
+    # a wall.
+    #
+    # 0.7 inch = 17.8 mm; 18 mm is the round number and the one that ships. WHICH NUMBER
+    # WINS AND WHY: this is an OPERATOR SPEC, not a derivation from tread geometry. No
+    # documented RVR climb capability exists in this repo or in Sphero's published
+    # material, so there is nothing to derive from -- and a number invented from wheel
+    # radius would be a guess wearing a derivation's clothes. If a real climb spec ever
+    # surfaces and it is LOWER than 18 mm, the spec wins and this drops to it; if it is
+    # higher, this stays at 18 mm, because being able to climb a thing is not a reason
+    # to drive into it.
+    #
+    # Measured against the sensor rather than assumed: at the shipped geometry a return
+    # 18 mm off the floor is ~15 mm of range difference in the near rows, which is
+    # several times the ~3 mm range noise -- so this gate is resolvable, not wishful.
+    # THE CAMERA COULD NEVER HAVE IMPLEMENTED THIS. A monocular floor-boundary reports
+    # WHERE the floor stops, not HOW HIGH the thing stopping it is; height is exactly
+    # the quantity it does not measure. One more reason the swap is a capability gain
+    # and not only a reliability one.
+    min_obstacle_height_m: float = 0.018
+
     # --- rule B: the lidar as a live background -----------------------------------
     # A ToF return this much nearer than the lidar's own range at the same bearing is
     # something the lidar cannot see -- which is the definition of the obstacle class
@@ -307,6 +331,10 @@ def nearer_than_floor(frame, cfg: TofConfig) -> list:
         # and still not be entitled to conclude from it -- design 9.2.
         if not rule_a_applies(row, col, cfg):
             continue
+        # Terrain, not an obstacle -- Scott's 18 mm gate, applied before the comparison
+        # so that a mat ridge is never a brake in either rule.
+        if not tall_enough_to_matter(row, col, value, cfg):
+            continue
         # `_floor_reading_m`, NOT `expected_floor_m`. The latter caps at
         # `floor_horizon_m` and returns None past it -- which is an AUTHORITY decision
         # wearing a visibility constant's name, the exact confusion 9.1 diagnosed.
@@ -339,6 +367,31 @@ def rule_a_rows(cfg: TofConfig) -> list:
     return [r for r in range(ZONES) if any(rule_a_applies(r, c, cfg) for c in range(ZONES))]
 
 
+def tall_enough_to_matter(row: int, col: int, value: int, cfg: TofConfig) -> bool:
+    """Is this return HIGH ENOUGH off the floor to be an obstacle rather than terrain?
+
+    Scott's 18 mm gate (see `min_obstacle_height_m`). The height comes from the same
+    fitted geometry the floor model uses: a return at ray-length r sits at
+    `mount_height + r * uz`, and uz is negative for every downward row, so a return
+    nearer than the floor is correspondingly higher off it.
+
+    APPLIED TO BOTH RULES, not just one. A 15 mm mat ridge produces a return that is
+    genuinely nearer than modelled floor AND genuinely invisible to the lidar, so it
+    satisfies rule A and rule B alike -- gating only one of them would leave the other
+    braking for the same mat.
+
+    A row that never meets the floor has no height above it to speak of and is passed
+    through: those returns are adjudicated by the lidar comparison, which is the only
+    thing that can judge them.
+    """
+    if _floor_ray_length(row, col, cfg) is None:
+        return True
+    point = zone_point(row, col, value, cfg)
+    if point is None:
+        return False
+    return point[2] >= cfg.min_obstacle_height_m
+
+
 def standing_above_floor(row: int, col: int, value: int, cfg: TofConfig) -> bool:
     """Is this return something standing ABOVE the ground, rather than the ground?
 
@@ -358,6 +411,8 @@ def standing_above_floor(row: int, col: int, value: int, cfg: TofConfig) -> bool
     than producing a phantom.
     """
     if not valid_mm(value, cfg):
+        return False
+    if not tall_enough_to_matter(row, col, value, cfg):
         return False
     floor = _floor_reading_m(row, col, cfg)
     if floor is None:

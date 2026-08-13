@@ -940,3 +940,67 @@ is a geometric invariant, not a measurement: today's edge columns cannot settle 
 because across nominally flat floor row 6 reads 247/267/282/271/267/261/252/243 mm — a
 ~35 mm spread against the ~10 mm the two conventions differ by. A cleaner edge-column
 capture would replace it with evidence.
+
+---
+
+## 10. REQUIREMENT — traversable terrain is not an obstacle (Scott, 2026-08-13)
+
+Verbatim: *"I think the rangefinder may be seeing the ridge (about 3/5 of an inch) high
+that is the mat my chair sits on. Anything smaller than say 0.7" should be ignored."*
+
+**Returns less than `min_obstacle_height_m` (0.018 m) above the fitted floor are
+TERRAIN and are dropped before either detection rule.**
+
+**Which number wins, and why it is not derived.** 0.7 inch is 17.8 mm; 18 mm ships.
+This is an OPERATOR SPEC, not a derivation — no documented RVR climb capability exists
+in this repo or in Sphero's published material, so there is nothing to derive from, and
+a threshold reverse-engineered from wheel radius would be a guess wearing a derivation's
+clothes. If a real climb spec surfaces and is LOWER, it wins; if HIGHER, 18 mm stays,
+because being *able* to climb something is not a reason to drive into it.
+
+**It is resolvable, not wishful.** At the shipped geometry an 18 mm height difference is
+~44 mm of range in row 5 — more than ten times the ~3 mm range noise.
+
+**THE CAMERA COULD NOT HAVE IMPLEMENTED THIS AT ALL, and that is a capability argument
+rather than a reliability one.** A monocular floor-boundary reports WHERE the floor stops,
+never HOW HIGH the thing stopping it is. Height is precisely the quantity it does not
+measure, so "ignore anything under 18 mm" is not a threshold the camera layer could have
+been given. The ToF measures height directly.
+
+### 10.1 The gate was INERT when first wired, and the reason generalises
+
+Deleting it from either rule changed no test. `floor_margin_m = 0.12` already refuses
+anything shorter than **27 mm (row 3), 51 mm (row 5), 76 mm (row 7)** — up to 4× the
+spec. The margin was doing terrain classification by accident.
+
+Same shape as `floor_horizon_m` making authority decisions (§9.1) and as proof 10's
+inertness (§9.9): two different questions answered by one constant, agreeing today and
+diverging later. **Here the divergence is already scheduled** — §3.3 requires
+`floor_margin_m` to be RE-DERIVED once the in-flight pitch envelope is measured. If that
+shrinks it, a stack leaning on the margin for terrain would silently begin braking for
+mats, and the symptom would be *a rover that got more timid after its floor model got
+better*. The proof therefore asserts the gate where the two constants come apart, at a
+tightened margin, and includes a vacuity check so it cannot pass by testing nothing.
+
+### 10.2 Stage (ii)'s comparison basis has changed — the camera cannot be the reference
+
+Scott, 2026-08-13: *"I thought we removed the camera as a guide. It isn't mounted
+properly so any feedback would be terrible."* The mount moved, most likely during the
+ToF mount work, and nobody noticed — **§1.0's "the camera mount is fixed" assumption died
+silently**, which is worth more than the incident: an assumption held by physical
+convention and never re-measured is not a constraint, it is a habit.
+
+Consequences:
+
+* **Stage (ii) is no longer ToF-versus-camera.** The camera cannot serve as the reference
+  sensor while its aim is unknown. The comparison becomes ToF versus GROUND TRUTH —
+  Scott's eyes, the lidar where it overlaps, and freeze/touch events.
+* The 2026-08-13 mission is **contaminated and excluded** — archived under
+  `03_validation/CONTAMINATED_mission_2026-08-13_mismounted_camera/` with his verdict
+  (*"Don't make changes based on that run - it was rubbish"*). No threshold, no
+  mat-ridge finding and no escape observation is taken from it.
+* **Bench item J and the sun measurement are unaffected** — neither involves the camera.
+* **The sun rule transfers pro tem**: missions avoid hard direct sun until the ToF sun
+  capture happens. It is a scheduling rule for the operator, not a code gate.
+* **Do not re-aim the mount.** Scott owns physical setup; if it is ever re-mounted for
+  Track 2, it gets measured then rather than assumed.
