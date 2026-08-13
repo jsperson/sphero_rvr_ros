@@ -99,6 +99,16 @@ class Recorder(Node):
         # the timer callback -- which in this node means the recording quietly stops
         # while the mission carries on believing it is being recorded.
         self.avoid_offset = 0.0
+        # THE ToF, RECORDED BESIDE THE CAMERA IT WILL REPLACE. Stage (i) of
+        # docs/tof_navigation_design.md: the sensor has no motion authority, so the
+        # ONLY way stage (ii) can compare the two is if both are in the same rows of
+        # the same file on the same missions. Columns cost nothing; a side-by-side
+        # comparison that has to align two recordings costs a day.
+        self.tof_obstacles = ""
+        self.tof_rule_i = ""
+        self.tof_rule_ii = ""
+        self.tof_state = ""
+        self.tof_rate = ""
         self.odom = (0.0, 0.0)
         self.yaw = 0.0
         self.t0 = time.monotonic()
@@ -107,6 +117,7 @@ class Recorder(Node):
         self.create_subscription(Twist, "/cmd_vel_motor", self._on_out, 10)
         self.create_subscription(
             Float32, "/decisive_controller/avoid_offset", self._on_avoid, 10)
+        self.create_subscription(String, "/tof/state", self._on_tof, 10)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_timer(0.1, self._sample)   # 10 Hz is plenty and keeps files small
 
@@ -133,6 +144,20 @@ class Recorder(Node):
     def _on_avoid(self, m):
         self.avoid_offset = m.data
 
+    def _on_tof(self, m):
+        """Scrape the ToF's own health line. Read-only, like every other column: the
+        recorder never asks a node a question it does not already publish."""
+        self.tof_state = (m.data.split() or [""])[0]
+        for field in m.data.split():
+            if field.startswith("obstacle_zones="):
+                self.tof_obstacles = field.split("=", 1)[1]
+            elif field.startswith("rule_i_zones="):
+                self.tof_rule_i = field.split("=", 1)[1]
+            elif field.startswith("rule_ii_zones="):
+                self.tof_rule_ii = field.split("=", 1)[1]
+            elif field.startswith("rate_hz="):
+                self.tof_rate = field.split("=", 1)[1]
+
     def _on_cmd(self, m):
         self.cmd = (m.linear.x, m.angular.z)
 
@@ -158,6 +183,8 @@ class Recorder(Node):
             round(time.monotonic() - self.t0, 2), self.state, self.reason,
             *[self.near[k] for k in FIELDS],
             round(self.avoid_offset, 3),
+            self.tof_state, self.tof_rate, self.tof_obstacles,
+            self.tof_rule_i, self.tof_rule_ii,
             round(self.cmd[0], 3), round(self.cmd[1], 3),
             round(self.out[0], 3), round(self.out[1], 3),
             round(self.odom[0], 3), round(self.odom[1], 3),
@@ -171,6 +198,8 @@ def main():
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["t", "state", "reason", *FIELDS, "avoid_offset",
+                    "tof_state", "tof_rate", "tof_obstacles",
+                    "tof_rule_i", "tof_rule_ii",
                     "cmd_vx", "cmd_wz", "out_vx", "out_wz",
                     "odom_x", "odom_y", "odom_yaw_deg"])
         n = Recorder(w)
