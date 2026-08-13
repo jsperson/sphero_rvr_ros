@@ -88,12 +88,30 @@ lidar_collision_stop_supervisor:
     max_angular_rad_s: 0.4
     allow_disable: false
     fail_on_missing_tf: true
-    # --- Camera low-obstacle brake (additive to the lidar core) ---
+    # --- Low-obstacle brake (additive to the lidar core) ---
     # Stops forward motion for LOW obstacles the 2D lidar misses (chair legs, a
-    # shoe, a floor cable), from the height-gated /camera/low_obstacles cloud. It
-    # can ONLY slow/stop forward motion (never reverse/turn), and only acts on a
-    # fresh cloud, so a camera that is off or dead leaves lidar behaviour unchanged.
-    low_obstacle_brake_enable: true
+    # shoe, a floor cable). It can ONLY slow/stop forward motion (never
+    # reverse/turn), and only acts on a fresh cloud, so a dead or disabled source
+    # leaves lidar behaviour unchanged.
+    #
+    # DISABLED 2026-08-13 ON SCOTT'S DIRECTION. Verbatim: "I thought we removed the
+    # camera as a guide. It isn't mounted properly so any feedback would be
+    # terrible." The camera mount moved -- most likely during the ToF mount work --
+    # and a monocular floor-projection reports distances that depend entirely on its
+    # aim, so this layer was feeding wrong numbers into the brake AND the pivot veto
+    # for every mission since the mount moved.
+    #
+    # THIS LEAVES NO SUB-LIDAR PROTECTION, and that is the honest state of the robot
+    # rather than an oversight. What still protects it: the lidar core (untouched),
+    # and freeze/touch detection plus the escape ladder, which were built for exactly
+    # the obstacle class no sensor can see. The ToF takes this slot in the next batch;
+    # it is deliberately NOT wired here, so that "camera removed" and "ToF given
+    # authority" are two reviewable changes and not one.
+    #
+    # `false` rather than deleting the code: the same disabled path is what a stale
+    # or dead cloud already produces, so this exercises a route that is tested
+    # (revert-proofs 1-2) instead of creating a new one.
+    low_obstacle_brake_enable: false
     low_obstacle_topic: /camera/low_obstacles
     # Stop while the obstacle is still reliably visible: the up-tilted low camera
     # cannot see the floor closer than ~0.45 m, so stop at 0.50 (not the lidar's

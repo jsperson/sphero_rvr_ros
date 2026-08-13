@@ -133,6 +133,16 @@ class DecisiveControllerNode(Node):
         self.declare_parameter("avoid_camera_min_range_m", 0.40)
         self.declare_parameter("avoid_camera_max_range_m", 1.20)
         self.declare_parameter("avoid_camera_topic", "/camera/low_obstacles")
+        # DISABLED 2026-08-13 ON SCOTT'S DIRECTION. Verbatim: "I thought we removed the
+        # camera as a guide. It isn't mounted properly so any feedback would be
+        # terrible." A monocular floor-projection's distances depend entirely on its
+        # aim, and the mount moved -- so this input was wrong for every mission since.
+        #
+        # A SWITCH RATHER THAN A DEAD TOPIC. Pointing `avoid_camera_topic` at something
+        # nobody publishes would disable it just as effectively and would read, to the
+        # next person, as a configuration mistake rather than a decision. This says what
+        # it means. When the ToF takes this slot the switch stays and the topic changes.
+        self.declare_parameter("avoid_camera_enable", False)
         self.declare_parameter("avoid_camera_max_age_s", 0.6)
 
         self._frequency = float(self.get_parameter("control_frequency").value)
@@ -227,6 +237,7 @@ class DecisiveControllerNode(Node):
         self._lidar_blocker_at = None
         self._camera_blocker = None
         self._camera_blocker_at = None
+        self._avoid_camera_enable = bool(self.get_parameter("avoid_camera_enable").value)
         self.create_subscription(
             LaserScan, "scan", self._on_scan, qos_profile_sensor_data)
         # READ-ONLY consumption of the low-obstacle cloud. This node does not brake,
@@ -237,6 +248,11 @@ class DecisiveControllerNode(Node):
         self.create_subscription(
             PointCloud2, str(self.get_parameter("avoid_camera_topic").value),
             self._on_camera_cloud, qos_profile_sensor_data)
+        if not self._avoid_camera_enable:
+            self.get_logger().warn(
+                "decisive_controller: low-obstacle steering input DISABLED "
+                "(avoid_camera_enable=false) — heading uses lidar blockers only. The "
+                "camera mount is unmeasured; see docs/tof_navigation_design.md 10.2.")
         # AUTHORITATIVE journey boundary from the explorer. Replaces the endpoint
         # proxy: bt_navigator's ~1 Hz replans of one journey carry the SAME
         # generation, so the anti-thrash budget still accumulates within a journey,
@@ -487,6 +503,8 @@ class DecisiveControllerNode(Node):
         blocker = corridor_blocker(
             camera_points_to_polar(pts, self._avoid_config), self._avoid_config)
         with self._scan_lock:
+            if not self._avoid_camera_enable:
+                return
             self._camera_blocker = blocker
             self._camera_blocker_at = time.monotonic()
 
