@@ -418,6 +418,16 @@ from comparing against a WALL, which is the learned background §3.2(b) rejects)
 corrected cost went back to Scott, who re-confirmed: *"Go ahead with camera removal.
 Do your best with the ToF. Note you should be able to use it for most objects."*
 
+**AND THE LIVE BACKGROUND RECOVERS MOST OF WHAT THE FALSIFIED CLAIM PROMISED**
+(measured 2026-08-13, after §9 was built). The 100% figure that proof 5 falsified came
+from comparing against a remembered wall — §3.2(b), rejected for safety because a
+background learned while an obstacle was present hides that obstacle forever. Rule B
+makes the same comparison against a background that is MEASURED LIVE by a second
+sensor: 38 of 40 recorded frames on the 5 cm object at 0.50 m. Same detection, no
+memory, and its failure mode is a missed obstacle rather than an invisible one. The
+capability the design over-claimed and then honestly retracted is largely back, by a
+mechanism the retraction is what forced us to find.
+
 **And his note is right, which the first correction over-stated in the other
 direction.** The 0.3-0.5 m limit belongs to the 5 cm RAIL CLASS, not to the sensor.
 See §4.1 — object height sets the envelope, and most things this rover meets are not
@@ -686,6 +696,29 @@ of the session moves from "miss" to "catch" on a 15 mm change in the floor model
 detection that thin is not a capability. Rule B does not depend on the floor model at
 all — the lidar measured the wall behind the box at 0.678 m, a disagreement of 0.178 m,
 nearly twenty times the margin rule A had to spare.
+
+**THE ARITHMETIC ABOVE IS A PREDICTION. HERE IS THE MEASUREMENT, AND IT SUPERSEDES IT.**
+Replayed through the built rules over 40 consecutive recorded frames, **rule A alone
+reaches this object in 0 of 40** — and the reason is NOT the 9 mm. It is the
+applicability bound: row 3's floor reads 0.63 m, outside the 0.45 m stop distance, so
+rule A never evaluates the row at all. The bound working as designed is the whole
+finding. Anyone reading the 9 mm as "rule A nearly had it" has the causality backwards.
+
+Lift the bound artificially — `stop_distance_m = 0.70`, admitting row 3 — and the
+prediction is roughly borne out, but raggedly, which is the fragility argument in a
+sharper form than the single-column sum could give:
+
+| row 3 column | median reading | rule A threshold | fires |
+|---|---|---|---|
+| 1 | 515 mm | 517 mm | **27/40** |
+| 2 | 502 mm | 512 mm | 39/40 |
+| 3 | 500 mm | 509 mm | 38/40 |
+| 0, 4–7 | 539–704 mm (the wall) | 509–526 mm | 0/40 |
+
+The object spans three columns, and rule A's confidence across them runs from 98% to
+**68%** on 1.5 to 9 mm of margin. The 9 mm in the hand calculation was the BEST column,
+quoted as if it were the object's. Rule B fires 38/40 on the same frames with 178 mm of
+margin and no floor model in the path at all.
 
 So rule B is load-bearing rather than an enhancement: without it there is a band,
 starting right at the stop distance, where the sensor sees an obstacle perfectly and the
