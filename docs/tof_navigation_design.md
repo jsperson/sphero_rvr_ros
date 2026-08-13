@@ -82,6 +82,53 @@ That last pair is the whole design. **A marginal obstacle is intermittent if you
 "did anything return" (~20%) and continuous if you ask "is this zone nearer than it
 should be" (100%).**
 
+### 1.0 DECIDED MOUNT GEOMETRY, 2026-08-14
+
+**Height as-is (~0.10-0.11 m), tilted DOWN 10°, board NOT flipped.** Scott's decision,
+against the analysis below.
+
+| option | verdict |
+|---|---|
+| flip the board ~3-4 cm lower | **declined.** Its hoped-for benefit does not exist: a 5 cm object at 0.5 m subtends 5.60° from h=0.10 and 5.68° from h=0.07 — 1% of fill — because angular subtense is set by distance, not sensor height, when the sensor is above the object. Meanwhile `d_max` falls 0.51 → 0.33 m and rows in the useful 0.20-0.50 m band drop from 2 to 1 |
+| raise the mount to ~0.15 m | **declined for RIGIDITY**, and this is the one that hurt. It was the biggest lever available (`d_max` 0.51 → 0.77 m, 3 rows in the useful band) but Scott: *"I don't have the ability to raise it much without totally redesigning the mount and possibly losing rigidity."* A flexing mount corrupts the floor model continuously, which is worse than any static geometry — rule (i) compares against a model of where the floor should be, and a mount that moves makes that model wrong in a way no calibration can catch |
+| **tilt down 10°** | **ADOPTED.** 3 floor-seeing rows instead of 2, near edge 0.24 → 0.16 m, 2 rows still inside 0.20-0.50 m, and 0.47 m of overhead reach at 1 m |
+
+**What tilt can and cannot do, since the reasoning is easy to get backwards:**
+`d_max = h / tan(θ_min)` contains **no tilt term**. Tilting cannot push rule (i)'s outer
+edge past the height-determined limit; what it does is decide WHICH rows land inside
+that limit, and it converts beyond-horizon rows into floor-seeing ones. That matters
+because **rule (i) is the strong rule** (continuous, no confirmation window) and rule
+(ii) is the weak one (adjacency plus N-of-M). Trading weak-rule rows for strong-rule
+rows is the actual gain.
+
+**The cost, stated:** overhead coverage. The cone's highest reach at 1 m falls from
+0.68 m to 0.47 m. Past ~15° the rover would start driving under chair seats seeing only
+legs, which is why 10° and not 20°.
+
+**AMBIGUITY FOR SCOTT TO RESOLVE WHEN HE AIMS IT:** the current mount sits at a FITTED
++4° nose-UP, which was never deliberate. "Down 10°" from level gives -10°; ten degrees
+of rotation from where it is now gives -6°. **He should aim for 10° below LEVEL**, and
+it does not need to be precise — the actual angle is FITTED from the floor rows in the
+bench session below, exactly as the +4° was. His aim is the target; the fit is the
+number that ships.
+
+### 1.05 The bench session that freezes the geometry
+
+One sitting, no chassis motion, ~5 minutes of captures. **Stage (ii) does not begin
+collecting until these numbers are in**, because side-by-side data taken at a geometry
+we then change describes a robot that does not exist.
+
+| # | capture | settles |
+|---|---|---|
+| 1 | clear floor, 30 s | re-fits mount height AND pitch; re-measures the grazing threshold (11° ± 3.75°, which every number in this note rests on) |
+| 2 | wall at distance A, 30 s | z-versus-radial: does the elevation profile stay flat? |
+| 3 | wall at distance B (≥ 0.3 m from A), 30 s | confirms 2 — one distance cannot separate a flat profile from a coincidence |
+| 4 | 5 cm rail at 0.46 m, 30 s | rule (ii) adjacency rate at the FINAL geometry; the M/N table is recomputed from it |
+
+Deliverables: refitted `mount_height_m`, `mount_pitch_deg`, `floor_horizon_m`,
+`reports_z`, and a recomputed adjacency/N-of-M table. Those four constants then FREEZE
+until something physical changes.
+
 ### 1.1 Two things that must be settled before thresholds are frozen
 
 1. **z versus radial.** Wall ranges are FLAT across 30° of elevation (983-993 mm) where

@@ -73,7 +73,12 @@ class TofNode(Node):
         # and the mount is re-fitted -- see the design note 1.1. Exposed as parameters
         # precisely so that re-fit is a config change, not a code change.
         self.declare_parameter("mount_height_m", 0.10)
-        self.declare_parameter("mount_pitch_deg", 4.0)
+        # PROVISIONAL. Decided geometry is 10 deg DOWN from level (2026-08-14), but
+        # the value that ships is FITTED from the floor rows in the bench session, the
+        # same way the original +4 deg was -- aiming a mount by eye and then trusting
+        # the intended number is how a floor model ends up describing a robot nobody
+        # built. Positive = nose UP, so the intent is negative here.
+        self.declare_parameter("mount_pitch_deg", -10.0)
         self.declare_parameter("mount_x_m", 0.10)
         self.declare_parameter("reports_z", True)
         self.declare_parameter("floor_margin_m", 0.12)
