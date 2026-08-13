@@ -100,8 +100,10 @@ should be" (100%).**
 
 ## 2. The driver node
 
-`sphero_rvr_driver/tof_node.py`, one job: turn I2C frames into two topics and never
-decide anything.
+`sphero_rvr_driver/tof_node.py`, one job: turn I2C frames into two topics. It makes **no
+motion decisions**; the derivation in §3 is deterministic, pure and testable against
+recorded frames, which is a different thing from "decides nothing" — it decides what
+counts as an obstacle, and that decision is auditable offline.
 
 ```
 /tof/points        sensor_msgs/PointCloud2   the raw 8x8, one point per FINITE zone,
@@ -145,15 +147,77 @@ geometry. Two rules, and the second is the one the recorded data proves:
      (rows whose floor intersection lies beyond the visibility horizon)
 ```
 
-Rule (ii) is strong precisely because of the floor-visibility limit that first looked
-like bad news. Row 5's floor lies at 0.79 m, past the horizon, so row 5 normally
-returns **nothing**. In the recorded data, row 5 returned finite values exactly when a
-rail or a box was placed in it — 4-6% baseline, rising to 14-23% with an obstacle
-present. **In that band, any return at all is an obstacle**, because nothing else in
-the room can produce one.
-
 `margin` is derived, not chosen: the measured range noise (a few mm) plus the pose
-uncertainty of the floor model itself. It is NOT a tuning knob for this room.
+uncertainty of the floor model itself, including the DYNAMIC pitch envelope of §3.3.
+It is NOT a tuning knob for this room.
+
+#### Rule (ii) needed fixing, and the review caught it against my own revert-proof
+
+The first draft of this note said *"in that band, any return at all is an obstacle,
+because nothing else in the room can produce one."* **That is false, and the same
+section recorded the evidence against it**: a 4-6% baseline of finite returns with
+nothing there. At 7.6 Hz that is a phantom obstacle every ~3 s on empty floor, and
+revert-proof 3 (replayed clear-floor frames produce ZERO obstacle points) fails against
+the design as written. The proof stands; the rule was wrong. What follows is measured
+from the recorded segments rather than reasoned about.
+
+**What the baseline returns actually are.** Two populations, and they need separating:
+
+* **Physically impossible values** — `0`, and values above ~1.8 m in a row whose entire
+  geometry is under 1 m. Examples from the clear-floor and wall-only segments: 0, 1824,
+  2163, 2251, 2612, 2717, 3185, 3691, 3730. About 4 per 30 s segment. **These are the
+  invalid-value signature the v1.3 firmware note warns about**, and they are removed by
+  a plausibility filter (60-1500 mm for a beyond-horizon row) at zero cost.
+* **Plausible-looking isolated returns** — 400-700 mm, scattered, no obvious cause;
+  cone-edge clutter or glints off the floor are candidates and I cannot tell from this
+  data which. **An unexplained few percent feeding a brake is exactly what the temporal
+  and spatial structure below is for**, and it is a question for the v1.3 retest.
+
+Filtering removes only the first population: baseline 3.16% → **2.86%** raw-to-filtered
+on clear floor, 4.19% → 3.89% on wall-only. Not a fix by itself.
+
+**Run lengths kill the obvious remedy.** Consecutive-frame debouncing does not work
+here, because obstacle returns are ALSO mostly isolated: median run length 1 frame both
+with and without an obstacle (max 5 with the rail, max 1-3 without). A rule requiring
+consecutive returns would reject the obstacle along with the noise.
+
+**What DOES separate them is SPATIAL COHERENCE.** An obstacle spans adjacent zones; the
+baseline arrives as scattered singles. Measured, per frame, over row 5's eight zones —
+"are there ≥2 ADJACENT zones returning at once":
+
+| segment | ≥2 adjacent zones, per frame |
+|---|---|
+| clear floor, nothing ahead | **1.3%** |
+| wall at 0.994 m, no obstacle | **1.8%** |
+| 5 cm rail at 0.46 m | **45.2%** |
+| 5 cm box at 0.74 m (against wall) | 14.0% |
+
+That is a 25× separation on the rail case, from a single frame, with no memory at all.
+
+**So rule (ii) becomes:** a beyond-horizon obstacle requires **≥2 adjacent zones
+returning plausible values in the same frame, in N of the last M frames**. Derived from
+the rates above (baseline 1.8%, rail 45.2%):
+
+| M | N | window | P(false fire per window) | false fires/min | P(detect, rail) |
+|---|---|---|---|---|---|
+| 6 | 2 | 0.79 s | 0.0046 | 0.35 | 0.84 |
+| **8** | **2** | **1.05 s** | **0.0084** | **0.48** | **0.94** |
+| 8 | 3 | 1.05 s | 0.0003 | 0.02 | 0.78 |
+| 12 | 3 | 1.58 s | 0.0011 | 0.04 | 0.96 |
+
+**Recommendation: M=8, N=3** — one false fire per ~50 minutes, 78% detection of the
+recorded rail per window, 1.05 s of window which is 0.21 m at cruise and 0.105 m at the
+ladder's escape speed. M=12/N=3 buys 96% detection for 1.58 s (0.32 m at cruise), which
+is too much travel to spend before braking. **(F)** — every number here moves with the
+firmware retest, and the table is the thing to recompute rather than re-argue.
+
+**And the honest limit:** the box at 0.74 m scores only 14% per frame on adjacency,
+because at that range a 5 cm object spans barely one zone. Rule (ii) is therefore a
+CLOSE-RANGE rule (~0.3-0.5 m, where an obstacle subtends 2+ zones) and rule (i) is what
+covers the box case — which it does at 100%, because there a wall provides the
+background. **The two rules cover different situations and neither generalises to the
+other's**; a design that claimed one rule for everything would be claiming something
+this data refutes.
 
 ### 3.2 Above the horizon — the honest answer
 
@@ -184,10 +248,27 @@ Anything cleverer belongs to steering, where being wrong costs a wasted curve.**
   model comes from a geometry fit that is itself unfinished (§1.1). **The fit must be
   re-derived and validated against recorded flight data before it holds authority**,
   which is what stage (ii) of the transition is for.
-* **Pitch drift.** A mount that shifts by 2° moves every row's floor intersection.
-  Detectable: the floor rows' readings ARE the calibration, so the driver can publish
-  the residual against the model and the state topic can say "my floor model disagrees
-  with the floor by X" — a self-check the camera never had.
+* **Static pitch drift.** A mount that shifts by 2° moves every row's floor
+  intersection. Detectable: the floor rows' readings ARE the calibration, so the driver
+  publishes the residual against the model and the state topic can say "my floor model
+  disagrees with the floor by X" — a self-check the camera never had.
+* **DYNAMIC PITCH, and it is the one that bites.** The chassis pitches on carpet under
+  acceleration and braking. A transient 2-3° nose-down moves every row's floor
+  intersection NEARER, which fires rule (i) — *exactly when the rover starts braking*.
+  That is a positive feedback loop into phantom stops: brake → pitch → phantom
+  obstacle → brake harder. The static-drift check above does not catch it, because the
+  residual is transient and correlated with the very command that caused it.
+
+  Consequences, all required rather than optional:
+  1. **The margin in rule (i) is derived from the MEASURED in-flight pitch envelope**,
+     not from bench geometry. Stage (ii) supplies it: floor-row residual against
+     commanded acceleration, over real missions.
+  2. **The residual self-check becomes a GATE on stage (iii), not telemetry.** The
+     authority swap does not happen until recorded flight shows the floor-model residual
+     staying inside the margin through accel and brake transients.
+  3. Until that envelope is measured, **any ToF number quoted for the brake is provisional**
+     — a static bench fit cannot bound a dynamic error, and pretending otherwise is how a
+     phantom-brake cascade gets discovered on carpet instead of in a recording.
 
 ---
 
@@ -217,6 +298,23 @@ it turned a 20% signal into a 100% one at 0.74 m in the recorded data. **That be
 what stage (ii) exists to test, and it is the thing that should kill this batch if it
 fails.**
 
+**AND THE STEERING LAW LOSES RANGE — say it plainly.** Consumer C reads camera points
+across 0.40-1.20 m and uses them to lean the heading BEFORE the brake band, which is the
+whole point of the gentle-turn design (engage at 0.90 m). The ToF's raw detection of a
+5 cm object on OPEN floor at 0.5-1.2 m — no wall behind it, so no background to compare
+against, so rule (i) cannot help — is **single-digit to ~20% of frames**, measured. In
+that band the replacement input is materially weaker than what it replaces, and the
+steering law was designed around information arriving at 0.90 m.
+
+Three honest options, to be chosen with stage (ii) data rather than now: accept
+later-and-sharper steering; keep the CAMERA as the steering law's input while the ToF
+takes the brake and veto (the two consumers have different requirements and nothing
+forces them to share a sensor); or let steering fall back to lidar-only blockers beyond
+0.5 m, which is what it already does whenever the camera cloud is stale. **Stage (ii)
+must measure steering-input degradation as its own metric** — brake equivalence alone
+would declare success while quietly halving the range at which the rover starts to
+turn.
+
 ---
 
 ## 5. Transition — four stages, each with its own revert
@@ -225,11 +323,23 @@ fails.**
 gains ToF columns beside `cam_*`. Camera keeps every job. *Revert: don't launch the node.*
 
 **(ii) SIDE-BY-SIDE, IN FLIGHT.** The gauntlet missions are the data source — they fly
-anyway. Both sensors recorded, camera still authoritative. The question to answer with
-numbers: **in the band where both can see, does the ToF flag what the camera flags?**
-Plus the two the camera cannot answer: what does the ToF catch that the camera missed,
-and how often does the floor model disagree with the floor? *Revert: nothing to revert;
-this stage changes no behaviour.*
+anyway. Both sensors recorded, camera still authoritative, no behaviour change.
+
+**PASS/KILL CRITERIA, PRE-REGISTERED — these are written before the first side-by-side
+flight and are not renegotiable afterwards.** Post-hoc judgement on side-by-side data is
+how a bet quietly becomes a narrative, which is the same failure as reading a median
+that hid an intermittent target.
+
+| Metric | PASS | KILL |
+|---|---|---|
+| **Agreement**: camera brake events (`cam_scale < 1.0`) with a concurrent ToF obstacle flag, restricted to the overlap band where both can see (0.40-0.50 m) | ≥ 80% | < 50% |
+| **Phantom rate**: replay the recording with ToF-as-authority and count brake events with no camera event and no lidar obstacle | ≤ 1 per mission | > 3 per mission |
+| **Floor-model residual**: |measured floor row − model| through accel/brake transients (R2) | ≤ the derived margin in 99% of frames | > margin in > 5% of frames |
+| **Steering-input degradation** (R4): ToF blocker availability vs camera blocker in the 0.5-1.2 m band | ToF supplies a blocker in ≥ 50% of frames where the camera did | < 25% |
+
+An outcome between PASS and KILL is neither — it means another mission's data, or a
+narrowed claim, not a judgement call in the direction we were already hoping for.
+*Revert: nothing to revert; this stage changes no behaviour.*
 
 **(iii) AUTHORITY SWAP — the safety-path batch.** ToF into the brake, the pivot veto and
 the steering law; camera consumers unwired. **Does not fly until: the gauntlet is
@@ -260,11 +370,15 @@ motion authority, not its existence.
   don't infer**: the driver knows it failed; the consumer must not guess from silence.
 * **SUNLIGHT.** The camera's low-obstacle path died of sun (D27, hard-won). This is a
   940 nm active sensor and ambient IR competes with its own illuminator — the failure
-  is plausible, the mechanism is different, and **it is untested**. One measurement in
-  hard sun before the authority swap, or the swap ships an unknown.
+  is plausible, the mechanism is different, and **it is untested**. **This is the THIRD
+  Scott-gated hardware item** (with the v1.3 update and the z-vs-radial wall test): one
+  measurement in hard sun, and it GATES stage (iii). Shipping the authority swap without
+  it would put the rover's only sub-lidar sense on an untested failure mode that already
+  killed its predecessor.
 * **LIDAR CROSS-TALK.** RPLIDAR is ~905 nm; this device ~940 nm; both are in the same
-  plane-ish volume. Interference is unlikely and unmeasured. Cheap to check: both
-  running, look for a rate or noise change vs lidar stopped.
+  plane-ish volume. Interference is unlikely and unmeasured. **Scheduled into stage (i)
+  bringup** rather than left floating: with the driver running, compare ToF rate and
+  per-zone noise with the lidar spinning vs stopped. Five minutes, no chassis.
 * **A ZONE REPORTS THE NEAREST SURFACE.** Safe for braking, but it means a zone cannot
   see past a near object — a 5 cm rail at 0.4 m hides the floor behind it. Consumers
   must not treat "one zone, one distance" as "this whole cone is at that distance".
