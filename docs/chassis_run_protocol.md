@@ -133,6 +133,15 @@ ros2 run nav2_map_server map_saver_cli -f ~/manual_map_$(date +%H%M%S)
 scp sphero-pi-2:"~/run_*.csv ~/launch_*.log ~/.ros/missions/*" <local>
 ```
 
+**AND ANY CHARACTERISATION DATA, not just mission runs.** Bench and sensor sessions
+produce evidence that lives nowhere else — `~/tof_smoke/` (2026-08-13's rangefinder
+characterisation) is the current example. It goes to the vault at teardown exactly
+like a mission artifact, with its README, because the vault plus iCloud is the ONLY
+backed-up home for evidence data: the provisioning repo deliberately excludes it
+(`sphero-pi-provisioning`, RESTORE.md §4), and the Pi's SD card is not a backup.
+Un-copied artifacts from an earlier run count too — check `ls ~/run_*.csv` against
+what the vault already holds before killing anything.
+
 Only then: Ctrl-C the launch. Remember it ignores SIGINT and children survive.
 **Kill by explicit PID — list them with `ps -eo pid,cmd`, then `kill <pid>` — and
 EXCLUDE YOUR OWN SESSION from that list.** Filtering the listing is not optional:
