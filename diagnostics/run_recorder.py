@@ -105,10 +105,15 @@ class Recorder(Node):
         # the same file on the same missions. Columns cost nothing; a side-by-side
         # comparison that has to align two recordings costs a day.
         self.tof_obstacles = ""
-        self.tof_rule_i = ""
-        self.tof_rule_ii = ""
+        self.tof_rule_a = ""
+        self.tof_rule_b = ""
         self.tof_state = ""
         self.tof_rate = ""
+        # Rule B's health, which is the whole point of flying both sensors together:
+        # "ok" means the lidar background was usable, anything else means rule B was
+        # UNAVAILABLE and the ToF was running on rule A alone. A column of obstacle
+        # counts without this cannot be interpreted afterwards.
+        self.tof_background = ""
         self.odom = (0.0, 0.0)
         self.yaw = 0.0
         self.t0 = time.monotonic()
@@ -151,10 +156,12 @@ class Recorder(Node):
         for field in m.data.split():
             if field.startswith("obstacle_zones="):
                 self.tof_obstacles = field.split("=", 1)[1]
-            elif field.startswith("rule_i_zones="):
-                self.tof_rule_i = field.split("=", 1)[1]
-            elif field.startswith("rule_ii_zones="):
-                self.tof_rule_ii = field.split("=", 1)[1]
+            elif field.startswith("rule_a_zones="):
+                self.tof_rule_a = field.split("=", 1)[1]
+            elif field.startswith("rule_b_zones="):
+                self.tof_rule_b = field.split("=", 1)[1]
+            elif field.startswith("background="):
+                self.tof_background = field.split("=", 1)[1]
             elif field.startswith("rate_hz="):
                 self.tof_rate = field.split("=", 1)[1]
 
@@ -184,7 +191,7 @@ class Recorder(Node):
             *[self.near[k] for k in FIELDS],
             round(self.avoid_offset, 3),
             self.tof_state, self.tof_rate, self.tof_obstacles,
-            self.tof_rule_i, self.tof_rule_ii,
+            self.tof_rule_a, self.tof_rule_b, self.tof_background,
             round(self.cmd[0], 3), round(self.cmd[1], 3),
             round(self.out[0], 3), round(self.out[1], 3),
             round(self.odom[0], 3), round(self.odom[1], 3),
@@ -199,7 +206,7 @@ def main():
         w = csv.writer(f)
         w.writerow(["t", "state", "reason", *FIELDS, "avoid_offset",
                     "tof_state", "tof_rate", "tof_obstacles",
-                    "tof_rule_i", "tof_rule_ii",
+                    "tof_rule_a", "tof_rule_b", "tof_background",
                     "cmd_vx", "cmd_wz", "out_vx", "out_wz",
                     "odom_x", "odom_y", "odom_yaw_deg"])
         n = Recorder(w)
