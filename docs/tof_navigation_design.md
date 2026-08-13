@@ -1004,3 +1004,94 @@ Consequences:
   capture happens. It is a scheduling rule for the operator, not a code gate.
 * **Do not re-aim the mount.** Scott owns physical setup; if it is ever re-mounted for
   Track 2, it gets measured then rather than assumed.
+
+---
+
+## 11. DERIVING THE ToF BRAKE — and the three wrong operands on the way
+
+Building the authority batch required deriving the brake's stop distance. The first
+attempt concluded the batch was blocked. **That conclusion was wrong** and 11.2 records
+why, because how it went wrong is more useful than the number it produced.
+
+### 11.1 Rule A's reach is not its floor distance
+
+A zone fires only below `floor − floor_margin`, so the obstacle must be that much nearer
+than the floor. The **margin sits between the floor and the detection range**, and
+reading the floor distance as the reach overstates it by the whole margin:
+
+| row | floor reads | fires below | → GROUND RANGE | obstacle height there |
+|---|---|---|---|---|
+| 3 | 0.629 m | 0.509 m | **0.498 m** | 0.027 m |
+| 4 | 0.434 m | 0.314 m | **0.298 m** | 0.039 m |
+| 5 | 0.330 m | 0.210 m | 0.194 m | 0.051 m |
+| 6 | 0.265 m | 0.145 m | 0.129 m | 0.063 m |
+| 7 | 0.219 m | 0.099 m | 0.085 m | 0.076 m |
+
+At the shipped 0.45 m authority bound, rule A's rows are 4–7, so **its reach is 0.298 m**.
+
+### 11.2 CORRECTED — the comparison in the first draft was wrong twice
+
+The first version of this section compared rule A's 0.298 m against the lidar's 0.30 m
+`stop_distance_m` and concluded the braking room was negative. **Both halves of that were
+wrong, and they compounded.**
+
+**Error 1: it is not redundancy, because the lidar cannot see this object class at all.**
+The lidar's 0.30 m stop applies to things the lidar SEES. A 5 cm rail is invisible to it
+at every distance — that is the entire reason this layer exists. Without it the rover
+reaches that rail at full cruise and learns about it by contact. Rule A at 0.298 m is not
+2 mm inside an existing stop; **it is the only detection that class gets.**
+
+**Error 2: 0.30 m is a THRESHOLD, not a stopping distance.** It is a number chosen to
+exceed the physical requirement with margin, so comparing a detection range against it
+asks the wrong question. The requirement is in the config's own arithmetic:
+
+    footprint_front 0.11 + payload_margin 0.02 + braking_margin 0.02 = 0.150 m
+    (the config comment cites a 0.045 braking term giving 0.175 m; deployed says 0.02)
+
+**Rule A's 0.298 m clears that by 0.12–0.15 m.** Taking the more conservative 0.175 m,
+rule A has 0.123 m of margin over the distance in which the rover must physically stop.
+
+### 11.3 So rule A alone IS a viable brake — a short-range one
+
+For sub-lidar obstacles, rule A detects at 0.298 m and needs ~0.175 m. It can deliver a
+clean stop. It is not inert, it is not touch-softening, and it is not redundant with the
+lidar. It is a **short-range brake for a class that currently has no brake at all.**
+
+**Rule B changes the quality of that stop, not its existence.** Row 3 reaches 0.498 m —
+0.20 m of extra warning, which at 0.20 m/s is a full second. That buys an earlier, gentler
+stop and room to steer around rather than halt. A real improvement, and **not a
+precondition.**
+
+**The corrected sequencing:** bench item J remains the right thing to do first and it is
+still five chassis-off minutes, but it is a RANGE upgrade rather than a gate on the batch
+existing. If J fails to pin rule B — bad margins, unusable false-fire rate — the fallback
+is not a dead batch, it is rule-A-only short-range braking, which is already worth more
+than the nothing the rover has today. Recorded now, while nobody is invested in the answer.
+
+### 11.4 What the episode is actually about
+
+Three wrong conclusions in one derivation, each from comparing against the nearest
+available number instead of the one the question needed: the floor distance instead of
+the floor-minus-margin reach, the lidar's threshold instead of the physical stop
+requirement, and a sensor that cannot see the object class at all instead of one that
+can. **The arithmetic was right every time; the operands were wrong.**
+
+That is the week's theme once more — one constant answering two questions — in its most
+expensive form yet, because here it nearly cancelled a batch that was sound.
+
+### 11.5 What the guard now guards
+
+`tests/test_tof_brake_derivation.py` no longer blocks the batch — the batch is not
+blocked. It pins the three operands so a future reader inherits the derivation rather
+than the conclusion: rule A's reach must be measured as floor MINUS MARGIN, the stop
+requirement must be the footprint-plus-braking sum and not the lidar's threshold, and the
+lidar must never be treated as covering the sub-lidar class.
+
+It also keeps the `# RULE B PINNED BY:` citation requirement, but scoped to what it
+honestly gates: **rule B's own authority**, not the brake as a whole. Rule A may fly
+without bench item J; rule B may not fly without it. Mutation-verified in both
+directions.
+
+**Lidar core constants stay untouched, and that is now a decision rather than an
+omission.** `stop_distance_m`, `slow_distance_m` and the cruise speed all have their own
+flight history and nothing in this derivation argues for moving any of them.
