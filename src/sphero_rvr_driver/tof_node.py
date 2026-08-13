@@ -69,16 +69,21 @@ class TofNode(Node):
         self.declare_parameter("frame_id", "tof_link")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("publish_rate_hz", 10.0)   # poll faster than the ~7.6 Hz sensor
-        # Geometry. PROVISIONAL until the two-distance wall test settles z-vs-radial
-        # and the mount is re-fitted -- see the design note 1.1. Exposed as parameters
-        # precisely so that re-fit is a config change, not a code change.
-        self.declare_parameter("mount_height_m", 0.10)
-        # PROVISIONAL. Decided geometry is 10 deg DOWN from level (2026-08-14), but
-        # the value that ships is FITTED from the floor rows in the bench session, the
-        # same way the original +4 deg was -- aiming a mount by eye and then trusting
-        # the intended number is how a floor model ends up describing a robot nobody
-        # built. Positive = nose UP, so the intent is negative here.
-        self.declare_parameter("mount_pitch_deg", -10.0)
+        # Geometry, JOINTLY FITTED on the tilted mount 2026-08-13 and no longer
+        # provisional: the two-distance wall test settled the reporting convention and
+        # the floor rows settled the rest. Parameters rather than constants so that a
+        # re-mount is a config change -- and a re-mount DOES require one, because these
+        # are calibration values, not a description of where the sensor is bolted
+        # (design note 9.7). The mount was aimed at 10 deg down; it fits at 15.7.
+        # Trusting the intended number over the fitted one is how a floor model ends
+        # up describing a robot nobody built.
+        self.declare_parameter("mount_height_m", 0.139)
+        self.declare_parameter("mount_pitch_deg", -15.7)     # positive = nose UP
+        # THE FIELD OF VIEW IS ASYMMETRIC: ~60 deg across, ~47 deg down. Two separate
+        # parameters because they are two separate measurements -- the horizontal from
+        # a 25 cm box filling 6 of 8 columns, the vertical from the floor-row fit.
+        self.declare_parameter("zone_deg_h", 7.5)
+        self.declare_parameter("zone_deg_v", 5.9)
         self.declare_parameter("mount_x_m", 0.10)
         self.declare_parameter("reports_z", True)
         self.declare_parameter("floor_margin_m", 0.12)
@@ -90,6 +95,8 @@ class TofNode(Node):
         self._cfg = TofConfig(
             mount_height_m=float(_p("mount_height_m").value),
             mount_pitch_deg=float(_p("mount_pitch_deg").value),
+            zone_deg_h=float(_p("zone_deg_h").value),
+            zone_deg_v=float(_p("zone_deg_v").value),
             reports_z=bool(_p("reports_z").value),
             floor_margin_m=float(_p("floor_margin_m").value),
             floor_horizon_m=float(_p("floor_horizon_m").value),

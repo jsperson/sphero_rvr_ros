@@ -27,17 +27,33 @@ class TofConfig:
     config or a measurement in the characterisation -- none is tuned for this room."""
 
     # --- geometry ---------------------------------------------------------------
-    # 60 deg total across 8 zones. CONFIRMED INDEPENDENTLY of the datasheet: a 25 cm
-    # box at 0.30 m filled 6 of 8 columns, and 6/8 of 60 deg spans 0.249 m at that
-    # range against a 25 cm object.
-    zone_deg: float = 7.5
-    # Mount, from the first fit. PROVISIONAL: the fit assumed RADIAL ranging and the
-    # wall data suggests the sensor reports PERPENDICULAR (z) distance -- ranges were
-    # flat across 30 deg of elevation where radial demands +16%. Re-derive after the
-    # two-distance wall test; `reports_z` below is the switch that decides which
-    # arithmetic the floor model uses.
-    mount_height_m: float = 0.10
-    mount_pitch_deg: float = 4.0        # positive = nose UP
+    # THE FIELD OF VIEW IS ASYMMETRIC, and assuming otherwise was a real model error.
+    #
+    # Horizontal, 7.5 deg/zone = 60 deg total. Confirmed INDEPENDENTLY of the
+    # datasheet: a 25 cm box at 0.30 m filled 6 of 8 columns, and 6/8 of 60 deg spans
+    # 0.249 m at that range.
+    zone_deg_h: float = 7.5
+    # Vertical, 5.9 deg/zone = ~47 deg total. FITTED 2026-08-13 from the tilted-mount
+    # floor rows: 5.9 reproduces eight clear-floor medians at 5.7 mm RMS, while forcing
+    # 7.5 gives 31.4 mm with residuals that are systematically one-signed (-24 -14 -27
+    # -25 -39 -35 -44 -33). A one-signed residual pattern is a model error, not noise,
+    # which is what makes this a measurement rather than a preference.
+    zone_deg_v: float = 5.9
+    # Mount, JOINTLY FITTED 2026-08-13 (floor rows + the 0.60 m wall gradient).
+    #
+    # THESE ARE CALIBRATION CONSTANTS, NOT A DESCRIPTION OF THE MOUNT. They are the
+    # numbers that make the model predict the readings; the fitted height sits ~30 mm
+    # ABOVE Scott's tape measure. The likely mechanism is that each zone reports the
+    # NEAREST returning part of its cone rather than its centre ray, which biases every
+    # downward row short and a fit absorbs that bias into height and pitch. Quoted as
+    # "the sensor is 13.9 cm up" they are wrong; used to predict a reading they are
+    # right to +-6 mm. Re-mounting invalidates them even if the tape is unchanged.
+    mount_height_m: float = 0.139
+    mount_pitch_deg: float = -15.7      # positive = nose UP
+    # The sensor reports distance along ITS OWN BORESIGHT, not along base_link x.
+    # SETTLED 2026-08-13 by pre-registering three hypotheses and measuring at two wall
+    # distances; see zone_angles_sensor for why the level mount could not have answered
+    # it and why getting it backwards cost 30 mm at the tilted mount.
     reports_z: bool = True
 
     # --- validity ---------------------------------------------------------------
@@ -81,7 +97,14 @@ class TofConfig:
     confirm_frames: int = 3
     window_frames: int = 8
     # Where the floor stops being visible: measured at 0.39 m yes, 0.79 m no.
+    # THIS IS A VISIBILITY CONSTANT AND NOTHING ELSE. Until 2026-08-13 both detection
+    # rules also used it to decide which rows were ALLOWED to conclude an obstacle,
+    # which is a different question -- and at the level mount the two questions had the
+    # same answer, so nothing said otherwise. Tilting the mount separated them and the
+    # detector reported an obstacle in 99.3% of frames. Separating the two is design
+    # note 9.1-9.2, and lands with the rules that need it.
     floor_horizon_m: float = 0.55
+
 
 
 def zone_angles(row: int, col: int, cfg: TofConfig) -> tuple:
@@ -101,9 +124,75 @@ def zone_angles(row: int, col: int, cfg: TofConfig) -> tuple:
     because that was assumed away (N1). This sensor needs no such rotation. The two
     facts live next to each other on purpose.
     """
-    az = math.radians(-(col - (ZONES - 1) / 2.0) * cfg.zone_deg)
-    el = math.radians(((ZONES - 1) / 2.0 - row) * cfg.zone_deg + cfg.mount_pitch_deg)
-    return az, el
+    az, el_s = zone_angles_sensor(row, col, cfg)
+    return az, el_s + math.radians(cfg.mount_pitch_deg)
+
+
+def zone_angles_sensor(row: int, col: int, cfg: TofConfig) -> tuple:
+    """(azimuth, elevation) of a zone centre RELATIVE TO THE SENSOR BORESIGHT, radians.
+
+    Both frames are needed and they are not interchangeable:
+
+        WORLD elevation  -- where the ray GOES (what the floor intersection needs)
+        SENSOR elevation -- what the reading is MEASURED ALONG (what `reports_z` needs)
+
+    THE DEFECT THIS SPLIT FIXES, found 2026-08-13: every projection in this module used
+    the WORLD elevation, i.e. it assumed the sensor reports distance along base_link x.
+    It reports along its own boresight. At the level mount (pitch +4 deg) the two differ
+    by a fraction of a percent and the error hid inside `floor_margin_m`; at -15.7 deg
+    it is 4%, and the floor model under-predicted eight recorded clear-floor medians by
+    19-42 mm -- ALL NEGATIVE, 29.7 mm RMS. With the boresight projection the SAME
+    constants land at 5.7 mm RMS with mixed signs.
+
+    So a mount angle that was chosen to see low obstacles also converted a harmless
+    rounding error into a systematic one, and a level bench could never have shown it.
+    """
+    az = math.radians(-(col - (ZONES - 1) / 2.0) * cfg.zone_deg_h)
+    el_s = math.radians(((ZONES - 1) / 2.0 - row) * cfg.zone_deg_v)
+    return az, el_s
+
+
+def zone_ray(row: int, col: int, cfg: TofConfig) -> tuple:
+    """Unit vector of a zone's ray in the ROBOT frame, from the sensor origin.
+
+    The mount pitch is applied as a REAL ROTATION rather than by adding it to the
+    zone's elevation. Those agree only on the centre column: at the corner zone
+    (az 26.25 deg, el_s -20.65 deg, pitch -15.7 deg) the shortcut is off by 1.8 deg of
+    world elevation, which moves that zone's floor intersection by ~5%. At the old +4
+    deg mount the same shortcut was wrong by 0.4 deg and nobody could have noticed.
+    """
+    az_s, el_s = zone_angles_sensor(row, col, cfg)
+    ux, uy, uz = (math.cos(el_s) * math.cos(az_s),
+                  math.cos(el_s) * math.sin(az_s),
+                  math.sin(el_s))
+    p = math.radians(cfg.mount_pitch_deg)          # + = nose UP
+    cp, sp = math.cos(p), math.sin(p)
+    return (cp * ux - sp * uz, uy, sp * ux + cp * uz)
+
+
+def _boresight_cosine(row: int, col: int, cfg: TofConfig) -> float:
+    """How much of a ray lies along the boresight -- the factor relating the RAY LENGTH
+    to what the sensor REPORTS when `reports_z` is true."""
+    az_s, el_s = zone_angles_sensor(row, col, cfg)
+    return math.cos(el_s) * math.cos(az_s)
+
+
+def _floor_ray_length(row: int, col: int, cfg: TofConfig) -> Optional[float]:
+    """Ray length from the sensor to the floor, or None for a ray that never gets
+    there (level or rising). Uses the ray's true world z-component, not an angle sum."""
+    uz = zone_ray(row, col, cfg)[2]
+    if uz >= -1e-9:
+        return None
+    return cfg.mount_height_m / -uz
+
+
+def _floor_reading_m(row: int, col: int, cfg: TofConfig) -> Optional[float]:
+    """What this zone would REPORT for flat floor -- ray length converted into the
+    sensor's own reporting convention."""
+    r = _floor_ray_length(row, col, cfg)
+    if r is None:
+        return None
+    return r * _boresight_cosine(row, col, cfg) if cfg.reports_z else r
 
 
 def valid_mm(value: int, cfg: TofConfig) -> bool:
@@ -123,11 +212,10 @@ def plausible_for_zone(row: int, col: int, value: int, cfg: TofConfig) -> bool:
     """
     if not valid_mm(value, cfg):
         return False
-    _, el = zone_angles(row, col, cfg)
-    if el >= -1e-6:
+    floor = _floor_reading_m(row, col, cfg)
+    if floor is None:
         return True
-    ceiling = cfg.mount_height_m / math.sin(-el) + cfg.floor_margin_m
-    return value / 1000.0 <= ceiling
+    return value / 1000.0 <= floor + cfg.floor_margin_m
 
 
 def zone_point(row: int, col: int, value_mm: int, cfg: TofConfig) -> Optional[tuple]:
@@ -141,12 +229,10 @@ def zone_point(row: int, col: int, value_mm: int, cfg: TofConfig) -> Optional[tu
     """
     if not valid_mm(value_mm, cfg):
         return None
-    az, el = zone_angles(row, col, cfg)
     d = value_mm / 1000.0
-    r = d / (math.cos(az) * math.cos(el)) if cfg.reports_z else d
-    return (r * math.cos(el) * math.cos(az),
-            r * math.cos(el) * math.sin(az),
-            cfg.mount_height_m + r * math.sin(el))
+    r = d / _boresight_cosine(row, col, cfg) if cfg.reports_z else d
+    ux, uy, uz = zone_ray(row, col, cfg)
+    return (r * ux, r * uy, cfg.mount_height_m + r * uz)
 
 
 def expected_floor_m(row: int, col: int, cfg: TofConfig) -> Optional[float]:
@@ -159,28 +245,22 @@ def expected_floor_m(row: int, col: int, cfg: TofConfig) -> Optional[float]:
     (grazing incidence -- measured: floor at 0.39 m returns, floor at 0.79 m does not).
     `floor_beyond_horizon` below distinguishes them.
     """
-    az, el = zone_angles(row, col, cfg)
-    if el >= -1e-6:
-        return None
-    r = cfg.mount_height_m / math.sin(-el)
-    # AZIMUTH MATTERS when the sensor reports perpendicular distance: z shrinks by
-    # cos(az) across the row, so the edge columns' floor legitimately reads NEARER
-    # than the centre's. Modelling the row as one distance over-predicts by 11% at
+    # AZIMUTH MATTERS when the sensor reports perpendicular distance: the reading
+    # shrinks by cos(az) across the row, so the edge columns' floor legitimately reads
+    # NEARER than the centre's. Modelling a row as one distance over-predicts by 11% at
     # column 7 (cos 26.25 deg) -- which made real floor look like an obstacle in the
-    # recorded clear-floor frames, and is the bug this line exists to record.
-    reading = r * math.cos(-el) * math.cos(az) if cfg.reports_z else r
+    # recorded clear-floor frames, and is the bug `_boresight_cosine` exists to record.
+    reading = _floor_reading_m(row, col, cfg)
+    if reading is None:
+        return None
     return None if reading > cfg.floor_horizon_m else reading
 
 
 def floor_beyond_horizon(row: int, col: int, cfg: TofConfig) -> bool:
     """True when this zone points DOWN at floor we cannot see -- the band where any
     plausible return is informative, because nothing else in the room produces one."""
-    az, el = zone_angles(row, col, cfg)
-    if el >= -1e-6:
-        return False
-    r = cfg.mount_height_m / math.sin(-el)
-    reading = r * math.cos(-el) * math.cos(az) if cfg.reports_z else r
-    return reading > cfg.floor_horizon_m
+    reading = _floor_reading_m(row, col, cfg)
+    return reading is not None and reading > cfg.floor_horizon_m
 
 
 def nearer_than_floor(frame, cfg: TofConfig) -> list:
@@ -195,6 +275,8 @@ def nearer_than_floor(frame, cfg: TofConfig) -> list:
         row, col = divmod(i, ZONES)
         if not valid_mm(value, cfg):
             continue
+        # AUTHORITY FIRST, then the comparison. This zone may see floor perfectly well
+        # and still not be entitled to conclude from it -- design 9.2.
         expected = expected_floor_m(row, col, cfg)
         if expected is None:
             continue
@@ -251,7 +333,7 @@ class ObstacleDetector:
         cfg = self._cfg
         near = nearer_than_floor(frame, cfg)
         adjacent = unexpected_returns(frame, cfg)
-        self._history.append({z for z in adjacent})
+        self._history.append(set(adjacent))
         if len(self._history) > cfg.window_frames:
             self._history.pop(0)
         counts: dict = {}

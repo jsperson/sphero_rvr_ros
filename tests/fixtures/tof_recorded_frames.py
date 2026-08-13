@@ -15,6 +15,30 @@ under test reads, not merely its values.
 Inlined rather than shipped as CSVs for the same reason CHAIR_PIN_YAW_DEG is: one
 trace, one consumer, no parser. The full 12,869-frame recordings stay in the vault.
 
+READ THIS BEFORE USING THESE FRAMES FOR ANYTHING GEOMETRIC
+---------------------------------------------------------
+**These are LEVEL-MOUNT frames and they are NOT evidence about geometry.** They are
+evidence about the SENSOR and the SCENE -- validity, sentinels, run lengths, adjacency
+separation, detection rates -- and they remain good for that.
+
+The demotion is not caution, it is arithmetic. The geometry they were recorded under
+was fitted with three errors that only became visible when the mount was tilted on
+2026-08-13 (design note 9.10): the reading was projected onto `base_link` x rather than
+the sensor's own boresight, the mount pitch was ADDED to each zone's elevation instead
+of applied as a rotation, and the vertical zone pitch was assumed equal to the
+horizontal one (7.5 deg; it is 5.9). At +4 deg all three sat inside `floor_margin_m`.
+
+**And it cannot be repaired.** Re-fitting needs a floor gradient, and the level
+session's clear-floor segment has every row from 1 to 7 reading ~300 mm -- the side
+clutter Scott flagged while recording it. There is nothing in this data to fit against.
+So `LEVEL_MOUNT_CFG` below freezes the geometry these frames were INTERPRETED under,
+known-wrong and deliberately unchanged, purely so their sensor-and-scene proofs keep
+testing what they were written to test.
+
+Geometry is pinned by `TILT_FLOOR_MEDIANS` and `TILT_WALL_060_ROWS`, which come from
+clean data. **If you are here looking for a fixture to pin a geometric constant, these
+top four are the wrong ones and no amount of care in your test will fix that.**
+
     CLEAR_FLOOR  nothing ahead for 2 m         (obstacle rules must find NOTHING)
     RAIL_046     5 cm rail at 0.46 m           (rule ii must find it)
     BOX_074      5 cm box at 0.74 m vs a wall  (rule i must find it, continuously)
@@ -194,3 +218,55 @@ WALL_ONLY = [
     [991, 978, 983, 978, 977, 994, 997, 4000, 982, 972, 970, 985, 979, 992, 959, 875, 986, 980, 995, 996, 1006, 972, 994, 885, 982, 1003, 985, 1010, 995, 988, 976, 896, 986, 991, 987, 992, 989, 988, 966, 918, 4000, 4000, 4000, 4000, 4000, 4000, 4000, 4000, 335, 355, 352, 376, 369, 370, 373, 326, 257, 272, 252, 274, 279, 268, 245, 282],
 ]
 
+
+
+# ----------------------------------------------------------------- FROZEN CONFIGS
+#
+# A FIXTURE MUST CARRY THE CONFIG IT WAS RECORDED UNDER. Everything above was
+# captured at the LEVEL mount; the shipping defaults now describe the TILTED one.
+# Before this block every test here called a bare `TofConfig()`, so re-fitting the
+# geometry silently re-interpreted 160 recorded frames and ten proofs changed meaning
+# without one line of test changing. That is the pycache trap in test form: the code
+# under test moved and the evidence followed it.
+
+from sphero_rvr_core.tof_frame import TofConfig  # noqa: E402
+
+#: The geometry in force when the frames above were recorded and their proofs written.
+#:
+#: KNOWN WRONG IN TWO WAYS, and frozen anyway. It assumes a 7.5 deg VERTICAL zone
+#: pitch (the sensor's is 5.9) and it was fitted with the boresight-projection defect
+#: (see `zone_angles_sensor`). It cannot be repaired: the level session's clear-floor
+#: segment has every row from 1 to 7 reading ~300 mm -- the side clutter Scott flagged
+#: at the time -- so there is no floor gradient in it to re-fit against.
+#:
+#: What that costs, stated so nobody mistakes these proofs for more than they are:
+#: these frames remain good evidence about the SENSOR and the SCENE -- validity,
+#: sentinels, run lengths, adjacency separation, detection rates -- and they are no
+#: longer evidence about the GEOMETRY. Geometry is pinned by TILT_FLOOR_MEDIANS below,
+#: which comes from clean data.
+LEVEL_MOUNT_CFG = TofConfig(
+    mount_height_m=0.10,
+    mount_pitch_deg=4.0,
+    zone_deg_h=7.5,
+    zone_deg_v=7.5,
+)
+
+#: Clear-floor medians from the TILTED session, 2026-08-13 15:45:00-15:54:30, 4321
+#: frames, columns 3 and 4. (row, col, metres). Rows 4-7 are the floor-returning ones;
+#: rows 0-2 saw a wall ~2 m away and rows 0-3 are excluded for that reason.
+#:
+#: This is what pins the asymmetric FOV. It is a MEDIAN OF THOUSANDS of frames rather
+#: than a hand-picked frame, because the level session already produced one statistic
+#: that hid an intermittent target.
+TILT_FLOOR_MEDIANS = [
+    (4, 3, 0.440), (4, 4, 0.430),
+    (5, 3, 0.327), (5, 4, 0.325),
+    (6, 3, 0.271), (6, 4, 0.267),
+    (7, 3, 0.230), (7, 4, 0.219),
+]
+
+#: Centre-column medians facing a flat wall at tape 0.60 m, same session, 15:58:50-
+#: 16:01:30. (row, metres). The wall is a PLANE, so this constrains pitch and the
+#: vertical zone pitch through the row-to-row gradient WITHOUT depending on the mount
+#: height at all -- an independent check on a fit that is otherwise degenerate.
+TILT_WALL_060_ROWS = [(0, 0.541), (1, 0.558), (2, 0.576), (3, 0.594)]
