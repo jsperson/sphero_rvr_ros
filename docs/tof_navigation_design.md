@@ -842,6 +842,24 @@ revert-proof:
   | **pins** | `disagreement_margin`, rule B's false-fire rate on (a), its detection rate on (b) |
   | **watch for** | the two clocks. §9.3 compares in `base_link` through TF, so the capture must carry TF or at minimum unambiguous stamps; a 53 s alignment error has already cost this project once |
 
+  **ACCEPTANCE CRITERION, quantitative — added 2026-08-13 after an attempt to settle
+  this from existing data failed.** J passes when, over its bare-wall segment, the
+  measured per-column disagreement between `/scan` and the ToF stays below the chosen
+  `disagreement_margin_m` in at least 99% of frames, and the margin is then set from
+  THAT distribution rather than from the current 0.10 m guess. Rule B's authority
+  follows the measurement; it is not a number anyone picks.
+
+  **AND A TRAP THAT ALREADY CAUGHT ME, so J's analysis does not repeat it: the background
+  is PER COLUMN and a uniform number is not a stand-in for it.** Replaying recorded
+  clear-floor frames against a flat 1.90 m background produced 188 "phantoms" which were
+  nothing of the kind — that segment's columns 0-4 face a wall at ~2.0 m while columns
+  5-7 see a real object at ~1.05 m, sitting 0.03-0.14 m up and therefore BELOW the
+  0.19 m lidar plane. Rule B was very likely right and the synthetic background was
+  wrong. `scan_min_by_column` exists because the background varies across the frame;
+  feeding it a constant asks a question no lidar would ever pose. **Nothing in the
+  existing recordings can settle rule B's false-fire rate at all** — which is a stronger
+  argument for J than any claim derived from them.
+
   **(a) is the more important half and is the one that will be skipped if the session
   runs long.** Detection rate is the number everyone wants; the false-fire rate on a bare
   wall is the number that decides whether this rule can drive a brake at all, and it is

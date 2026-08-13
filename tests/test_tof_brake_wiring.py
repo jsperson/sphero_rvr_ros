@@ -110,14 +110,24 @@ def test_clear_floor_produces_NO_brake_input():
     sys.path.insert(0, os.path.dirname(__file__))
     from fixtures.tof_recorded_frames import TILT_CLEAR
 
-    # Both configurations: shipped (rule A only) and rule B enabled with a lidar
-    # background. Floor must never reach the brake under either.
     assert not _tof_cloud_ground_ranges(TILT_CLEAR, TofConfig()), (
         "clear floor produced brake input with the shipped rule-A-only configuration")
-    live = dataclasses.replace(TofConfig(), rule_b_enable=True)
-    assert not _tof_cloud_ground_ranges(TILT_CLEAR, live, [3.0] * 8), (
-        "clear floor produced brake input once rule B was enabled against an open "
-        "lidar background")
+
+    # RULE B IS DELIBERATELY NOT EXERCISED HERE, and the reason is a correction.
+    #
+    # An earlier version fed rule B a UNIFORM synthetic background ([1.90] * 8) and
+    # reported 188 "phantoms" on this segment. They were not phantoms. The frame is not
+    # one surface: columns 0-4 read ~2.0 m (a wall) and columns 5-7 read ~1.05 m (a real
+    # object to the rover's right -- the side clutter Scott flagged while recording).
+    # At 1.05 m that object sits 0.03-0.14 m up, BELOW the 0.19 m lidar plane, so rule B
+    # flagging it is very likely CORRECT.
+    #
+    # A uniform background is not a stand-in for a real one; `scan_min_by_column` exists
+    # precisely because the background varies per column. Supplying a flat number asks
+    # the detector a question no lidar would ever pose, and its answer means nothing.
+    # Nothing in this recording can settle rule B's false-fire rate, because no
+    # synchronised scan was ever captured beside it -- which is bench item J, and is a
+    # better argument for J than the phantom claim it replaces.
 
 
 def test_stale_tof_degrades_to_lidar_only():
