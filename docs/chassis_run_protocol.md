@@ -224,3 +224,40 @@ and costmap alone, and the camera should not be credited or blamed for it.
   (D2); `cam_cloud_age` max over the drive (D22); `pivot_veto` events if any
   pivot was refused near a low obstacle.
 - Update the register the same night — closed rows cite the artifact filenames.
+
+---
+
+## Sensor GEOMETRY sessions — the constraint that must be in every capture
+
+Applies to any bench sitting that fits a sensor's mount geometry (height, pitch,
+zone/beam angles). Chassis off; this is not a run.
+
+**ALWAYS capture a flat wall at TWO distances, in addition to whatever the session is
+actually about.** Not optional and not a nice-to-have — it is the constraint that makes
+the fit identifiable at all.
+
+Why, from 2026-08-13 (docs/tof_navigation_design.md §9.10): mount height, pitch and
+vertical zone pitch are strongly correlated in a fit against floor rows alone. Separate
+fits over the *same* eight recorded medians produced heights from 0.109 m to 0.185 m at
+comparable RMS — all of them "good fits", none of them identifiable. A flat wall breaks
+the degeneracy because **a plane's row-to-row gradient depends on pitch and zone pitch
+but not on mount height at all**. Solving the wall distance from one row and predicting
+the rest landed within 6 mm.
+
+Two distances, not one, for the same reason at a different level: at one distance,
+competing models of what the sensor REPORTS can coincide. The level-mount session
+answered the ToF's reporting convention correctly by luck, because a horizontal
+boresight makes two of the three candidate models the same line.
+
+Practical points, all learned the hard way:
+
+* **Check monotonicity before trusting a wall segment.** The 2.13 m wall was discarded
+  because its row medians ran 1.905 / 1.857 / 1.967 — not monotonic, therefore not one
+  plane. Side clutter. A contaminated constraint is worse than no constraint.
+* **Pre-register the competing models and what each predicts**, before capturing. That
+  is what turned "it reports z" from a lucky guess into a measurement.
+* **Watch the capture's line count GROW**, not merely exist — a capture died silently
+  after 500 frames on 2026-08-13 while Scott held a pose in front of it.
+* **Stop captures with the script's own `--stop`**, never a bare `kill` on a shell
+  wrapper: `python3 diagnostics/tof_capture.py --stop <csv>`. Killing the wrapper leaves
+  the Python child recording, which happened three times in one session.

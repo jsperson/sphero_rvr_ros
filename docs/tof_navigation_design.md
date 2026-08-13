@@ -530,3 +530,380 @@ motion authority, not its existence.
   need its own design if anyone wants it for steering.
 * The v1.3 firmware update itself (Scott's Windows machine) — this design consumes its
   result, it does not perform it.
+
+---
+
+## 9. AMENDMENT, 2026-08-13 — the detection rules at the fitted geometry
+
+**Status: HELD FOR REVIEW. No code in this section has been written.** §§1-8 above
+describe the LEVEL mount and stay as the record of that; this section supersedes §3.1's
+two rules for the tilted mount and adds the lidar-background rule §4.1 wrote down and
+deliberately did not build.
+
+### 9.0 The defect, measured
+
+Running the real `ObstacleDetector` against 23,057 frames at the new tilt: **an obstacle
+was reported in 99.3% of frames, rule (i) fired ZERO times, and the trigger was row 2
+seeing the WALL.** The box the session existed to detect was never the reason. Both
+rules broke, in opposite directions, from the same cause.
+
+### 9.1 Diagnosis — a visibility constant was doing an authority job
+
+`floor_horizon_m = 0.55` answers *"can the floor return from this far?"*. Both rules used
+it to answer *"may this row conclude an obstacle?"*. Those are different questions, and
+tilting the mount pulled them apart:
+
+All figures below are computed THROUGH THE PRODUCTION MODEL at the shipped constants,
+centre column, and "floor reads" is the quantity rule A actually compares against — the
+reading a zone would report for flat floor, not a ground distance:
+
+| row | world elevation | floor reads | height of a return at 0.50 m |
+|---|---|---|---|
+| 0 | +4.98° | none (above horizon) | +0.226 m |
+| 1 | −0.92° | 8.37 m | +0.131 m |
+| 2 | −6.82° | **1.16 m** | +0.079 m |
+| 3 | −12.72° | 0.63 m | +0.026 m |
+| 4 | −18.62° | 0.43 m | — (below floor) |
+| 5 | −24.51° | 0.33 m | — |
+| 6 | −30.41° | 0.27 m | — |
+| 7 | −36.31° | 0.23 m | — |
+
+Rule (i) requires `expected_floor_m`, which returns `None` past the horizon — so rows 2
+and 3 lost their floor model entirely and rule (i) went silent on exactly the rows that
+now point at the interesting band. Rule (ii) fires on *any* adjacent plausible returns
+past the horizon, on the premise that **nothing else in the room produces one** — true
+for a row whose floor is 0.30 m away, false for row 2, whose floor is 1.16 m away and
+whose ray at 0.68 m is only 79 mm off the ground. A wall has material at 79 mm. The
+premise was never a property of the rule; it was a property of the level geometry, and
+nothing in the code said so.
+
+### 9.2 Rule A (was rule (i)) — floor comparison, with a DERIVED applicability bound
+
+The comparison is unchanged: a finite plausible return at `R < F − floor_margin` is
+something standing between the sensor and the floor. What changes is **which rows may
+use it**, and the bound is derived rather than tuned:
+
+> **Rule A applies to a row only where its floor intersection F is inside the stop
+> distance.**
+
+The justification is §3.2's rule that the brake may only use models whose errors make it
+stop sooner. Rule A cannot distinguish an object from the sub-lidar part of a wall — it
+never could. Where `F ≤ stop_distance`, it does not need to: anything nearer than the
+floor at that range is inside the brake band whatever it is, so both explanations
+demand the same action and the ambiguity is harmless. Where `F > stop_distance`, the two
+explanations demand opposite actions and rule A is not entitled to choose.
+
+At a stop distance of 0.45 m this admits **rows 4-7**; at 0.35-0.40 m, rows 5-7. The row
+set is therefore a FUNCTION of the stop distance, which §4 still lists as
+*derive after the re-fit* and which §3.3 gates on the unmeasured in-flight pitch
+envelope. **The row set is not frozen by this amendment and must not be hardcoded** — it
+is computed from the geometry and the stop distance at config time, and published on
+`~/state` so a recording says which rows held authority.
+
+`floor_horizon_m` keeps its original job — it stays in `plausible_for_zone` and in the
+"can this zone see floor at all" question — and loses its authority job entirely.
+
+### 9.3 Rule B (replaces rule (ii)) — the lidar as a LIVE background
+
+For rows outside rule A's bound, the ToF alone cannot separate an object from a wall.
+The lidar can, and §4.1 already stated why: **a return the lidar CANNOT see at matching
+range is sub-lidar by definition.** That is the class this sensor exists for.
+
+```
+For a ToF return, expressed in base_link as (x, y, z):
+    r     = hypot(x, y)                 range in the ground plane
+    beta  = atan2(y, x)                 bearing
+    L_min = MINIMUM lidar range over the angular span of this zone's column
+    RULE B fires when   r  <  L_min - disagreement_margin
+```
+
+**CORRECTION, made while building it: THE FLOOR IS A RETURN TOO.** As approved, the rule
+above compares every ToF return against the lidar and nothing else — and the floor is
+always nearer than the wall the lidar sees. Replayed against recorded frames the first
+implementation fired in **38 of 40 clear-floor frames**. The rule needs a front half:
+
+```
+a return is a CANDIDATE only if it stands ABOVE the ground --
+    reading < modelled floor - floor_margin      (or the row never meets the floor)
+then rule A concludes directly inside its bound, and rule B asks the lidar outside it
+```
+
+That makes the two rules one pipeline rather than two overlapping tests: the same
+"something is standing here" evidence, adjudicated by the floor model where that is
+safe and by the lidar where it is not. It also re-introduces a floor-model dependency
+into rule B, in the EXCLUDING direction only — a wrong floor model can make rule B miss
+an obstacle, never invent one. That is the failure direction rule B already committed
+to. And the margin cuts the right way: a return within `floor_margin` of modelled floor
+is within a couple of centimetres of the ground at any of these geometries, so what it
+excludes is objects thin enough that the freeze/escape machinery is what handles them.
+
+Four further properties, each load-bearing:
+
+* **The comparison happens in `base_link`, through TF, on both sides.** The lidar's
+  `base_link->laser` yaw is ~179°, so its raw bearing 0 points BEHIND the robot, and the
+  two sensors sit at different x offsets — at 0.68 m that parallax is not negligible.
+  Comparing raw scan indices against ToF columns is the N1 defect with a new pair of
+  sensors. This is the single most likely way to build this rule wrong.
+* **Applicability: the ToF ray must be BELOW the lidar plane** (`z < laser_z`, measured
+  0.1905 m). Rows 1-7 always satisfy this — the mount at 0.139 m sits 51 mm below the
+  lidar plane and every downward row descends. Row 0 (+4.95°) crosses the lidar plane at
+  **0.59 m**; beyond that the lidar can see what row 0 sees, disagreement means occlusion
+  geometry rather than a sub-lidar object, and rule B must not fire. Below 0.59 m it may.
+* **`L_min`, not `L_mean` or `L_max` — deliberately the insensitive choice.** A ToF
+  column spans 7.5° against the lidar's ~1°, so a column straddling a doorway or a corner
+  contains both near and far lidar returns. Taking the minimum makes disagreement HARDER
+  to claim, so the rule's error is a missed obstacle rather than a phantom brake at every
+  corner. That is the failure mode §4.1 committed to (*"loss of sensitivity rather than a
+  phantom"*), and it is the opposite of rule A's — which is correct, because rule A
+  operates where over-caution is free and rule B operates where it costs the mission.
+* **Adjacency and N-of-M survive unchanged.** The isolated-return baseline (1.3-1.8% of
+  frames) is a property of the sensor, not of the geometry, and nothing in the tilt
+  data contradicts the 25× adjacency separation §3.1 measured. `min_adjacent_zones=2`,
+  `M=8, N=3` carry over, still **(F)**-gated on the firmware retest.
+
+**No lidar return at that bearing is NOT the same as no lidar.** A bearing where the
+scan reports infinity, NaN, or beyond max range means *open to max range* — so any ToF
+return there is sub-lidar and rule B fires at full strength. That is the rule's strongest
+case, and conflating it with a missing scan would silently invert it. The two are
+distinguished at the source and reported separately on `~/state`.
+
+### 9.4 The gap between A and B is real, and today's own object sat on its edge
+
+Row 3's floor reads 0.63 m, so it is outside rule A's bound at any plausible stop
+distance — and it is the row that saw the 5 cm box at 0.50 m in 100% of frames. Testing
+that object against rule A as if row 3 did qualify:
+
+```
+reading 0.500 m ,  floor reads 0.629 m ,  floor_margin 0.120
+0.500 < 0.629 - 0.120 = 0.509 ?   yes -- by 9 mm
+```
+
+**CORRECTION.** The first draft of this section computed 0.614 m by hand, using the
+pre-9.10 geometry, and reported that rule A MISSED this object by 6 mm. Recomputed
+through the corrected model it catches it, by 9 mm. The conclusion survives the sign
+flip and is in fact strengthened by it: **rule A's verdict on the best-detected object
+of the session moves from "miss" to "catch" on a 15 mm change in the floor model.** A
+detection that thin is not a capability. Rule B does not depend on the floor model at
+all — the lidar measured the wall behind the box at 0.678 m, a disagreement of 0.178 m,
+nearly twenty times the margin rule A had to spare.
+
+So rule B is load-bearing rather than an enhancement: without it there is a band,
+starting right at the stop distance, where the sensor sees an obstacle perfectly and the
+only rule available to report it is balanced on its own calibration error.
+
+**STATED AS THE ARGUMENT FOR THE LAYERING, because that is what it is.** Rule A is a
+*differencing* rule: its verdict is the gap between a reading and a MODEL, so near its
+applicability edge that verdict inherits the model's whole error budget. The numbers
+above are that inheritance made visible — 9 mm of decisive margin against a 15 mm
+correction to the model itself. Rule B is a *comparison between two sensors*: it holds
+178 mm on the same object and it does not consult the floor model at all, so a floor-fit
+error cannot move it.
+
+**Rule A is therefore not load-bearing alone near its boundary, and must not be treated
+as though it were.** That is not a reason to distrust it — inside its bound, where the
+floor is nearer than the stop distance, it is the strong rule: continuous, no
+confirmation window, and correct whichever explanation is true. It is a reason the two
+rules degrade INDEPENDENTLY, which is the entire point of running both. A floor-model
+error blinds rule A and leaves rule B intact; a lidar outage removes rule B and leaves
+rule A intact. Neither failure is silent, because `~/state` names which rule concluded
+what. A single rule covering both bands would have one error budget and one failure
+mode, and the 9 mm above is what that would be resting on.
+
+### 9.5 WHERE the background check lives — the seam
+
+**Recommendation: `tof_node` subscribes to `/scan` and applies rule B before publishing
+`~/obstacles`.** This is new coupling and it needs the justification the review asked for.
+
+The deciding argument is the fan-out. `~/obstacles` has TWO consumers — the supervisor
+brakes on it and the decisive controller steers around it, exactly as
+`/camera/low_obstacles` is consumed today. If the background check lived in the
+supervisor, the steering law would receive the UNFILTERED set and the two consumers would
+be acting on different definitions of "obstacle". Two consumers disagreeing about the
+contents of one topic is a defect this project has already paid for. The check must sit
+upstream of the fan-out, and upstream of the fan-out is the ToF node.
+
+The secondary argument: rule B is a PERCEPTION judgement ("is this return sub-lidar?"),
+not a braking judgement, and it needs the ToF's zone geometry to compute a column's
+angular span. That geometry lives in `tof_frame`. Moving the rule into `collision_stop`
+would move ToF geometry into the safety path, which is under a standing empty-diffstat
+discipline.
+
+Alternatives considered:
+
+| option | why not |
+|---|---|
+| **Supervisor does it** (it already has `/scan`) | Splits the obstacle definition between two consumers; grows the safety path with perception logic |
+| **A separate fusion node** | Adds a third process between two that both already exist, whose silence reads as clear floor; the ToF node would still need `/scan` for its own `~/state` honesty |
+| **Both consumers do it** | Two implementations of one rule, guaranteed to drift |
+
+The coupling is made observable rather than hidden: `~/points` continues to publish the
+raw per-zone returns with NO background filtering, so any consumer that distrusts our
+conclusion can re-derive its own and a recording keeps both. That separation is already
+the node's stated design and it is what makes this coupling acceptable.
+
+### 9.6 When the lidar is down — spelled out, three distinct cases
+
+Per the standing rule, degrade toward lidar-only braking. The cases are not the same and
+must not share a code path:
+
+1. **Scan MISSING or STALE.** Rule B is UNAVAILABLE, not "false". Its candidate zones are
+   DROPPED — never published as obstacles, never published as clear. Rule A continues on
+   its own rows. `~/state` reports `background=DEGRADED` with the reason token.
+   Note what the supervisor is doing meanwhile: a missing or stale scan is already
+   `SENSOR_STALE` there (`max_scan_age_s = 0.30`), which stops the robot. So in the
+   dangerous direction this case is largely moot — the rover is not moving on a degraded
+   ToF. The requirement is that the ToF node not INVENT a conclusion in the window before
+   the supervisor notices.
+2. **Scan present, no return at this bearing.** Not a failure — see §9.3. Rule B fires.
+3. **Scan present and disagreeing with itself** (stamp not advancing, etc.). Treated as
+   case 1. The supervisor's existing `evaluate_scan` taxonomy is the model; the ToF node
+   should not invent a second one.
+
+**The net effect of losing the lidar is that the ToF becomes strictly less sensitive,
+never more.** Rule B can only ADD obstacles, so its unavailability can only remove them —
+it can never produce a phantom brake by being absent.
+
+### 9.7 The fitted constants are CALIBRATION, not a description of the mount
+
+`h = 0.139 m`, `pitch = −15.7°`, `5.9°/zone vertical` reproduce 8 independent floor-row
+measurements to **±4 mm RMS**. They are the numbers that make the model predict the
+readings. They are **not** a statement about where the sensor physically is: the fitted
+height sits ~30 mm above Scott's tape measure, and the most likely mechanism is that each
+zone reports the NEAREST returning part of its cone rather than its centre ray — which
+biases every downward row short, and a fit absorbs that bias into height and pitch.
+
+Consequences that follow from this and are not optional:
+
+* Re-mounting invalidates these numbers even if the tape says the height is unchanged.
+* They must not be quoted as physical facts in the provisioning repo or the run protocol.
+* The residual self-check of §3.3 measures the model against the floor, which is exactly
+  what these constants were fitted to — so **a small residual is not evidence the fit is
+  physically right**, only that it is still self-consistent.
+
+The horizontal zone pitch stays at **7.5°** (independently confirmed: a 25 cm box at
+0.30 m filled 6 of 8 columns). The FOV is therefore **asymmetric, ~60° × ~47°**, and
+`zone_deg` must split into `zone_deg_h` / `zone_deg_v` — forcing 7.5° on both axes is six
+times worse on the fit with a systematic pattern, i.e. a real model error rather than
+noise.
+
+### 9.8 What this amendment does NOT have data for — the gates
+
+Stated plainly, because the last version of this design was falsified by its own
+revert-proof:
+
+* **`disagreement_margin` is unpinned.** The tilt session recorded 23,057 ToF frames and
+  NO synchronised `/scan` — the 0.678 m lidar figure is a single spot probe from the
+  crosstalk check, not a time series. So rule B's threshold, its false-fire rate on a bare
+  wall, and its detection rate on the box are all UNMEASURED. A capture recording
+  `/scan` and ToF frames together is a precondition for rule B holding any authority, and
+  the arithmetic in §9.4 is a worked example, not a measurement.
+
+  **BENCH ITEM J — JOINT `/scan` + ToF CAPTURE.** Named so it can ride along rather than
+  wait for a session of its own.
+
+  | | |
+  |---|---|
+  | **effort** | ~5 minutes, chassis OFF, rover stationary — it is a tag-along on any staged session, not a trip of its own |
+  | **needs** | lidar up and spinning, ToF capture running, both recorded with timestamps that can be aligned |
+  | **scene** | (a) bare flat wall at ~0.7 m, 60 s — the FALSE-FIRE case: the lidar and the ToF must AGREE, and every rule B fire here is a phantom brake at a wall; (b) the same 5 cm object at 0.50 m in front of that wall, 60 s — the DETECTION case, where they must disagree by ~0.18 m |
+  | **pins** | `disagreement_margin`, rule B's false-fire rate on (a), its detection rate on (b) |
+  | **watch for** | the two clocks. §9.3 compares in `base_link` through TF, so the capture must carry TF or at minimum unambiguous stamps; a 53 s alignment error has already cost this project once |
+
+  **(a) is the more important half and is the one that will be skipped if the session
+  runs long.** Detection rate is the number everyone wants; the false-fire rate on a bare
+  wall is the number that decides whether this rule can drive a brake at all, and it is
+  the failure this whole amendment exists to fix. If only one scene gets captured,
+  capture the WALL.
+* **The stop distance is still underived**, so rule A's row set is still parametric
+  (§9.2), and §3.3's in-flight pitch envelope still gates `floor_margin_m`.
+* **The 6 mm miss in §9.4 is one object at one range.** It shows the gap exists; it does
+  not measure its width.
+
+### 9.9 Revert-proofs for this amendment (to be mutation-verified before code lands)
+
+Numbered on from §7. Each must FAIL against the code it indicts:
+
+9. `row_two_does_not_brake_for_a_wall` — replay the tilt session's wall frames: the
+   99.3% obstacle rate becomes ZERO from row 2. BUILT, mutation-verified. It asserts
+   BOTH independent reasons (row 2 holds no rule A authority; rule B agrees with the
+   lidar) and asserts that the REMOVED rule still fires on the same frames — without
+   that last line the proof passes against code that detects nothing at all.
+10. `rule_a_row_set_follows_the_stop_distance` — BUILT, mutation-verified, anchored on
+    rows 2 and 3 by name.
+10b. `rule_a_authority_is_independent_of_the_floor_horizon` — **added because proof 10
+    was INERT.** A mutation deleting rule A's authority bound outright changed no test:
+    at a 0.45 m stop distance the 0.55 m visibility horizon was already stricter, so
+    `expected_floor_m` returning None past the horizon was still making the authority
+    call — the very confusion 9.1 diagnosed, surviving inside its own fix. Same shape as
+    the pivot controller below an unreachable branch. `nearer_than_floor` now uses the
+    UNCAPPED floor reading and the bound is the only gate.
+10. `rule_a_row_set_follows_the_stop_distance` — changing the stop distance changes which
+    rows hold rule A, computed not hardcoded. Fails against a frozen row list.
+11. `rule_b_needs_the_lidar_to_disagree` — a ToF return at the same range the lidar
+    reports produces NO obstacle; the same return with the lidar reporting open space
+    DOES. Fails against absolute proximity thresholding.
+12. `missing_scan_drops_rule_b_zones` — with no scan, rule B's zones appear in NEITHER
+    the obstacle set nor a clear conclusion, and `~/state` says DEGRADED. Fails against
+    a version that treats a missing scan as open space (which would brake on everything)
+    or as agreement (which would brake on nothing).
+13. `row_zero_stops_above_the_lidar_plane` — a row 0 return beyond 0.59 m produces no
+    rule B obstacle however much the lidar disagrees. Fails against a version that
+    applies rule B to every row.
+14. `bearings_are_compared_in_base_link` — a synthetic scan built with the real ~179°
+    laser yaw must not mirror the comparison. The N1 lesson, pre-empted for a second time.
+15. `asymmetric_fov_is_pinned_by_measurement` — the vertical zone pitch is fixed against
+    today's capture, and forcing it equal to the horizontal one fails the fit. BUILT and
+    mutation-verified: symmetric 7.5 deg gives 31 mm RMS against 6 mm, with residuals
+    that are ALL ONE-SIGNED. The sign pattern is the assertion; RMS alone could be noise.
+16. `the_sensor_reports_along_its_own_boresight` — the 0.60 m wall's row gradient is
+    predicted within 6 mm from ONE solved parameter. Fails against the base_link-x
+    projection that shipped (defect 1, 9.10). BUILT and mutation-verified.
+17. `the_mount_pitch_is_a_rigid_rotation` — the angle between any two zone rays is
+    unchanged by pitch. Fails against adding pitch to elevation (defect 2, 9.10). BUILT
+    and mutation-verified. WEAKEST proof here: an invariant, not a measurement — see 9.10.
+
+### 9.10 TWO GEOMETRY DEFECTS IN SHIPPED STAGE-(i) CODE, found while building 9.2
+
+Neither was in the review that approved this amendment's scope. Both were found by
+trying to pin the vertical zone pitch against today's data and discovering the fit
+would not reproduce — a fixture doing the job a fixture is for.
+
+**Defect 1 — the reading was projected onto the wrong axis.** Every projection in
+`tof_frame` used the ray's WORLD elevation, i.e. it assumed the sensor reports distance
+along `base_link` x. It reports along its own boresight, which §1 of this note settled
+by measurement. Against eight recorded clear-floor medians the floor model
+under-predicted by 19–42 mm, **all negative, 29.7 mm RMS**; with the boresight
+projection the same constants land at **5.6 mm RMS with mixed signs**.
+
+**Defect 2 — the mount pitch was applied as an addition, not a rotation.** Adding the
+pitch to each zone's elevation is exact on the centre column and wrong by **1.8° at the
+corner zone** at −15.7°, moving that zone's floor intersection by ~5%.
+
+**Why both shipped:** at the old +4° mount, defect 1 was worth a fraction of a percent
+and defect 2 was worth 0.4°. Both sat far inside `floor_margin_m` and no test could see
+them. The mount angle chosen to see low obstacles is also what converted two harmless
+roundings into systematic errors — *a level bench could not have found either*, which is
+the same lesson as §1's reporting convention, arriving twice in one session.
+
+**The clean-up this forced, and its cost.** The vertical zone pitch, the mount height
+and the pitch are strongly correlated in a floor-only fit — three parameters, few
+constraints. The 0.60 m WALL is what breaks the degeneracy: a plane's row-to-row
+gradient depends on pitch and zone pitch but NOT on mount height. Solving the wall
+distance from row 0 alone and then predicting rows 1-3 lands within 6 mm, and the solved
+distance (0.578 m) sits sensibly behind the 0.60 m tape. That is an independent check,
+and it is why the wall segment is now a fixture in its own right.
+
+**The level-mount geometry could NOT be repaired.** Its constants were fitted under both
+defects AND a 7.5° vertical assumption, and its clear-floor segment has every row from 1
+to 7 reading ~300 mm — the side clutter Scott flagged at the time — so there is no floor
+gradient left to re-fit against. The level fixtures are therefore frozen with the
+geometry they were recorded under, explicitly labelled as known-wrong-and-unrepairable,
+and **demoted**: they remain evidence about the sensor and the scene (validity,
+sentinels, run lengths, adjacency separation, detection rates) and are no longer evidence
+about geometry. Geometry is pinned by the tilt fixtures, which come from clean data.
+
+**One proof is weaker than the rest and is marked as such.** The rigid-rotation property
+is a geometric invariant, not a measurement: today's edge columns cannot settle it,
+because across nominally flat floor row 6 reads 247/267/282/271/267/261/252/243 mm — a
+~35 mm spread against the ~10 mm the two conventions differ by. A cleaner edge-column
+capture would replace it with evidence.
