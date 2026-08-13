@@ -286,6 +286,44 @@ Derived from the sensor and the measurements, **not from the camera's constants*
 | Proposed ToF stop distance | **derive after the geometry re-fit** | must exceed braking distance at cruise |
 | Proposed slow band | **derive after the re-fit** | as above |
 
+### 4.1 The envelope is a function of OBJECT HEIGHT, not a single number
+
+A zone spans `2·d·tan(3.75°)` vertically — 39 mm at 0.30 m, 66 mm at 0.50 m, 131 mm at
+1.0 m, 262 mm at 2.0 m. An object taller than that FILLS the zone, and fill fraction is
+what detection tracks (measured across four target/range pairs):
+
+| class | height | fills a zone out to | measured |
+|---|---|---|---|
+| **rail-class** | ~5 cm | **~0.38 m** | 83% fill at 0.46 m → 15-45% of frames; 39% fill at 0.98 m → ~1% |
+| **box-class** | ~15-25 cm | **~1.1-1.9 m** | 216% fill at 0.885 m → **100% of frames** |
+| **wall-class** | fills always | full range | **100%**, 992 mm vs 994 tape |
+
+**So "0.3-0.5 m" is the RAIL-class envelope, and quoting it as the sensor's is the
+mistake this table exists to prevent.** Anything taller than ~13 cm fills a zone at a
+metre and is seen as reliably as the wall was. The weak class is the smallest one —
+and that is also the class the freeze/escape machinery already handles by touch, which
+is what makes the trade survivable rather than merely accepted.
+
+**THE GAP THIS EXPOSES, and it is not yet built.** Rules (i) and (ii) are FLOOR rules:
+one compares against modelled floor, the other fires in the band where floor cannot
+return. A box-class object at 1 m sits at or just ABOVE the horizon (a 13 cm object at
+1.0 m subtends +1.7°, which is row 4) — where neither rule applies. §3.2 recommended
+absolute proximity there and stage (i) did NOT implement it, deliberately, because the
+obvious version does not work: **at 1 m a 13 cm object and a wall read the same
+distance in the same zone.** Absolute proximity cannot tell them apart, and firing on
+both means braking at every wall.
+
+The promising answer is not a learned background but a LIVE one: **the lidar already
+knows where the walls are.** A ToF return at 0.9 m in a bearing where the lidar reports
+open space to 3 m is, by construction, something below the lidar plane — which is
+exactly the definition of the obstacle class this sensor exists for. That is sensor
+fusion rather than memory, its background comes from a sensor we trust, and its failure
+mode is loss of sensitivity rather than a phantom.
+
+**It is written here and NOT built**, because it is a new rule in a reviewed design and
+belongs in the next review rather than smuggled into stage (i). Stage (ii)'s recordings
+will show how often it would have mattered.
+
 **(F) = gated on the v1.3 firmware retest.** If the true rate is 40% rather than 15%,
 detector windows shorten and the usable envelope grows; if it is genuinely 15%, the
 comparison rule of §3 is doing nearly all the work and the design must say so.
@@ -325,6 +363,18 @@ relitigated quietly by whoever is next in this file.
 **Stage (ii)'s steering-degradation measurement therefore stays**, and changes purpose:
 it is no longer deciding whether to swap, it is the evidence for whether the accepted
 cost is the cost we thought it was.
+
+**CORRECTION AND RE-CONFIRMATION, 2026-08-14.** After the design was approved, stage
+(i)'s revert-proof falsified the claim that the comparison rule would buy back the
+0.5-1.2 m band (§7, proof 5 — 0 of 40 recorded frames, because that 100% figure came
+from comparing against a WALL, which is the learned background §3.2(b) rejects). The
+corrected cost went back to Scott, who re-confirmed: *"Go ahead with camera removal.
+Do your best with the ToF. Note you should be able to use it for most objects."*
+
+**And his note is right, which the first correction over-stated in the other
+direction.** The 0.3-0.5 m limit belongs to the 5 cm RAIL CLASS, not to the sensor.
+See §4.1 — object height sets the envelope, and most things this rover meets are not
+5 cm tall.
 
 ---
 
