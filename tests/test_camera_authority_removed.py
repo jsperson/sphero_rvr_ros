@@ -25,15 +25,32 @@ SUPERVISOR = ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py"
 CONTROLLER = ROOT / "src" / "sphero_rvr_driver" / "decisive_controller_node.py"
 
 
-def test_the_deployed_config_disables_the_low_obstacle_brake():
-    """THE DEPLOYED YAML, not the dataclass default. Thirteen fields once differed
-    between the two and a verdict flipped depending on which was read."""
+def test_the_camera_CLOUD_does_not_feed_the_brake_or_the_veto():
+    """THE PROPERTY, NOT THE MECHANISM -- and this test had to be rewritten to say so.
+
+    Its first version asserted `low_obstacle_brake_enable: false`, which was how the
+    camera lost authority on 2026-08-13. Hours later the ToF took the slot and the layer
+    was re-enabled, so the test failed while the property it exists to protect was
+    perfectly intact. A test pinned to the mechanism of the day fails on the next
+    correct change and passes on the next wrong one.
+
+    What must stay true regardless of mechanism: the supervisor does not consume
+    /camera/low_obstacles. Whether that is achieved by disabling the layer or by
+    pointing it elsewhere is an implementation detail.
+
+    THE DEPLOYED YAML, not the dataclass default -- thirteen fields once differed
+    between those two and a verdict flipped depending on which was read.
+    """
     text = SUPERVISOR_CFG.read_text()
-    m = re.search(r"^\s*low_obstacle_brake_enable:\s*(\w+)", text, re.M)
-    assert m, "low_obstacle_brake_enable is not set in the deployed config at all"
-    assert m.group(1) == "false", (
-        f"the deployed supervisor config has low_obstacle_brake_enable: {m.group(1)} -- "
-        "the camera still brakes and still vetoes pivots on an unmeasured mount")
+    topic = re.search(r"^\s*low_obstacle_topic:\s*(\S+)", text, re.M)
+    enable = re.search(r"^\s*low_obstacle_brake_enable:\s*(\w+)", text, re.M)
+    assert topic and enable, "the low-obstacle layer's config is missing"
+    feeds_camera = (topic.group(1) == "/camera/low_obstacles"
+                    and enable.group(1) == "true")
+    assert not feeds_camera, (
+        "the supervisor is consuming /camera/low_obstacles again. The mount is "
+        "unmeasured -- Scott: 'any feedback would be terrible' -- so its cloud must not "
+        "reach the brake or the pivot veto by any route")
 
 
 def test_disabling_the_brake_also_disables_the_PIVOT_VETO():
@@ -69,20 +86,23 @@ def test_the_camera_NODE_still_runs():
     assert (ROOT / "launch" / "camera.launch.py").exists(), (
         "the camera launch was removed; Scott's direction was that its FEEDBACK must "
         "not guide the rover, not that the camera comes off the robot")
-    assert "low_obstacle_topic: /camera/low_obstacles" in SUPERVISOR_CFG.read_text(), (
-        "the topic was repointed or blanked in the same change that disabled the layer; "
-        "keep them separate so 'camera removed' and 'ToF given authority' stay two "
-        "reviewable steps")
+    assert "/camera/low_obstacles" in (ROOT / "src" / "sphero_rvr_driver"
+                                      / "low_obstacle_node.py").read_text(), (
+        "the camera's low-obstacle node no longer publishes its cloud; authority was "
+        "meant to be removed, not the sensor. Track 2 uses it, its recording is still "
+        "evidence, and its cloud is what will timestamp when the mount moved")
 
 
-def test_what_still_protects_the_rover_is_written_down():
-    """A batch that removes a protection has to say what remains, in the file a future
-    reader opens -- not only in a commit message they will not find."""
+def test_the_configs_limits_are_written_down_beside_it():
+    """A layer with a gated half has to say so in the file a future reader opens, not
+    only in a commit message they will never find. When this layer was DISABLED the same
+    test demanded it name what still protected the rover; now that it is live, it must
+    name what is still unmeasured. Same rule, opposite state."""
     cfg = SUPERVISOR_CFG.read_text()
-    block = cfg[cfg.index("low_obstacle_brake_enable"):]
-    block = cfg[max(0, cfg.index("low_obstacle_brake_enable") - 2000):
-                cfg.index("low_obstacle_brake_enable")]
-    for phrase in ("NO SUB-LIDAR PROTECTION", "lidar core", "escape ladder"):
+    i = cfg.index("low_obstacle_brake_enable")
+    block = cfg[max(0, i - 2500):i + 2500]
+    for phrase in ("RULE B IS GATED OFF", "bench item J", "rule_a_only"):
         assert phrase.lower() in block.lower(), (
-            f"the config does not say {phrase!r} where the layer is disabled; a reader "
-            "finding brake_enable=false has no way to learn what still protects the robot")
+            f"the config does not say {phrase!r} beside the layer it governs. A reader "
+            "finding this enabled must be able to learn, without leaving the file, which "
+            "rules are actually live and what is still unmeasured")

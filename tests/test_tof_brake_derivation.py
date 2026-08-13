@@ -24,6 +24,19 @@ from sphero_rvr_core.tof_frame import (  # noqa: E402
 
 CFG = Path(__file__).resolve().parents[1] / "config" / "collision_stop.yaml"
 
+_CITATION = re.compile(
+    r"^\s*#\s*RULE B PINNED BY:\s*(?!<|\.\.\.|$)(\S[^\n]{7,})", re.M)
+"""A citation must NAME something.
+
+The first version matched the bare token, so the config's OWN SENTENCE explaining the
+requirement satisfied it -- prose defeating the guard it described. Anyone could have
+enabled rule B and passed, because the explanatory comment was already there.
+
+It must now carry at least eight characters of real content and must not be a
+`<placeholder>` or an ellipsis. Second phantom-guard defect in this file's short life;
+the first cited a flag that did not exist. Guards need their own adversary.
+"""
+
 
 def _yaml_float(name):
     m = re.search(rf"^\s*{name}:\s*([0-9.]+)", CFG.read_text(), re.M)
@@ -139,7 +152,7 @@ def test_rule_b_authority_requires_a_pinning_citation():
     # nobody may act on. So the citation is checked here and the gate itself in
     # TofConfig, which is the thing that actually decides.
     if topic.group(1) == "/tof/obstacles" and enable.group(1) == "true":
-        pinned = re.search(r"^\s*#\s*RULE B PINNED BY:", text, re.M)
+        pinned = _CITATION.search(text)
         assert pinned or not TofConfig().rule_b_enable, (
             "the ToF has brake authority with rule B ENABLED and no pinning citation. "
             "Rule A alone is fine to fly (design 11.3); rule B is not, while its margin "

@@ -94,44 +94,51 @@ lidar_collision_stop_supervisor:
     # reverse/turn), and only acts on a fresh cloud, so a dead or disabled source
     # leaves lidar behaviour unchanged.
     #
-    # DISABLED 2026-08-13 ON SCOTT'S DIRECTION. Verbatim: "I thought we removed the
-    # camera as a guide. It isn't mounted properly so any feedback would be
-    # terrible." The camera mount moved -- most likely during the ToF mount work --
-    # and a monocular floor-projection reports distances that depend entirely on its
-    # aim, so this layer was feeding wrong numbers into the brake AND the pivot veto
-    # for every mission since the mount moved.
+    # WIRED TO THE ToF, 2026-08-13. The camera lost this slot the same day (its mount
+    # moved and its aim is unmeasured -- Scott: "any feedback would be terrible"). The
+    # ToF measures range directly, so nothing here depends on a mount aim being right.
     #
-    # THIS LEAVES NO SUB-LIDAR PROTECTION, and that is the honest state of the robot
-    # rather than an oversight. What still protects it: the lidar core (untouched),
-    # and freeze/touch detection plus the escape ladder, which were built for exactly
-    # the obstacle class no sensor can see. The ToF takes this slot in the next batch;
-    # it is deliberately NOT wired here, so that "camera removed" and "ToF given
-    # authority" are two reviewable changes and not one.
+    # RULE B IS GATED OFF (TofConfig.rule_b_enable = False) until bench item J pins its
+    # disagreement margin against a synchronised /scan. Rule A flies without J; rule B
+    # does not. /tof/state reports rules=rule_a_only so a recording can never be
+    # misread as B-protected. Flipping the gate requires a pinning citation on its own
+    # comment line here, in the form enforced by tests/test_tof_brake_derivation.py --
+    # the exact token is deliberately not written out in this sentence, because a guard
+    # that a mere MENTION satisfies is a guard that prose can defeat.
+    low_obstacle_brake_enable: true
+    low_obstacle_topic: /tof/obstacles
+    # EVERY DISTANCE BELOW IS RE-DERIVED FOR THIS SENSOR. The camera's 0.50/0.70/0.40/
+    # 1.20 came from ITS blind zone and mean nothing here -- carrying them over would
+    # have set a stop distance 0.20 m beyond anything the ToF can see.
     #
-    # `false` rather than deleting the code: the same disabled path is what a stale
-    # or dead cloud already produces, so this exercises a route that is tested
-    # (revert-proofs 1-2) instead of creating a new one.
-    low_obstacle_brake_enable: false
-    low_obstacle_topic: /camera/low_obstacles
-    # Stop while the obstacle is still reliably visible: the up-tilted low camera
-    # cannot see the floor closer than ~0.45 m, so stop at 0.50 (not the lidar's
-    # 0.12) or a low obstacle would slip into the blind zone before the stop.
-    low_obstacle_stop_distance_m: 0.50
-    low_obstacle_slow_distance_m: 0.70
-    # Fallback cone (used only when low_obstacle_swept_path is false). 21 deg, not 25:
-    # the lens only reaches 21 deg to the RIGHT (38 deg left, measured), so a
-    # symmetric 25 deg cone claims ground the camera cannot see. A safety check
-    # must not assert coverage it lacks. The swept-path check has no such issue --
-    # it can only ever match points the camera actually reported.
-    low_obstacle_half_angle_deg: 21.0
-    low_obstacle_min_range_m: 0.40
-    low_obstacle_max_range_m: 1.20
+    # Detection reach with rule A alone is 0.298 m of ground range: row 4's floor reads
+    # 0.434 m and the 0.12 m floor margin sits between the floor and the trigger
+    # (design 11.1). The rover must physically stop within footprint_front 0.11 +
+    # payload_margin 0.02 + braking 0.02..0.045 = 0.150..0.175 m from base_link.
+    #
+    # 0.20 m sits above the conservative 0.175 m requirement and 0.098 m inside the
+    # 0.298 m detection -- about half a second of approach at the 0.20 m/s cruise, and
+    # 0.09 m clear of the physical nose. It is deliberately NOT pushed nearer the
+    # detection limit: the floor margin it depends on is still provisional until the
+    # in-flight pitch envelope is measured (design 3.3).
+    low_obstacle_stop_distance_m: 0.20
+    # Engages the moment anything is detectable at all, so the rover is already slowing
+    # through the whole approach rather than braking flat from cruise.
+    low_obstacle_slow_distance_m: 0.30
+    # Symmetric +-30 deg: this sensor's field, not the camera's lopsided lens. Used only
+    # when swept_path is false.
+    low_obstacle_half_angle_deg: 30.0
+    # The nearest ground range the sensor can report at this geometry is 0.052 m; 0.08
+    # keeps a margin above it rather than trusting the very edge of the field.
+    low_obstacle_min_range_m: 0.08
+    # Covers rule B's 0.498 m reach so that pinning B needs no second change here.
+    # Nothing is published beyond rule A's 0.298 m while B is gated.
+    low_obstacle_max_range_m: 0.55
     low_obstacle_min_forward_scale: 0.60
-    low_obstacle_max_age_s: 0.6
-    # Check the ARC actually commanded, not a fixed cone ahead. A differential
-    # drive turning left pivots about a centre to its left, so the RIGHT flank
-    # leads and sweeps ground the nose never covers -- a straight-ahead cone reads
-    # CLEAR while the flank hits a chair leg (observed 2026-08-06). half_width is
-    # the robot half-width plus a small margin.
+    # ~2 frames at the measured 6.5-7.6 Hz. 0.6 s (the camera's, at 5 Hz) would allow
+    # 0.12 m of travel on stale data against a 0.098 m approach window -- more than the
+    # margin it is supposed to protect. 0.30 s is 0.06 m.
+    low_obstacle_max_age_s: 0.30
+    # Robot geometry, sensor-independent: unchanged from the camera era.
     low_obstacle_swept_path: true
     low_obstacle_half_width_m: 0.16
