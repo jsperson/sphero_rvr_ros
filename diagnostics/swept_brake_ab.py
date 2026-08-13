@@ -4,7 +4,7 @@ misses during a turn?  (Regression test for the chair-leg fix.)
 Place a LOW obstacle roughly 0.55 m ahead and 0.30 m to one side (~30 deg) -- outside
 the 21 deg fallback cone but inside the camera's 38 deg left FOV, so the two logics
 genuinely disagree. Run once as-is, then restart the supervisor with
-`-p camera_swept_path:=false` and run again.
+`-p low_obstacle_swept_path:=false` and run again.
 
 Expected (measured 2026-08-06): swept catches it on the left arcs (scale ~0.68-0.70)
 while the cone never sees it at all (stays 1.00). Straight ahead, a too-tight arc and

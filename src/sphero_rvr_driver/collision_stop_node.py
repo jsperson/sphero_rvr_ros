@@ -203,7 +203,7 @@ def main(args=None):
             # on a stale cloud, so that is the sub-lidar protection silently off.
             # This callback takes no state lock, so it is safe to run in parallel
             # with the arbitration path.
-            self._camera_group = ReentrantCallbackGroup()
+            self._low_obstacle_group = ReentrantCallbackGroup()
             now = self._now_seconds()
             self._supervisor = CollisionStopSupervisor(self._config, now=now)
             self._tf_buffer = Buffer()
@@ -213,21 +213,21 @@ def main(args=None):
             # Camera low-obstacle brake (additive; can only slow/stop forward motion,
             # never speeds it up, never touches reverse/rotation, and only acts on a
             # fresh cloud so a dead camera leaves the lidar behaviour unchanged).
-            self._cam_enable = bool(self.get_parameter("camera_brake_enable").value)
-            self._cam_half_angle = math.radians(float(self.get_parameter("camera_half_angle_deg").value))
-            self._cam_stop_m = float(self.get_parameter("camera_stop_distance_m").value)
-            self._cam_slow_m = float(self.get_parameter("camera_slow_distance_m").value)
-            self._cam_min_r = float(self.get_parameter("camera_min_range_m").value)
-            self._cam_max_r = float(self.get_parameter("camera_max_range_m").value)
-            self._cam_min_scale = float(self.get_parameter("camera_min_forward_scale").value)
-            self._cam_max_age = float(self.get_parameter("camera_max_age_s").value)
-            self._cam_swept = bool(self.get_parameter("camera_swept_path").value)
-            self._cam_half_width = float(self.get_parameter("camera_half_width_m").value)
-            self._cam_lock = threading.Lock()
-            self._cam_points: list = []
-            self._cam_stamp: Optional[float] = None
-            self._cam_nearest: Optional[float] = None
-            self._cam_scale: float = 1.0
+            self._lowobs_enable = bool(self.get_parameter("low_obstacle_brake_enable").value)
+            self._lowobs_half_angle = math.radians(float(self.get_parameter("low_obstacle_half_angle_deg").value))
+            self._lowobs_stop_m = float(self.get_parameter("low_obstacle_stop_distance_m").value)
+            self._lowobs_slow_m = float(self.get_parameter("low_obstacle_slow_distance_m").value)
+            self._lowobs_min_r = float(self.get_parameter("low_obstacle_min_range_m").value)
+            self._lowobs_max_r = float(self.get_parameter("low_obstacle_max_range_m").value)
+            self._lowobs_min_scale = float(self.get_parameter("low_obstacle_min_forward_scale").value)
+            self._lowobs_max_age = float(self.get_parameter("low_obstacle_max_age_s").value)
+            self._lowobs_swept = bool(self.get_parameter("low_obstacle_swept_path").value)
+            self._lowobs_half_width = float(self.get_parameter("low_obstacle_half_width_m").value)
+            self._lowobs_lock = threading.Lock()
+            self._lowobs_points: list = []
+            self._lowobs_stamp: Optional[float] = None
+            self._lowobs_nearest: Optional[float] = None
+            self._lowobs_scale: float = 1.0
 
             requested_cmd_topic = str(self.get_parameter("requested_cmd_topic").value)
             motor_cmd_topic = str(self.get_parameter("motor_cmd_topic").value)
@@ -249,10 +249,10 @@ def main(args=None):
             )
             self.create_subscription(
                 PointCloud2,
-                str(self.get_parameter("camera_obstacle_topic").value),
-                self._on_camera_cloud,
+                str(self.get_parameter("low_obstacle_topic").value),
+                self._on_low_obstacle_cloud,
                 qos_profile_sensor_data,
-                callback_group=self._camera_group,
+                callback_group=self._low_obstacle_group,
             )
 
             self._driver_stop_client = self.create_client(
@@ -339,19 +339,19 @@ def main(args=None):
                 "tf_timeout_s": defaults.tf_timeout_s,
                 "requested_cmd_timeout_s": defaults.requested_cmd_timeout_s,
                 # Camera low-obstacle brake (node-level, additive to the lidar core).
-                "camera_brake_enable": True,
-                "camera_obstacle_topic": "/camera/low_obstacles",
-                "camera_stop_distance_m": 0.50,  # >= camera near-vision limit (~0.45 m)
-                "camera_slow_distance_m": 0.70,
-                "camera_half_angle_deg": 25.0,
-                "camera_min_range_m": 0.40,  # below this the monocular detector is unreliable
-                "camera_max_range_m": 1.20,
-                "camera_min_forward_scale": 0.60,  # slow-band floor; avoid sub-breakaway creep
-                "camera_max_age_s": 0.6,  # stale cloud -> no camera limit (lidar-only)
+                "low_obstacle_brake_enable": True,
+                "low_obstacle_topic": "/camera/low_obstacles",
+                "low_obstacle_stop_distance_m": 0.50,  # >= camera near-vision limit (~0.45 m)
+                "low_obstacle_slow_distance_m": 0.70,
+                "low_obstacle_half_angle_deg": 25.0,
+                "low_obstacle_min_range_m": 0.40,  # below this the monocular detector is unreliable
+                "low_obstacle_max_range_m": 1.20,
+                "low_obstacle_min_forward_scale": 0.60,  # slow-band floor; avoid sub-breakaway creep
+                "low_obstacle_max_age_s": 0.6,  # stale cloud -> no camera limit (lidar-only)
                 # Swept-path check: use the arc actually commanded instead of a fixed
                 # cone. half_width is the robot half-width plus a little margin.
-                "camera_swept_path": True,
-                "camera_half_width_m": 0.16,
+                "low_obstacle_swept_path": True,
+                "low_obstacle_half_width_m": 0.16,
             }.items():
                 self.declare_parameter(name, value)
 
@@ -449,7 +449,7 @@ def main(args=None):
                 )
                 self._publish_decision(decision)
 
-        def _on_camera_cloud(self, msg):
+        def _on_low_obstacle_cloud(self, msg):
             try:
                 pts = [
                     (float(p[0]), float(p[1]))
@@ -457,11 +457,11 @@ def main(args=None):
                 ]
             except Exception:
                 pts = []
-            with self._cam_lock:
-                self._cam_points = pts
-                self._cam_stamp = self._now_seconds()
+            with self._lowobs_lock:
+                self._lowobs_points = pts
+                self._lowobs_stamp = self._now_seconds()
 
-        def _camera_blocks_pivot(self, pts, cloud_age):
+        def _low_obstacle_blocks_pivot(self, pts, cloud_age):
             """True when a FRESH camera cloud has a point inside the swept circle.
 
             Same geometry as the supervisor's pivot gate: the circumscribed corner
@@ -475,9 +475,9 @@ def main(args=None):
             straddle a cloud arrival, and then the state line disagrees with what the
             veto actually saw.
             """
-            if not self._cam_enable:
+            if not self._lowobs_enable:
                 return False
-            if cloud_age is None or cloud_age > self._cam_max_age or not pts:
+            if cloud_age is None or cloud_age > self._lowobs_max_age or not pts:
                 return False
             radius = math.hypot(
                 max(float(self.get_parameter("footprint_front_m").value),
@@ -490,7 +490,7 @@ def main(args=None):
                     return True
             return False
 
-        def _apply_camera_brake(self, linear_x, angular_z, now):
+        def _apply_low_obstacle_brake(self, linear_x, angular_z, now):
             """Additive forward limit from a FRESH camera low-obstacle cloud. Returns
             (limited_linear_x, nearest_m, scale). Only reduces positive forward speed;
             reverse/zero and a stale/absent cloud pass through unchanged (lidar-only).
@@ -500,23 +500,23 @@ def main(args=None):
             side, so the flank leads and sweeps ground the nose never covers. A
             straight-ahead cone reports CLEAR while the flank hits a chair leg.
             """
-            if not self._cam_enable or linear_x <= 0.0:
+            if not self._lowobs_enable or linear_x <= 0.0:
                 return linear_x, None, 1.0
-            with self._cam_lock:
-                pts = self._cam_points
-                stamp = self._cam_stamp
-            if stamp is None or (now - stamp) > self._cam_max_age:
+            with self._lowobs_lock:
+                pts = self._lowobs_points
+                stamp = self._lowobs_stamp
+            if stamp is None or (now - stamp) > self._lowobs_max_age:
                 return linear_x, None, 1.0
-            if self._cam_swept:
+            if self._lowobs_swept:
                 nearest = swept_path_obstacle(
-                    pts, linear_x, angular_z, self._cam_half_width,
-                    self._cam_min_r, self._cam_max_r,
+                    pts, linear_x, angular_z, self._lowobs_half_width,
+                    self._lowobs_min_r, self._lowobs_max_r,
                 )
             else:
                 nearest = nearest_forward_obstacle(
-                    pts, self._cam_half_angle, self._cam_min_r, self._cam_max_r
+                    pts, self._lowobs_half_angle, self._lowobs_min_r, self._lowobs_max_r
                 )
-            scale = forward_speed_scale(nearest, self._cam_stop_m, self._cam_slow_m, self._cam_min_scale)
+            scale = forward_speed_scale(nearest, self._lowobs_stop_m, self._lowobs_slow_m, self._lowobs_min_scale)
             return linear_x * scale, nearest, scale
 
         def _on_timer(self):
@@ -567,10 +567,10 @@ def main(args=None):
             if not self._context_ok():
                 return
             msg = Twist()
-            cam_linear, cam_nearest, cam_scale = self._apply_camera_brake(
+            cam_linear, cam_nearest, cam_scale = self._apply_low_obstacle_brake(
                 decision.output.linear_x, decision.output.angular_z, self._now_seconds()
             )
-            self._cam_nearest, self._cam_scale = cam_nearest, cam_scale
+            self._lowobs_nearest, self._lowobs_scale = cam_nearest, cam_scale
             msg.linear.x = cam_linear
             msg.angular.z = decision.output.angular_z
             # A PIVOT is the one motion the camera used to be blind to. The forward
@@ -582,15 +582,15 @@ def main(args=None):
             # camera point inside that circle blocks the turn.
             # ONE snapshot of the cloud feeds both the veto and the telemetry, so
             # the state line reports exactly what the veto judged.
-            with self._cam_lock:
-                cam_pts = self._cam_points
-                cam_stamp = self._cam_stamp
+            with self._lowobs_lock:
+                cam_pts = self._lowobs_points
+                cam_stamp = self._lowobs_stamp
             cam_cloud_age = (
                 None if cam_stamp is None else self._now_seconds() - cam_stamp
             )
             pivot_veto = False
             if msg.linear.x == 0.0 and msg.angular.z != 0.0:
-                pivot_veto = self._camera_blocks_pivot(cam_pts, cam_cloud_age)
+                pivot_veto = self._low_obstacle_blocks_pivot(cam_pts, cam_cloud_age)
                 if pivot_veto:
                     msg.angular.z = 0.0
             self._cmd_pub.publish(msg)
@@ -635,7 +635,7 @@ def main(args=None):
             )
             self._state_pub.publish(state)
             event_text = f"{decision.state.value} {decision.reason}"
-            if self._cam_enable and cam_scale < 1.0:
+            if self._lowobs_enable and cam_scale < 1.0:
                 event_text += f" +CAMERA_LOW_OBSTACLE_{'STOP' if cam_scale == 0.0 else 'SLOW'}@{cam_nearest:.2f}m"
             if event_text != self._last_event:
                 event = String()

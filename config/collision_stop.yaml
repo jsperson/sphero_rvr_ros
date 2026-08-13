@@ -93,27 +93,27 @@ lidar_collision_stop_supervisor:
     # shoe, a floor cable), from the height-gated /camera/low_obstacles cloud. It
     # can ONLY slow/stop forward motion (never reverse/turn), and only acts on a
     # fresh cloud, so a camera that is off or dead leaves lidar behaviour unchanged.
-    camera_brake_enable: true
-    camera_obstacle_topic: /camera/low_obstacles
+    low_obstacle_brake_enable: true
+    low_obstacle_topic: /camera/low_obstacles
     # Stop while the obstacle is still reliably visible: the up-tilted low camera
     # cannot see the floor closer than ~0.45 m, so stop at 0.50 (not the lidar's
     # 0.12) or a low obstacle would slip into the blind zone before the stop.
-    camera_stop_distance_m: 0.50
-    camera_slow_distance_m: 0.70
-    # Fallback cone (used only when camera_swept_path is false). 21 deg, not 25:
+    low_obstacle_stop_distance_m: 0.50
+    low_obstacle_slow_distance_m: 0.70
+    # Fallback cone (used only when low_obstacle_swept_path is false). 21 deg, not 25:
     # the lens only reaches 21 deg to the RIGHT (38 deg left, measured), so a
     # symmetric 25 deg cone claims ground the camera cannot see. A safety check
     # must not assert coverage it lacks. The swept-path check has no such issue --
     # it can only ever match points the camera actually reported.
-    camera_half_angle_deg: 21.0
-    camera_min_range_m: 0.40
-    camera_max_range_m: 1.20
-    camera_min_forward_scale: 0.60
-    camera_max_age_s: 0.6
+    low_obstacle_half_angle_deg: 21.0
+    low_obstacle_min_range_m: 0.40
+    low_obstacle_max_range_m: 1.20
+    low_obstacle_min_forward_scale: 0.60
+    low_obstacle_max_age_s: 0.6
     # Check the ARC actually commanded, not a fixed cone ahead. A differential
     # drive turning left pivots about a centre to its left, so the RIGHT flank
     # leads and sweeps ground the nose never covers -- a straight-ahead cone reads
     # CLEAR while the flank hits a chair leg (observed 2026-08-06). half_width is
     # the robot half-width plus a small margin.
-    camera_swept_path: true
-    camera_half_width_m: 0.16
+    low_obstacle_swept_path: true
+    low_obstacle_half_width_m: 0.16

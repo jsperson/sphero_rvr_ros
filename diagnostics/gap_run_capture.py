@@ -4,7 +4,7 @@ The 2026-08-08 regression ("stopping in the narrowest point", "fighting itself")
 two candidate sources, both fed by the same camera cloud: the collision brake and the
 costmap obstacle layer. Telling them apart needs the SAME maneuver measured twice --
 Arm A with the brake on, Arm B with the supervisor restarted `-p
-camera_brake_enable:=false` (marks still in the costmap, brake inert).
+low_obstacle_brake_enable:=false` (marks still in the costmap, brake inert).
 
 Usage (on the Pi, motion stack up, ATTENDED):
     python3 gap_run_capture.py A --forward 2.0            # goal 2.0 m straight ahead
