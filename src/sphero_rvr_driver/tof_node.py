@@ -24,19 +24,29 @@ NEW seam for this stack, which is why `~/state` reports read errors rather than 
 silence be mistaken for clear floor.
 """
 
+import dataclasses
 import math
+import sys
 import threading
 import time
 
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
-from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from std_msgs.msg import String
+import tf2_ros
 from tf2_ros import StaticTransformBroadcaster
 
+# The supervisor's planar scan transform, imported rather than re-derived. It is
+# tested, it already handles the ~179 deg laser yaw, and a second implementation of
+# the same arithmetic is how two consumers come to disagree about where a return is.
+# IMPORTING does not modify the safety path -- collision_stop.py's diffstat stays empty.
+from sphero_rvr_driver.collision_stop import Transform2D
+
 from sphero_rvr_core.tof_frame import (
-    ObstacleDetector, TofConfig, ZONES, N_ZONES, valid_mm, zone_point,
+    ObstacleDetector, TofConfig, ZONES, N_ZONES, rule_a_rows, scan_min_by_column,
+    valid_mm, zone_point,
 )
 
 
@@ -66,6 +76,12 @@ class TofNode(Node):
         super().__init__("tof")
         self.declare_parameter("i2c_address", 0x33)
         self.declare_parameter("i2c_bus", 1)
+        # DFRobot ships the only implementation of this sensor's packet protocol and
+        # it is not a pip package. Rather than re-deriving their framing (and owning
+        # every bug in it), the node imports theirs from a path -- named here so a
+        # missing driver is a CONFIGURATION error with an obvious fix, not an import
+        # traceback at bringup. Restoring it is in the provisioning repo's manifest.
+        self.declare_parameter("driver_path", "/home/jsperson/tof_smoke")
         self.declare_parameter("frame_id", "tof_link")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("publish_rate_hz", 10.0)   # poll faster than the ~7.6 Hz sensor
@@ -88,6 +104,18 @@ class TofNode(Node):
         self.declare_parameter("reports_z", True)
         self.declare_parameter("floor_margin_m", 0.12)
         self.declare_parameter("floor_horizon_m", 0.55)
+        # Rule A's authority bound. NOT the visibility horizon above -- keeping those
+        # two apart is the whole content of design note 9.1.
+        self.declare_parameter("stop_distance_m", 0.45)
+        # Rule B: the lidar as a live background (design 9.3). The margin is UNPINNED --
+        # no synchronised /scan has ever been recorded beside this sensor, and bench
+        # item J exists to fix that. Until it does, ~/state says so on every line.
+        self.declare_parameter("scan_topic", "/scan")
+        self.declare_parameter("disagreement_margin_m", 0.10)
+        # Matches the supervisor's own scan-staleness bound, deliberately: two different
+        # answers to "is this scan usable" is two components disagreeing about reality.
+        self.declare_parameter("max_scan_age_s", 0.30)
+        self.declare_parameter("laser_frame", "laser")
 
         _p = self.get_parameter
         self._frame_id = str(_p("frame_id").value)
@@ -100,6 +128,8 @@ class TofNode(Node):
             reports_z=bool(_p("reports_z").value),
             floor_margin_m=float(_p("floor_margin_m").value),
             floor_horizon_m=float(_p("floor_horizon_m").value),
+            stop_distance_m=float(_p("stop_distance_m").value),
+            disagreement_margin_m=float(_p("disagreement_margin_m").value),
         )
         self._detector = ObstacleDetector(self._cfg)
 
@@ -122,6 +152,17 @@ class TofNode(Node):
         t.transform.rotation.w = math.cos(pitch / 2.0)
         self._tf.sendTransform(t)
 
+        # Rule B's inputs. The lidar plane height comes from TF, never from a constant:
+        # `lidar_plane_m`'s default in TofConfig exists only so the pure core runs in a
+        # test, and using it here would be the N1 defect in a new place.
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self._scan = None                 # (monotonic_at, Transform2D, bearings, ranges)
+        self._scan_reason = "no_scan_yet"
+        self._lidar_plane_m = None
+        self.create_subscription(
+            LaserScan, str(_p("scan_topic").value), self._on_scan, 5)
+
         self._lock = threading.Lock()
         self._sensor = None
         self._read_errors = 0
@@ -139,11 +180,87 @@ class TofNode(Node):
             "NOTHING CONSUMES THESE YET (stage i)."
         )
 
+    def _on_scan(self, msg: LaserScan):
+        """Keep the freshest scan, already in ROBOT bearings.
+
+        Transforming HERE rather than at use means the ~179 deg laser yaw is applied
+        exactly once, by the same tested primitive the supervisor uses. `scan_min_by_column`
+        downstream takes bearings and believes them -- it has no way to notice a mirror,
+        which is why the mirror has to be impossible rather than merely unlikely.
+        """
+        transform, reason = self._lookup_scan_transform(msg.header.frame_id)
+        if transform is None:
+            with self._lock:
+                self._scan, self._scan_reason = None, reason
+            return
+        bearings, ranges = [], []
+        angle = msg.angle_min
+        for r in msg.ranges:
+            if math.isfinite(r) and msg.range_min <= r <= msg.range_max:
+                x, y = transform.transform_point(r * math.cos(angle), r * math.sin(angle))
+                bearings.append(math.atan2(y, x))
+                ranges.append(math.hypot(x, y))
+            angle += msg.angle_increment
+        with self._lock:
+            self._scan = (time.monotonic(), bearings, ranges)
+            self._scan_reason = "ok"
+
+    def _lookup_scan_transform(self, frame_id: str):
+        """(Transform2D, reason). Also latches the lidar's PLANE HEIGHT from the same
+        lookup -- rule B's applicability test needs it and TF is where it lives."""
+        if not frame_id:
+            return None, "no_scan_frame"
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._base_frame, frame_id, rclpy.time.Time())
+        except Exception as exc:                       # noqa: BLE001 - reported, not raised
+            self.get_logger().warn(f"tof: no TF {self._base_frame}<-{frame_id}: {exc}",
+                                   throttle_duration_sec=10.0)
+            return None, "no_tf"
+        q = tf.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._lidar_plane_m = float(tf.transform.translation.z)
+        return Transform2D(x=float(tf.transform.translation.x),
+                           y=float(tf.transform.translation.y), yaw=yaw), "ok"
+
+    def _background(self):
+        """(column_min, reason) for rule B, or (None, reason) when it is UNAVAILABLE.
+
+        Unavailable is not "clear" and not "blocked" -- design 9.6. Rule B can only ADD
+        obstacles, so returning None can only lose sensitivity; it cannot invent a brake.
+        Note also what the supervisor is doing during case (1): a scan this stale is
+        already SENSOR_STALE over there and the robot is stopping anyway. The requirement
+        here is only that this node not manufacture a conclusion in the meantime.
+        """
+        with self._lock:
+            scan, reason = self._scan, self._scan_reason
+        if scan is None:
+            return None, reason
+        at, bearings, ranges = scan
+        age = time.monotonic() - at
+        if age > float(self.get_parameter("max_scan_age_s").value):
+            return None, "stale_scan"
+        if self._lidar_plane_m is None:
+            return None, "no_lidar_plane"
+        return scan_min_by_column(bearings, ranges, self._effective_cfg()), "ok"
+
+    def _effective_cfg(self) -> TofConfig:
+        """The config with the lidar plane height TF actually reported. Rebuilt rather
+        than mutated because TofConfig is frozen, and frozen is what stops a stray
+        assignment somewhere from quietly redefining the geometry mid-run."""
+        if self._lidar_plane_m is None:
+            return self._cfg
+        return dataclasses.replace(self._cfg, lidar_plane_m=self._lidar_plane_m)
+
     def _open_sensor(self):
         """Open the sensor, or record why not. A driver that cannot reach its hardware
         must SAY SO on ~/state rather than publishing empty clouds that read exactly
         like clear floor."""
         try:
+            path = str(self.get_parameter("driver_path").value)
+            if path and path not in sys.path:
+                sys.path.insert(0, path)
             from DFRobot_matrixLidar import DFRobot_matrixLidar_i2c
             sensor = DFRobot_matrixLidar_i2c(int(self.get_parameter("i2c_address").value))
             sensor.begin()
@@ -191,7 +308,10 @@ class TofNode(Node):
                 points.append(p)
         self._points_pub.publish(_cloud(self._base_frame, stamp, points))
 
-        result = self._detector.update(frame)
+        column_min, background_reason = self._background()
+        self._detector.retune(self._effective_cfg())   # TF owns the plane height
+        result = self._detector.update(frame, column_min)
+        result["background_reason"] = background_reason
         obstacles = []
         for row, col in result["obstacles"]:
             p = zone_point(row, col, frame[row * ZONES + col], self._cfg)
@@ -209,8 +329,10 @@ class TofNode(Node):
         elapsed = max(1e-6, time.monotonic() - self._started)
         result = getattr(self, "_last_result", None)
         obstacles = result["obstacles"] if result else []
-        rule_i = result["nearer_than_floor"] if result else []
-        rule_ii = result["confirmed_unexpected"] if result else []
+        rule_a = result["nearer_than_floor"] if result else []
+        rule_b = result["confirmed_disagreement"] if result else []
+        background = result.get("background_reason", "unknown") if result else "no_frame"
+        cfg = self._effective_cfg()
         state = String()
         state.data = (
             f"{'OK' if self._sensor is not None and age is not None and age < 1.0 else 'STALE'} "
@@ -218,7 +340,18 @@ class TofNode(Node):
             f"i2c_errors={errors} "
             f"frame_age_s={'None' if age is None else round(age, 3)} "
             f"obstacle_zones={len(obstacles)} "
-            f"rule_i_zones={len(rule_i)} rule_ii_zones={len(rule_ii)} "
+            f"rule_a_zones={len(rule_a)} rule_b_zones={len(rule_b)} "
+            # WHICH ROWS MAY CONCLUDE, every second. A recording that cannot say this
+            # cannot explain what fired -- and the row set is a function of the stop
+            # distance, so it is not derivable from the source either (design 9.2).
+            f"rule_a_rows={'|'.join(str(r) for r in rule_a_rows(cfg))} "
+            f"stop_distance_m={cfg.stop_distance_m} "
+            # Rule B's health, and its provenance. UNPINNED is not a warning about this
+            # run -- it says the margin below has no recorded data behind it at all, and
+            # stays until bench item J supplies some (design 9.8).
+            f"background={background} "
+            f"lidar_plane_m={'None' if self._lidar_plane_m is None else round(self._lidar_plane_m, 4)} "
+            f"rule_b=UNPINNED margin_m={cfg.disagreement_margin_m} "
             f"consumers=none_stage_i"
         )
         self._state_pub.publish(state)

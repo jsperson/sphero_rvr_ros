@@ -101,10 +101,38 @@ class TofConfig:
     # rules also used it to decide which rows were ALLOWED to conclude an obstacle,
     # which is a different question -- and at the level mount the two questions had the
     # same answer, so nothing said otherwise. Tilting the mount separated them and the
-    # detector reported an obstacle in 99.3% of frames. Separating the two is design
-    # note 9.1-9.2, and lands with the rules that need it.
+    # detector reported an obstacle in 99.3% of frames. Authority now belongs to
+    # `stop_distance_m` below (design note 9.1-9.2).
     floor_horizon_m: float = 0.55
 
+    # --- rule A: where the floor comparison is ALLOWED to conclude -----------------
+    # A zone may use the floor comparison only where its floor lies INSIDE this
+    # distance. The justification is the design's own rule that a brake may only use
+    # models whose errors make it stop sooner: inside this bound, "an object" and "the
+    # sub-lidar part of a wall" are both things we are about to stop for, so the
+    # comparison cannot tell them apart AND DOES NOT NEED TO. Outside it the two
+    # explanations demand opposite actions and rule A is not entitled to choose.
+    # PROVISIONAL -- the real stop distance is still underived (design note 4) and
+    # gated on the in-flight pitch envelope. Which rows this admits is therefore a
+    # FUNCTION of this number and is published on ~/state rather than hardcoded.
+    stop_distance_m: float = 0.45
+
+    # --- rule B: the lidar as a live background -----------------------------------
+    # A ToF return this much nearer than the lidar's own range at the same bearing is
+    # something the lidar cannot see -- which is the definition of the obstacle class
+    # this sensor exists for.
+    # UNPINNED. There is no recorded data behind this number: the tilt session captured
+    # 23,057 ToF frames and ZERO synchronised /scan. Bench item J (design note 9.8)
+    # pins it. Until then the node advertises rule B as UNPINNED on ~/state and it
+    # carries no authority.
+    disagreement_margin_m: float = 0.10
+    # Height of the lidar's scan plane. THE NODE OVERRIDES THIS FROM TF and this
+    # default exists only so the pure core is runnable in a test -- geometry belongs to
+    # TF, and a consumer that hardcodes a mounting height is the N1 defect wearing a
+    # different hat. Rule B applies only where the ToF ray is BELOW this plane; above
+    # it the lidar can see whatever the ToF sees, so disagreement means occlusion
+    # geometry rather than a sub-lidar object.
+    lidar_plane_m: float = 0.1905
 
 
 def zone_angles(row: int, col: int, cfg: TofConfig) -> tuple:
@@ -277,11 +305,170 @@ def nearer_than_floor(frame, cfg: TofConfig) -> list:
             continue
         # AUTHORITY FIRST, then the comparison. This zone may see floor perfectly well
         # and still not be entitled to conclude from it -- design 9.2.
-        expected = expected_floor_m(row, col, cfg)
+        if not rule_a_applies(row, col, cfg):
+            continue
+        # `_floor_reading_m`, NOT `expected_floor_m`. The latter caps at
+        # `floor_horizon_m` and returns None past it -- which is an AUTHORITY decision
+        # wearing a visibility constant's name, the exact confusion 9.1 diagnosed.
+        # Calling it here left the new bound INERT: a mutation deleting
+        # `rule_a_applies` altogether changed no test, because at a 0.45 m stop
+        # distance the 0.55 m horizon was already stricter and hid it. Authority is the
+        # line above; this line is only arithmetic.
+        expected = _floor_reading_m(row, col, cfg)
         if expected is None:
             continue
         if value / 1000.0 < expected - cfg.floor_margin_m:
             out.append((row, col))
+    return out
+
+
+def rule_a_applies(row: int, col: int, cfg: TofConfig) -> bool:
+    """Whether the floor comparison may CONCLUDE for this zone -- design note 9.2.
+
+    Computed from the geometry and the stop distance every time, never a row list. A
+    frozen row set is how `floor_horizon_m` came to be enforcing an authority boundary
+    it was never chosen for.
+    """
+    floor = _floor_reading_m(row, col, cfg)
+    return floor is not None and floor <= cfg.stop_distance_m
+
+
+def rule_a_rows(cfg: TofConfig) -> list:
+    """The rows rule A currently holds authority over, for ~/state. A recording that
+    cannot say which rows were allowed to conclude cannot explain what fired."""
+    return [r for r in range(ZONES) if any(rule_a_applies(r, c, cfg) for c in range(ZONES))]
+
+
+def standing_above_floor(row: int, col: int, value: int, cfg: TofConfig) -> bool:
+    """Is this return something standing ABOVE the ground, rather than the ground?
+
+    The shared front half of both detection rules. A zone reading within
+    `floor_margin_m` of its modelled floor is the floor; a zone reading NEARER than
+    that has something in front of it. What the two rules then do with that fact is
+    where they differ -- rule A concludes directly (inside its bound, where the answer
+    is the same either way), rule B asks the lidar (outside it, where it is not).
+
+    A row whose ray never reaches the floor has no floor to be confused with, so every
+    plausible return there is standing by definition.
+
+    THE MARGIN CUTS THE RIGHT WAY HERE. A return within the margin of modelled floor is
+    within a couple of centimetres of the ground at any of these geometries, so calling
+    it floor loses only objects thin enough that the freeze/escape machinery is the
+    thing that handles them anyway -- and a floor-model error costs sensitivity rather
+    than producing a phantom.
+    """
+    if not valid_mm(value, cfg):
+        return False
+    floor = _floor_reading_m(row, col, cfg)
+    if floor is None:
+        return True
+    return value / 1000.0 < floor - cfg.floor_margin_m
+
+
+def rule_b_applies(row: int, col: int, range_m: float, cfg: TofConfig) -> bool:
+    """Whether a return at this range is BELOW the lidar's scan plane -- design 9.3.
+
+    Above the plane the lidar sees what the ToF sees, so a disagreement there is
+    occlusion geometry, not a sub-lidar object, and rule B must stay quiet. At the
+    shipped geometry only row 0 rises, crossing at ~0.59 m.
+    """
+    if range_m <= 0.0:
+        return False
+    ux, uy, uz = zone_ray(row, col, cfg)
+    ground = math.hypot(ux, uy)
+    if ground <= 1e-9:
+        return False
+    return cfg.mount_height_m + range_m * uz / ground < cfg.lidar_plane_m
+
+
+def column_span_rad(col: int, cfg: TofConfig) -> tuple:
+    """(low, high) azimuth bounds of a column, radians, in the ROBOT frame."""
+    half = math.radians(cfg.zone_deg_h) / 2.0
+    az = math.radians(-(col - (ZONES - 1) / 2.0) * cfg.zone_deg_h)
+    return az - half, az + half
+
+
+def scan_min_by_column(bearings_rad, ranges_m, cfg: TofConfig) -> list:
+    """Minimum lidar range within each ToF column's angular span.
+
+    Bearings must ALREADY be in the robot frame -- the caller transforms them through
+    TF. The RPLIDAR's `base_link->laser` yaw is ~179 deg, so raw scan indices are very
+    nearly the mirror image of these bearings, and a rung once steered into exactly
+    that mirror image (N1). This function refuses to guess: it takes bearings and
+    believes them.
+
+    MINIMUM, not mean or max, and the choice has a direction. A ToF column spans 7.5 deg
+    against the lidar's ~1 deg, so a column straddling a doorway holds both near and far
+    returns. Taking the nearest makes disagreement HARDER to claim, so rule B's error is
+    a missed obstacle rather than a phantom brake at every corner -- deliberately the
+    OPPOSITE bias from rule A, which operates where over-caution is free.
+
+    A column with no return inside its span is `inf`, meaning OPEN TO MAX RANGE, which
+    is rule B's strongest case. That is not the same as having no scan at all, which is
+    the caller's job to signal by passing None (design 9.6).
+    """
+    out = []
+    for col in range(ZONES):
+        lo, hi = column_span_rad(col, cfg)
+        best = math.inf
+        for b, r in zip(bearings_rad, ranges_m):
+            if lo <= b <= hi and math.isfinite(r) and r > 0.0 and r < best:
+                best = r
+        out.append(best)
+    return out
+
+
+def lidar_disagreement(frame, cfg: TofConfig, column_min) -> list:
+    """RULE B, SINGLE FRAME. Zones the ToF sees NEARER than the lidar does.
+
+    `column_min` is `scan_min_by_column`'s output, or None when there is no usable
+    scan. None means UNAVAILABLE, and unavailable returns nothing -- not an obstacle
+    and not a clearance. Rule B can only ADD obstacles, so its absence can only remove
+    them; it cannot phantom-brake by being missing.
+    """
+    if column_min is None:
+        return []
+    out = []
+    for row in range(ZONES):
+        hits = []
+        for col in range(ZONES):
+            value = frame[row * ZONES + col]
+            if not plausible_for_zone(row, col, value, cfg):
+                continue
+            # THE FLOOR IS NOT AN OBSTACLE, and this line is why the rule works. The
+            # first version of rule B compared every return against the lidar and
+            # nothing else -- so on any recorded segment the FLOOR itself, which is
+            # always nearer than the wall the lidar sees, fired in 38 of 40 frames on
+            # clear floor. Only returns standing ABOVE the ground are candidates.
+            if not standing_above_floor(row, col, value, cfg):
+                continue
+            point = zone_point(row, col, value, cfg)
+            if point is None:
+                continue
+            ground = math.hypot(point[0], point[1])
+            if not rule_b_applies(row, col, ground, cfg):
+                continue
+            if ground < column_min[col] - cfg.disagreement_margin_m:
+                hits.append(col)
+        out.extend((row, col) for col in _adjacent_runs(hits, cfg))
+    return out
+
+
+def _adjacent_runs(hits, cfg: TofConfig) -> list:
+    """Columns belonging to a run of at least `min_adjacent_zones` adjacent hits.
+
+    Shared by rules A-beyond and B because the noise it rejects is a property of the
+    SENSOR, not of either rule: the isolated-return baseline ran 1.3-1.8% of frames on
+    clear floor against 45.2% adjacent-pair with a rail present.
+    """
+    out, run = [], []
+    for c in list(hits) + [None]:
+        if run and c is not None and c == run[-1] + 1:
+            run.append(c)
+            continue
+        if len(run) >= cfg.min_adjacent_zones:
+            out.extend(run)
+        run = [] if c is None else [c]
     return out
 
 
@@ -323,17 +510,34 @@ class ObstacleDetector:
         self._cfg = cfg or TofConfig()
         self._history: list = []
 
-    def update(self, frame) -> dict:
+    def retune(self, cfg: TofConfig) -> None:
+        """Replace the config WITHOUT clearing the confirmation window.
+
+        Exists for exactly one caller: the node latches the lidar's plane height from
+        TF, which is not available at construction time. Public rather than a poke at
+        `_cfg` from outside, because a private attribute assigned from another module is
+        a contract nobody can see. The window survives on purpose -- the geometry has
+        not changed, only our knowledge of one number in it, and dropping N-of-M history
+        on a TF update would make confirmation depend on TF timing.
+        """
+        self._cfg = cfg
+
+    def update(self, frame, column_min=None) -> dict:
         """One frame in; the obstacle conclusion out.
 
-        Returns both rules separately rather than a merged verdict: a consumer that
-        wants only the certain one (i) can have it, and a recording can tell which
-        rule fired -- the alternative is a boolean nobody can debug afterwards.
+        `column_min` is `scan_min_by_column`'s output, or None when there is no usable
+        scan -- in which case rule B is UNAVAILABLE and reports nothing. Note what the
+        default does: a caller that forgets the lidar entirely gets rule A alone, which
+        is the degraded behaviour and never the over-confident one.
+
+        Returns every rule separately rather than a merged verdict: a consumer that
+        wants only the certain one can have it, and a recording can say WHICH rule
+        fired -- the alternative is a boolean nobody can debug afterwards.
         """
         cfg = self._cfg
         near = nearer_than_floor(frame, cfg)
-        adjacent = unexpected_returns(frame, cfg)
-        self._history.append(set(adjacent))
+        disagree = lidar_disagreement(frame, cfg, column_min)
+        self._history.append(set(disagree))
         if len(self._history) > cfg.window_frames:
             self._history.pop(0)
         counts: dict = {}
@@ -342,8 +546,10 @@ class ObstacleDetector:
                 counts[z] = counts.get(z, 0) + 1
         confirmed = [z for z, n in counts.items() if n >= cfg.confirm_frames]
         return {
-            "nearer_than_floor": near,          # rule (i), immediate
-            "adjacent_this_frame": adjacent,    # rule (ii), unconfirmed
-            "confirmed_unexpected": sorted(confirmed),   # rule (ii), N-of-M
+            "nearer_than_floor": near,                  # rule A, immediate
+            "disagrees_this_frame": disagree,           # rule B, unconfirmed
+            "confirmed_disagreement": sorted(confirmed),  # rule B, N-of-M
+            "background": "unavailable" if column_min is None else "ok",
+            "rule_a_rows": rule_a_rows(cfg),
             "obstacles": sorted(set(near) | set(confirmed)),
         }
