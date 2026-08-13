@@ -306,14 +306,25 @@ against, so rule (i) cannot help — is **single-digit to ~20% of frames**, meas
 that band the replacement input is materially weaker than what it replaces, and the
 steering law was designed around information arriving at 0.90 m.
 
-Three honest options, to be chosen with stage (ii) data rather than now: accept
-later-and-sharper steering; keep the CAMERA as the steering law's input while the ToF
-takes the brake and veto (the two consumers have different requirements and nothing
-forces them to share a sensor); or let steering fall back to lidar-only blockers beyond
-0.5 m, which is what it already does whenever the camera cloud is stale. **Stage (ii)
-must measure steering-input degradation as its own metric** — brake equivalence alone
-would declare success while quietly halving the range at which the rover starts to
-turn.
+**RESOLVED BY SCOTT, 2026-08-14: full removal.** Verbatim — *"Let's just go without the
+camera for navigation right now."* The ToF takes the brake, the pivot veto AND the
+steering law's obstacle input; after stage (iii) the camera holds **zero** navigation
+roles.
+
+**The accepted cost, stated plainly so it is a decision and not a discovery:** reduced
+early steer-around for small low obstacles at 0.5-1.2 m on open floor. The rover will
+brake-and-escape where it would previously have curved around, and it will do so until
+something else fills that band. That is a real loss of grace, knowingly taken.
+
+**The hybrid — camera for steering, ToF for brake and veto — was considered and
+declined**, not overlooked. It is kept here because Scott's *"right now"* leaves the
+door open: if stage (ii)'s degradation metric shows the loss biting harder than this
+paragraph implies, the number goes back to him as a fresh decision rather than being
+relitigated quietly by whoever is next in this file.
+
+**Stage (ii)'s steering-degradation measurement therefore stays**, and changes purpose:
+it is no longer deciding whether to swap, it is the evidence for whether the accepted
+cost is the cost we thought it was.
 
 ---
 
