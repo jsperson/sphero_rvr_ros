@@ -18,6 +18,31 @@ it is the planner the goal would have been handed to anyway — and it removes t
 whole apparatus that used to exist to paper over a hand-rolled estimate
 disagreeing with the real costmap (map erosion by an inscribed radius, a
 navigability-restricted flood, and a blacklist with a radius and a TTL).
+
+AND NO CLEARANCE FILTER RUNS AHEAD OF IT. There was one, and it was removed rather
+than retuned, because the defect was structural rather than numeric:
+
+    **A frontier borders unknown space by definition.** Unknown cells are exactly
+    what a clearance probe cannot judge, so frontier goals sit at the bottom of the
+    clearance distribution as a matter of geometry, not of clutter. Measured on the
+    live costmap during gauntlet run 1 (2026-08-11): the frontier population's median
+    clearance was **0.05 m — the probe floor**, and **0 of 125 frontiers** passed the
+    then-deployed 0.35 m. Even at 0.10 m only 9% passed.
+
+A filter that rejects frontier goals makes frontier exploration impossible in any
+room, on any robot, at any threshold above the grid resolution — so there is no value
+to tune it to. It was neutralised to 0.0 in config mid-gauntlet as the minimal safe
+diff, and this is the removal that was owed afterwards.
+
+What that filter was FOR is still a real problem: run 185048 drove to a pose with
+0.22 m on two sides and could then neither plan nor escape. That is now the stall
+ladder's job (docs/stall_survival_ladder.md) -- recovery, from a pose the rover is
+actually in, instead of prediction about a pose it might go to. The one prediction
+that survives is `blocked_start_check`, which asks whether the robot's OWN current
+cell is wedged; it is not a filter on candidates and does not have the anti-frontier
+property, because the rover's own pose is not a frontier.
+
+tests/test_goal_clearance_filter_removed.py fails if any of this comes back.
 """
 
 import json
@@ -60,7 +85,6 @@ from sphero_rvr_core.coverage_exploration import (
     cell_center_world,
     cell_world_grid,
     is_frontier,
-    pose_clearance_m,
     robot_start_blocked,
     stamp_coverage,
     world_grid,
@@ -158,19 +182,6 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("save_map_on_end", True)
         self.declare_parameter("map_save_dir", os.path.expanduser("~/.ros/missions"))
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
-        # PREVENTION. Measured to INSCRIBED-cost cells, so the boundary this is
-        # measured FROM already guarantees the robot fits: inscribed = obstacle +
-        # robot_radius + inflation_radius (0.14 + 0.16 = 0.30 m). What remains to
-        # justify is manoeuvring margin on top of that, and the honest robot-derived
-        # figure is TWO COSTMAP CELLS -- 2 x 0.05 m resolution -- covering grid
-        # quantization and localization jitter. Two cells is defensible in any room.
-        #
-        # It was 0.35 m, and that number double-counted the inflation: I derived it
-        # from the same 0.14 + 0.16 = 0.30 m that the inscribed boundary had ALREADY
-        # applied, so the filter demanded a second robot-and-inflation clearance
-        # beyond the one the costmap encoded. Defensible in the abstract, wrong about
-        # the quantity being measured.
-        self.declare_parameter("min_goal_clearance_m", 0.10)
         # Defaults to FALSE: bringing the stack up must not commit the robot to
         # moving. Set true only for an unattended run that genuinely wants liftoff
         # at launch.
@@ -219,16 +230,11 @@ class CoverageExplorerNode(Node):
         map_topic = str(self.get_parameter("map_topic").value)
 
         self._map = None
+        # Still subscribed, and still load-bearing: `blocked_start_check` reads it to
+        # answer "is the ROBOT's own cell wedged". That is a question about one pose
+        # the rover is already standing in, which is why it survived the removal of
+        # the goal-clearance filter -- see the note above `_select_and_send`.
         self._costmap = None
-        self._min_goal_clearance_m = float(
-            self.get_parameter("min_goal_clearance_m").value)
-        # Reported, never silent: a filter that quietly eats every candidate looks
-        # exactly like a room with nothing left to explore.
-        self._clearance_rejections = 0
-        # Per-CYCLE, so the none-plannable warning can say where this cycle's
-        # candidates died. The cumulative counter above cannot: it answers "how many
-        # ever" when the question is "which gate killed the set we just had".
-        self._clearance_rejected_this_cycle = 0
         # F1: last time the controller reported an active escape. See _ladder_running.
         self._ladder_active_at = None
         self._ladder_signal_max_age_s = 1.0
@@ -572,7 +578,6 @@ class CoverageExplorerNode(Node):
         goal_cell = None
         goal_point = None
         exhausted = False
-        self._clearance_rejected_this_cycle = 0
         budget = time.monotonic() + self._select_budget_s
         for cell in candidates:
             if time.monotonic() >= budget:
@@ -596,27 +601,12 @@ class CoverageExplorerNode(Node):
             # only needs proximity. So ask for the nearest point that both plans
             # AND still counts as covering the target.
             for awx, awy in self._approach_points(gwx, gwy, wx, wy):
-                # PREVENTION (docs/stall_survival_ladder.md): never send the rover to
-                # a pose it will not be able to LEAVE. Run 185048 selected, planned to
-                # and reached a pose with 0.22 m on two sides, where the planner then
-                # refused every onward goal and every escape was vetoed. Recovery
-                # cannot help there -- at that clearance the ladder's rungs are all
-                # refused too -- so the cheapest fix by far is not to go.
-                #
-                # A pose we cannot JUDGE (unknown, off-map, or no costmap at all ->
-                # None) passes through to the planner rather than being rejected.
-                # I built it the other way first, reasoning that "cannot tell" should
-                # fail safe -- and the rehearsal suite showed that rejecting on None
-                # makes the explorer refuse EVERY candidate whenever the costmap is
-                # absent or the goal sits near unknown space, which is where coverage
-                # goals live by construction. An inert explorer is not a safe one.
-                # The planner still gates every candidate below, so this filter only
-                # ever REMOVES poses it can positively prove are too tight.
-                clearance = self._pose_clearance(awx, awy)
-                if clearance is not None and clearance < self._min_goal_clearance_m:
-                    self._clearance_rejections += 1
-                    self._clearance_rejected_this_cycle += 1
-                    continue
+                # THE PLANNER IS THE ONLY GATE ON A CANDIDATE, and that is deliberate.
+                # A goal-pose clearance filter used to run here first; it is gone,
+                # because it rejected frontier goals as a matter of geometry rather
+                # than of clutter. The measurement and the reasoning are in this
+                # module's docstring, and the revert-proof is
+                # tests/test_goal_clearance_filter_removed.py.
                 if self._planner_can_reach(awx, awy, frame):
                     goal_cell, goal_point = cell, (awx, awy)
                     break
@@ -642,8 +632,7 @@ class CoverageExplorerNode(Node):
             self._unstick_attempts += 1
             self.get_logger().warn(
                 f"{len(candidates)} target(s) left but none plannable from here "
-                f"({self._clearance_rejected_this_cycle} rejected on CLEARANCE, "
-                f"{self._unplannable_last_cycle} on the PLANNER) — "
+                f"({self._unplannable_last_cycle} refused by the PLANNER) — "
                 f"unsticking (attempt {self._unstick_attempts}/{self._max_unstick})"
             )
             self._unstick(toward=self._cell_world(candidates[0], ox, oy, res))
@@ -666,15 +655,12 @@ class CoverageExplorerNode(Node):
                     self.get_logger().warn(
                         f"exploration ENDED with {len(candidates)} target(s) still "
                         f"wanted but NONE plannable — {len(self._covered)} cells "
-                        "covered, so COVERAGE IS INCOMPLETE. Where the candidates "
-                        f"died THIS cycle: {self._clearance_rejected_this_cycle} "
-                        f"rejected on CLEARANCE (min_goal_clearance_m="
-                        f"{self._min_goal_clearance_m:.2f}), "
-                        f"{self._unplannable_last_cycle} refused by the PLANNER. "
-                        "Both gates thin the same set and the clearance one runs "
-                        "FIRST, so a candidate it drops never reaches the planner to "
-                        "be counted — without this split the log cannot say which "
-                        "gate ended the mission."
+                        "covered, so COVERAGE IS INCOMPLETE. All "
+                        f"{self._unplannable_last_cycle} of this cycle's candidates "
+                        "were refused by the PLANNER, which is now the only gate a "
+                        "candidate faces: the goal-clearance filter that used to run "
+                        "ahead of it is gone, so this count is the whole story rather "
+                        "than the second half of one."
                     )
                     self._finish(OUTCOME_NO_PLANNABLE_TARGETS, res, len(candidates))
                 else:
@@ -938,7 +924,6 @@ class CoverageExplorerNode(Node):
         self.get_logger().info(
             f"coverage goal -> cell {cell} world ({wx:.2f},{wy:.2f}){via}; "
             f"covered={len(self._covered)} planner-rejected={self._unplannable_last_cycle} "
-            f"clearance-rejected={self._clearance_rejections} "
             f"stalled={len(self._stalled)}"
         )
         self._nav.send_goal_async(goal).add_done_callback(self._on_goal_response)
@@ -1119,44 +1104,6 @@ class CoverageExplorerNode(Node):
             here = self._robot_world(self._map.header.frame_id or "map") if self._map else None
             if here is not None:
                 self._escape_poses.append((round(here[0], 2), round(here[1], 2)))
-
-    def _pose_clearance(self, wx, wy):
-        """Clearance at a candidate pose, from the GLOBAL costmap.
-
-        Returns None when it cannot be judged. The caller passes those poses to the
-        planner rather than rejecting them — see the call site. This docstring said
-        the opposite until the rehearsal suite proved rejecting-on-None makes the
-        explorer refuse every candidate whenever the costmap is absent.
-        """
-        m = self._costmap
-        if m is None:
-            # THE FILTER IS INOPERABLE, which is NOT the same as "this pose is bad".
-            # Rejecting on this branch made the explorer refuse every candidate
-            # forever whenever the costmap was absent or late -- caught by the
-            # rehearsal suite, which runs the real node with no costmap publisher at
-            # all, and which sat there reporting "targets left but none plannable"
-            # while the map was wide open. Exactly the silent-inertia failure this
-            # filter's own commit message warned about.
-            #
-            # Passing through is safe: the planner still gates every candidate
-            # afterwards, so this restores the pre-filter behaviour rather than
-            # inventing a weaker one. Loud, because a prevention layer that is not
-            # running must never be invisible.
-            self._costmap_missing_warned = getattr(
-                self, "_costmap_missing_warned", False)
-            if not self._costmap_missing_warned:
-                self.get_logger().warn(
-                    "goal-clearance prevention INACTIVE: no costmap on "
-                    f"{self.get_parameter('costmap_topic').value}. Candidates are "
-                    "planner-gated only.")
-                self._costmap_missing_warned = True
-            return None
-        return pose_clearance_m(
-            m.data, m.info.width, m.info.height,
-            m.info.origin.position.x, m.info.origin.position.y,
-            m.info.resolution, wx, wy,
-            max_probe_m=self._min_goal_clearance_m + 0.25,
-        )
 
     def _cell_world(self, cell, ox, oy, res):
         return cell_center_world(cell[0], cell[1], ox, oy, res)

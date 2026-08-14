@@ -88,12 +88,15 @@ coverage_explorer:
     # is in fact wedged. Was a code-only default, untunable from here (D15).
     blocked_hold_s: 5.0
 
-    # DISABLED for the gauntlet (2026-08-11). A clearance filter on goal poses is
-    # structurally anti-frontier: a frontier borders unknown space BY DEFINITION, and
-    # measured on the live costmap the frontier population has median clearance
-    # 0.05 m — the floor. Zero of 125 frontiers passed the original 0.35 m, so the
-    # filter made frontier exploration impossible in any room on any robot; even at
-    # 0.10 m only 9% passed. Selection reverts to planner-gated truth. Full removal is
-    # a reviewed batch after the gauntlet — this is the minimal diff to restore
-    # correct behaviour without changing code mid-run.
-    min_goal_clearance_m: 0.0
+    # REMOVED 2026-08-13: `min_goal_clearance_m` and the filter it fed are gone from
+    # the code, not merely set to 0.0. A clearance filter on goal poses is
+    # structurally anti-frontier — a frontier borders unknown space BY DEFINITION, and
+    # measured on the live costmap the frontier population's median clearance was
+    # 0.05 m, the probe floor. Zero of 125 frontiers passed the original 0.35 m; even
+    # at 0.10 m only 9% did. There is no threshold to tune it to, so it was deleted
+    # rather than retuned. Selection is planner-gated, full stop.
+    #
+    # Do not re-add this key. A stray `min_goal_clearance_m` here now sets an
+    # UNDECLARED parameter, which ROS accepts silently and nothing reads — the config
+    # would look like it were controlling something it is not.
+    # tests/test_goal_clearance_filter_removed.py fails if the key returns.
