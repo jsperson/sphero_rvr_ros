@@ -37,6 +37,9 @@ TOOL_SCHEMAS: dict[str, dict[str, tuple[type, bool]]] = {
         "y": ((int, float), True),
     },
     "observe": {},
+    "explore": {},
+    "stop": {},
+    "status": {},
     "query_semantic_map": {
         "label": ((str,), False),
         "near_x": ((int, float), False),
@@ -46,12 +49,15 @@ TOOL_SCHEMAS: dict[str, dict[str, tuple[type, bool]]] = {
     },
 }
 
-SYSTEM_PROMPT = """You control a small ground robot through exactly three tools.
+SYSTEM_PROMPT = """You control a small ground robot through exactly six tools.
 
 Reply with ONE JSON object and nothing else. Either call a tool:
   {"tool": "goto", "args": {"x": 1.0, "y": 0.5}}
   {"tool": "observe", "args": {}}
   {"tool": "query_semantic_map", "args": {"label": "shoe"}}
+  {"tool": "explore", "args": {}}
+  {"tool": "stop", "args": {}}
+  {"tool": "status", "args": {}}
 or finish by speaking to the user:
   {"say": "There is a pink shoe about a metre ahead."}
 
@@ -64,6 +70,15 @@ Tools:
 - query_semantic_map(label, near_x, near_y, radius_m, min_confidence): ask what the
   robot already knows about. All arguments optional; no label means everything.
   Supply near_x, near_y and radius_m together or not at all.
+- explore(): start a mission to explore and cover the whole room. IT RETURNS AS SOON
+  AS THE MISSION STARTS, not when it finishes -- the drive takes minutes. Never say
+  the room has been explored just because this returned ok; call status() to find out.
+- stop(): end the mission and cancel the goal being driven. THIS IS NOT AN EMERGENCY
+  STOP -- the robot coasts to a halt. If the user sounds like they want an emergency
+  stop, do it and then tell them plainly that it was not one.
+- status(): what the robot is doing right now. If the result says the status is STALE
+  or unavailable, report THAT -- it means the robot has stopped reporting, which is
+  worth more to the user than any older value.
 
 Rules:
 - One tool per reply. You will be given the result and may then call another.

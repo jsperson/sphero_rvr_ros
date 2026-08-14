@@ -46,6 +46,7 @@ Everything decidable without ROS -- the goal envelope, the semantic query, the
 result shape -- lives in `sphero_rvr_core.task_tools`.
 """
 
+import json
 import threading
 import time
 
@@ -61,6 +62,7 @@ from std_srvs.srv import Trigger
 import tf2_ros
 
 from sphero_rvr_core.task_tools import (
+    describe_mission,
     EnvelopeError,
     GoalEnvelope,
     query_semantic_objects,
@@ -85,6 +87,15 @@ class TaskNode(Node):
         # the goal would go to anyway -- and it turns "drove at a wall for two
         # minutes then aborted" into an immediate typed refusal. False = send blind.
         self.declare_parameter("precheck_reachable", True)
+        self.declare_parameter("mission_start_service",
+                               "/coverage_explorer/mission/start")
+        self.declare_parameter("mission_stop_service",
+                               "/coverage_explorer/mission/stop")
+        self.declare_parameter("mission_status_topic", "/coverage_explorer/status")
+        # The explorer publishes status at 1 Hz. Three missed publications is a node
+        # that has stopped answering, not a slow one -- and saying so is the whole
+        # value of the tool at that moment.
+        self.declare_parameter("mission_status_max_age_s", 3.0)
         self.declare_parameter("observe_service", "observe")
         self.declare_parameter("observe_timeout_s", 30.0)
         self.declare_parameter("semantic_objects_topic", "/semantic_map/objects")
@@ -105,6 +116,8 @@ class TaskNode(Node):
         self._plan_timeout_s = float(self.get_parameter("plan_timeout_s").value)
         self._goal_timeout_s = float(self.get_parameter("goal_timeout_s").value)
         self._observe_timeout_s = float(self.get_parameter("observe_timeout_s").value)
+        self._mission_status_max_age_s = float(
+            self.get_parameter("mission_status_max_age_s").value)
         self._precheck = bool(self.get_parameter("precheck_reachable").value)
 
         cbg = ReentrantCallbackGroup()
@@ -120,6 +133,10 @@ class TaskNode(Node):
         )
 
         self._objects_lock = threading.Lock()
+        # Guards the mission-status snapshot only. Deliberately NOT the
+        # objects lock: a 1 Hz subscriber must not queue behind a query
+        # that can be waiting on a semantic-map answer.
+        self._status_lock = threading.Lock()
         self._objects_json = ""
         self.create_subscription(
             String, str(self.get_parameter("semantic_objects_topic").value),
@@ -139,6 +156,25 @@ class TaskNode(Node):
             cancel_callback=lambda _gh: CancelResponse.ACCEPT,
             callback_group=cbg,
         )
+        # MISSION TOOLS (Track 2 v2). Forwarding, not invention: the coverage explorer
+        # already owns arming, goal selection and ending, and already exposes them as
+        # plain Triggers. What this adds is a NAME a language model can reach.
+        self._explore_client = self.create_client(
+            Trigger, str(self.get_parameter("mission_start_service").value),
+            callback_group=cbg)
+        self._stop_client = self.create_client(
+            Trigger, str(self.get_parameter("mission_stop_service").value),
+            callback_group=cbg)
+        self._mission_status = None            # (monotonic_at, payload dict)
+        self.create_subscription(
+            String, str(self.get_parameter("mission_status_topic").value),
+            self._on_mission_status, 10, callback_group=cbg)
+        self.create_service(Trigger, "task/explore", self._on_explore,
+                            callback_group=cbg)
+        self.create_service(Trigger, "task/stop", self._on_stop,
+                            callback_group=cbg)
+        self.create_service(Trigger, "task/status", self._on_status,
+                            callback_group=cbg)
         self.create_service(Trigger, "task/observe", self._on_observe,
                             callback_group=cbg)
         self.create_service(Trigger, "task/query_semantic_map", self._on_query,
@@ -311,6 +347,97 @@ class TaskNode(Node):
         return len(result.result.path.poses) > 0
 
     # --- observe --------------------------------------------------------------
+
+    def _on_mission_status(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except (ValueError, TypeError):
+            return                      # a malformed status is NOT a status
+        with self._status_lock:
+            self._mission_status = (time.monotonic(), payload)
+
+    def _forward_trigger(self, client, tool, service_label, success_message):
+        """Call another node's Trigger and report what actually happened.
+
+        The forwarded call's own success/message is passed through rather than
+        replaced: this node did not do the work and must not claim to know better
+        than the node that did.
+        """
+        if not client.wait_for_service(timeout_sec=2.0):
+            return tool_result(
+                False, tool,
+                f"{service_label} unavailable — is the coverage explorer running?"), False
+        result = self._await(client.call_async(Trigger.Request()),
+                             time.monotonic() + 5.0)
+        if result is None:
+            return tool_result(
+                False, tool, f"{service_label} did not answer within 5s"), False
+        if not result.success:
+            return tool_result(False, tool, result.message or "refused"), False
+        return tool_result(True, tool, success_message, detail=result.message), True
+
+    def _on_explore(self, request, response):
+        """Start a coverage mission of the room.
+
+        RETURNS WHEN THE MISSION STARTS, NOT WHEN IT FINISHES, and the message says so
+        in words a model will repeat. A caller that assumes otherwise reports "I have
+        explored the room" about one second into a ten-minute drive, which is the most
+        likely way this tool produces a confidently wrong answer.
+        """
+        response.message, response.success = self._forward_trigger(
+            self._explore_client, "explore", "mission/start",
+            "mission STARTED — the robot is now exploring. This returns immediately; "
+            "the mission runs until it finishes or is stopped. Call status() to follow it.")
+        return response
+
+    def _on_stop(self, request, response):
+        """End the mission and drop the goal in flight.
+
+        NOT AN EMERGENCY STOP, and the message says that too. This disarms the mission
+        and cancels the current goal; the rover coasts to a halt through the normal
+        command path. The collision supervisor owns real stopping and nothing here
+        touches it. Someone who says "stop" in an emergency must not be left believing
+        they hit a brake.
+        """
+        response.message, response.success = self._forward_trigger(
+            self._stop_client, "stop", "mission/stop",
+            "mission STOPPED and the current goal cancelled. This is not an emergency "
+            "stop: the robot coasts to a halt and the collision supervisor is untouched.")
+        return response
+
+    def _on_status(self, request, response):
+        """What the robot is doing right now.
+
+        STALENESS IS THE ANSWER WHEN IT IS THE ANSWER. A status tool that serves the
+        last good value when the publisher has gone quiet converts the single most
+        informative symptom a stuck rover has — silence — into a reassuring report.
+        So an absent or aged status is reported as UNAVAILABLE with its age, and never
+        smoothed over.
+        """
+        with self._status_lock:
+            entry = self._mission_status
+        if entry is None:
+            response.success = False
+            response.message = tool_result(
+                False, "status", "no mission status has ever been received — the "
+                "coverage explorer is not running, or not publishing")
+            return response
+        at, payload = entry
+        age = time.monotonic() - at
+        if age > self._mission_status_max_age_s:
+            response.success = False
+            response.message = tool_result(
+                False, "status",
+                f"mission status is STALE ({age:.1f}s old, limit "
+                f"{self._mission_status_max_age_s:.0f}s) — the explorer has stopped "
+                "publishing. Do not treat the values below as current.",
+                stale_age_s=round(age, 1), last_known=payload)
+            return response
+        response.success = True
+        response.message = tool_result(
+            True, "status", describe_mission(payload),
+            age_s=round(age, 2), **payload)
+        return response
 
     def _on_observe(self, request, response):
         """Pass-through to the semantic_map node's existing `observe` Trigger.

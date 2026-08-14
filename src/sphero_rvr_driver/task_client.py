@@ -61,6 +61,12 @@ class ToolRunner(Node):
         self._active_goto = None
         self._goto = ActionClient(self, NavigateToPose, "task/goto")
         self._observe = self.create_client(Trigger, "task/observe")
+        # THE MISSION TOOLS. Three more clients, no new machinery -- they are Triggers
+        # exactly like observe, which is the payoff of task_node keeping them Triggers.
+        self._mission = {
+            name: self.create_client(Trigger, f"task/{name}")
+            for name in ("explore", "stop", "status")
+        }
         self._query = self.create_client(Trigger, "task/query_semantic_map")
 
     # Each runner returns the tool's own JSON result string. Failures are returned,
@@ -73,6 +79,8 @@ class ToolRunner(Node):
             return self._call(self._observe, "observe")
         if tool == "query_semantic_map":
             return self._run_query(args)
+        if tool in ("explore", "stop", "status"):
+            return self._call(self._mission[tool], tool)
         return json.dumps({"ok": False, "message": f"no such tool {tool!r}"})
 
     def _spin_until(self, future, deadline):

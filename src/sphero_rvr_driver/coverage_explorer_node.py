@@ -327,6 +327,9 @@ class CoverageExplorerNode(Node):
         self._armed = bool(self.get_parameter("autostart").value)
         self._consecutive_empty = 0
         self._ever_had_target = False
+        # None means NOT YET COUNTED. See _publish_status: a fabricated 0 here would
+        # read as "nothing left to explore".
+        self._last_candidate_count = None
         self._complete_after_empty = int(self.get_parameter("complete_after_empty_cycles").value)
 
         cbg = ReentrantCallbackGroup()
@@ -395,6 +398,14 @@ class CoverageExplorerNode(Node):
         # rover sat motionless while the give-up counter emptied (run 103337).
         # We know the answer here; say it. Namespaced (~/) per the F3 lesson.
         self._generation_pub = self.create_publisher(Int32, "~/goal_generation", 10)
+        # LIVE MISSION STATUS, 1 Hz. `~/report` is latched and only exists once a
+        # mission has ENDED, so until this publisher there was no way to ask a running
+        # rover what it was doing -- and the task surface's `status` tool would have
+        # had to infer it from goal generations or topic liveness, which is the
+        # proxy-inference class this project has paid for three times. The explorer
+        # knows whether it is armed; it says so.
+        self._status_pub = self.create_publisher(String, "~/status", 10)
+        self.create_timer(1.0, self._publish_status, callback_group=cbg)
         self.create_timer(0.5, self._publish_generation)
         self.create_service(Trigger, "~/mission/start", self._on_mission_start,
                             callback_group=cbg)
@@ -479,6 +490,42 @@ class CoverageExplorerNode(Node):
         """True once mission/stop has disarmed us. Long-running recovery loops poll
         this so they abandon instead of finishing a manoeuvre for a stopped mission."""
         return not self._armed
+
+    def _publish_status(self):
+        """What this node is doing, once a second, as JSON.
+
+        EVERY FIELD IS SOMETHING THIS NODE OWNS. No field is derived from another
+        component's behaviour, and nothing here is a guess -- a consumer that wants to
+        know about the supervisor asks the supervisor.
+
+        `running` is armed-and-not-done rather than "a goal is in flight": a rover
+        between goals is still exploring, and reporting it idle would make every
+        selection cycle look like a stall.
+        """
+        with self._lock:
+            payload = {
+                "armed": bool(self._armed),
+                "done": bool(self._mission_done),
+                "running": bool(self._armed and not self._mission_done),
+                "goal_in_flight": self._active_goal_cell is not None,
+                "goal_cell": (list(self._active_goal_cell)
+                              if self._active_goal_cell is not None else None),
+                "goals_sent": self._goals_sent,
+                "goals_succeeded": self._goals_succeeded,
+                "goals_aborted": self._goals_aborted,
+                "goals_aborted_after_recovery": self._goals_aborted_after_recovery,
+                "goals_aborted_without_recovery": self._goals_aborted_without_recovery,
+                "planner_rejections": self._planner_rejections,
+                "covered_cells": len(self._covered),
+                "unstick_attempts": self._unstick_attempts,
+                "escapes": len(self._escape_events),
+                "freezes": len(self._freeze_events),
+                # UNKNOWN, not zero. Candidates are counted during selection; between
+                # cycles there is no fresh number, and a stale 0 reads as "nothing left
+                # to explore", which is the most reassuring possible lie (D24).
+                "remaining_candidates": self._last_candidate_count,
+            }
+        self._status_pub.publish(String(data=json.dumps(payload)))
 
     def _on_mission_stop(self, _request, response):
         """Disarm and drop any goal in flight.
@@ -654,6 +701,7 @@ class CoverageExplorerNode(Node):
                     break
             if goal_cell is not None:
                 break
+        self._last_candidate_count = len(candidates)
         self._unplannable_last_cycle = (
             len(candidates) if goal_cell is None else candidates.index(goal_cell)
         )

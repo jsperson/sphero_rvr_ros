@@ -172,3 +172,29 @@ def tool_result(ok: bool, tool: str, message: str = "", **fields) -> str:
         payload["message"] = message
     payload.update(fields)
     return json.dumps(payload, sort_keys=True)
+
+
+def describe_mission(p):
+    """One English sentence from the explorer's status payload.
+
+    Exists so the model is handed a sentence rather than a dict to paraphrase --
+    paraphrasing numbers is where a model invents them. The numbers travel alongside
+    in the same result for anything that wants them.
+    """
+    if p.get("done"):
+        head = "the mission has FINISHED"
+    elif p.get("running"):
+        head = ("exploring, currently driving to a goal" if p.get("goal_in_flight")
+                else "exploring, choosing the next goal")
+    elif p.get("armed"):
+        head = "armed but not running"
+    else:
+        head = "IDLE — no mission is running"
+    sent = p.get("goals_sent", 0)
+    ok = p.get("goals_succeeded", 0)
+    bad = p.get("goals_aborted", 0)
+    left = p.get("remaining_candidates")
+    left_txt = ("unknown" if left is None else str(left))
+    return (f"{head}. {sent} goals sent, {ok} reached, {bad} aborted; "
+            f"{p.get('covered_cells', 0)} cells covered; {left_txt} place(s) still "
+            "wanted.")

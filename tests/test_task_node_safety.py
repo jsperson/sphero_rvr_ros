@@ -57,16 +57,39 @@ def test_task_node_is_wired_as_a_real_entry_point():
     assert "task_node = sphero_rvr_driver.task_node:main" in setup
 
 
-def test_task_node_exposes_exactly_the_three_v1_tools():
-    """v1 is three tools. explore start/stop, set_search_classes and capture_photo
-    are explicitly out of scope, and a surface that quietly grows is how a thin node
-    stops being thin."""
+def test_task_node_exposes_exactly_the_SIX_tools_and_no_more():
+    """A surface that quietly grows is how a thin node stops being thin, so the tool
+    set is a WHITELIST and adding to it is a deliberate edit here.
+
+    WIDENED 3 -> 6 on 2026-08-14 for Track 2 v2 (`explore`, `stop`, `status`) --
+    widened rather than relaxed, which is the same distinction the ToF node's
+    subscription boundary drew when rule B needed /scan. The new tools are named
+    individually; a SEVENTH tool, whatever it is, fails this test.
+
+    Still out of scope and still asserted: `set_search_classes`, `capture_photo`, and
+    anything that would give this surface its own motion authority. An e-stop tool in
+    particular is NOT here -- it answers to the collision supervisor, not to the task
+    layer, and it needs its own review rather than an entry in a list.
+    """
     source = TASK_NODE.read_text()
-    for tool in ("task/goto", "task/observe", "task/query_semantic_map"):
-        assert f'"{tool}"' in source
+    tools = ("task/goto", "task/observe", "task/query_semantic_map",
+             "task/explore", "task/stop", "task/status")
+    for tool in tools:
+        assert f'"{tool}"' in source, f"{tool} is no longer exposed"
+
     body = _executable_body(source)
-    for forbidden in ("set_search_classes", "capture_photo", "task/explore"):
-        assert forbidden not in body
+    import re
+    declared = set(re.findall(r'"(task/[a-z_]+)"', body))
+    assert declared == set(tools), (
+        f"the tool surface is {sorted(declared)}, not {sorted(tools)}. Adding a tool "
+        "is a decision, not an implementation detail -- name it here or remove it")
+
+    for forbidden in ("set_search_classes", "capture_photo", "task/estop",
+                      "task/emergency_stop"):
+        assert forbidden not in body, (
+            f"{forbidden!r} appeared in the tool surface. An emergency stop answers "
+            "to the collision supervisor and does not belong on this node without "
+            "its own review")
 
 
 def test_task_node_carries_no_transport_or_model_layer():
