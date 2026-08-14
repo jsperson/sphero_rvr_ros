@@ -67,6 +67,8 @@ def build_report(
     goals_sent=0,
     goals_succeeded=0,
     goals_aborted=0,
+    goals_aborted_after_recovery=None,
+    goals_aborted_without_recovery=None,
     planner_rejections=0,
     remaining_candidates=0,
     map_files=None,
@@ -110,6 +112,31 @@ def build_report(
             "sent": int(goals_sent),
             "succeeded": int(goals_succeeded),
             "aborted": int(goals_aborted),
+            # THE ABORT SPLIT. `aborted` alone cannot support the conclusion that
+            # ABORTED_GOALS_KEEP_FAILING implies -- that the rover tried and the room
+            # refused. Only the aborts where a RECOVERY ran carry that evidence; an
+            # abort with no recovery (the 2026-08-13 follow_path acknowledgement
+            # timeout is the recorded example) says something about the stack's
+            # concurrency and nothing about the room.
+            #
+            # NAMED FOR THE SIGNAL, NOT THE QUESTION. `without_recovery` is not
+            # "never tried": a goal the rover drove at normally and failed lands here
+            # too. What the pair supports is "how much of this ending is backed by a
+            # recovery attempt", which is exactly what the gauntlet's no-count rule
+            # needs and is all the controller's `ladder_active` signal can say.
+            #
+            # None means UNKNOWN and serializes to null -- for callers that predate
+            # the split. Never defaulted to 0: a fabricated zero in
+            # `without_recovery` reads as "every abort was earned", the most
+            # reassuring possible claim, which is the D24 mistake in a new field.
+            "aborted_after_recovery": (
+                None if goals_aborted_after_recovery is None
+                else int(goals_aborted_after_recovery)
+            ),
+            "aborted_without_recovery": (
+                None if goals_aborted_without_recovery is None
+                else int(goals_aborted_without_recovery)
+            ),
             "planner_rejections": int(planner_rejections),
         },
         "remaining_candidates": (

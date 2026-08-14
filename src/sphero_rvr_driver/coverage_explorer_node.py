@@ -265,6 +265,34 @@ class CoverageExplorerNode(Node):
         self._mission_start = time.monotonic()
         self._goals_sent = 0
         self._goals_succeeded = 0
+        # THE ABORT COUNTER, SPLIT (design reverse_before_give_up_design.md, amendment
+        # 2026-08-13). `_goals_aborted` answered two questions with one number:
+        #
+        #   "we tried here and could not move"  -- a ladder exhaustion. Real evidence
+        #                                          that the place is hard, and what
+        #                                          ABORTED_GOALS_KEEP_FAILING is meant
+        #                                          to mean.
+        #   "no recovery ran at all"            -- e.g. the follow_path acknowledgement
+        #                                          timeout of 2026-08-13, where the
+        #                                          goal aborted with the controller
+        #                                          busy on the PREVIOUS goal. Evidence
+        #                                          about the stack, not about the room.
+        #
+        # A run with enough of the second ends ABORTED_GOALS_KEEP_FAILING having proved
+        # far less than the count implies, and the report could not say so because the
+        # two were one number.
+        #
+        # WHAT THE DISCRIMINATOR ACTUALLY IS, stated plainly because it is narrower than
+        # the question: it is whether the CONTROLLER reported a recovery during this
+        # goal, taken from the controller's own `ladder_active` topic. That separates
+        # "recovery ran and was exhausted" from "no recovery ran". It does NOT separate
+        # "never got to try" from "drove normally and failed" -- both land in
+        # `without_recovery`, and neither is evidence the location is unreachable, which
+        # is the property the ending depends on. Naming these for the signal rather than
+        # for the question is deliberate: a field called `never_tried` would be a
+        # capability word that outlives the thing that made it true (D35).
+        self._goals_aborted_after_recovery = 0
+        self._goals_aborted_without_recovery = 0
         self._goals_aborted = 0
         self._planner_rejections = 0
         self._reported = False
@@ -283,6 +311,10 @@ class CoverageExplorerNode(Node):
         self._freeze_events = []
         self._active_goal_cell = None
         self._active_goal_handle = None
+        # DID THE CONTROLLER ATTEMPT A RECOVERY ON THIS GOAL? Set from the controller's
+        # own `ladder_active` publication -- never inferred from progress, a timer, or
+        # the shape of the abort. See `_goals_aborted_without_recovery`.
+        self._active_goal_saw_ladder = False
         self._goal_inflight = False
         self._goal_start_pose = None   # (wx, wy) when the active goal was sent
         self._goal_start_time = None   # time.monotonic() when the active goal was sent
@@ -380,6 +412,14 @@ class CoverageExplorerNode(Node):
     def _on_ladder_active(self, msg):
         if msg.data:
             self._ladder_active_at = time.monotonic()
+            # STICKY FOR THE LIFE OF THE GOAL. `_ladder_running()` is freshness-bounded
+            # so a dead controller cannot hang the mission, but the abort arrives on an
+            # async callback that can land well after the last rung -- the 2026-08-13
+            # pairing showed terminal outcomes at 0.0 s and one at +1.8 s. Sampling the
+            # live signal at abort time would classify by callback latency.
+            with self._lock:
+                if self._active_goal_cell is not None:
+                    self._active_goal_saw_ladder = True
 
     def _on_map(self, msg):
         self._map = msg
@@ -513,6 +553,8 @@ class CoverageExplorerNode(Node):
                     goals_sent=self._goals_sent,
                     goals_succeeded=self._goals_succeeded,
                     goals_aborted=self._goals_aborted,
+                    goals_aborted_after_recovery=self._goals_aborted_after_recovery,
+                    goals_aborted_without_recovery=self._goals_aborted_without_recovery,
                     planner_rejections=self._planner_rejections,
                 ))))
             return
@@ -702,6 +744,8 @@ class CoverageExplorerNode(Node):
             goals_sent=self._goals_sent,
             goals_succeeded=self._goals_succeeded,
             goals_aborted=self._goals_aborted,
+            goals_aborted_after_recovery=self._goals_aborted_after_recovery,
+            goals_aborted_without_recovery=self._goals_aborted_without_recovery,
             planner_rejections=self._planner_rejections,
             remaining_candidates=remaining,
             map_files=files,
@@ -905,6 +949,7 @@ class CoverageExplorerNode(Node):
                 return
             self._goal_inflight = True
             self._active_goal_cell = cell
+            self._active_goal_saw_ladder = False
             self._goals_sent += 1
             # The generation THIS goal belongs to. A freeze is claimed against the
             # goal it happened during, and the abort arrives on an async result
@@ -976,6 +1021,7 @@ class CoverageExplorerNode(Node):
         with self._lock:
             cell = self._active_goal_cell
             generation = self._active_goal_generation
+            saw_ladder = self._active_goal_saw_ladder
             self._active_goal_handle = None
             self._active_goal_cell = None
         if status == GoalStatus.STATUS_ABORTED:
@@ -993,8 +1039,14 @@ class CoverageExplorerNode(Node):
             # to delete it. Same narrow, expiring shape as the stall suppression.
             with self._lock:
                 self._goals_aborted += 1
+                if saw_ladder:
+                    self._goals_aborted_after_recovery += 1
+                else:
+                    self._goals_aborted_without_recovery += 1
             self.get_logger().warn(
-                f"coverage goal {cell} ABORTED — suppressing it for "
+                f"coverage goal {cell} ABORTED "
+                f"({'after recovery' if saw_ladder else 'NO recovery ran'}) — "
+                f"suppressing it for "
                 f"{self._stall_ttl_s:.0f}s so we do not drive at it again"
             )
             self._note_failure(cell, generation)

@@ -679,6 +679,24 @@ distinguished at the source and reported separately on `~/state`.
 
 ### 9.4 The gap between A and B is real, and today's own object sat on its edge
 
+> **RETRACTION, 2026-08-13 (the frame batch). The "0.178 m" figure below is wrong and
+> every conclusion drawn from its SIZE is withdrawn.** It is `0.678 − 0.500`: a lidar
+> range measured from `base_link` minus a **ToF sensor reading**, subtracted across two
+> frames that differ by the sensor's 0.10 m forward offset. The object's real
+> disagreement is **0.089 m**. So "nearly twenty times the margin rule A had to spare"
+> becomes *under one times the margin* — at the shipped `disagreement_margin_m` of
+> 0.10 m, rule B does not fire on this object at all (0 of 40 recorded frames).
+>
+> **What survives, and it is the load-bearing part:** rule B does not consult the floor
+> model, so a floor-fit error cannot move it, while rule A's verdict here rests on
+> 1.5–9 mm of margin against a model that took a 15 mm correction. The ARGUMENT FOR
+> LAYERING is unaffected — it was never about the size of the number. What is withdrawn
+> is the claim that rule B holds a comfortable margin on this object at the current
+> threshold. It holds 0.089 m, and the threshold has to come in under that.
+>
+> This is the same defect class as the code the section describes, committed in prose
+> while describing it: `range` meaning two things. See `docs/frame_fix_handover.md` §9.6.
+
 Row 3's floor reads 0.63 m, so it is outside rule A's bound at any plausible stop
 distance — and it is the row that saw the 5 cm box at 0.50 m in 100% of frames. Testing
 that object against rule A as if row 3 did qualify:
@@ -1046,6 +1064,29 @@ reading the floor distance as the reach overstates it by the whole margin:
 | 7 | 0.219 m | 0.099 m | 0.085 m | 0.076 m |
 
 At the shipped 0.45 m authority bound, rule A's rows are 4–7, so **its reach is 0.298 m**.
+
+> **SUPERSEDED 2026-08-13 by the frame batch — the table above is in the BROKEN frame.**
+> Every "GROUND RANGE" in it omits the sensor's 0.10 m forward offset. Corrected, and
+> with the authority bound now compared in `base_link` as it must be:
+>
+> | row | floor reads | floor FROM base_link | fires below | → GROUND RANGE |
+> |---|---|---|---|---|
+> | 3 | 0.629 m | 0.716 m | 0.509 m | **0.598 m** |
+> | 4 | 0.434 m | **0.512 m** | 0.314 m | **0.397 m** |
+> | 5 | 0.330 m | 0.405 m | 0.210 m | **0.294 m** |
+> | 6 | 0.265 m | 0.337 m | 0.145 m | 0.229 m |
+> | 7 | 0.219 m | 0.289 m | 0.099 m | 0.185 m |
+>
+> **Row 4 leaves the row set.** Its floor is 0.512 m from `base_link` — outside the
+> 0.45 m bound — although it READS 0.434 m, which is inside. Rule A's rows are now
+> **5–7 and its reach is 0.297 m** (zone (5,0); the centre column gives 0.294 m).
+>
+> Note what did NOT happen: the reach did not move by the offset. Every row's reach
+> gained exactly +0.100 m, and the reach still fell from 0.298 to 0.297 because the row
+> supplying it changed. A check that the number "still looks right" would have passed.
+> The floor comparison moves by 0.070–0.108 m instead, because it crosses the boresight
+> projection as well as the offset — which is why the constants were recomputed rather
+> than shifted.
 
 ### 11.2 CORRECTED — the comparison in the first draft was wrong twice
 

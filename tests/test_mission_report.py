@@ -57,8 +57,36 @@ def test_goal_counts_and_map_files_round_trip():
                      goals_aborted=1, planner_rejections=7,
                      map_files=["/tmp/m.pgm", "/tmp/m.yaml"])
     assert r["goals"] == {"sent": 5, "succeeded": 4, "aborted": 1,
+                          "aborted_after_recovery": None,
+                          "aborted_without_recovery": None,
                           "planner_rejections": 7}
     assert r["map_files"] == ["/tmp/m.pgm", "/tmp/m.yaml"]
+
+
+def test_the_abort_split_reports_UNKNOWN_rather_than_zero_when_absent():
+    """A caller that does not supply the split must not be reported as having measured
+    it and found none.
+
+    `aborted_without_recovery: 0` is the single most reassuring line this report can
+    carry -- it says every abort was earned by a real recovery attempt. Defaulting it
+    to 0 for callers that never measured it is D24 in a new field: a fabricated number
+    that reads as evidence.
+    """
+    absent = build_report(OUTCOME_COMPLETE, covered_cells=1, resolution=0.05,
+                          duration_s=1.0, goals_aborted=9)
+    assert absent["goals"]["aborted_without_recovery"] is None
+    assert absent["goals"]["aborted_after_recovery"] is None
+
+    split = build_report(OUTCOME_COMPLETE, covered_cells=1, resolution=0.05,
+                         duration_s=1.0, goals_aborted=9,
+                         goals_aborted_after_recovery=2,
+                         goals_aborted_without_recovery=7)
+    assert split["goals"]["aborted_after_recovery"] == 2
+    assert split["goals"]["aborted_without_recovery"] == 7
+    # The two halves must account for the whole, or the ending is being explained by a
+    # number that does not describe the aborts it is attached to.
+    assert (split["goals"]["aborted_after_recovery"]
+            + split["goals"]["aborted_without_recovery"]) == split["goals"]["aborted"]
 
 
 # --- map serialization ---

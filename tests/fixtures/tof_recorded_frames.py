@@ -410,11 +410,51 @@ TILT_CLEAR = [
 
 #: Distance from the SENSOR to the wall in TILT_WALL_060, solved from the wall's own
 #: row gradient (0.578 m) rather than from the 0.60 m tape, whose reference point is
-#: not the sensor face. A lidar looking at this wall would report approximately this.
+#: not the sensor face.
+#:
+#: THE OLD COMMENT HERE READ "a lidar looking at this wall would report approximately
+#: this", AND THAT WAS THE FRAME BUG IN FIXTURE FORM. The lidar sits at base_link
+#: (`base_link->laser` x = 0.0045 m); the ToF sits `mount_x_m` = 0.10 m forward of it.
+#: A lidar looking at this wall reports the BASE_LINK distance below, 0.10 m further
+#: than this one. Feeding this number to `lidar_disagreement` as a background compares
+#: a sensor-frame distance against base_link ground ranges -- which understates the
+#: background by exactly the mount offset and makes rule B look quieter than it is.
 TILT_WALL_060_SENSOR_M = 0.578
+
+#: The same wall in BASE_LINK -- what a lidar actually reports, and therefore the only
+#: correct background for `lidar_disagreement`.
+#:
+#: Corroborated rather than merely derived, which matters because 0.578 + `mount_x_m`
+#: would otherwise be the model predicting its own input: the lidar spot probe in the
+#: box segment measured this same wall at 0.678 m directly (see TILT_BOX_050_WALL_M).
+#: Two routes -- a ToF row gradient plus the mount offset, and an independent lidar
+#: measurement -- landing on the same number is the strongest single confirmation that
+#: `mount_x_m` is 0.10 m and that it belongs in `zone_point`.
+#:
+#: (The two segments' TAPES read 0.60 and 0.687 for the same 0.678 m wall. That is a
+#: tape-reference discrepancy, already flagged above, and it is why neither tape is
+#: used as an operand anywhere.)
+TILT_WALL_060_BASE_M = 0.678
 
 #: The 5 cm object in TILT_BOX_050 stood at tape 0.50 m and the sensor read 500-501 mm
 #: in 100% of 271 frames. The wall behind it is the same one: lidar spot probe 0.678 m
 #: against a 0.687 m tape, from lidar_crosstalk.log in the same session.
+#:
+#: MIND THE FRAMES, WHICH DIFFER BETWEEN THESE TWO LINES. The object figure is what the
+#: SENSOR read; the wall figure is what the LIDAR read, and the lidar sits at base_link
+#: while the sensor sits 0.10 m forward of it. Subtracting one from the other -- which
+#: design 9.4 did, getting 0.178 m -- subtracts across frames and inflates the answer by
+#: the whole mount offset. The real disagreement is 0.089 m. Use the base_link value
+#: below whenever the number is going anywhere near `lidar_disagreement`.
 TILT_BOX_050_OBJECT_M = 0.500
 TILT_BOX_050_WALL_M = 0.678
+
+#: The same object in BASE_LINK: tape 0.50 m from the sensor face plus the 0.10 m mount
+#: offset. This is what a lidar WOULD report if it could see the object, and therefore
+#: the correct "the lidar sees the object itself" background.
+#:
+#: Cross-checked against the ToF's own returns through the fixed geometry, which is the
+#: only independent handle available: the object's three columns land at 0.580, 0.595
+#: and 0.633 m of base_link ground range. 0.60 sits inside that spread rather than
+#: being fitted to it.
+TILT_BOX_050_OBJECT_BASE_M = 0.60

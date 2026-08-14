@@ -104,6 +104,24 @@ Open decision (flag at run time): `enable_imu_fusion:=true` is hardware-validate
 and visibly straightened driving-with-turns; include it unless the run is meant to
 reproduce a wheel-odom-only baseline.
 
+## One check that must happen on the FIRST Pi bringup after the frame batch
+
+**Chassis off; the ToF needs only I2C.** Bring `tof_node` up alone and watch one cycle
+of `/tof/state`. The line must contain `obstacle_consumers=<n>`.
+
+Two reasons, and the second is the one that costs something if skipped:
+
+1. That token replaced `consumers=none_stage_i`, a literal that had been false since the
+   supervisor first subscribed. It is now a MEASURED count
+   (`get_subscription_count()`), so it also serves as a pairing check: on a flight
+   bringup it must be `>= 1`, and a `0` means the supervisor is not actually subscribed
+   whatever its own config claims.
+2. **It is the one line in that batch that no test on the dev machine can execute** —
+   there is no `rclpy` on the Mac, so the call was reviewed but never run. It lives in
+   the 1 Hz state timer, where an `AttributeError` would take the node down. A state
+   line that prints the token proves the call is real; a node that dies a second after
+   bringup is the other answer, and it is far better to get it here than mid-mission.
+
 ## During the run
 
 - Watch; do not touch a healthy run. Note wall-clock times of anything odd — the

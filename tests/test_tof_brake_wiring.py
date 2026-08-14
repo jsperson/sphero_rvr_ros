@@ -74,24 +74,86 @@ def test_the_brake_is_wired_to_the_ToF_and_enabled():
 
 def test_the_brake_acts_on_a_REAL_recorded_obstacle():
     """END TO END on recorded frames: a real 5 cm object at 0.50 m, through the shipped
-    detector, produces a cloud whose nearest point falls inside the deployed slow band.
+    detector, produces a cloud whose nearest point falls inside the deployed range
+    window.
 
     Uses the tilt session's own frames rather than a synthetic obstacle, so the clause
     is about what this sensor really returns.
+
+    THE MARGIN IS DECLARED, NOT INHERITED, and that is the whole lesson of this test's
+    second version. It used to run at the shipped `disagreement_margin_m` of 0.10 m and
+    pass, because every ToF ground range was 0.10 m short and every apparent
+    disagreement was inflated by the frame error to 0.178 m. Corrected, the real
+    disagreement on this object is 0.089 m and the shipped guess does not reach it --
+    so the wiring proof, run at the shipped margin, would now assert that the brake
+    cannot see the object it was built for. That is a true statement about an UNPINNED
+    constant, and it belongs in its own test (below) rather than silently deciding
+    whether the wiring works. What this proof is about is the PATH: detector to cloud
+    to the consumer's range window.
     """
     sys.path.insert(0, os.path.dirname(__file__))
     from fixtures.tof_recorded_frames import TILT_BOX_050, TILT_BOX_050_WALL_M
 
     # The object is rule B's case (row 3 lies outside rule A's band), so the proof needs
     # rule B enabled AND the lidar background it adjudicates against -- the wall behind
-    # the object, spot-measured at 0.678 m in the same session.
-    cfg = dataclasses.replace(TofConfig(), rule_b_enable=True)
+    # the object, spot-measured at 0.678 m in the same session, in base_link.
+    cfg = dataclasses.replace(
+        TofConfig(), rule_b_enable=True, disagreement_margin_m=0.05)
     ranges = _tof_cloud_ground_ranges(TILT_BOX_050, cfg, [TILT_BOX_050_WALL_M] * 8)
     assert ranges, "the recorded object produced no obstacle points through the wired path"
     nearest = min(ranges)
     assert nearest <= _f("low_obstacle_max_range_m"), (
         f"the recorded object sits at {nearest:.3f} m, outside the deployed range window "
         "-- the brake could not see it even with rule B pinned")
+    # THE WINDOW HAS TO ACTUALLY REACH IT, which is what the max_range re-derivation
+    # bought. The object sits at ~0.58 m of base_link ground range; the old 0.55 m
+    # window would have clipped it, and clipping is silent.
+    assert nearest > 0.55, (
+        f"the recorded object now lands at {nearest:.3f} m, inside the OLD 0.55 m "
+        "window -- so this assertion no longer demonstrates that widening it mattered, "
+        "and the max_range derivation needs redoing rather than trusting")
+
+
+def test_the_margin_does_not_reach_the_object_it_was_argued_from():
+    """THE UNPINNED CONSTANT, MEASURED. Recorded as a test so it cannot be forgotten
+    between now and bench item J.
+
+    Design 9.4 justified rule B on this object with "a disagreement of 0.178 m, nearly
+    twenty times the margin rule A had to spare". That 0.178 m was 0.678 (a LIDAR range
+    from base_link) minus 0.500 (a SENSOR reading) -- a subtraction across two frames,
+    and the same defect class as the code it was describing. In one frame the number is
+    0.089 m, and the shipped 0.10 m guess sits ABOVE it.
+
+    So the consequence is concrete: at today's deployed margin, rule B would not fire
+    on the best-detected object of the characterisation session. That does not make
+    rule B wrong -- it makes the GUESS wrong, in a direction nobody could have seen
+    while the frame was broken. J pins it against a real capture; this test exists so
+    that pinning happens on purpose.
+
+    IT MUST NOT BE 'FIXED' BY EDITING THE MARGIN. A constant moved to make a test fire
+    is the self-consistently-wrong stack the frame batch existed to prevent.
+    """
+    sys.path.insert(0, os.path.dirname(__file__))
+    from fixtures.tof_recorded_frames import TILT_BOX_050, TILT_BOX_050_WALL_M
+
+    shipped = dataclasses.replace(TofConfig(), rule_b_enable=True)
+    assert shipped.disagreement_margin_m == 0.10, (
+        "the disagreement margin has moved; if bench item J pinned it, this test should "
+        "be rewritten around the measured value and its citation, and if it moved for "
+        "any other reason that is the problem")
+
+    fired = _tof_cloud_ground_ranges(TILT_BOX_050, shipped, [TILT_BOX_050_WALL_M] * 8)
+    assert not fired, (
+        f"rule B now reaches the recorded object at the unpinned 0.10 m margin "
+        f"({len(fired)} points). Either the geometry changed or the margin did -- "
+        "either way the 0.089 m measurement behind this test needs redoing")
+
+    # ...and the object IS reachable at a margin inside the predicted window, so the
+    # assertion above is about the margin and not about a detector that sees nothing.
+    inside = dataclasses.replace(shipped, disagreement_margin_m=0.05)
+    assert _tof_cloud_ground_ranges(TILT_BOX_050, inside, [TILT_BOX_050_WALL_M] * 8), (
+        "the object is unreachable even at a 0.05 m margin, so the test above proves "
+        "nothing about the margin -- the detector is simply not concluding")
 
     # AND THE COUPLING THAT PINNING RULE B WILL CREATE, asserted now while it is cheap.
     # The object is at 0.482 m; the deployed slow band is 0.30 m, sized for rule A's

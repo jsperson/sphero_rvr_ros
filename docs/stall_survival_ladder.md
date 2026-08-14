@@ -320,6 +320,50 @@ Sub-criteria, each falsifiable from artifacts we already collect:
   `ProgressGuard` — today it produces `{drive: N}` for any N.
 - Class B regression: a refused straight reverse must reach rung 2, not abort.
 
+### 7.1 THE NO-COUNT RULE — a run scored on aborts it never earned (2026-08-13)
+
+**A mission ending `ABORTED_GOALS_KEEP_FAILING` is only evidence that the room refused
+the rover if the rover actually asked.** It was not always asking. On 2026-08-13 an
+abort arrived 1.1 s after `bt_navigator` logged *"Timed out while waiting for action
+server to acknowledge goal request for follow_path"*, with the controller busy running
+the ladder on the PREVIOUS goal. Nothing was attempted on that goal and the rover may
+have been physically free — yet it counted exactly like a ladder exhaustion, because
+`_goals_aborted` was one number answering two questions
+(`docs/reverse_before_give_up_design.md`, amendment 2026-08-13).
+
+The counter is now split. The mission report carries `goals.aborted_after_recovery` and
+`goals.aborted_without_recovery`, discriminated by the controller's own `ladder_active`
+publication — not inferred from progress, a timer, or the shape of the abort.
+
+**MIND WHAT THE DISCRIMINATOR ACTUALLY SAYS, because the rule is built on its limits.**
+`without_recovery` means *no recovery ran*. It is a **superset** of *never got to try*:
+a goal the rover drove at normally and failed lands there too, and that abort IS earned.
+So the counter cannot no-count a run by itself, and a rule that let it would be
+measuring the wrong population again.
+
+The rule, therefore:
+
+> A run whose `ABORTED_GOALS_KEEP_FAILING` ending is **dominated by
+> `aborted_without_recovery`** does not count toward the three **on confirmation, not on
+> the counter**. Confirmation is a manual read of the launch log for the acknowledgement
+> signature (`"Timed out while waiting for action server to acknowledge goal request for
+> follow_path"` inside ~2 s of the abort) against the ordinary planner-abort signature.
+> Aborts confirmed as never-attempted do not count; aborts that were ordinary failed
+> drives do. If the never-attempted class dominates, the **starvation root cause jumps
+> the queue** — the ending is about the stack's concurrency, not about the room.
+
+**This stays manual until the controller publishes a per-goal fact.** The honest fix is
+the standing rule — the owner publishes the fact — and it is the deferred message-
+contract batch (same batch as the freeze-mark merge radius). When a controller-published
+"I accepted a FollowPath goal" lands, the no-count becomes automatic and this paragraph
+is deleted rather than amended.
+
+A note on the naming, since it will look wrong to someone who read the design first: the
+fields are named for the SIGNAL (`without_recovery`), not for the question
+(`never_tried`). A field called `never_tried` would claim more than the controller ever
+told us, and would go on claiming it after the discriminator changed — the capability-
+word failure of D35, in a field name.
+
 ---
 
 ## 8. D29 — no armed state (rides along)

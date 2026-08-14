@@ -50,6 +50,22 @@ class TofConfig:
     # right to +-6 mm. Re-mounting invalidates them even if the tape is unchanged.
     mount_height_m: float = 0.139
     mount_pitch_deg: float = -15.7      # positive = nose UP
+    # FORWARD OFFSET OF THE SENSOR FROM base_link, and the reason this module now has a
+    # single source of truth for position. It existed only as a node parameter feeding
+    # the static TF; `zone_point` -- which builds the clouds PUBLISHED IN base_link --
+    # never applied it, so every point was 0.10 m nearer to base_link than the thing it
+    # represented, and every consumer of those points inherited the error.
+    #
+    # Found by bench item J on 2026-08-13, in its first twenty seconds and before the
+    # wall was even staged: the ToF read a MEDIAN 0.10 m nearer than the lidar on the
+    # same surfaces, CONSTANT from 0.72 m to 1.90 m. A constant offset across a 2.6x
+    # range change is a missing translation; a sensor artifact would have scaled with
+    # range. Data: 03_validation/escape_provocation_2026-08-13/J_probe2.csv.
+    #
+    # Unlike `mount_height_m` and `mount_pitch_deg` above, this is NOT a fitted
+    # calibration value -- it is the same physical translation the static TF publishes,
+    # and the two must move together. A remount changes both.
+    mount_x_m: float = 0.10
     # The sensor reports distance along ITS OWN BORESIGHT, not along base_link x.
     # SETTLED 2026-08-13 by pre-registering three hypotheses and measuring at two wall
     # distances; see zone_angles_sensor for why the level mount could not have answered
@@ -112,9 +128,48 @@ class TofConfig:
     # sub-lidar part of a wall" are both things we are about to stop for, so the
     # comparison cannot tell them apart AND DOES NOT NEED TO. Outside it the two
     # explanations demand opposite actions and rule A is not entitled to choose.
-    # PROVISIONAL -- the real stop distance is still underived (design note 4) and
-    # gated on the in-flight pitch envelope. Which rows this admits is therefore a
-    # FUNCTION of this number and is published on ~/state rather than hardcoded.
+    # DERIVED 2026-08-13 IN THE TRUE FRAME, and it is a `base_link` GROUND RANGE --
+    # compared against `floor_ground_range_m`, never against a sensor reading. It was
+    # previously compared against `_floor_reading_m`, which is the shorter number, so
+    # the bound admitted rows whose floor is further from the robot than it looks. The
+    # error ran in the PERMISSIVE direction: it granted authority the geometry did not
+    # support, to the one rule that cannot tell an object from a wall.
+    #
+    # THE OPERAND, NAMED. Rule A may conclude only where the two explanations of a
+    # return -- an object, or the sub-lidar part of a wall -- demand the same action.
+    # They do exactly where a WALL is already commanding a stop from another authority,
+    # and that authority is the lidar supervisor's own `stop_distance_m: 0.30` in
+    # config/collision_stop.yaml, which is a base_link distance (the scan is
+    # transformed to base_link at collision_stop.py before any range comparison).
+    #
+    # THIS IS NOT THE RETRACTED COMPARISON OF DESIGN 11.2, and the difference is the
+    # question being asked. 11.2's error was measuring rule A's REACH against 0.30 as
+    # though 0.30 were the distance in which the rover must physically stop -- a
+    # threshold standing in for a requirement. Here the question IS about a threshold:
+    # "at what range does the other brake already act?" The physical stop requirement
+    # (footprint + payload + braking) would be the wrong operand for that.
+    #
+    # THE ARITHMETIC. Rule A's reach per row, in base_link, at floor - floor_margin:
+    #     row 4  0.397 m   > 0.30  -- EXCLUDED
+    #     row 5  0.297 m  <= 0.30  -- admitted (3.3 mm inside)
+    #     row 6  0.229 m           -- admitted
+    #     row 7  0.185 m           -- admitted
+    # The bound is expressed on the floor's ground range, so admitting {5,6,7} and
+    # excluding 4 requires a value in [0.421, 0.5125) -- row 5's furthest floor and
+    # row 4's nearest. 0.45 lies inside that window with 0.029 m below and 0.062 m
+    # above, so the SHIPPED NUMBER DOES NOT MOVE; what changed is that it now has an
+    # operand instead of a provenance of "provisional".
+    #
+    # Row 5 clears the bound by 3.3 mm and that is tolerable HERE for a reason that
+    # does not generalise: exceeding it means braking early for a wall the lidar has
+    # not yet stopped for, which is over-caution. Design 9.4's 9 mm was a DETECTION
+    # claim, where the thin side is a miss. Thin margins are judged by which way they
+    # fail, not by their width.
+    #
+    # Still PROVISIONAL in one respect: `floor_margin_m` below is static-only, and the
+    # reach above is computed from it, so the in-flight pitch envelope (design 3.3)
+    # can still move this. Which rows it admits stays a FUNCTION of this number and is
+    # published on ~/state rather than hardcoded.
     stop_distance_m: float = 0.45
 
     # --- traversable terrain: what is NOT an obstacle ------------------------------
@@ -145,10 +200,33 @@ class TofConfig:
     # A ToF return this much nearer than the lidar's own range at the same bearing is
     # something the lidar cannot see -- which is the definition of the obstacle class
     # this sensor exists for.
-    # UNPINNED. There is no recorded data behind this number: the tilt session captured
-    # 23,057 ToF frames and ZERO synchronised /scan. Bench item J (design note 9.8)
-    # pins it. Until then the node advertises rule B as UNPINNED on ~/state and it
-    # carries no authority.
+    # STILL UNPINNED, and now known to be WRONG IN A MEASURABLE DIRECTION. Bench item J
+    # (design note 9.8) pins it against a real synchronised capture; nothing below is a
+    # substitute for that, and the node advertises rule B as UNPINNED on ~/state until
+    # it happens.
+    #
+    # What the frame fix changed: this 0.10 m guess was set while every ToF ground range
+    # was 0.10 m short, which inflated every apparent disagreement by exactly the
+    # margin's own size. Re-measured through the fixed code:
+    #
+    #   the 5 cm object at 0.50 m (TILT_BOX_050, the object rule B was justified BY)
+    #       real disagreement  0.089 m   -- design 9.4 recorded 0.178 m, of which
+    #                                       0.100 m was frame error and 0.078 m signal
+    #   a bare wall (TILT_WALL_060 against its base_link background)
+    #       worst apparent disagreement  +0.009 m
+    #   the J probe's wall columns, re-analysed (03_validation/
+    #       escape_provocation_2026-08-13/J_probe2.csv)
+    #       residual +0.001 m at 0.83 m, +0.024 m at 1.80 m -- range-scaling, not a
+    #       translation, and consistent with each zone reporting the nearest part of
+    #       its cone (design 9.7)
+    #
+    # So the margin must sit ABOVE the bare-wall residual and BELOW the object's real
+    # disagreement: predicted window roughly [0.033, 0.089) once the long-range
+    # residual is included. AT THE SHIPPED 0.10 m, RULE B DOES NOT REACH THE OBJECT IT
+    # WAS ARGUED FROM -- 0 of 40 recorded frames. That is a prediction for J to confirm
+    # or destroy, not a licence to edit this number: a margin chosen to make a test
+    # fire is the "self-consistently wrong stack" the frame batch existed to avoid.
+    # The value stays at its old guess so that J measures against an unmoved target.
     disagreement_margin_m: float = 0.10
     # RULE B IS GATED OFF UNTIL ITS MARGIN IS PINNED (bench item J, design 9.8). The
     # gate lives on the DETECTOR rather than on the consumer, because rule B decides
@@ -280,7 +358,19 @@ def plausible_for_zone(row: int, col: int, value: int, cfg: TofConfig) -> bool:
 
 
 def zone_point(row: int, col: int, value_mm: int, cfg: TofConfig) -> Optional[tuple]:
-    """(x, y, z) of a zone's return in the robot frame, metres, or None if invalid.
+    """(x, y, z) of a zone's return in `base_link`, metres, or None if invalid.
+
+    THE SINGLE SOURCE OF TRUTH FOR WHERE A RETURN IS. Every predicate below that needs
+    a position asks this function, and none of them re-derives one from a scalar. That
+    is a rule with a cost attached: the word "range" was used for two quantities -- a
+    distance from the SENSOR (what the ToF reports) and a distance from `base_link`
+    (what every consumer assumed) -- and the sensor sits `mount_x_m` forward of
+    `base_link`. Three separate defects came out of that one ambiguity in a day.
+
+    The mount offsets are applied HERE, once, so a caller cannot forget them:
+    `mount_x_m` forward and `mount_height_m` up. A ray length is measured from the
+    sensor; the point is expressed from `base_link`; nothing in between gets to hold a
+    number whose frame you have to remember.
 
     `reports_z` decides the arithmetic: if the sensor reports PERPENDICULAR distance
     the reading is the x-component and the ray is scaled out to it; if it reports
@@ -292,8 +382,40 @@ def zone_point(row: int, col: int, value_mm: int, cfg: TofConfig) -> Optional[tu
         return None
     d = value_mm / 1000.0
     r = d / _boresight_cosine(row, col, cfg) if cfg.reports_z else d
+    return _point_from_ray_length(row, col, r, cfg)
+
+
+def _point_from_ray_length(row: int, col: int, r: float, cfg: TofConfig) -> tuple:
+    """(x, y, z) in `base_link` for a ray of length `r` FROM THE SENSOR.
+
+    THE ONLY PLACE A RAY LENGTH BECOMES A POSITION, and therefore the only place the
+    mount offsets are applied. Two callers need this arithmetic -- a return's point and
+    the floor's -- and the previous shape had each of them doing its own version, which
+    is how one of them came to omit `mount_x_m` entirely while the other never had it
+    to omit.
+    """
     ux, uy, uz = zone_ray(row, col, cfg)
-    return (r * ux, r * uy, cfg.mount_height_m + r * uz)
+    return (cfg.mount_x_m + r * ux, r * uy, cfg.mount_height_m + r * uz)
+
+
+def floor_ground_range_m(row: int, col: int, cfg: TofConfig) -> Optional[float]:
+    """Ground range IN base_link at which this zone's ray meets the floor, or None for
+    a ray that never gets there.
+
+    The `base_link` counterpart of `_floor_reading_m`, and the two must never be
+    substituted for each other -- substituting them is bug 2 of the frame batch.
+    `_floor_reading_m` answers *"what would this zone REPORT for flat floor?"*: a
+    sensor-frame reading, and the right operand only for comparison against another
+    reading. This answers *"how far in front of the ROBOT is that floor?"*: the right
+    operand for comparison against a distance the robot cares about, such as the stop
+    distance. They differ by the mount offset AND by the boresight projection, and the
+    gap is large enough to move rule A's row set.
+    """
+    r = _floor_ray_length(row, col, cfg)
+    if r is None:
+        return None
+    x, y, _z = _point_from_ray_length(row, col, r, cfg)
+    return math.hypot(x, y)
 
 
 def expected_floor_m(row: int, col: int, cfg: TofConfig) -> Optional[float]:
@@ -365,8 +487,16 @@ def rule_a_applies(row: int, col: int, cfg: TofConfig) -> bool:
     Computed from the geometry and the stop distance every time, never a row list. A
     frozen row set is how `floor_horizon_m` came to be enforcing an authority boundary
     it was never chosen for.
+
+    THE OPERAND IS A `base_link` GROUND RANGE, and it used to be a sensor READING. The
+    bound asks "is this zone's floor inside the distance at which the ROBOT must stop?"
+    -- both sides of that question belong to the robot, and `_floor_reading_m` belongs
+    to the sensor. The reading is the shorter number, so the old comparison admitted
+    rows whose floor is actually FURTHER from base_link than the stop distance, and
+    admitted them to the one rule that cannot tell an object from a wall. The error was
+    in the permissive direction: it granted authority the geometry did not support.
     """
-    floor = _floor_reading_m(row, col, cfg)
+    floor = floor_ground_range_m(row, col, cfg)
     return floor is not None and floor <= cfg.stop_distance_m
 
 
@@ -429,20 +559,26 @@ def standing_above_floor(row: int, col: int, value: int, cfg: TofConfig) -> bool
     return value / 1000.0 < floor - cfg.floor_margin_m
 
 
-def rule_b_applies(row: int, col: int, range_m: float, cfg: TofConfig) -> bool:
-    """Whether a return at this range is BELOW the lidar's scan plane -- design 9.3.
+def rule_b_applies(point, cfg: TofConfig) -> bool:
+    """Whether this return is BELOW the lidar's scan plane -- design 9.3.
 
     Above the plane the lidar sees what the ToF sees, so a disagreement there is
     occlusion geometry, not a sub-lidar object, and rule B must stay quiet. At the
     shipped geometry only row 0 rises, crossing at ~0.59 m.
+
+    IT TAKES THE POINT, AND THE POINT ALREADY KNOWS ITS OWN HEIGHT. The previous
+    version took a ground range and RECONSTRUCTED the height from the ray's slope --
+    correct only while that range was measured from the sensor, which is exactly what
+    stopped being true when `zone_point` started returning true `base_link`. The two
+    frame errors had been cancelling: reconstruction and caller agreed because both
+    omitted `mount_x_m`. Fixing the point alone would have left this formula treating a
+    `base_link` ground range as a sensor-frame one and UNDER-estimating z by 22 mm at
+    0.50 m -- growing with range, and in the PERMISSIVE direction, since a return that
+    looks lower than it is looks more sub-lidar than it is. That is why the frame fix
+    had to be one refactor and not three patches: `tall_enough_to_matter` already read
+    `point[2]` and was already immune, and this is that pattern applied everywhere.
     """
-    if range_m <= 0.0:
-        return False
-    ux, uy, uz = zone_ray(row, col, cfg)
-    ground = math.hypot(ux, uy)
-    if ground <= 1e-9:
-        return False
-    return cfg.mount_height_m + range_m * uz / ground < cfg.lidar_plane_m
+    return point is not None and point[2] < cfg.lidar_plane_m
 
 
 def column_span_rad(col: int, cfg: TofConfig) -> tuple:
@@ -509,9 +645,16 @@ def lidar_disagreement(frame, cfg: TofConfig, column_min) -> list:
             point = zone_point(row, col, value, cfg)
             if point is None:
                 continue
-            ground = math.hypot(point[0], point[1])
-            if not rule_b_applies(row, col, ground, cfg):
+            if not rule_b_applies(point, cfg):
                 continue
+            # THE GROUND RANGE COMPARED AGAINST THE LIDAR IS THE POINT'S OWN, in
+            # base_link, and so is `column_min` -- the node transforms the scan through
+            # TF before it ever reaches `scan_min_by_column`. Both sides of this
+            # inequality are therefore distances from the same origin. While
+            # `zone_point` omitted `mount_x_m` they were not, and the ToF read 0.10 m
+            # nearer than the lidar on identical surfaces, which is a phantom
+            # disagreement of exactly the size rule B's margin was being asked to cover.
+            ground = math.hypot(point[0], point[1])
             if ground < column_min[col] - cfg.disagreement_margin_m:
                 hits.append(col)
         out.extend((row, col) for col in _adjacent_runs(hits, cfg))

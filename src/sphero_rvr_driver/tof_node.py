@@ -125,6 +125,12 @@ class TofNode(Node):
         self._cfg = TofConfig(
             mount_height_m=float(_p("mount_height_m").value),
             mount_pitch_deg=float(_p("mount_pitch_deg").value),
+            # THE SAME PARAMETER THE STATIC TF BELOW USES, and that is the whole point.
+            # It was declared, published to TF, and never handed to the geometry that
+            # builds the clouds -- so TF said the sensor was 0.10 m forward while every
+            # point those clouds carried said it was at base_link. One parameter, two
+            # answers, and only the wrong one reached the consumers.
+            mount_x_m=float(_p("mount_x_m").value),
             zone_deg_h=float(_p("zone_deg_h").value),
             zone_deg_v=float(_p("zone_deg_v").value),
             reports_z=bool(_p("reports_z").value),
@@ -357,7 +363,18 @@ class TofNode(Node):
             f"lidar_plane_m={'None' if self._lidar_plane_m is None else round(self._lidar_plane_m, 4)} "
             f"rule_b={'UNPINNED' if not cfg.rule_b_enable else 'pinned'} "
             f"margin_m={cfg.disagreement_margin_m} "
-            f"consumers=none_stage_i"
+            # COUNTED, NEVER ASSERTED. This read `consumers=none_stage_i` -- a literal
+            # that was true when the node was written and false from the moment the
+            # supervisor subscribed for the low-obstacle brake, which is to say for
+            # every flight it has ever appeared in. A recording that says a sensor had
+            # no consumers while that sensor is holding the brake is worse than one
+            # that says nothing.
+            #
+            # The node cannot know who its consumers are; it can only MEASURE how many
+            # there are. So it measures. The count is also a pairing check for free: on
+            # a flight bringup this must be >= 1, and a 0 means the supervisor is not
+            # actually subscribed whatever its own config claims.
+            f"obstacle_consumers={self._obstacles_pub.get_subscription_count()}"
         )
         self._state_pub.publish(state)
 

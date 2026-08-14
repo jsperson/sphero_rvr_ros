@@ -18,12 +18,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fixtures.tof_recorded_frames import (  # noqa: E402
     BOX_074, CLEAR_FLOOR, LEVEL_MOUNT_CFG, RAIL_046, TILT_BOX_050,
-    TILT_BOX_050_OBJECT_M, TILT_BOX_050_WALL_M, TILT_CLEAR, TILT_FLOOR_MEDIANS,
-    TILT_WALL_060, TILT_WALL_060_ROWS, TILT_WALL_060_SENSOR_M, WALL_ONLY,
+    TILT_BOX_050_OBJECT_BASE_M, TILT_BOX_050_OBJECT_M, TILT_BOX_050_WALL_M, TILT_CLEAR, TILT_FLOOR_MEDIANS,
+    TILT_WALL_060, TILT_WALL_060_ROWS, TILT_WALL_060_BASE_M, TILT_WALL_060_SENSOR_M,
+    WALL_ONLY,
 )
 from sphero_rvr_core.tof_frame import (  # noqa: E402
     _floor_reading_m,
     ObstacleDetector, TofConfig, expected_floor_m, floor_beyond_horizon,
+    floor_ground_range_m,
     lidar_disagreement, nearer_than_floor, plausible_for_zone, rule_a_applies,
     rule_a_rows, rule_b_applies, scan_min_by_column, tall_enough_to_matter,
     unexpected_returns, valid_mm,
@@ -285,8 +287,15 @@ def test_rule_one_fires_on_a_real_floor_obstruction():
     Saying that out loud is better than dressing a synthetic frame as evidence. A
     5 cm obstacle standing at row 6's floor intersection shortens that zone by about
     0.18 m, comfortably past the 0.12 m margin derived from the measured residuals.
+
+    AUTHORITY IS STATED, NOT INHERITED. This replays the retired LEVEL mount, where
+    row 6's floor sits 0.479 m from base_link -- outside the 0.45 m bound that was
+    derived for the TILTED geometry. Inheriting that bound here would make the proof
+    fail for a reason that has nothing to do with the mechanism it tests, and nudging
+    the shipped constant to keep an old-era fixture green would be the tail wagging
+    the dog. The bound is therefore set explicitly for this fixture's own geometry.
     """
-    cfg = LEVEL_MOUNT_CFG
+    cfg = dataclasses.replace(LEVEL_MOUNT_CFG, stop_distance_m=0.50)
     frame = list(CLEAR_FLOOR[0])
     expected = expected_floor_m(6, 3, cfg)
     for col in (3, 4):
@@ -427,7 +436,11 @@ def test_row_two_does_not_brake_for_a_wall():
         "row 2 holds rule A authority at the shipped stop distance; its floor is 1.16 m "
         "away and the comparison there cannot tell a wall from an obstacle")
 
-    background = [TILT_WALL_060_SENSOR_M] * 8
+    # BASE_LINK, because that is the frame `lidar_disagreement` compares in. The
+    # sensor-frame 0.578 m understates the background by the mount offset, which makes
+    # rule B look quieter than it is -- so this proof would have passed against a rule
+    # B that fired on every wall.
+    background = [TILT_WALL_060_BASE_M] * 8
     det = ObstacleDetector(cfg)
     fired = [(i, r["obstacles"]) for i, r in
              ((i, det.update(f, background)) for i, f in enumerate(TILT_WALL_060))
@@ -465,18 +478,25 @@ def test_rule_a_row_set_follows_the_stop_distance():
     """
     cfg = TofConfig()
     rows = {d: rule_a_rows(dataclasses.replace(cfg, stop_distance_m=d))
-            for d in (0.25, 0.35, 0.45, 0.70, 1.20)}
-    for a, b in ((0.25, 0.35), (0.35, 0.45), (0.45, 0.70), (0.70, 1.20)):
+            for d in (0.25, 0.35, 0.45, 0.75, 1.30)}
+    for a, b in ((0.25, 0.35), (0.35, 0.45), (0.45, 0.75), (0.75, 1.30)):
         assert set(rows[a]) < set(rows[b]), (
             f"stop distance {a} -> rows {rows[a]} and {b} -> rows {rows[b]}: the set is "
             "not growing with the distance, so it is not being computed from it")
-    # Anchored on the two rows the amendment argues about by name: row 3's floor reads
-    # 0.63 m and row 2's 1.16 m, so each is admitted only once the stop distance passes
-    # its own floor -- which is the whole content of the bound.
-    assert 3 not in rows[0.45] and 3 in rows[0.70], (
-        f"row 3 (floor 0.63 m) is admitted at 0.45 m: {rows[0.45]}")
-    assert 2 not in rows[0.70] and 2 in rows[1.20], (
-        f"row 2 (floor 1.16 m) is admitted at 0.70 m: {rows[0.70]}")
+    # Anchored on the two rows the amendment argues about by name -- AND THE ANCHORS
+    # MOVED WITH THE FRAME FIX, which is the point worth recording. Row 3's floor
+    # READS 0.63 m and row 2's reads 1.16 m, but the bound is a base_link ground range
+    # now, where the same two floors sit at 0.716 m and 1.263 m. The old anchors (0.70
+    # and 1.20) fell in the gap between the two frames and would have failed here --
+    # correctly. A test that had been "updated" by nudging them to keep passing would
+    # have erased the only visible sign that the operand changed.
+    assert floor_ground_range_m(3, 3, cfg) > _floor_reading_m(3, 3, cfg), (
+        "a zone's floor is no further from base_link than it reads from the sensor, so "
+        "the two frames have collapsed and this bound cannot be tested in the wrong one")
+    assert 3 not in rows[0.45] and 3 in rows[0.75], (
+        f"row 3 (floor 0.716 m from base_link) is admitted at 0.45 m: {rows[0.45]}")
+    assert 2 not in rows[0.75] and 2 in rows[1.30], (
+        f"row 2 (floor 1.263 m from base_link) is admitted at 0.75 m: {rows[0.75]}")
 
 
 def test_rule_b_needs_the_lidar_to_DISAGREE():
@@ -495,15 +515,33 @@ def test_rule_b_needs_the_lidar_to_DISAGREE():
     OPTS IN EXPLICITLY. Rule B ships GATED OFF until bench item J pins its margin, so a
     proof of rule B's logic has to enable it and say so -- inheriting the shipped default
     would leave this quietly testing nothing the day the gate flipped either way.
+
+    AND IT DECLARES ITS MARGIN, which the first version did not. This proof is about
+    rule B's LOGIC -- disagreement fires, agreement does not -- and that logic must be
+    demonstrable without depending on an unpinned constant. Inheriting the shipped
+    0.10 m guess made the proof silently depend on it, and the frame fix then showed
+    the guess to be on the wrong side of this very object: the real disagreement is
+    0.089 m, so at 0.10 m rule B reaches it in 0 of 40 frames. The margin used here is
+    therefore stated, not inherited, and `test_the_margin_does_not_reach_the_object_it
+    _was_argued_from` below records the shipped guess's actual behaviour.
     """
-    cfg = dataclasses.replace(TofConfig(), rule_b_enable=True)
+    # HYPOTHETICAL, and labelled as such. Chosen below the object's measured 0.089 m
+    # disagreement and above the bare wall's 0.009 m -- the window the re-analysis
+    # predicts J will land in. It is not a proposal for the deployed value; only a
+    # real synchronised capture may set that.
+    cfg = dataclasses.replace(
+        TofConfig(), rule_b_enable=True, disagreement_margin_m=0.05)
 
     def fires(background):
         det = ObstacleDetector(cfg)
         return sum(1 for f in TILT_BOX_050 if det.update(f, background)["obstacles"])
 
     disagree = fires([TILT_BOX_050_WALL_M] * 8)
-    agree = fires([TILT_BOX_050_OBJECT_M] * 8)
+    # BASE_LINK, not the 0.500 m the sensor read. Feeding the sensor-frame number here
+    # made the agreement case pass for the wrong reason: a background 0.10 m NEARER
+    # than the ToF's own ground range can never be disagreed with, so the assertion
+    # held against any implementation at all, including one that ignored the lidar.
+    agree = fires([TILT_BOX_050_OBJECT_BASE_M] * 8)
     open_space = fires([float("inf")] * 8)
 
     assert disagree > 30, (
@@ -569,18 +607,44 @@ def test_row_zero_stops_applying_above_the_lidar_plane():
     a sub-lidar object; beyond that the lidar can see whatever row 0 sees, so a
     disagreement means occlusion geometry and the rule must go quiet. Rows 1-7 descend
     from a mount 51 mm below the plane and never leave it.
+
+    THE PREDICATE NOW TAKES THE POINT, and the crossing is swept by feeding real
+    readings through `zone_point` rather than by handing the predicate a bare range.
+    That is not cosmetic: the old signature took a ground range and RECONSTRUCTED the
+    height from the ray slope, which agreed with the point only while both of them
+    omitted `mount_x_m`. Sweeping readings exercises the same path the detector uses.
     """
     cfg = TofConfig()
-    assert rule_b_applies(0, 3, 0.40, cfg), "row 0 is excluded even close in"
-    assert not rule_b_applies(0, 3, 1.50, cfg), (
+
+    def applies_at(row, reading_mm):
+        return rule_b_applies(zone_point(row, 3, reading_mm, cfg), cfg)
+
+    assert applies_at(0, 400), "row 0 is excluded even close in"
+    assert not applies_at(0, 1500), (
         "row 0 still claims sub-lidar authority at 1.5 m, where its ray is well above "
         "the lidar's own scan plane")
-    crossing = [r for r in [x / 100.0 for x in range(20, 150)]
-                if not rule_b_applies(0, 3, r, cfg)]
-    assert 0.50 < min(crossing) < 0.70, f"row 0 crosses the plane at {min(crossing):.2f} m"
+    ground = []
+    for mm in range(200, 1500):
+        p = zone_point(0, 3, mm, cfg)
+        if p and not rule_b_applies(p, cfg):
+            ground.append(math.hypot(p[0], p[1]))
+    assert 0.50 < min(ground) < 0.70, f"row 0 crosses the plane at {min(ground):.2f} m"
     for row in range(1, 8):
-        assert rule_b_applies(row, 3, 2.0, cfg), (
+        assert applies_at(row, 2000) or zone_point(row, 3, 2000, cfg) is None, (
             f"row {row} descends from below the lidar plane and cannot rise above it")
+
+    # THE MUTATION THIS PROOF EXISTS TO CATCH, asserted rather than trusted: a height
+    # reconstructed from the point's base_link ground range -- the shape the old
+    # signature invited -- is WRONG BY 22 mm at 0.50 m, and wrong downward, which reads
+    # as "further below the lidar plane" and hands rule B authority it has not earned.
+    p = zone_point(3, 3, 500, cfg)
+    ux, uy, uz = zone_ray(3, 3, cfg)
+    reconstructed = cfg.mount_height_m + math.hypot(p[0], p[1]) * uz / math.hypot(ux, uy)
+    assert reconstructed < p[2] - 0.020, (
+        f"reconstructing height from a base_link ground range now agrees with the "
+        f"point ({reconstructed:.4f} vs {p[2]:.4f}) -- either the mount offset left "
+        "zone_point or the two frames collapsed, and this proof can no longer tell "
+        "the correct predicate from the one it replaced")
 
 
 def test_the_lidar_background_is_read_by_BEARING_not_by_index():
@@ -635,7 +699,10 @@ def test_rule_a_authority_is_INDEPENDENT_of_the_floor_horizon():
         "the shipped constants no longer make this test meaningful; pick a stop "
         "distance either side of the horizon and re-derive what it should prove")
 
-    wide = dataclasses.replace(cfg, stop_distance_m=0.70)
+    # 0.75, not 0.70: the bound is a base_link ground range now, and row 3's floor is
+    # 0.716 m from base_link though it READS 0.629 m. The old 0.70 sat between the two
+    # frames -- past the horizon, but short of the row it was chosen to admit.
+    wide = dataclasses.replace(cfg, stop_distance_m=0.75)
     assert set(rule_a_rows(wide)) > set(rule_a_rows(cfg)), (
         f"raising the stop distance past the {cfg.floor_horizon_m} m horizon gained no "
         f"rows ({rule_a_rows(wide)} vs {rule_a_rows(cfg)}) -- the horizon is still "

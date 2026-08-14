@@ -288,3 +288,143 @@ Only then is it worth asking whether the ladder's contribution should be reduced
   If a latency test is still wanted, it belongs on the Pi and should measure
   acknowledgement latency **against host CPU**, which is the variable this analysis
   says matters.
+
+---
+
+## 9. CORRECTIONS TO THIS DOCUMENT, made while executing it (2026-08-13)
+
+Appended, not edited, on the same basis as §8. The handover asked to be treated with
+suspicion; this is what the suspicion found. **Two of §1's three bugs were live. The
+third was not, and its dormancy is the strongest argument for the shape §2 prescribes.**
+
+### 9.1 Bug 3 was LATENT, not live — and the two errors cancelled EXACTLY
+
+§1's table lists bug 3 as an error in the deployed binary, "+22 mm of height error at
+0.40 m, growing with range". Measured against the shipped code at row 3, column 3, a
+500 mm reading:
+
+    zone_point's z                     0.0286 m
+    rule_b_applies' reconstruction     0.0286 m      error 0.0000 m
+
+They agree to the last digit, and they must: `rule_b_applies` reconstructed the height
+from a ground range that its caller computed as `hypot(point.x, point.y)`, and while
+`zone_point` omitted `mount_x_m` that ground range was exactly `r · hypot(ux, uy)` —
+precisely the quantity the reconstruction assumed. **Bug 1 and bug 3 were the same
+omission, applied twice, cancelling.** Apply the parked patch and the same zone gives:
+
+    zone_point's z                     0.0286 m
+    reconstruction                     0.0060 m      error −0.0225 m
+
+So §2's warning is right and its reasoning needs one correction: the parked patch does
+not make an existing error worse, it **ACTIVATES a dormant one**. The distinction
+matters for the deployed binary's status — §7 calls it "honest but known-biased", and
+that remains true: the height gate in flight was correct, and only positions were short.
+
+### 9.2 The activation is in the PERMISSIVE direction
+
+The reconstruction UNDER-states z. A return that looks lower than it is looks further
+below the lidar plane than it is, so `rule_b_applies` would extend rule B's authority
+**above** the plane — where the lidar sees perfectly well and disagreement means
+occlusion geometry, not a sub-lidar object. That is the unsafe side, and it is the
+second reason the parked patch must never ship alone.
+
+`tall_enough_to_matter` was already immune because it reads `point[2]` directly. It is
+not a lucky exception; it is the pattern, and the refactor is that pattern applied to
+every predicate.
+
+### 9.3 §3's predicted constants — two confirmed, one wrong in a way that matters
+
+| §3 predicted | measured in the true frame | |
+|---|---|---|
+| rule A reach ~0.398 m | **0.397 m** for row 4 | confirmed |
+| rule B reach 0.598 m | **0.598 m** for row 3 | confirmed |
+| nearest reportable 0.152 m | **0.1517 m** | confirmed |
+| rule A's reach becomes ~0.398 m | **it becomes 0.297 m** | **wrong, and instructively** |
+
+Every row's reach moved by +0.100 m as predicted. But rule A's reach is the reach of
+the furthest row that still holds AUTHORITY, and the authority bound moved too — a
+zone's floor is 0.070–0.108 m further from `base_link` than it READS, because that
+comparison crosses the boresight projection as well as the mount offset. **Row 4 fell
+out of the row set** (its floor is 0.512 m from base_link, outside the 0.45 m bound),
+and the reach fell back to row 5's 0.297 m.
+
+The number barely moved (0.298 → 0.297) and the row that supplies it changed. Anyone
+checking this batch by confirming that the reach "still looks about right" would have
+seen nothing.
+
+### 9.4 `stop_distance_m` did not need to move, and now has an operand
+
+§3 says it "must be a base_link distance now that it is compared against one" without
+naming what sets it. Derived: rule A may conclude only where a WALL is already
+commanding a stop from another authority, which is the lidar supervisor's own
+`stop_distance_m: 0.30` — a base_link distance (the scan is transformed before any
+range comparison). Rule A's reach must therefore stay inside 0.30 m: row 4's 0.397 m
+does not, rows 5–7 do. Expressed on the floor's ground range, admitting {5,6,7} and
+excluding 4 requires a bound in **[0.421, 0.5125)**, and the shipped 0.45 sits inside
+it. Unchanged value, derived provenance.
+
+This is **not** the comparison design §11.2 retracted. That error measured a detection
+REACH against 0.30 as though 0.30 were a physical stopping requirement. This asks when
+another brake acts, and a threshold is the correct operand for that question.
+
+### 9.5 The fixture layer carried the same bug, in two places
+
+Neither is in §1's table, and both were making tests pass for the wrong reason:
+
+* `TILT_WALL_060_SENSOR_M = 0.578` is a SENSOR-frame distance whose comment claimed "a
+  lidar looking at this wall would report approximately this". It was being fed to
+  `lidar_disagreement` as a background, which compares against `base_link` ground
+  ranges. Corrected to `TILT_WALL_060_BASE_M = 0.678` — **and that number is an
+  independent lidar spot probe of the same wall, not 0.578 + 0.10.** Two routes to the
+  same figure is the strongest single confirmation that `mount_x_m` is 0.10 m.
+* `TILT_BOX_050_OBJECT_M = 0.500` (a sensor reading) was the "the lidar sees the object
+  itself" background. A background 0.10 m nearer than the ToF's own ground range can
+  never be disagreed with, so that assertion held against any implementation at all —
+  including one that ignored the lidar entirely.
+
+### 9.6 THE FINDING THAT OUTLIVES THIS BATCH: design §9.4's 0.178 m was cross-frame
+
+Design 9.4 justified rule B on the 5 cm object with "a disagreement of 0.178 m, nearly
+twenty times the margin rule A had to spare". That figure is `0.678 − 0.500`: a lidar
+range from `base_link` minus a **sensor reading**. In one frame the object's real
+disagreement is **0.089 m**, and the shipped `disagreement_margin_m` of 0.10 m sits
+ABOVE it — so at today's deployed margin **rule B does not fire on the object it was
+argued from, 0 of 40 recorded frames.**
+
+This does not make rule B wrong. It makes the *guess* wrong, in a direction nobody
+could see while the frame was broken, and it sharpens bench item J rather than
+threatening it. Measured bounds for the margin J must pin:
+
+    bare wall (TILT_WALL_060, base_link background)   worst apparent  +0.009 m
+    J probe wall columns, re-analysed                 +0.001 m at 0.83 m
+                                                      +0.024 m at 1.80 m
+    the 5 cm object at 0.50 m                          real            +0.089 m
+
+**Predicted window: roughly [0.033, 0.089).** It is a prediction, not a value — the
+margin is set from J's own per-column distribution or not at all. The constant is
+deliberately left at 0.10 so J measures against an unmoved target.
+
+### 9.7 The J re-analysis gate — PASSED
+
+Per §3's sanity check, `J_probe2.csv` re-analysed through the fixed geometry
+(`diagnostics/tof_lidar_frame_check.py`, added so the next capture need not re-derive
+this by hand):
+
+| | as recorded | re-analysed |
+|---|---|---|
+| overall median disagreement | **+0.1095 m** | **+0.0133 m** |
+| near columns (~0.83 m) | +0.099 m | **+0.0008 m** |
+| far columns (~1.80 m) | +0.126 m | +0.0241 m |
+
+The constant offset is gone. What remains scales with range — near-zero at 0.83 m,
+0.024 m at 1.80 m — which is the signature of each zone reporting the nearest part of
+its cone (design 9.7), not of a translation. **A residual translation would have stayed
+flat; this does not.**
+
+One column does not collapse: column 4 holds +0.487 m after correction, at z = 0.119 m,
+below the 0.1905 m lidar plane. That is a real sub-lidar return — rule B's true-positive
+class — and not a frame error. It is also §9.8's per-column trap in the flesh: pooling
+it with the wall columns produces a "margin" of 0.74 m against wall columns at 0.03 m.
+
+`J_probe.csv` (the first probe) is **entirely floor returns** and cannot test the frame
+at all: the ToF and the lidar were not looking at the same surface.

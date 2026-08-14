@@ -119,12 +119,20 @@ def test_the_stop_requirement_is_not_the_lidar_threshold():
 
 
 def test_rule_b_buys_range_not_existence():
-    """Row 3 reaches 0.498 m against rule A's 0.298 m -- 0.20 m, a full second at the
-    0.20 m/s cruise. That is an earlier and gentler stop, and room to steer rather than
-    halt. It is an upgrade to the brake, NOT a precondition for having one, and the
-    difference decides whether bench item J gates the batch or merely improves it."""
+    """Row 3 reaches 0.598 m against rule A's 0.297 m -- 0.30 m, a second and a half at
+    the 0.20 m/s cruise. That is an earlier and gentler stop, and room to steer rather
+    than halt. It is an upgrade to the brake, NOT a precondition for having one, and the
+    difference decides whether bench item J gates the batch or merely improves it.
+
+    BOTH FIGURES MOVED WITH THE FRAME FIX and the gap grew: 0.498/0.298 were ground
+    ranges missing the sensor's 0.10 m forward offset. The offset does not add a flat
+    0.10 m to either -- a steep downward ray gains less ground range than it gains x --
+    which is why these are recomputed here rather than shifted.
+    """
     cfg = TofConfig()
-    wide = dataclasses.replace(cfg, stop_distance_m=0.70)      # admits row 3
+    # 0.75, not 0.70: row 3's floor is 0.716 m from base_link although it READS
+    # 0.629 m, and the bound compares against base_link now.
+    wide = dataclasses.replace(cfg, stop_distance_m=0.75)      # admits row 3
     assert 3 in rule_a_rows(wide) and 3 not in rule_a_rows(cfg)
     gain = rule_a_reach_m(wide) - rule_a_reach_m(cfg)
     assert gain > 0.15, (
