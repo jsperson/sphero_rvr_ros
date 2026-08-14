@@ -463,3 +463,34 @@ the largest change).
 **NOT BUILT. This is a reviewed design and the decision is not mine.** Recorded here
 before the gauntlet, because a gauntlet scored on `ABORTED_GOALS_KEEP_FAILING` endings is
 scoring a number that currently means two things.
+
+---
+
+## Later-batch list — recorded so it is not lost
+
+Neither item is built. Both are here because they were identified while doing something
+else and would otherwise survive only in a session that has since been cleared.
+
+### 1. The controller should PUBLISH its freeze-mark merge radius (D35's second half)
+
+The mission report now says how many distinct places its freeze events describe, and at
+what radius it merged them. But the radius it merges at is a *matching literal* in
+`coverage_explorer_node.py`, pinned equal to `decisive_controller_node.py`'s by a CI
+test (`tests/test_freeze_mark_reporting.py`). That test is a seam, not a fix: the
+controller has already merged at its own radius before publishing, so if the two ever
+differ, the report's "N distinct positions" describes a set nothing on the robot
+computed — and nothing raises, because both numbers are individually valid.
+
+The honest fix is the standing rule: **the owner publishes the fact.** The controller
+knows its merge radius; it should put it on the freeze event, and the explorer should
+merge at the radius actually used rather than at a copy of it.
+
+**Deferred on purpose, 2026-08-13.** It is a message-contract change, the ToF frame fix
+is ahead of it in the queue, and the Pi is ten commits behind — a deployed controller
+without the field would need a fallback path, which is a second thing to get right for a
+seam that is currently pinned. Do it after the frame fix lands and the Pi is current.
+
+### 2. Split the abort counter
+
+Per the section above: `_goals_aborted` conflates "we tried and could not move" with "we
+never got to try". Also carried in `docs/frame_fix_handover.md` §4.

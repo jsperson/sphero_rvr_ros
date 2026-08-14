@@ -525,6 +525,32 @@ class FreezeMarkSet:
         return len(self._marks)
 
 
+def merge_positions(points, merge_radius_m: float) -> list:
+    """The distinct PLACES behind a sequence of freeze events.
+
+    Exists because the mission report needs the same answer the controller already
+    computes, and a second implementation of "within merge_radius_m" is a second thing
+    to keep in sync. So this does not re-implement the rule -- it runs the events
+    through :class:`FreezeMarkSet` itself, with expiry disabled so that every event
+    counts regardless of when it happened. Whatever the controller's merge does, this
+    does, by construction rather than by review.
+
+    Expiry is switched off ON PURPOSE. The set's TTL bounds what is PUBLISHED to the
+    costmap layer (see the class docstring); a report is a summary of the whole
+    mission, so an obstacle discovered in the first minute is still one of the places
+    the rover could not go at minute nine.
+
+    D35: the explorer appended one dict per freeze event and the report field was named
+    as though it held places. Run 112721 filed nine entries for six positions --
+    ``(-0.847,-1.094)`` four times -- and the run's own author read it as nine
+    obstacles within the hour. Counting is the fix; naming is the other half of it.
+    """
+    marks = FreezeMarkSet(ttl_s=float("inf"), merge_radius_m=merge_radius_m)
+    for x, y in points:
+        marks.add(float(x), float(y), 0.0)
+    return [(m.x, m.y) for m in marks.live(0.0)]
+
+
 def freeze_mark_pose(x, y, yaw, front_m, rear_m, reversing=False):
     """Where a freeze mark goes: the edge of the footprint that was DRIVING INTO it.
 

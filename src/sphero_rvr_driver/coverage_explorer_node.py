@@ -112,6 +112,14 @@ class CoverageExplorerNode(Node):
         # Without a separate ceiling the exemption would be unbounded and a rover
         # wedged in a corner would freeze forever, which is why this exists.
         self.declare_parameter("max_consecutive_freezes", 5)
+        # Only for REPORTING: at what separation two freeze events are one place.
+        # CHANGE BOTH OR NEITHER -- it must equal decisive_controller_node's
+        # `freeze_mark_merge_radius_m`, because the controller has already merged at
+        # its own radius before publishing, and a report claiming "6 distinct
+        # positions" at a different radius describes a set nothing ever computed.
+        # tests/test_freeze_mark_reporting.py fails in CI if the two literals drift.
+        # This node does NOT act on the value; nothing in goal selection reads it.
+        self.declare_parameter("freeze_mark_merge_radius_m", 0.15)
         # A goal nearer than this is somewhere the rover already is: it succeeds
         # without moving, the target is still a target next tick, and it gets picked
         # again forever. Never issue one.
@@ -262,7 +270,11 @@ class CoverageExplorerNode(Node):
         # failure.
         self._pending_freezes = []
         self._active_goal_generation = 0
-        self._freeze_marks = []
+        # One entry per freeze EVENT, in order, never merged here. Merging is the
+        # report's job and it happens once, at the radius the report also states
+        # (D35). Named for what it holds: this list was `_freeze_marks`, and the
+        # ambiguity in that word is the whole defect.
+        self._freeze_events = []
         self._active_goal_cell = None
         self._active_goal_handle = None
         self._goal_inflight = False
@@ -707,7 +719,9 @@ class CoverageExplorerNode(Node):
             planner_rejections=self._planner_rejections,
             remaining_candidates=remaining,
             map_files=files,
-            freeze_marks=list(self._freeze_marks),
+            freeze_events=list(self._freeze_events),
+            freeze_mark_merge_radius_m=float(
+                self.get_parameter("freeze_mark_merge_radius_m").value),
             escape_events=list(self._escape_events),
             escape_poses=list(self._escape_poses),
         )
@@ -1158,7 +1172,7 @@ class CoverageExplorerNode(Node):
             # Tagged with the GOAL it arrived during, not just a timestamp. See
             # _claim_freeze for why the wall clock was the wrong key.
             self._pending_freezes.append((self._goals_sent, x, y))
-            self._freeze_marks.append({"x": round(x, 3), "y": round(y, 3)})
+            self._freeze_events.append({"x": round(x, 3), "y": round(y, 3)})
 
     def _claim_freeze(self, generation=None):
         """Consume the most recent unclaimed freeze FROM THIS GOAL.

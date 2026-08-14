@@ -16,6 +16,21 @@ here: a 34-minute SLAM map was destroyed by a stack restart on 2026-08-08 and to
 both arms of an A/B with it.
 """
 
+from sphero_rvr_core.decisive_control import merge_positions
+
+# The radius at which two freeze events are one place. CHANGE BOTH OR NEITHER: this
+# must equal decisive_controller_node's `freeze_mark_merge_radius_m` default, because
+# the report's "distinct positions" claim is only true if it merges the way the
+# controller that produced the events merged. tests/test_freeze_mark_reporting.py
+# fails in CI if the two drift.
+#
+# The honest better answer, deferred: the controller should PUBLISH its merge radius
+# on the freeze event, so the explorer merges at the radius the controller actually
+# used instead of at a matching literal. That is a message-contract change and waits
+# for the ToF frame fix to land and the Pi to be current --
+# docs/reverse_before_give_up_design.md carries it in the later-batch list.
+DEFAULT_FREEZE_MARK_MERGE_RADIUS_M = 0.15
+
 OUTCOME_COMPLETE = "COMPLETE"
 OUTCOME_NO_PLANNABLE_TARGETS = "INCOMPLETE_NO_PLANNABLE_TARGETS"
 OUTCOME_START_BLOCKED = "INCOMPLETE_START_BLOCKED"
@@ -55,7 +70,8 @@ def build_report(
     planner_rejections=0,
     remaining_candidates=0,
     map_files=None,
-    freeze_marks=None,
+    freeze_events=None,
+    freeze_mark_merge_radius_m=DEFAULT_FREEZE_MARK_MERGE_RADIUS_M,
     escape_events=None,
     escape_poses=None,
 ):
@@ -72,9 +88,18 @@ def build_report(
     be taken (no map, no pose). It must never be used as a stand-in for zero: a
     fabricated 0 reads as "nothing left worth going to", which is the most
     reassuring possible claim and was untrue on both 2026-08-10 runs (D24).
+
+    ``freeze_events`` is one entry per freeze the controller reported, in order. The
+    report publishes it under that name, plus the merged ``freeze_positions`` and a
+    ``freeze_mark_counts`` block carrying both counts and the radius they were merged
+    at. It was called ``freeze_marks`` and held only the events, which is D35.
     """
     if outcome not in ALL_OUTCOMES:
         raise ValueError(f"unknown outcome {outcome!r}")
+    _marks = [{"x": round(float(m["x"]), 3), "y": round(float(m["y"]), 3)}
+              for m in (freeze_events or [])]
+    _places = merge_positions(((m["x"], m["y"]) for m in _marks),
+                              freeze_mark_merge_radius_m)
     return {
         "outcome": outcome,
         "complete": outcome == OUTCOME_COMPLETE,
@@ -93,14 +118,33 @@ def build_report(
         # Places the robot PROVED it could not pass. In the report, never in the
         # saved map: the map is the room as SLAM measured it, these are the robot's
         # own belief about where it could not go.
+        #
+        # EVENTS AND PLACES ARE DIFFERENT NUMBERS AND BOTH ARE NAMED (D35). The old
+        # field was called `freeze_marks` and held one entry per event, so run
+        # 112721's nine entries for six positions read as nine obstacles -- to its own
+        # author, an hour after the run. The field is RENAMED rather than merely
+        # supplemented: leaving `freeze_marks` in place would leave every
+        # `len(report["freeze_marks"])` in the world still quietly wrong, whereas a
+        # rename makes that reader fail loudly and get fixed. `freeze_events` is a
+        # list of events and says so; `freeze_positions` is the merged places.
+        #
         # SCOPE: a mark lasts the MISSION by design. The costmap layer that carries
         # them runs clearing:false (it must -- the lidar sees straight through these
         # obstacles and would otherwise erase them), and an ObstacleLayer never
         # un-marks a cell. Measured 2026-08-10: a marked cell stayed lethal after
         # publication stopped. Revoking a mark mid-mission would need a real
-        # mechanism; the publisher's TTL bounds this list and what is published,
-        # not the grid.
-        "freeze_marks": list(freeze_marks or []),
+        # mechanism; the publisher's TTL bounds what is published, not the grid.
+        "freeze_events": _marks,
+        "freeze_positions": [{"x": round(x, 3), "y": round(y, 3)} for x, y in _places],
+        # The radius travels WITH the count, because "6 distinct positions" is not a
+        # fact about the room until you know at what separation two freezes were
+        # called one place. A reader of the archived report should never have to go
+        # find out which config produced it.
+        "freeze_mark_counts": {
+            "events": len(_marks),
+            "distinct_positions": len(_places),
+            "merge_radius_m": round(float(freeze_mark_merge_radius_m), 3),
+        },
         # THE GIVE-UP ESCAPES: what was attempted when nothing would plan, and how
         # each one turned out. EVENTS AND DISTINCT PLACES, separately and on purpose.
         # Mission 1 on 2026-08-12 reported `freeze_marks: 9` for six distinct

@@ -501,7 +501,12 @@ def test_one_freeze_excuses_only_one_abort(stack):
 )
 def test_freeze_marks_reach_the_mission_report(stack):
     """Where the rover could not go is diagnostic gold, and it belongs in the report
-    — never written into the saved map, which is the room as SLAM measured it."""
+    — never written into the saved map, which is the room as SLAM measured it.
+
+    Post-D35 the field is `freeze_events` (one per event) alongside `freeze_positions`
+    and `freeze_mark_counts`. This scenario freezes at ONE spot 200 times, so it is
+    also the end-to-end proof that the merge runs on the real node: 200-odd events
+    collapse to a single place."""
     stack.world.nav_mode = "abort"
     stack.world.publish_map(make_map())
 
@@ -512,9 +517,15 @@ def test_freeze_marks_reach_the_mission_report(stack):
     threading.Thread(target=keep_freezing, daemon=True).start()
 
     assert wait_until(lambda: bool(stack.world.reports), 30.0)
-    marks = stack.world.reports[-1].get("freeze_marks")
-    assert marks, "the report carries no freeze marks"
-    assert marks[0]["x"] == pytest.approx(1.5)
+    report = stack.world.reports[-1]
+    events = report.get("freeze_events")
+    assert events, "the report carries no freeze events"
+    assert events[0]["x"] == pytest.approx(1.5)
+    # Every freeze was published at the same pose, so however many events landed,
+    # the rover discovered exactly ONE place it could not go (D35).
+    assert report["freeze_mark_counts"]["distinct_positions"] == 1
+    assert report["freeze_mark_counts"]["events"] == len(events)
+    assert report["freeze_positions"] == [{"x": 1.5, "y": -0.5}]
 
 
 # ------------------------------------------------------------------------- D29

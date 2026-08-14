@@ -113,8 +113,12 @@ No layer-side state to reason about, and "which marks exist" has one owner.
   is cheap.
 - **Serialising with the mission map:** the marks are *robot-derived belief*, not
   geometry SLAM measured, so they must NOT be written into the saved PGM (that map is
-  the room). They go in the mission report as a `freeze_marks` list of poses +
-  timestamps — diagnosable, and Scott can see where it got stuck.
+  the room). They go in the mission report as a list of poses + timestamps —
+  diagnosable, and Scott can see where it got stuck. **Field name superseded by D35:**
+  this shipped as `freeze_marks`, one entry per EVENT under a name that reads as
+  places, and run 112721 duly filed nine for six. It is now `freeze_events` +
+  `freeze_positions` + `freeze_mark_counts{events, distinct_positions,
+  merge_radius_m}`.
 
 ### 2c. Counter semantics — the redesign Scott asked for
 `max_consecutive_failures` exists to catch *"the stack is broken, it would fail
@@ -138,8 +142,8 @@ anywhere"* (D4/D11). A freeze is the opposite: **positive evidence about the roo
 ## 3. Added / deleted
 **Added:** `/cmd_vel_motor` subscription + freeze classifier in decisive_controller; a
 freeze-mark PointCloud2 publisher + TTL set; `freeze_layer` in lean_nav2.yaml; explorer
-freeze subscription + `max_consecutive_freezes` + new outcome constant; `freeze_marks`
-in the mission report.
+freeze subscription + `max_consecutive_freezes` + new outcome constant; the freeze
+marks in the mission report (shipped as `freeze_marks`, renamed by D35 — see above).
 **Deleted:** the unconditional angular pass-through in the front-stop escape (replaced by
 the pure-pivot-only condition).
 **Unchanged:** every D17–D21 gate and `pivot_gate_probe`; the supervisor stays the sole
