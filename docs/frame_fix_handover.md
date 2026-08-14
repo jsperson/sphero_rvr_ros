@@ -145,3 +145,146 @@ cheapest to confirm and the most likely given this week's record.
 * Unspent: the give-up escape's field observation (its branch is not reachable by hand
   staging — the gauntlet is expected to produce it organically), and gauntlet missions
   1–3.
+
+---
+
+## 8. The starvation analysis — ASSIGNED IN §5, ANSWERED HERE (2026-08-13)
+
+**No fix was made. This is analysis only, as instructed.**
+
+### The short version
+
+**The premise of the question is wrong.** §5 asks "why does ladder execution starve
+`FollowPath` goal acknowledgement?" — it does not. The same run contains a **47.0 s
+continuous ladder episode with zero acknowledgement timeouts**, and the one timeout on
+record happened during a *shorter* (12.1 s) episode. All three candidates in §5 are
+intra-node concurrency defects, and the field evidence shows the starvation **crossed
+process boundaries**, which no callback group or thread pool inside
+`decisive_controller_node` can do.
+
+The mechanism the evidence supports is **host-level CPU saturation**. The ladder is a
+measurable *contributor* to that load, not the cause.
+
+### The corpus, and the honest size of it
+
+Every archived launch log was searched. `"acknowledge goal request"` appears **exactly
+once in the entire recorded history of this project** — at t+645.9 s of the 997 s
+contaminated run of 2026-08-13 (`03_validation/CONTAMINATED_mission_2026-08-13_mismounted_camera/launch_20260813_173529.log`).
+Ten launch logs, one event. **n=1**, and every conclusion below inherits that. This
+analysis can refute the ranked candidates, because refutation needs only one clean
+counter-example and there is one; it cannot establish the positive mechanism with the
+confidence a fix would want.
+
+### Candidate 1 — "the ladder holds a lock the goal-acceptance path also needs"
+
+**REFUTED by code read.** `_follow_path_goal_callback` acquires nothing. Its entire
+body reads one boolean (`self._escape_active`), optionally logs, and returns a
+`GoalResponse`. There is no `with` block in it and no call that can block. It cannot
+queue behind `_execute` because it never asks for anything `_execute` holds.
+
+Worth recording for the future, since it is the near miss: `_escape_goal_callback` —
+the *other* goal callback on this node — **does** take `self._goal_lock`, which
+`_execute` also takes. Today that critical section is two statements and nothing
+blocks, but this is where candidate 1's shape would become real if the lock were ever
+widened. Pinned by `tests/test_goal_acceptance_is_nonblocking.py`.
+
+### Candidate 3 — "the callback group does not actually cover goal acceptance"
+
+**REFUTED by code read.** Both action servers are constructed with
+`callback_group=self._callback_group`, and that group is a `ReentrantCallbackGroup`
+(`decisive_controller_node.py:324-356`). Acceptance is covered by the assignment. This
+was the ranked candidate — "check that first, it is the cheapest to confirm and the
+most likely given this week's record" — and it is simply not what happened. The
+unreachable-clause pattern did not repeat here.
+
+*(Caveat, stated because it is the limit of a code read: whether rclpy's `ActionServer`
+honours that kwarg for every entity it owns could not be verified from source on this
+host — there is no rclpy on the Mac. What follows does not depend on it.)*
+
+### Candidate 2 — "the executor's threads are exhausted"
+
+**NOT SUPPORTED as the primary mechanism**, on evidence that also disposes of 1 and 3:
+in the ±10 s around the timeout, processes *other than the controller* were missing
+their deadlines at many times their own baseline for the run.
+
+| Symptom | Process | Run baseline | ±10 s of the timeout | Ratio |
+|---|---|---|---|---|
+| "Failed to meet update rate" | `ekf_node` | 0.13/s | 1.30/s | **10.3×** |
+| serial "timed out waiting for response" | `rvr_node` | 0.02/s | 0.30/s | **15.7×** |
+| costmap "timestamp earlier than the transform cache" | `planner_server` | 0.05/s | 0.25/s | 4.6× |
+| "message filter queue is full" | `slam_toolbox` | 0.03/s | 0.10/s | 3.7× |
+
+`ekf_node` and `rvr_node` are **separate processes with their own executors**. Nothing
+about `decisive_controller`'s callback groups or its thread pool can starve them.
+Whatever was short, it was short host-wide. The acknowledgement timeout is one victim
+in a burst, not the event itself.
+
+### The control case — what actually kills the ladder hypothesis
+
+Ten ladder episodes in this run, 128 s total (12.9% of it). **One** contained an
+acknowledgement timeout, and it was not the longest:
+
+| | duration | ack timeouts | EKF misses |
+|---|---|---|---|
+| the run's LONGEST ladder episode (t+786.9) | **47.0 s** | **0** | 0.468/s |
+| the episode with the timeout (t+634.6) | 12.1 s | 1 | **1.318/s** |
+
+At bt_navigator's measured ~1 Hz `follow_path` resend rate, the 47 s episode delivered
+roughly **47 consecutive acknowledgements during uninterrupted ladder execution**. If
+ladder execution starved acknowledgement, that episode could not exist.
+
+The ladder is nonetheless a real contributor to load: EKF deadline misses run at
+**0.390/s during ladder episodes vs 0.087/s outside them — 4.5×**. It pushes the host
+toward the cliff. It does not by itself go over it.
+
+### What separates the two episodes — and what does not
+
+* **Not duration.** The clean one was 3.9× longer.
+* **Not the controller's own health.** Its 1 s-throttled `_running` lines came at
+  median 1.15 s in the failing episode vs 1.06 s in the clean one — and the worst
+  single gap in the whole run (4.48 s) is in the **clean** episode. The controller was
+  not conspicuously more starved when the acknowledgement failed.
+* **Not per-task cost.** EKF cycle overruns during the failing episode: median 102 ms,
+  max 196 ms — against a run-wide median of 104 ms. Individual cycles were *not*
+  slower.
+* **It is CONTENTION FREQUENCY.** Same per-cycle cost, 2.8× as many missed deadlines,
+  and the timeout sits inside the single largest EKF-miss burst of the run (26 misses
+  in 9.7 s). More things wanting the CPU at once, not any one thing taking longer.
+
+### A correction to §5's own account
+
+§5 records that the goal "aborted, and the explorer counted it — with nothing attempted
+on that goal." For this instance that is **not so**. `bt_navigator` began navigating to
+(0.24, −0.84) at 1786661252.923; the ladder ran from 1786661255.236 to 1786661268.302
+and tried **four rungs** (`pivot_open` → `drive_open` → `reverse_arc` →
+`reverse_straight`), ending `all_rungs_ineffective`. The rover attempted a great deal
+on that goal. The abort-counter split proposed in §4 stands on its own evidence, but
+this event is not an example of "we never got to try".
+
+### What would settle it, and what should not be built yet
+
+The §5 fix candidates all target intra-node concurrency, which the evidence does not
+support. Building one now would be fixing the mechanism we can see the code of rather
+than the one the logs point at.
+
+What is missing is per-process CPU during a run. The recorder captures none, so
+"the host was saturated" is an inference from four independent deadline-miss streams
+rather than a measurement. **One `top -b`-class sample stream alongside the next
+mission recording would convert every ratio in this section into an attribution** —
+and it costs nothing, needs no chassis, and would also serve D22's open question about
+where between 1× and 6× load the camera-age cliff sits.
+
+Only then is it worth asking whether the ladder's contribution should be reduced.
+
+### Artefacts
+
+* `tests/test_goal_acceptance_is_nonblocking.py` — structural guard: acceptance stays
+  lock-free and non-blocking, both servers stay on the reentrant group, the escape's
+  critical section stays a plain state read. Five mutations, each caught.
+* **The reproducing test assigned in the brief (fake action client, ladder busy,
+  measure ack latency) was NOT built.** There is no rclpy on the Mac, so there is no
+  real action server, executor or acknowledgement to time; a hand-rolled executor model
+  would only prove things about the model. It is also now aimed at a refuted mechanism.
+  If a latency test is still wanted, it belongs on the Pi and should measure
+  acknowledgement latency **against host CPU**, which is the variable this analysis
+  says matters.
