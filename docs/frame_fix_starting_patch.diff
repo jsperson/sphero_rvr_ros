@@ -1,0 +1,42 @@
+diff --git a/src/sphero_rvr_core/tof_frame.py b/src/sphero_rvr_core/tof_frame.py
+index a31990c..da6f992 100644
+--- a/src/sphero_rvr_core/tof_frame.py
++++ b/src/sphero_rvr_core/tof_frame.py
+@@ -50,6 +50,16 @@ class TofConfig:
+     # right to +-6 mm. Re-mounting invalidates them even if the tape is unchanged.
+     mount_height_m: float = 0.139
+     mount_pitch_deg: float = -15.7      # positive = nose UP
++    # FORWARD OFFSET OF THE SENSOR FROM base_link. It existed only as a node parameter
++    # feeding the static TF, and `zone_point` -- which builds the clouds published IN
++    # base_link -- never applied it. Every point was therefore 0.10 m nearer to
++    # base_link than the thing it represented.
++    #
++    # Found by bench item J on 2026-08-13, in its first twenty seconds and before the
++    # wall was even staged: the ToF read a MEDIAN 0.10 m nearer than the lidar on the
++    # same surfaces, constant from 0.72 m to 1.90 m. A constant offset across a 2.6x
++    # range change is a missing translation; a sensor artifact would have scaled.
++    mount_x_m: float = 0.10
+     # The sensor reports distance along ITS OWN BORESIGHT, not along base_link x.
+     # SETTLED 2026-08-13 by pre-registering three hypotheses and measuring at two wall
+     # distances; see zone_angles_sensor for why the level mount could not have answered
+@@ -293,7 +303,7 @@ def zone_point(row: int, col: int, value_mm: int, cfg: TofConfig) -> Optional[tu
+     d = value_mm / 1000.0
+     r = d / _boresight_cosine(row, col, cfg) if cfg.reports_z else d
+     ux, uy, uz = zone_ray(row, col, cfg)
+-    return (r * ux, r * uy, cfg.mount_height_m + r * uz)
++    return (cfg.mount_x_m + r * ux, r * uy, cfg.mount_height_m + r * uz)
+ 
+ 
+ def expected_floor_m(row: int, col: int, cfg: TofConfig) -> Optional[float]:
+diff --git a/src/sphero_rvr_driver/tof_node.py b/src/sphero_rvr_driver/tof_node.py
+index 6a78bf4..57f5344 100644
+--- a/src/sphero_rvr_driver/tof_node.py
++++ b/src/sphero_rvr_driver/tof_node.py
+@@ -125,6 +125,7 @@ class TofNode(Node):
+         self._cfg = TofConfig(
+             mount_height_m=float(_p("mount_height_m").value),
+             mount_pitch_deg=float(_p("mount_pitch_deg").value),
++            mount_x_m=float(_p("mount_x_m").value),
+             zone_deg_h=float(_p("zone_deg_h").value),
+             zone_deg_v=float(_p("zone_deg_v").value),
+             reports_z=bool(_p("reports_z").value),
