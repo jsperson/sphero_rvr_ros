@@ -142,6 +142,19 @@ backed-up home for evidence data: the provisioning repo deliberately excludes it
 Un-copied artifacts from an earlier run count too — check `ls ~/run_*.csv` against
 what the vault already holds before killing anything.
 
+**An artifact is ARCHIVED when it is in the vault with its hashes recorded — not when
+it has been copied off the Pi.** A session scratchpad is a staging area, and staging
+areas are swept. The 2026-08-12 gauntlet-reset runs (mission 1 = `112721`, D35's
+evidence; mission 2 = `125305`, D36's close-criterion source) were pulled off the Pi
+correctly and then sat in `/private/tmp/claude-501/.../scratchpad/` for two days while
+the vault held nothing from that date — long enough that a later session searching
+`03_validation/` concluded the runs had never been captured at all. They were recovered
+on 2026-08-13 and are now at `03_validation/run_2026-08-12_gauntlet-reset_mission{1,2}/`
+with per-file sha256 manifests. So: the "check what the vault already holds" sweep above
+applies to **scratchpads too**, the copy is not done until `shasum -a 256` matches at
+both ends, and the manifest goes in the set's README where a future session will find it
+without having to trust a narration.
+
 Only then: Ctrl-C the launch. Remember it ignores SIGINT and children survive.
 **Kill by explicit PID — list them with `ps -eo pid,cmd`, then `kill <pid>` — and
 EXCLUDE YOUR OWN SESSION from that list.** Filtering the listing is not optional:
