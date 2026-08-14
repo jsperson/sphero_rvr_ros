@@ -200,43 +200,57 @@ class TofConfig:
     # A ToF return this much nearer than the lidar's own range at the same bearing is
     # something the lidar cannot see -- which is the definition of the obstacle class
     # this sensor exists for.
-    # STILL UNPINNED, and now known to be WRONG IN A MEASURABLE DIRECTION. Bench item J
-    # (design note 9.8) pins it against a real synchronised capture; nothing below is a
-    # substitute for that, and the node advertises rule B as UNPINNED on ~/state until
-    # it happens.
+    # PINNED 2026-08-14 BY BENCH ITEM J. Set FROM the measured distribution, which is
+    # what design 9.8 required and what the previous 0.10 never was.
     #
-    # What the frame fix changed: this 0.10 m guess was set while every ToF ground range
-    # was 0.10 m short, which inflated every apparent disagreement by exactly the
-    # margin's own size. Re-measured through the fixed code:
+    # THE MEASUREMENT. Bare wall at 0.70 m from the sensor face, rover stationary,
+    # chassis off, /scan and ToF recorded together and compared PER COLUMN in
+    # base_link through the recorded TF. 639 frames x 8 columns = 5112 column-samples
+    # of bare wall, phantom-direction (ToF nearer than lidar) only:
     #
-    #   the 5 cm object at 0.50 m (TILT_BOX_050, the object rule B was justified BY)
-    #       real disagreement  0.089 m   -- design 9.4 recorded 0.178 m, of which
-    #                                       0.100 m was frame error and 0.078 m signal
-    #   a bare wall (TILT_WALL_060 against its base_link background)
-    #       worst apparent disagreement  +0.009 m
-    #   the J probe's wall columns, re-analysed (03_validation/
-    #       escape_provocation_2026-08-13/J_probe2.csv)
-    #       residual +0.001 m at 0.83 m, +0.024 m at 1.80 m -- range-scaling, not a
-    #       translation, and consistent with each zone reporting the nearest part of
-    #       its cone (design 9.7)
+    #     p99 = 0.0293 m    p99.9 = 0.0352 m    MAX = 0.0396 m
     #
-    # So the margin must sit ABOVE the bare-wall residual and BELOW the object's real
-    # disagreement: predicted window roughly [0.033, 0.089) once the long-range
-    # residual is included. AT THE SHIPPED 0.10 m, RULE B DOES NOT REACH THE OBJECT IT
-    # WAS ARGUED FROM -- 0 of 40 recorded frames. That is a prediction for J to confirm
-    # or destroy, not a licence to edit this number: a margin chosen to make a test
-    # fire is the "self-consistently wrong stack" the frame batch existed to avoid.
-    # The value stays at its old guess so that J measures against an unmoved target.
-    disagreement_margin_m: float = 0.10
-    # RULE B IS GATED OFF UNTIL ITS MARGIN IS PINNED (bench item J, design 9.8). The
-    # gate lives on the DETECTOR rather than on the consumer, because rule B decides
-    # what it publishes and a consumer-side gate would leave the detector claiming
-    # obstacles nobody was allowed to act on -- two components disagreeing about what
-    # is true, which is the seam class this project keeps paying for.
+    # and the 5 cm object at 0.55 m base_link, in the two columns that see it:
     #
-    # Rule A flies without J; rule B does not (design 11.3, 11.5). Flipping this is a
-    # config change accompanied by a "# RULE B PINNED BY:" citation, not a code change.
-    rule_b_enable: bool = False
+    #     min 0.1219 m   p1 0.2038 m   median 0.2182 m
+    #
+    # The two populations do not overlap: the wall never reached 0.040 m and the
+    # object never fell below 0.122 m. Any margin in (0.040, 0.122) separates them.
+    #
+    # WHY 0.06 AND NOT THE OLD 0.10, which would also have measured zero false fires
+    # here: the false-fire side is ours to measure, but the DETECTION side is not. A
+    # return's disagreement is the gap between the object and whatever the lidar sees
+    # behind it, and how close an object sits to its wall is the room's choice, not
+    # ours. The tilt session's own object (TILT_BOX_050) sat 0.089 m in front of its
+    # wall -- a real geometry that a 0.10 m margin MISSES and 0.06 catches with 48%
+    # to spare. So the margin is set as low as the false-fire data allows, not as high
+    # as the detection data would tolerate. 0.06 is 1.5x the measured worst case and
+    # 2.0x p99.
+    #
+    # Capture: 03_validation/bench_J_2026-08-14/ (mcap, sha256 recorded there).
+    # Analysis: diagnostics/tof_lidar_frame_check.py and the per-column script beside
+    # the capture. Re-derive from the bag rather than trusting this comment.
+    disagreement_margin_m: float = 0.06
+    # RULE B IS LIVE, 2026-08-14, because bench item J pinned its margin against a
+    # real synchronised capture. The gate lives on the DETECTOR rather than on the
+    # consumer, because rule B decides what it publishes and a consumer-side gate
+    # would leave the detector claiming obstacles nobody was allowed to act on -- two
+    # components disagreeing about what is true, which is the seam class this project
+    # keeps paying for.
+    #
+    # What J measured, and it is the number that decides this flag: ZERO phantom fires
+    # in 5112 bare-wall column-samples at the pinned margin, against a detection that
+    # holds 0.218 m of median disagreement on the object. Design 9.8's criterion was
+    # "inside the margin in at least 99% of frames"; the measurement is 100%.
+    #
+    # WHAT J DID NOT SETTLE, so the next reader does not over-read this flag: one
+    # wall, one object, one room, one afternoon. The false-fire rate is measured
+    # against THIS background, and a room with a mirror, a glass door or a dark
+    # low-reflectance surface is not in the sample. Rule B degrades toward silence
+    # rather than toward phantoms (it can only ADD obstacles, and an absent or stale
+    # scan removes them), so the failure direction is a missed obstacle, which the
+    # lidar and the freeze machinery still cover.
+    rule_b_enable: bool = True
     # Height of the lidar's scan plane. THE NODE OVERRIDES THIS FROM TF and this
     # default exists only so the pure core is runnable in a test -- geometry belongs to
     # TF, and a consumer that hardcodes a mounting height is the N1 defect wearing a

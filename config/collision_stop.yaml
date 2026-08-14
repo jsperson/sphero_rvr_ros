@@ -98,13 +98,33 @@ lidar_collision_stop_supervisor:
     # moved and its aim is unmeasured -- Scott: "any feedback would be terrible"). The
     # ToF measures range directly, so nothing here depends on a mount aim being right.
     #
-    # RULE B IS GATED OFF (TofConfig.rule_b_enable = False) until bench item J pins its
-    # disagreement margin against a synchronised /scan. Rule A flies without J; rule B
-    # does not. /tof/state reports rules=rule_a_only so a recording can never be
-    # misread as B-protected. Flipping the gate requires a pinning citation on its own
-    # comment line here, in the form enforced by tests/test_tof_brake_derivation.py --
-    # the exact token is deliberately not written out in this sentence, because a guard
-    # that a mere MENTION satisfies is a guard that prose can defeat.
+    # RULE B IS LIVE (TofConfig.rule_b_enable = True) as of 2026-08-14. It was gated
+    # from the day it was written until bench item J measured its false-fire rate
+    # against a synchronised /scan, because a margin nobody had measured cannot hold
+    # brake authority. /tof/state now reports rules=rule_a+b, so a recording says which
+    # rules were live rather than leaving it to be inferred. The gate still requires a
+    # pinning citation on its own comment line here, in the form enforced by
+    # tests/test_tof_brake_derivation.py -- the exact token is deliberately not written
+    # out in this sentence, because a guard that a mere MENTION satisfies is a guard
+    # that prose can defeat.
+    # RULE B PINNED BY: bench item J, 2026-08-14 capture at 03_validation/
+    # bench_J_2026-08-14/J_wall_0.mcap (sha256 774baaa20984c5a3f8ec4a8916bcb87c21c3b244aa96cddbad08093ddff09e20)
+    # -- bare wall at 0.70 m, 639 frames x 8 columns, phantom-direction disagreement
+    # p99 0.0293 m / max 0.0396 m, against 0.218 m median on the 5 cm object at
+    # 0.55 m. Margin set to 0.06 m FROM that distribution. Zero phantom fires measured.
+    #
+    # SCOPE OF THAT EVIDENCE, stated here because a citation that names only its result
+    # invites the result to be read wider than the measurement: ONE wall, ONE object,
+    # ONE room, ONE session. Painted drywall with a rounded baseboard and a door, at
+    # 0.70-1.00 m. NOT in the sample: mirrors, glass, dark low-reflectance surfaces,
+    # direct sun, and any surface the ToF sees differently from the lidar for optical
+    # rather than geometric reasons. Field recordings extend this distribution for
+    # free -- every mission with /scan and /tof/points recorded is more bare-wall
+    # background -- and the honest way to widen the claim is to widen the sample.
+    #
+    # Rule B's failure direction is a MISSED obstacle, never a phantom (it can only ADD
+    # obstacles, and a missing or stale scan removes them), so an untested surface
+    # costs sensitivity rather than producing a brake at a wall.
     low_obstacle_brake_enable: true
     low_obstacle_topic: /tof/obstacles
     # EVERY DISTANCE BELOW IS RE-DERIVED FOR THIS SENSOR. The camera's 0.50/0.70/0.40/
@@ -143,12 +163,16 @@ lidar_collision_stop_supervisor:
     # detection limit: the floor margin it depends on is still provisional until the
     # in-flight pitch envelope is measured (design 3.3). UNCHANGED at 0.20.
     low_obstacle_stop_distance_m: 0.20
-    # >= rule A's true reach (0.297 m), so the rover is already easing off through the
-    # whole approach rather than braking flat from cruise. 0.30 clears it by 3.3 mm.
-    # UNCHANGED, and the tightness is deliberate rather than lucky: the failure
-    # direction is a harsher stop, not a missed one, so the cheap fix if the reach ever
-    # grows past it is to widen this rather than to re-argue the reach.
-    low_obstacle_slow_distance_m: 0.30
+    # WIDENED 2026-08-14, when bench item J pinned rule B and the reach that matters
+    # stopped being rule A's. It must be >= the reach of the FURTHEST rule now live:
+    #     rule A  0.297 m  (rows 5-7, floor comparison)
+    #     rule B  0.598 m  (row 3, lidar background)
+    # At 0.30 the rover would have carried on at cruise until an obstacle rule B saw
+    # at 0.60 m closed to half that distance -- throwing away every metre of range J
+    # was run to buy, and braking flat from cruise at the end of it. 0.60 covers rule
+    # B's reach exactly and matches low_obstacle_max_range_m below, so nothing the
+    # detector can publish falls outside the band the brake acts on.
+    low_obstacle_slow_distance_m: 0.60
     # Symmetric +-30 deg: this sensor's field, not the camera's lopsided lens. Used only
     # when swept_path is false.
     low_obstacle_half_angle_deg: 30.0

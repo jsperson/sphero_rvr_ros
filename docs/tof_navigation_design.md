@@ -1172,3 +1172,119 @@ directions.
 **Lidar core constants stay untouched, and that is now a decision rather than an
 omission.** `stop_distance_m`, `slow_distance_m` and the cruise speed all have their own
 flight history and nothing in this derivation argues for moving any of them.
+
+---
+
+## 12. AMENDMENT, 2026-08-14 — BENCH ITEM J FLEW. Rule B is pinned, and the envelope is a BAND
+
+Written from the capture, not from memory: `03_validation/bench_J_2026-08-14/J_wall_0.mcap`,
+sha256 `774baaa20984c5a3f8ec4a8916bcb87c21c3b244aa96cddbad08093ddff09e20`, 658 s,
+16,909 messages, `/scan` + `/tof/points` + `/tof/state` + TF recorded together on the
+frame-fixed binary. Re-derive from the bag rather than trusting this section.
+
+### 12.1 The measurement §9.8 asked for
+
+Bare wall at 0.70 m from the sensor face, rover stationary, chassis off. Per column, in
+`base_link`, through the recorded TF, using the PRODUCTION candidate gate
+(`standing_above_floor` + below the lidar plane). 639 frames × 8 columns:
+
+| | phantom-direction disagreement (ToF nearer than lidar) |
+|---|---|
+| p99 | **0.0293 m** |
+| p99.9 | 0.0352 m |
+| max | **0.0396 m** |
+
+and the 5 cm object at 0.55 m `base_link`, in the two columns that see it, when firing:
+
+| | |
+|---|---|
+| min | **0.1219 m** |
+| p1 | 0.2038 m |
+| median | **0.2182 m** |
+
+**The two populations do not overlap.** The wall never reached 0.040 m; the object never
+fell below 0.122 m. Any margin in (0.040, 0.122) separates them, and **zero phantom
+fires were measured at 0.06 m in 5112 bare-wall column-samples** — §9.8 asked for 99%,
+the measurement is 100%.
+
+`disagreement_margin_m` is therefore **0.06**, and rule B is LIVE.
+
+**Why 0.06 and not the 0.10 guess, which also measured zero false fires here.** The
+false-fire side is ours to measure; the DETECTION side is not. A return's disagreement
+is the gap between the object and whatever the lidar sees behind it, and how close an
+object sits to its wall is the room's choice. The tilt session's own object sat 0.089 m
+in front of its wall — a real geometry that 0.10 misses and 0.06 catches with 48% to
+spare. Set the margin as low as the false-fire data allows, never as high as the
+detection data tolerates.
+
+### 12.2 Detection rate, per column, and the raggedness §9.4 warned about
+
+Object at 0.55 m, 1134 frames, fraction of frames each column fired (flat from 0.075 m
+to 0.15 m of margin, so this is fill-fraction and not a threshold effect):
+
+| column | 0 | 1 | 2 | 3–7 |
+|---|---|---|---|---|
+| fires | 42.2% | **64.5%** | 64.5% | 0.0% |
+
+Two ADJACENT columns at 64.5% each satisfies `min_adjacent_zones=2` in most frames and
+the 3-of-8 confirmation window comfortably. Columns 3–7 stare at bare wall in the SAME
+frames and fire 0.0% — the false-fire and detection numbers come from one scene at one
+instant, which is stronger than two scenes compared across time.
+
+### 12.3 THE ENVELOPE IS A BAND, NOT A REACH — and this is the section that changes how we quote it
+
+The capture put the same object at three ranges. It was seen at 0.55 m and NOT at
+0.65 m or 0.75 m. That is not a detection failure; it is geometry, and the mechanism was
+not written down before:
+
+> **A return's height is where the RAY STRIKES the object, not the object's top.**
+
+A row's ray descends. Detection of an object of height `H` at ground range `g` requires
+
+    min_obstacle_height_m  <=  ray_height(g)  <=  H
+
+— a BAND with both edges moving. The lower edge ends the row's reach (the ray drops
+under the 18 mm terrain gate and the return is correctly called terrain); the upper edge
+begins it (above `H` the ray passes over the object entirely). Row 3, centre column:
+
+| ground range | ray height | 5 cm box |
+|---|---|---|
+| 0.55 m | 37 mm | **seen** |
+| 0.65 m | 15 mm | under the terrain gate — not seen |
+| 0.716 m | 0 (floor) | ray terminates |
+| 0.75 m | row 3 gone; row 2 at 61 mm | passes over — **blind** |
+
+**There is a blind band for a 5 cm object between roughly 0.72 m and 0.84 m**, between
+where row 3 stops and where row 2 has descended to 5 cm. Taller objects have narrower
+bands; thinner objects have wider ones.
+
+**Consequence, and it is a documentation rule rather than a code change:** rule B's
+0.598 m reach must be quoted as *"0.598 m for an object of at least X mm"*, never as a
+bare number. A single figure describes one object height and silently overstates the
+sensor for everything shorter.
+
+**NOT MEASURED, deliberately (sensor work is frozen 2026-08-14):** the band edges for
+object heights other than 50 mm. Two field points and the model are what we have. If a
+gauntlet run produces a contact with something in a blind band, that promotes this;
+until then it is a documented limit, not a work item.
+
+### 12.4 What J did NOT settle
+
+One wall, one object, one room, one afternoon. The false-fire rate is measured against
+THIS background; a mirror, a glass door or a dark low-reflectance surface is not in the
+sample. Rule B degrades toward silence rather than toward phantoms — it can only ADD
+obstacles, and a missing or stale scan removes them — so the failure direction is a
+missed obstacle, which the lidar and the freeze machinery still cover.
+
+### 12.5 A process note that cost 42 seconds of the wrong data
+
+The first cut of the bare-wall segment used the timestamps relayed to me by the
+supervising session. Columns 0–2 showed a 20–32% tail of ~0.6 m returns — which looked
+like a false-fire rate that would have made rule B unpinnable. It was one contiguous
+cluster occupying the final 42 s of the window: **Scott was in position with the box
+well before the mark completed its trip between two sessions and into my hands.**
+
+Cut on the DATA's own step change instead and the tail vanishes entirely. Same lesson as
+the 53 s recorder misalignment: **align against the signature, never against the
+narration.** A relayed human mark carries human latency, and the one number that decided
+whether rule B could hold brake authority was the number that latency corrupted.

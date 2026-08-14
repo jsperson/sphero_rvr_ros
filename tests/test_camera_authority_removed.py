@@ -94,14 +94,19 @@ def test_the_camera_NODE_still_runs():
 
 
 def test_the_configs_limits_are_written_down_beside_it():
-    """A layer with a gated half has to say so in the file a future reader opens, not
-    only in a commit message they will never find. When this layer was DISABLED the same
-    test demanded it name what still protected the rover; now that it is live, it must
-    name what is still unmeasured. Same rule, opposite state."""
+    """A layer has to say what it is doing in the file a future reader opens, not only
+    in a commit message they will never find. The demanded phrases track the STATE and
+    have now changed twice: disabled, it had to name what still protected the rover;
+    gated, it had to name what was unmeasured; LIVE, it must name the evidence that
+    unlocked it and what that evidence does not cover.
+
+    The rule is constant and the words are not, which is the point -- a fixed phrase
+    list would have gone on demanding "RULE B IS GATED OFF" from a config where rule B
+    is live, i.e. it would have enforced a lie."""
     cfg = SUPERVISOR_CFG.read_text()
     i = cfg.index("low_obstacle_brake_enable")
     block = cfg[max(0, i - 2500):i + 2500]
-    for phrase in ("RULE B IS GATED OFF", "bench item J", "rule_a_only"):
+    for phrase in ("RULE B IS LIVE", "bench item J", "RULE B PINNED BY"):
         assert phrase.lower() in block.lower(), (
             f"the config does not say {phrase!r} beside the layer it governs. A reader "
             "finding this enabled must be able to learn, without leaving the file, which "

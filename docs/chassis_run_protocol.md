@@ -104,6 +104,23 @@ Open decision (flag at run time): `enable_imu_fusion:=true` is hardware-validate
 and visibly straightened driving-with-turns; include it unless the run is meant to
 reproduce a wheel-odom-only baseline.
 
+## Direct sun — a SCHEDULING rule, and it now matters more than it did
+
+**Missions avoid hard direct sun until the sun capture happens.** This is not a code
+gate and there is nothing in the stack that enforces it; it rides on whoever schedules
+the run.
+
+It was already the rule. What changed on 2026-08-14 is the stake: **rule B now holds
+brake authority**, pinned against an indoor wall under indoor light. A ToF's failure
+mode in strong ambient IR is dropped or shortened returns, and rule B reads a shortened
+return as an obstacle nearer than the lidar sees — which is the phantom direction. The
+sensor has never been measured in sun, so the size of that effect is unknown rather than
+small.
+
+Until Scott's sun capture exists, treat hard direct sun as an unstaged condition: run in
+it only deliberately, with the run labelled, and do not read a brake event in sun as
+evidence about the room.
+
 ## One check that must happen on the FIRST Pi bringup after the frame batch
 
 **Chassis off; the ToF needs only I2C.** Bring `tof_node` up alone and watch one cycle

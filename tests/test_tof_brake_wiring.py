@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CFG = ROOT / "config" / "collision_stop.yaml"
 
 _CITATION = re.compile(
-    r"^\\s*#\\s*RULE B PINNED BY:\\s*(?!<|\\.\\.\\.|$)(\\S[^\\n]{7,})", re.M)
+    r"^\s*#\s*RULE B PINNED BY:\s*(?!<|\.\.\.|$)(\S[^\n]{7,})", re.M)
 """A citation must NAME something. The first version matched the bare token, so
 the config's own sentence explaining the requirement satisfied it -- prose
 defeating the guard it described. It must now carry at least eight characters of
@@ -114,56 +114,46 @@ def test_the_brake_acts_on_a_REAL_recorded_obstacle():
         "and the max_range derivation needs redoing rather than trusting")
 
 
-def test_the_margin_does_not_reach_the_object_it_was_argued_from():
-    """THE UNPINNED CONSTANT, MEASURED. Recorded as a test so it cannot be forgotten
-    between now and bench item J.
+def test_the_pinned_margin_reaches_the_object_it_was_argued_from():
+    """REWRITTEN 2026-08-14 AROUND THE MEASURED VALUE, which is what the previous
+    version of this test told its reader to do the day bench item J pinned the margin.
 
-    Design 9.4 justified rule B on this object with "a disagreement of 0.178 m, nearly
-    twenty times the margin rule A had to spare". That 0.178 m was 0.678 (a LIDAR range
-    from base_link) minus 0.500 (a SENSOR reading) -- a subtraction across two frames,
-    and the same defect class as the code it was describing. In one frame the number is
-    0.089 m, and the shipped 0.10 m guess sits ABOVE it.
+    The history matters and is why this test exists at all. Design 9.4 justified rule B
+    on this object with "a disagreement of 0.178 m, nearly twenty times the margin rule
+    A had to spare". That 0.178 was 0.678 (a LIDAR range from base_link) minus 0.500 (a
+    ToF SENSOR reading) -- subtracted across two frames. In one frame the object's real
+    disagreement is 0.089 m, and the UNPINNED 0.10 m guess sat above it: at the shipped
+    margin, rule B would not have fired on the object it was argued from.
 
-    So the consequence is concrete: at today's deployed margin, rule B would not fire
-    on the best-detected object of the characterisation session. That does not make
-    rule B wrong -- it makes the GUESS wrong, in a direction nobody could have seen
-    while the frame was broken. J pins it against a real capture; this test exists so
-    that pinning happens on purpose.
-
-    IT MUST NOT BE 'FIXED' BY EDITING THE MARGIN. A constant moved to make a test fire
-    is the self-consistently-wrong stack the frame batch existed to prevent.
+    J pinned the margin at 0.06 m from a measured bare-wall distribution whose worst
+    phantom-direction sample was 0.0396 m. So this object is now reachable with 48% of
+    margin to spare, and that headroom is the point: the false-fire side is ours to
+    measure, but how close an object sits to the wall behind it is the room's choice.
+    A margin set as high as the detection data tolerates would keep missing this
+    geometry.
     """
     sys.path.insert(0, os.path.dirname(__file__))
     from fixtures.tof_recorded_frames import TILT_BOX_050, TILT_BOX_050_WALL_M
 
-    shipped = dataclasses.replace(TofConfig(), rule_b_enable=True)
-    assert shipped.disagreement_margin_m == 0.10, (
-        "the disagreement margin has moved; if bench item J pinned it, this test should "
-        "be rewritten around the measured value and its citation, and if it moved for "
-        "any other reason that is the problem")
+    shipped = TofConfig()
+    assert shipped.rule_b_enable, "rule B is gated; this test is about the pinned state"
+    assert shipped.disagreement_margin_m == 0.06, (
+        f"the pinned margin has moved to {shipped.disagreement_margin_m}. It was set "
+        "FROM bench item J's measured distribution; moving it needs a new measurement "
+        "and a new citation, not an edit")
 
     fired = _tof_cloud_ground_ranges(TILT_BOX_050, shipped, [TILT_BOX_050_WALL_M] * 8)
-    assert not fired, (
-        f"rule B now reaches the recorded object at the unpinned 0.10 m margin "
-        f"({len(fired)} points). Either the geometry changed or the margin did -- "
-        "either way the 0.089 m measurement behind this test needs redoing")
+    assert fired, (
+        "rule B does NOT reach the recorded object at the pinned 0.06 m margin. That "
+        "object's real disagreement is 0.089 m, so either the margin moved above it "
+        "or the geometry changed -- both are regressions of the thing J bought")
 
-    # ...and the object IS reachable at a margin inside the predicted window, so the
-    # assertion above is about the margin and not about a detector that sees nothing.
-    inside = dataclasses.replace(shipped, disagreement_margin_m=0.05)
-    assert _tof_cloud_ground_ranges(TILT_BOX_050, inside, [TILT_BOX_050_WALL_M] * 8), (
-        "the object is unreachable even at a 0.05 m margin, so the test above proves "
-        "nothing about the margin -- the detector is simply not concluding")
-
-    # AND THE COUPLING THAT PINNING RULE B WILL CREATE, asserted now while it is cheap.
-    # The object is at 0.482 m; the deployed slow band is 0.30 m, sized for rule A's
-    # 0.298 m reach. That is correct TODAY, with rule B gated. The moment J pins rule B,
-    # a 0.30 m slow band would throw away every metre of the range B was run to buy.
-    if _CITATION.search(CFG.read_text()):
-        assert _f("low_obstacle_slow_distance_m") >= 0.50, (
-            f"rule B is pinned but the slow band is still {_f('low_obstacle_slow_distance_m')} m, "
-            f"sized for rule A. The recorded object is seen at {nearest:.3f} m and would "
-            "be ignored until it reached 0.30 m -- rule B's range bought nothing")
+    # AND THE OLD GUESS STILL MISSES IT, so this test measures the margin rather than
+    # the detector. Without this line it would pass against any margin at all.
+    guess = dataclasses.replace(shipped, disagreement_margin_m=0.10)
+    assert not _tof_cloud_ground_ranges(TILT_BOX_050, guess, [TILT_BOX_050_WALL_M] * 8), (
+        "the old 0.10 m guess now reaches this object too, so the pinning made no "
+        "observable difference here and this proof no longer distinguishes them")
 
 
 def test_clear_floor_produces_NO_brake_input():
@@ -231,13 +221,26 @@ def test_the_slow_band_covers_the_whole_detectable_range():
     assert _f("low_obstacle_slow_distance_m") > _f("low_obstacle_stop_distance_m")
 
 
-def test_rule_b_is_still_gated_through_the_real_wiring():
-    """The whole point of the gate is that WIRING the sensor does not silently enable
-    every rule it has."""
-    assert TofConfig().rule_b_enable is False
-    if "RULE B PINNED BY:" not in CFG.read_text():
-        assert TofConfig().rule_b_enable is False, (
-            "rule B is enabled with no pinning citation in the deployed config")
+def test_rule_b_is_live_ONLY_WITH_a_pinning_citation():
+    """The gate's whole point was that WIRING the sensor does not silently enable every
+    rule it has. Bench item J unlocked it on 2026-08-14, so the assertion inverts --
+    but the CONDITION does not: enabled still requires the citation, and this test now
+    guards the pairing rather than the off-state.
+
+    Written this way deliberately. The lazy edit when a gate opens is to delete the
+    test that asserted it was shut; what that throws away is the rule that opening it
+    needs evidence. A future config that re-enables rule B after someone removes the
+    citation fails here.
+    """
+    text = CFG.read_text()
+    if TofConfig().rule_b_enable:
+        assert _CITATION.search(text), (
+            "rule B is ENABLED with no '# RULE B PINNED BY:' citation in the deployed "
+            "config. The flag and the evidence for it travel together or not at all")
+    else:
+        # Still a legal state -- a re-gating after a bad field result is a config
+        # change, not a regression -- but it must not be silent.
+        assert "RULE B" in text, "rule B is gated and the config does not say so"
 
 
 def test_the_range_window_matches_the_sensor_not_the_camera():
@@ -245,9 +248,12 @@ def test_the_range_window_matches_the_sensor_not_the_camera():
     every point it produces lies below 0.40 m. Carrying those numbers over would have
     wired the brake and left it inert."""
     lo, hi = _f("low_obstacle_min_range_m"), _f("low_obstacle_max_range_m")
-    assert lo < 0.298 < hi, (
+    assert lo < 0.297 < hi, (
         f"the deployed window {lo}-{hi} m does not contain rule A's 0.298 m reach")
-    assert lo >= 0.052, (
-        f"min range {lo} is below the 0.052 m nearest range this geometry can report")
-    assert hi >= 0.498, (
-        f"max range {hi} would clip rule B's 0.498 m reach once bench item J pins it")
+    assert lo <= 0.1517, (
+        f"min range {lo} is ABOVE the 0.1517 m nearest range this geometry can report "
+        "in the true frame, so it silently discards the closest real returns -- the "
+        "0.052 m figure it used to be checked against was the broken frame's")
+    assert hi >= 0.598, (
+        f"max range {hi} clips rule B's 0.598 m reach in the true base_link frame "
+        "(0.498 was the same reach measured before the mount offset was applied)")

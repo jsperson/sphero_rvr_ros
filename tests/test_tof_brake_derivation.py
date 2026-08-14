@@ -169,30 +169,32 @@ def test_rule_b_authority_requires_a_pinning_citation():
             "TofConfig.rule_b_enable False and fly rule A honestly")
 
 
-def test_the_shipped_gate_is_real_and_defaults_OFF():
+def test_the_shipped_gate_is_real_and_is_CONSULTED_both_ways():
     """The guard above cites `rule_b_enable`. A guard that names a parameter nobody
     implemented is worse than no guard: it reads as protection and enforces nothing.
-
     That is the unreachable-recovery pattern in test form, and the first draft of this
     file had exactly it -- the citation named a `low_obstacle_rule_b_enable` key that
     existed in no config and no code.
+
+    RENAMED FROM `..._defaults_OFF` on 2026-08-14, when bench item J pinned the margin
+    and the default flipped. What that test was really worth was never the OFF state --
+    it was that the flag is REACHED by the code in both positions. So the assertion on
+    the default is gone and the two-way check that made it meaningful stays.
     """
     cfg = TofConfig()
     assert hasattr(cfg, "rule_b_enable"), "the gate the guard cites does not exist"
-    assert cfg.rule_b_enable is False, (
-        "rule B ships ENABLED. Its disagreement margin has never been measured against "
-        "a synchronised scan; bench item J is what changes that")
 
     from sphero_rvr_core.tof_frame import lidar_disagreement
     frame = [4000] * 64
     for col in (2, 3, 4):
         frame[3 * 8 + col] = 500                      # the recorded object, 0.50 m
-    assert lidar_disagreement(frame, cfg, [3.0] * 8) == [], (
-        "rule B produced obstacles while gated off -- the flag is declared but not "
-        "consulted, which is a gate in name only")
     live = dataclasses.replace(cfg, rule_b_enable=True)
+    gated = dataclasses.replace(cfg, rule_b_enable=False)
+    assert lidar_disagreement(frame, gated, [3.0] * 8) == [], (
+        "rule B produced obstacles while gated OFF -- the flag is declared but not "
+        "consulted, which is a gate in name only")
     assert lidar_disagreement(frame, live, [3.0] * 8), (
-        "rule B produces nothing even when ENABLED, so the test above proves nothing")
+        "rule B produces nothing even when ENABLED, so the check above proves nothing")
 
 
 def test_the_state_token_describes_CONFIGURATION_not_capability():
@@ -205,9 +207,13 @@ def test_the_state_token_describes_CONFIGURATION_not_capability():
     what it means.
     """
     from sphero_rvr_core.tof_frame import ObstacleDetector
-    gated = ObstacleDetector(TofConfig()).update([4000] * 64, None)
-    live = ObstacleDetector(dataclasses.replace(TofConfig(), rule_b_enable=True)).update(
-        [4000] * 64, None)
+    # BOTH STATES CONSTRUCTED EXPLICITLY. This used to take the gated case from the
+    # shipped default, so the day the gate flipped it silently compared "live" against
+    # "live" and asserted nothing.
+    gated = ObstacleDetector(
+        dataclasses.replace(TofConfig(), rule_b_enable=False)).update([4000] * 64, None)
+    live = ObstacleDetector(
+        dataclasses.replace(TofConfig(), rule_b_enable=True)).update([4000] * 64, None)
     assert gated["rules"] == "rule_a_only"
     assert live["rules"] == "rule_a+b"
     for banned in ("short", "full", "degraded", "limited", "safe"):
