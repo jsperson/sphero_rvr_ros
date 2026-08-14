@@ -53,10 +53,99 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy  # n
 from std_msgs.msg import String  # noqa: E402
 from tf2_ros import TransformBroadcaster  # noqa: E402
 
+from sphero_rvr_core.coverage_exploration import INSCRIBED_COST  # noqa: E402
+from sphero_rvr_core.escape_outcome import (  # noqa: E402
+    CLEARED as ESCAPE_CLEARED, REFUSED as ESCAPE_REFUSED,
+    format_outcome as ESCAPE_FORMAT,
+)
 from sphero_rvr_driver.coverage_explorer_node import CoverageExplorerNode  # noqa: E402
 
 
 RES = 0.05
+#: Lethal, on the OccupancyGrid scale Nav2 publishes its costmap in. NOT 254: that is
+#: the raw costmap_2d value and it does not fit in the int8 an OccupancyGrid carries.
+LETHAL = 100
+
+
+def make_costmap(size_cells=60, origin=-1.5, fill=0):
+    """A GLOBAL COSTMAP, the topic the explorer's start-pose guard reads.
+
+    Separate from `make_map` on purpose: they are different grids answering different
+    questions, and the harness had only the first. That gap is why the goal-clearance
+    filter could not be proved behaviourally when it was removed -- with no costmap
+    publisher the filter returned None for every pose and passed everything through,
+    so a scenario written against it would have passed against the BUG too. A harness
+    that cannot make the costmap say anything cannot test a costmap-reading rule.
+    """
+    m = OccupancyGrid()
+    m.header.frame_id = "map"
+    m.info.resolution = RES
+    m.info.width = size_cells
+    m.info.height = size_cells
+    m.info.origin.position.x = origin
+    m.info.origin.position.y = origin
+    m.data = [fill] * (size_cells * size_cells)
+    return m
+
+
+def stamp_cost(grid, wx, wy, radius_m, value):
+    """Paint a disc of cost centred on a WORLD point. Returns the grid."""
+    res = grid.info.resolution
+    cx = int((wx - grid.info.origin.position.x) / res)
+    cy = int((wy - grid.info.origin.position.y) / res)
+    r = int(math.ceil(radius_m / res))
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if math.hypot(dx, dy) * res > radius_m:
+                continue
+            x, y = cx + dx, cy + dy
+            if 0 <= x < grid.info.width and 0 <= y < grid.info.height:
+                grid.data[y * grid.info.width + x] = value
+    return grid
+
+
+def probe_clearance_m(grid, wx, wy, max_probe_m=0.60, threshold=INSCRIBED_COST):
+    """Smallest distance from (wx, wy) to costmap obstruction, 8 compass directions.
+
+    A DELIBERATE RE-IMPLEMENTATION of the filter that was deleted in 1e6af5c, living
+    here and nowhere else. The behavioural proof below has to show that the goal the
+    explorer sent is one the old filter WOULD have rejected -- otherwise it passes
+    vacuously, which is the exact trap the removal commit refused to walk into. That
+    check needs the old arithmetic, and importing it is impossible because deleting it
+    was half the point. So the test carries its own copy, where it can never be
+    mistaken for production code or rewired into the selection loop.
+
+    Returns None when the pose is off-map or unknown, matching the original.
+
+    THE SCALE IS 0..100, NOT 0..255. Nav2 publishes its costmap as an OccupancyGrid,
+    whose `data` is int8 -- 100 is lethal, 99 the inscribed ring, -1 unknown. Staging
+    a raw 254 here raises OverflowError on a real message, which is how this was
+    caught: on the dev machine the whole file skips for want of rclpy, and the value
+    looked plausible until a Pi ran it. `INSCRIBED_COST` is imported from the
+    production module rather than repeated, so the harness cannot drift off the
+    threshold the node actually uses.
+    """
+    res = grid.info.resolution
+    cx = int((wx - grid.info.origin.position.x) / res)
+    cy = int((wy - grid.info.origin.position.y) / res)
+    w, h = grid.info.width, grid.info.height
+    if not (0 <= cx < w and 0 <= cy < h):
+        return None
+    if grid.data[cy * w + cx] < 0:
+        return None
+    steps = int(max_probe_m / res)
+    best = max_probe_m
+    for ux, uy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+        norm = math.hypot(ux, uy)
+        for step in range(1, steps + 1):
+            x = cx + int(round(ux * step / norm))
+            y = cy + int(round(uy * step / norm))
+            if not (0 <= x < w and 0 <= y < h):
+                break
+            if grid.data[y * w + x] >= threshold:
+                best = min(best, step * res)
+                break
+    return best
 
 
 def make_map(size_cells=60, origin=-1.5):
@@ -80,7 +169,13 @@ class FakeWorld(Node):
         # --- scripting knobs ---
         self.plannable = lambda x, y: True     # ComputePathToPose verdict
         self.nav_mode = "succeed"              # "succeed" | "abort" | "hold"
-        self.behavior_mode = "hold"            # the escape: "hold" | "succeed"
+        self.behavior_mode = "hold"            # escape: "hold"|"succeed"|"costmap_refuse"
+        #: The outcome word a succeeding escape reports. The explorer parses this as a
+        #: FACT about what happened (sphero_rvr_core.escape_outcome), so a harness that
+        #: leaves it empty is testing the unrecognised-outcome path, not the escape.
+        self.escape_outcome = ESCAPE_CLEARED
+        self.escape_detail = "moved 0.30 m"
+        self.costmap = None                    # last costmap published, for D36
         # --- recordings ---
         self.pose = (0.0, 0.0)                 # teleported on nav succeed
         self.nav_goals = []                    # (t, x, y)
@@ -132,6 +227,13 @@ class FakeWorld(Node):
             report_qos, callback_group=cbg,
         )
 
+        # THE COSTMAP THE EXPLORER'S START GUARD READS. Same QoS as the map: the
+        # explorer subscribes with TRANSIENT_LOCAL + RELIABLE, and a VOLATILE
+        # publisher here would be silently incompatible -- no error, no delivery, and
+        # every costmap-dependent scenario passing because the costmap never arrived.
+        self._costmap_pub = self.create_publisher(
+            OccupancyGrid, "/global_costmap/costmap", map_qos)
+
         self._freeze_pub = self.create_publisher(
             String, "/decisive_controller/freeze_event", 10)
         self._tf = TransformBroadcaster(self)
@@ -139,6 +241,10 @@ class FakeWorld(Node):
 
     def publish_map(self, grid):
         self._map_pub.publish(grid)
+
+    def publish_costmap(self, grid):
+        self.costmap = grid
+        self._costmap_pub.publish(grid)
 
     def publish_freeze(self, x=0.0, y=0.0):
         """Stand in for the controller reporting a freeze: the supervisor permitted
@@ -194,7 +300,30 @@ class FakeWorld(Node):
             self.behavior_goals.append((rec[0], kind, goal_handle.request))
             self.behavior_active.append(rec)
             try:
-                if self.behavior_mode == "succeed":
+                if self.behavior_mode == "costmap_refuse":
+                    # D36 REPLAYED. Nav2's BackUp/Spin collision-check the GLOBAL
+                    # COSTMAP, so on 2026-08-12 they refused in 3 ms with 0.78 m of
+                    # measured clear floor behind the rover -- the rover's own freeze
+                    # marks had made its cell lethal. This reproduces that mechanism
+                    # exactly: consult the costmap, refuse instantly, do not move.
+                    # BackUp collision-checks the path it would TRAVEL, so the cell
+                    # that matters is the one behind the rover, not the one under it.
+                    # Checking the rover's own cell instead makes this unreachable:
+                    # the explorer's own START POSE guard ends the mission first, which
+                    # is a different defect from D36 and was how the first draft of
+                    # this scenario failed.
+                    back = float(getattr(goal_handle.request.target, "x", 0.0))
+                    blocked = self._costmap_says_blocked(
+                        self.pose[0] - back, self.pose[1])
+                    if blocked:
+                        result = BackUp.Result()
+                        setattr(result, "error_msg",
+                                ESCAPE_FORMAT(ESCAPE_REFUSED, "collision check"))
+                        goal_handle.abort()
+                        return result
+                    time.sleep(0.05)
+                    goal_handle.succeed()
+                elif self.behavior_mode == "succeed":
                     time.sleep(0.05)
                     goal_handle.succeed()
                 else:  # hold until cancelled: a BackUp against an unseen obstacle
@@ -202,10 +331,27 @@ class FakeWorld(Node):
                         time.sleep(0.02)
                     self.behavior_cancels.append((time.monotonic(), kind))
                     goal_handle.canceled()
-                return BackUp.Result()
+                result = BackUp.Result()
+                # The escape's RESULT IS THE FACT the explorer consumes. Left empty,
+                # every escape reads as "an outcome this node does not know" and the
+                # scenario measures the unrecognised path instead of the one it names.
+                setattr(result, "error_msg",
+                        ESCAPE_FORMAT(self.escape_outcome, self.escape_detail))
+                return result
             finally:
                 rec[1] = time.monotonic()
         return execute
+
+    def _costmap_says_blocked(self, wx, wy, threshold=INSCRIBED_COST):
+        cm = self.costmap
+        if cm is None:
+            return False
+        res = cm.info.resolution
+        cx = int((wx - cm.info.origin.position.x) / res)
+        cy = int((wy - cm.info.origin.position.y) / res)
+        if not (0 <= cx < cm.info.width and 0 <= cy < cm.info.height):
+            return False
+        return cm.data[cy * cm.info.width + cx] >= threshold
 
 
 class Stack:
@@ -775,3 +921,205 @@ def test_no_goal_is_cancelled_inside_coverage_radius_while_a_ladder_runs(stack):
     assert len(stack.world.nav_goals) == goals_before, (
         "a replacement goal was issued mid-escape — the controller starts driving "
         "at the obstacle again on the new goal's execute loop")
+
+
+# ---------------------------------------------------------------- the costmap scenarios
+#
+# Both need the costmap publisher added above, and that is the whole reason they did
+# not exist. The goal-clearance filter was removed in 1e6af5c with a structural
+# revert-proof and NO behavioural one, stated plainly in that commit: with no costmap
+# in the harness the filter returned None for every pose and passed everything
+# through, so a scenario written then would have passed against the bug as loudly as
+# against the fix. That is the D10/D20 vacuous-pass trap, and the answer was to build
+# the plumbing rather than to write the scenario anyway.
+
+
+@pytest.mark.parametrize("stack", [{"blocked_start_check": True}], indirect=True)
+def test_a_frontier_goal_the_old_filter_would_have_REJECTED_is_still_sent(stack):
+    """THE BEHAVIOURAL PROOF the removal commit owed.
+
+    A frontier borders unknown space by definition, and unknown cells are exactly what
+    a clearance probe cannot judge -- so frontier goals sit at the bottom of the
+    clearance distribution as a matter of geometry, not of clutter. Measured on the
+    live costmap in gauntlet run 1: frontier median clearance 0.05 m (the probe
+    floor), 0 of 125 frontiers passing the deployed 0.35 m threshold. There is no
+    threshold to tune it to, which is why the filter was deleted rather than retuned.
+
+    Here that geometry is staged: obstruction is painted close enough to the reachable
+    floor that any approach point is inside the old 0.35 m threshold, while the robot's
+    own cell stays open so the start guard does not end the mission for a different
+    reason. The explorer must still SEND a goal.
+
+    THE ANTI-VACUITY ASSERTION IS THE POINT OF THIS TEST. It is not enough that a goal
+    was sent -- the goal must be one the old filter would have thrown away. So the
+    clearance at the sent goal is measured here, with the deleted arithmetic
+    re-implemented in this file, and the test FAILS IF THAT CLEARANCE IS COMFORTABLE.
+    A scenario that cannot show the filter would have bitten is not a proof that
+    removing it mattered.
+    """
+    grid = make_map()
+    stack.world.publish_map(grid)
+
+    # Lethal cost lining the corridor the rover must work in. Painted as a ring so the
+    # rover's OWN cell (the origin) stays open -- otherwise `blocked_start_check` ends
+    # the mission as START_BLOCKED and the goal is never selected for a reason that has
+    # nothing to do with clearance.
+    costmap = make_costmap()
+    for ang in range(0, 360, 10):
+        r = 0.42
+        stamp_cost(costmap, r * math.cos(math.radians(ang)),
+                   r * math.sin(math.radians(ang)), 0.06, LETHAL)
+    stack.world.publish_costmap(costmap)
+    assert probe_clearance_m(costmap, 0.0, 0.0) is not None, "the robot is off costmap"
+
+    stack.world.nav_mode = "succeed"
+    assert wait_until(lambda: len(stack.world.nav_goals) >= 1, 25.0), (
+        "the explorer sent NO goal with a low-clearance costmap present. That is the "
+        "goal-clearance filter's exact failure mode -- 0 of 125 frontiers passing -- "
+        "and it means the filter, or something shaped like it, is back in selection")
+
+    _t, gx, gy = stack.world.nav_goals[0]
+    clearance = probe_clearance_m(costmap, gx, gy)
+    assert clearance is not None, (
+        f"the goal at ({gx:.2f}, {gy:.2f}) probes as UNKNOWN, where the old filter "
+        "passed poses through untouched -- this scenario cannot show it would have "
+        "rejected anything, so it proves nothing. Stage the costmap so the goal is on "
+        "known ground")
+    assert clearance < 0.35, (
+        f"the goal at ({gx:.2f}, {gy:.2f}) has {clearance:.3f} m of clearance, which "
+        "the removed 0.35 m filter would have ACCEPTED. The scenario is vacuous: it "
+        "would pass against the filter too. Tighten the staged obstruction")
+
+
+@pytest.mark.parametrize(
+    "stack", [{"blocked_start_check": True, "max_unstick_attempts": 3}], indirect=True,
+)
+def test_d36_the_escape_is_asked_even_when_the_costmap_is_lethal(stack):
+    """D36 REPLAY. *The explorer's unstick is invoked correctly and executes nothing,
+    because Nav2's BackUp/Spin collision-check the costmap the rover's own freeze marks
+    have made lethal -- refusing in 3 ms with 0.78 m of measured clear floor behind.*
+
+    The fix moved the escape off `behavior_server` and onto the controller's own
+    action, which drives through the collision supervisor and therefore reads the LIVE
+    LIDAR. The property that fix bought is not "the escape succeeds" -- it is that the
+    escape's verdict does not come from the costmap. So this stages the costmap that
+    refused: lethal all around the rover, its own cell open, nothing plannable.
+
+    WHAT THIS ONE CANNOT SHOW ON ITS OWN, said plainly: it asserts that the escape is
+    requested and that its outcome word arrives, and both of those hold under an
+    explorer that ignores the controller and records `cleared` unconditionally --
+    verified by mutation. Its discriminating power against that lives in its sibling
+    below, which stages the refusal. Read as a pair or not at all.
+
+    THE MISSION HAS TO EXPLORE SOMETHING FIRST, and finding that out is what the
+    harness is for. The explorer only ends a mission once `_ever_had_target` is true,
+    which is set when a goal is actually SENT -- so a scenario where nothing was ever
+    plannable produces no report at all, forever. Mission 2 got stuck after driving,
+    not before, and this now replays it in that order.
+    """
+    stack.world.publish_map(make_map())
+    stack.world.publish_costmap(make_costmap())          # open floor to begin with
+    stack.world.nav_mode = "succeed"
+    assert wait_until(lambda: len(stack.world.nav_goals) >= 1, 25.0), \
+        "the explorer never drove at all, so the stuck phase below is unreachable"
+    assert wait_until(lambda: stack.world.pose != (0.0, 0.0), 10.0), \
+        "the rover never arrived anywhere, so its stuck pose is the start pose"
+
+    # NOW it is stuck, exactly as mission 2 was: its own freeze marks have made the
+    # costmap lethal all around it, and nothing routes.
+    px, py = stack.world.pose
+    costmap = make_costmap()
+    for ang in range(0, 360, 8):
+        stamp_cost(costmap, px + 0.30 * math.cos(math.radians(ang)),
+                   py + 0.30 * math.sin(math.radians(ang)), 0.10, LETHAL)
+    stack.world.publish_costmap(costmap)
+    assert stack.world._costmap_says_blocked(px + 0.30, py), \
+        "the staged costmap is not lethal, so this scenario cannot show D36 at all"
+    assert not stack.world._costmap_says_blocked(px, py), (
+        "the rover's own cell is lethal, so the mission ends START_BLOCKED and the "
+        "escape is never reached -- that is a different defect from D36")
+
+    stack.world.plannable = lambda x, y: False     # nothing routes: the unstick trigger
+    stack.world.behavior_mode = "succeed"          # the controller escapes via the lidar
+    stack.world.escape_outcome = ESCAPE_CLEARED
+
+    before = len(stack.world.behavior_goals)
+    assert wait_until(lambda: len(stack.world.behavior_goals) > before, 25.0), (
+        "no escape was ever requested with a lethal costmap around the rover. The "
+        "escape path is consulting the costmap again, which is D36")
+    # THE REPORT'S OWN VOCABULARY: escapes land under `give_up_escapes`, as a count
+    # and a histogram of the CONTROLLER'S OWN outcome words -- not as a boolean and
+    # not as a count alone. Asserting on the histogram is the whole point: "3 escapes
+    # attempted" reads as recovery, and only the words say whether any of them moved
+    # the rover.
+    assert wait_until(lambda: any(r.get("give_up_escapes", {}).get("attempted")
+                                  for r in stack.world.reports), 40.0), (
+        f"the mission ended without recording any escape; reports={stack.world.reports}")
+    outcomes = {}
+    for r in stack.world.reports:
+        for word, n in (r.get("give_up_escapes", {}).get("outcomes") or {}).items():
+            outcomes[word] = outcomes.get(word, 0) + n
+    assert ESCAPE_CLEARED in outcomes, (
+        f"the escape's own outcome word never reached the report: {outcomes}. The "
+        "explorer is not consuming the controller's fact -- it is inferring one")
+
+
+@pytest.mark.parametrize(
+    "stack", [{"blocked_start_check": True, "max_unstick_attempts": 3}], indirect=True,
+)
+def test_d36_a_costmap_gated_escape_is_RECORDED_not_swallowed(stack):
+    """The other half, and the one that makes the test above non-vacuous.
+
+    If the escape were wired back to something that collision-checks the costmap, the
+    request would still go out and the refusal would still come back in milliseconds.
+    D36's cost was not the refusal -- it was that the refusal was INVISIBLE: the
+    mission ended reporting aborted goals, with nothing saying that every escape it
+    attempted had executed no motion at all.
+
+    So with the escape server behaving exactly as `behavior_server` did -- collision-
+    checking the ground it would back into -- the report must still name what happened.
+    An outcome word that never reaches the report is the failure this asserts against,
+    whatever the escape mechanism is.
+    """
+    stack.world.publish_map(make_map())
+    stack.world.publish_costmap(make_costmap())
+    stack.world.nav_mode = "succeed"
+    assert wait_until(lambda: len(stack.world.nav_goals) >= 1, 25.0), \
+        "the explorer never drove, so the stuck phase is unreachable"
+    assert wait_until(lambda: stack.world.pose != (0.0, 0.0), 10.0)
+
+    px, py = stack.world.pose
+    costmap = make_costmap()
+    # Lethal BEHIND the rover -- the ground a BackUp would traverse -- with its own
+    # cell left open so the start guard does not end the mission first.
+    stamp_cost(costmap, px - 0.30, py, 0.12, LETHAL)
+    stack.world.publish_costmap(costmap)
+    assert not stack.world._costmap_says_blocked(px, py), \
+        "the rover's own cell is lethal; that ends the mission as START_BLOCKED"
+
+    stack.world.plannable = lambda x, y: False
+    stack.world.behavior_mode = "costmap_refuse"   # the D36 mechanism itself
+
+    before = len(stack.world.behavior_goals)
+    assert wait_until(lambda: len(stack.world.behavior_goals) > before, 25.0), \
+        "the explorer never asked for an escape at all"
+    assert wait_until(lambda: any(r.get("outcome") for r in stack.world.reports), 45.0), (
+        f"the mission never ended; reports={stack.world.reports}")
+    report = [r for r in stack.world.reports if r.get("outcome")][-1]
+    escapes = report.get("give_up_escapes") or {}
+    assert escapes.get("attempted"), (
+        "the mission ended with escapes attempted and NOTHING in give_up_escapes. "
+        "That is D36's real cost: the refusal was invisible, so the run read as 'the "
+        "room refused us' when it was 'we never moved'. "
+        f"report={report}")
+    # A COUNT IS NOT A RECORD. "attempted: 3" is exactly the line that made D36
+    # invisible for a day -- three escapes attempted reads as three escapes performed.
+    # The histogram is what distinguishes them, and it must name the refusal.
+    assert ESCAPE_REFUSED in (escapes.get("outcomes") or {}), (
+        f"escapes were counted but their outcomes are {escapes.get('outcomes')!r}, "
+        "which does not name the refusal. A count without the words is the D36 report "
+        "verbatim")
+    assert ESCAPE_CLEARED not in (escapes.get("outcomes") or {}), (
+        f"a costmap-refused escape was recorded as CLEARED: {escapes.get('outcomes')}. "
+        "The explorer is reporting an escape that moved nothing as one that moved the "
+        "rover, which is D36 wearing the fix's clothes")
