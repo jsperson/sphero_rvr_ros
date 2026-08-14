@@ -396,3 +396,70 @@ field shape prevents.
 * It does not change the freeze-mark mechanism, though it interacts with it. Whether
   marks should decay faster, or be suppressed under the robot's own footprint, is a
   real question this run raises and a separate one.
+
+---
+
+## AMENDMENT 2026-08-13 — the reachability map, and the hole in it
+
+**Assignment: verify or refute the claim that the stall ladder is a strict superset of
+the give-up escape, so wiring the escape to the wedged path would add nothing.**
+
+### The superset argument HOLDS for the normal abort path
+
+Every abort in the 2026-08-13 provocation run paired 1:1 with a ladder terminal outcome,
+all within 0.0 s:
+
+    abort (22,33) <- GENUINELY WEDGED            0.0 s earlier
+    abort (14,28) <- GENUINELY WEDGED            0.0 s earlier
+    abort (21,25) <- GENUINELY WEDGED            0.0 s earlier
+    abort (27,29) <- GENUINELY WEDGED            0.0 s earlier
+    abort (14,52) <- all_rungs_ineffective       0.0 s earlier
+
+On that path the ladder has already requested reverse, arc, pivot AND forward through the
+same supervisor the escape would use. A fifth request adds nothing. **Confirmed.**
+
+### But a route EXISTS where the counter fills with NOTHING tried
+
+Of 8 aborts in the earlier run that day, **one had no ladder outcome within 20 s** — and
+1.1 s before it, bt_navigator logged:
+
+    Timed out while waiting for action server to acknowledge goal request for follow_path
+    Goal failed
+    coverage goal (36,32) ABORTED — suppressing it for 45s
+
+The controller's log for the 11 s before that timeout shows it running the ladder
+continuously on the PREVIOUS goal — pivot_open, drive_open, reverse_arc, reverse_straight
+— and reaching `all_rungs_ineffective` 1.8 s AFTER the timeout.
+
+**Mechanism: while the ladder is executing, the FollowPath action server does not
+acknowledge new goals in time. bt_navigator gives up, the goal aborts, and the explorer
+counts it.** Nothing was attempted on that goal; the rover may be physically free.
+
+*(This evidence comes from the contaminated run and is admissible on the same basis as
+its ladder-mechanism observation: an action-server acknowledgement timeout is a property
+of the code's concurrency, and a mis-aimed camera cannot produce one.)*
+
+### The real hole is the COUNTER, not the escape wiring
+
+`_goals_aborted` conflates two different facts:
+
+* **"we tried here and could not move"** — a ladder exhaustion, real evidence the place
+  is hard, and the thing `ABORTED_GOALS_KEEP_FAILING` is supposed to mean;
+* **"we never got to try"** — an acknowledgement timeout, evidence only that the
+  controller was busy.
+
+A run with enough of the second ends `ABORTED_GOALS_KEEP_FAILING` having attempted far
+less than the count implies — the mission-2 shape reached by a different road, and
+invisible in the report because the two are one number. **Measuring the right
+population, again.**
+
+**So the escape's wiring is CORRECT and the amendment belongs elsewhere**: an abort that
+never reached the controller must not count as evidence that a location is unreachable.
+Options, for review rather than my choice — count it separately and let the ending name
+which kind dominated; or retry an ack-timeout goal once before counting it; or fix the
+starvation so the acknowledgement is not blocked by ladder execution (the root cause, and
+the largest change).
+
+**NOT BUILT. This is a reviewed design and the decision is not mine.** Recorded here
+before the gauntlet, because a gauntlet scored on `ABORTED_GOALS_KEEP_FAILING` endings is
+scoring a number that currently means two things.
