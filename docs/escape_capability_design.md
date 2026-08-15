@@ -126,6 +126,48 @@ The supervisor remains the sole arbiter; nothing here gains special authority. R
 makes the sequence adaptive rather than a fixed ladder — the world after a failed attempt is not
 the world the first survey saw.
 
+### VOUCHING — absence of evidence is a first-class fact
+
+The survey must not present "no sensor can speak about this direction" as if it were "this
+direction is clear." Every direction carries a **vouching level**:
+
+| level | what vouches | what it covers |
+|---|---|---|
+| **TRAIL** | the robot's own body swept it | **all heights** — the strongest evidence available |
+| **ToF** | sub-lidar returns, within envelope | low objects, inside the measured band only |
+| **LIDAR** | the 0.19 m scan plane | that plane, and nothing above or below it |
+| **UNVOUCHED** | nothing | no sensor can speak |
+
+**2026-08-15's pin lived in unvouched space.** All five freezes were "an obstacle no sensor on this
+robot can see", and ToF read `obstacle_zones=0` at the escape stamps. The survey must **say** that,
+rather than silently ranking a sensor-blind direction as though it were open.
+
+**The plan ranks vouched space above unvouched.** Unvouched directions are **never forbidden** — a
+rule that refused them would deadlock a real room, since most of any room is unvouched at any
+instant. They rank **last**, and execute at **reduced speed with the freeze-watch armed**, which is
+the existing machinery doing exactly the job it was built for.
+
+### CAUSE-CONDITIONED FIRST CANDIDATE
+
+The stuck-cause changes which candidate leads:
+
+* **Cause = FREEZE** (invisible contact — 2026-08-15's class): **trail-retrace ranks FIRST by
+  rule.** A freeze is proof that unvouched space is *actively hostile*, and the trail is the only
+  eyewitness that carries all-heights evidence. Ranking a lidar-open bearing first after a freeze is
+  ranking the sensor that just demonstrably missed something.
+* **Cause = lidar-visible**: the survey's **widest adequate opening leads**, since the sensor that
+  can see the problem is the sensor that should choose the exit.
+
+**THE UNIFICATION, and it is the part worth remembering: after 2026-08-15's 180° spin, THE TRAIL
+LIES AHEAD.** The rover drove into that corner nose-first and then reoriented, so retracing its own
+entry corridor means driving *forward*. **Trail-retrace at specimen 3 IS forward-drive.**
+
+Scott's *"it can 100% drive forward clear across the room"* and the trail rule give the **same
+answer at that pose for the same underlying reason**: that corridor is body-proven. So the
+three-specimen acceptance stands with this reading, and 12 o'clock at specimen 3 arrives **via the
+trail rank**, not via naive open-bearing — which is a stronger derivation than the one it replaces,
+because it would still hold if the lidar were lying about the far wall.
+
 ### Scott's hard requirement, verbatim
 
 > **After reorienting, the selector must use the CURRENT heading — spin-then-flee-backwards becomes
@@ -134,6 +176,52 @@ the world the first survey saw.
 This is an acceptance criterion, not a preference. Under survey→plan→execute it is satisfied
 structurally rather than by a rule: the post-spin survey shows forward open, so forward-drive ranks
 first, and the 2026-08-15 failure cannot recur.
+
+### THE LAST RUNG: ask the human
+
+Scott, verbatim, 2026-08-15:
+
+> "Yeah, last resort - just ask for help! I can dialog with it to help it move or move stuff out of
+> the way or just relocate the rover."
+
+Full escalation, with the honestly-blocked ending pushed to the very end where it belongs:
+
+    SURVEY -> PLAN -> EXECUTE (candidates exhausted)
+        -> [future Track 2 increment] LLM recovery intent
+        -> ASK THE HUMAN
+        -> only then, the honest blocked ending
+
+**1. The help request IS the stuck-report rendered as English**, through the existing
+status/conversation channel. The survey supplies the content, so no second description of the
+situation is authored anywhere:
+
+> *"I'm pinned on something I can't see behind me. Forward is open about 1.8 m. I've tried arcing
+> out four times. Can you move what's behind me, or should I drive forward?"*
+
+**One artifact, three consumers: the autopsy log, the LLM tool, and the human plea.** That is the
+same discipline as the survey itself — the robot states its situation once, and everything that
+needs it reads the same statement.
+
+**2. TWO HELP OUTCOMES, and the robot must DISTINGUISH them rather than assume:**
+
+* **(a) The obstacle was moved or cleared.** Operator says retry, or a fresh survey shows the world
+  changed → **re-survey, re-plan, and the mission CONTINUES seamlessly.** This must **not** burn a
+  give-up count: nothing failed, the room changed.
+* **(b) The rover was RELOCATED BY HAND.** This is a **teleport, and SLAM's pose is now a lie.**
+  The design must handle it explicitly — detect the discontinuity, or take the operator's word for
+  it. Honest options are **relocalize if we can**, or **end the mission and restart cleanly**.
+  **Silently continuing on a corrupted pose is FORBIDDEN.** It is the mapping equivalent of the
+  mis-aimed camera: every subsequent artifact would look plausible and be worthless, and the whole
+  map plus every freeze mark in it would be quietly wrong.
+
+**3. A timeout.** Help requested, nobody answers within N minutes → proceed to the honest ending,
+**recording that help was requested and unanswered.** Per D35 discipline the report carries the
+outcome as fields — `help_requested` / `answered` / `outcome` — not as prose, so a future session
+can count them.
+
+**Lifecycle:** `mission/stop` and the D34 rules apply to the waiting state. **A STOP during a
+help-wait must win instantly** — a robot that keeps waiting through a stop request is a robot
+ignoring its operator, and the help state is exactly where that would be most infuriating.
 
 ### What this changes and what it does not
 
