@@ -67,7 +67,146 @@ first and be provable on its own.
 
 ---
 
-## 1. The two specimens, and why we needed both
+## 0.5 THE ARCHITECTURE: survey → plan → execute
+
+**This section supersedes the rung-shaped framing of A1/A2 below. They survive as plan
+CANDIDATES, not as separate rungs.**
+
+Scott's directive, verbatim, 2026-08-15:
+
+> "We talked about this a while back. The first thing when the rover gets stuck should be taking
+> measurements with the sensors and trying to figure a way out."
+
+He is right that he said it long ago — *"pivot more and use lidar to see where the open space is"*
+is in the founding principles — and the honest audit is that **we half-built it**: the ladder
+consumes ONE bearing as a hint, and the give-up escape consumes nothing at all. The field paid for
+the correction on 2026-08-15 (specimen 3, §1): the rover spun to face out of a corner, then
+reversed back into it with 1.77 m of clear floor dead ahead.
+
+The defect is not that the escape chooses badly among options. **It has exactly one option and it
+never looks.**
+
+### The three stages
+
+**1. SURVEY — the stuck state's first act is to MEASURE.** One shared entry point: whatever
+declares stuck (the ladder's trigger or the give-up trigger) fires a survey before any motion is
+proposed. The survey collects, as ONE structured snapshot:
+
+* **full 360° lidar clearance by bearing** — the audited arithmetic from
+  `sphero_rvr_core.bearings`, computed in-process, not a diagnostic script;
+* **ToF columns** — the sub-lidar picture, which is the only sensor that speaks to the object class
+  that actually pins this robot (all five freezes on 2026-08-15 were "an obstacle no sensor can
+  see");
+* **trail validity and geometry** — is there a usable recent trail, and what shape is it;
+* **footprint-overlap check** — are there returns inside the declared footprint (the 08-14b class,
+  where overlap made every projection refusal correct by construction);
+* **the ladder's cause classification** (freeze vs visible) as an input, not a separate mechanism.
+
+**The survey is LOGGED as a unit.** That is deliberate and it is half the value: the survey is both
+the plan's input *and* the register's evidence, so **every future wedge autopsy starts from the
+robot's own survey instead of our reconstruction from a bag.** Three wedge autopsies so far have
+each cost hours of after-the-fact derivation that the robot could have emitted in one line.
+
+**2. PLAN — rank exit candidates from the survey.** Candidates, each scored against what the survey
+actually shows:
+
+* **forward-drive** — when a sector wide enough for the swept path is open **at the current
+  heading**;
+* **arc toward the widest adequate opening** — direction taken FROM THE SURVEY, with both sides
+  considered (see the mirror-pair test in §1);
+* **trail retrace** — when the survey shows no adequate live opening, or shows footprint overlap.
+
+**Each candidate's predicted FIRST COMMAND SHAPE is checked for grantability against the arbiter at
+PLAN TIME.** This is the un-grantable-by-construction lesson (§0) applied one layer earlier: a
+candidate whose command the supervisor must refuse is never proposed, rather than proposed and
+refused four times over 21 s.
+
+**3. EXECUTE through the supervisor, one candidate at a time, and RE-SURVEY after each failure.**
+The supervisor remains the sole arbiter; nothing here gains special authority. Re-surveying is what
+makes the sequence adaptive rather than a fixed ladder — the world after a failed attempt is not
+the world the first survey saw.
+
+### Scott's hard requirement, verbatim
+
+> **After reorienting, the selector must use the CURRENT heading — spin-then-flee-backwards becomes
+> impossible by construction.**
+
+This is an acceptance criterion, not a preference. Under survey→plan→execute it is satisfied
+structurally rather than by a rule: the post-spin survey shows forward open, so forward-drive ranks
+first, and the 2026-08-15 failure cannot recur.
+
+### What this changes and what it does not
+
+* **A1 (trail retrace)** becomes a plan candidate. Its design — proposed by the trail, permitted by
+  live sensing, invalidated by a since-planted freeze mark or a long stationary gap, composing with
+  D34 and inheriting freeze behaviour — is unchanged and still governs (§2).
+* **A2 (rung candidate on sector evidence)** is subsumed: candidate ranking IS the selector. §3
+  survives as the reasoning behind ranking, not as a separate rung.
+* **A3 (swept-arc gating + footprint derivation)** is unchanged and still gates the arbiter side
+  (§4, §6b).
+* **Commit 1 stays** as the arc candidate's command shape — its field execution on 2026-08-15
+  proved the shape is grantable (`refused ×4` → `frozen ×4`).
+* **D34 lifecycle composition and freeze inheritance are unchanged.** No goal starts mid-escape; a
+  survey-driven escape that freezes marks and stops.
+
+### The acceptance test the three specimens now give us
+
+One rule, three poses, and a heading-blind rule fails at least one:
+
+| pose | survey shows | plan must nominate |
+|---|---|---|
+| mission 2 (08-14) | forward 0.387 m open, left object 0.166 m at 9 o'clock | **12 o'clock** (forward) |
+| 08-14b | forward 0.266 m blocked, left side open to 2.18 m at 8 o'clock | **8 o'clock** (arc left) |
+| 2026-08-15 | forward **1.77 m** open after reorientation | **12 o'clock** (forward) |
+
+The first two are near mirror images of each other, so a side-biased rule fails one of them; the
+third is the heading-blindness test. **A rule that satisfies all three is the deliverable.**
+
+---
+
+## 1. THREE specimens, and each indicts something different
+
+Three wedge poses now. Neither of the first two alone would have produced the right architecture,
+and the third is what forced it.
+
+### Specimen 3 (2026-08-15) — the purest, and the one that changed the design
+
+The rover was cornered with objects on three sides, **spun 180° to face out of the corner**, and
+then the give-up escape reversed straight back into the obstacle it had just turned away from.
+
+    12  1.763 OPEN   <-- STRAIGHT AHEAD      6  0.474 OPEN
+     1  0.602 OPEN                           7  0.475 OPEN
+     2  0.377 OPEN                           8  0.232 blocked  <-- MIN
+     3  0.366 OPEN                           9  0.281 blocked
+     4  0.275 blocked                       10  0.687 OPEN
+     5  0.310 OPEN                          11  1.261 OPEN
+    OPEN 9/12.
+
+**1.77 m of clear floor dead ahead; four commanded reverses.** Scott, from the floor: *"It 100% can
+drive forward clear across the room"* — measured at 1.763–1.770 m, vindicated to three decimals.
+
+The escape's command WAS granted this time (commit 1 working: `refused ×4` → `frozen ×4`, output
+carrying both linear −0.100 and angular +0.400). The rover was then pinned on something sub-lidar
+and achieved 0.42–0.84° of yaw and 6–10 mm of travel. So the freeze was real, not phantom — checked
+explicitly against the D33 class and refuted.
+
+**The rover had already solved the hard part and then threw the reorientation away.** That is the
+whole argument for survey→plan→execute (§0.5).
+
+### All three, side by side
+
+| | mission 2 (08-14) | 08-14b | **2026-08-15** |
+|---|---|---|---|
+| forward (12 o'clock) | **0.387 m OPEN**, never commanded in 683 rows | **0.266 m blocked** | **1.77 m OPEN**, never commanded |
+| min clearance | 0.166 m at 9 o'clock (LEFT) | 0.150 m at 5 o'clock (RIGHT) | 0.232 m at 8 o'clock (LEFT) |
+| refusing gate | reverse trajectory projection ×350 | `rear_hold` ×4 | **none — granted, then pinned** |
+| indicts | the rung SET | directional vocabulary | **heading-blindness after reorientation** |
+
+The first two are near mirror images — blocked left with the right open, then blocked right with the
+left open — so **a side-biased rule fails one of them**. The third adds the heading test. Together
+they are a three-way acceptance the design can be measured against rather than argued about.
+
+### The original two, and why both were needed
 
 Two wedge poses, both with the escape stack refused, and they indict *different* things. Neither
 alone would have produced the right fix.
