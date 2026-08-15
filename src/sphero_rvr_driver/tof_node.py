@@ -71,6 +71,24 @@ def _cloud(frame_id, stamp, points):
     return msg
 
 
+#: THE DEFAULTS COME FROM TofConfig, NOT FROM LITERALS HERE. Every geometry and
+#: detection constant used to be written twice -- once in `TofConfig` and once as this
+#: node's declared parameter default -- and the node's copy WON, because it is what
+#: gets passed into the config object.
+#:
+#: That cost a gauntlet gate on 2026-08-14. Bench item J pinned `disagreement_margin_m`
+#: to 0.06 and enabled rule B in `TofConfig`; the deployed config carried the citation;
+#: the tests were green; and the flying node still reported `rule_b=UNPINNED
+#: margin_m=0.1 rules=rule_a_only`, because these two lines still said 0.10 and False.
+#: The stack was one gate away from flying a mission believing rule B held authority
+#: it did not have.
+#:
+#: One source of truth. A parameter may still OVERRIDE any of these at runtime -- that
+#: is what parameters are for -- but the default is now the same object the pure core
+#: uses, so pinning a constant in one place pins it everywhere.
+_D = TofConfig()
+
+
 class TofNode(Node):
     def __init__(self):
         super().__init__("tof")
@@ -93,27 +111,27 @@ class TofNode(Node):
         # (design note 9.7). The mount was aimed at 10 deg down; it fits at 15.7.
         # Trusting the intended number over the fitted one is how a floor model ends
         # up describing a robot nobody built.
-        self.declare_parameter("mount_height_m", 0.139)
-        self.declare_parameter("mount_pitch_deg", -15.7)     # positive = nose UP
+        self.declare_parameter("mount_height_m", _D.mount_height_m)
+        self.declare_parameter("mount_pitch_deg", _D.mount_pitch_deg)     # positive = nose UP
         # THE FIELD OF VIEW IS ASYMMETRIC: ~60 deg across, ~47 deg down. Two separate
         # parameters because they are two separate measurements -- the horizontal from
         # a 25 cm box filling 6 of 8 columns, the vertical from the floor-row fit.
-        self.declare_parameter("zone_deg_h", 7.5)
-        self.declare_parameter("zone_deg_v", 5.9)
-        self.declare_parameter("mount_x_m", 0.10)
-        self.declare_parameter("reports_z", True)
-        self.declare_parameter("floor_margin_m", 0.12)
-        self.declare_parameter("floor_horizon_m", 0.55)
+        self.declare_parameter("zone_deg_h", _D.zone_deg_h)
+        self.declare_parameter("zone_deg_v", _D.zone_deg_v)
+        self.declare_parameter("mount_x_m", _D.mount_x_m)
+        self.declare_parameter("reports_z", _D.reports_z)
+        self.declare_parameter("floor_margin_m", _D.floor_margin_m)
+        self.declare_parameter("floor_horizon_m", _D.floor_horizon_m)
         # Rule A's authority bound. NOT the visibility horizon above -- keeping those
         # two apart is the whole content of design note 9.1.
-        self.declare_parameter("stop_distance_m", 0.45)
+        self.declare_parameter("stop_distance_m", _D.stop_distance_m)
         # Rule B: the lidar as a live background (design 9.3). The margin is UNPINNED --
         # no synchronised /scan has ever been recorded beside this sensor, and bench
         # item J exists to fix that. Until it does, ~/state says so on every line.
         self.declare_parameter("scan_topic", "/scan")
-        self.declare_parameter("disagreement_margin_m", 0.10)
+        self.declare_parameter("disagreement_margin_m", _D.disagreement_margin_m)
         # Gated until bench item J pins the margin above. Rule A flies without J.
-        self.declare_parameter("rule_b_enable", False)
+        self.declare_parameter("rule_b_enable", _D.rule_b_enable)
         # Matches the supervisor's own scan-staleness bound, deliberately: two different
         # answers to "is this scan usable" is two components disagreeing about reality.
         self.declare_parameter("max_scan_age_s", 0.30)

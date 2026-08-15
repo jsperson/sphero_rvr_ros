@@ -280,3 +280,40 @@ def test_the_node_hands_the_offset_to_the_geometry_and_to_tf():
 
 
 import pytest  # noqa: E402  (imported last so the module reads top-down)
+
+
+def test_the_node_declares_NO_geometry_constant_of_its_own():
+    """PROOF 22. The defect that held gauntlet mission 1 on the pad, 2026-08-14.
+
+    Every geometry and detection constant was written TWICE -- once in `TofConfig` and
+    once as this node's declared parameter default -- and the node's copy won, because
+    it is what gets passed into the config object.
+
+    So bench item J pinned `disagreement_margin_m` to 0.06 and enabled rule B in
+    `TofConfig`; the deployed config carried the pinning citation; every test was
+    green; and the flying node reported `rule_b=UNPINNED margin_m=0.1
+    rules=rule_a_only`. The stack was one pre-flight gate away from flying a mission
+    believing rule B held authority it did not have -- and the tests could not have
+    caught it, because they all read TofConfig, which was right.
+
+    THE ONLY REASON IT WAS CAUGHT is that the run card gates on `/tof/state`'s own
+    words rather than on what the config says. A number that appears in two places will
+    eventually disagree with itself; this asserts it appears in one.
+    """
+    src = NODE.read_text()
+    body = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+
+    fields = {f for f in TofConfig().__dataclass_fields__}
+    literal = re.compile(r'declare_parameter\(\s*"([a-z_0-9]+)"\s*,\s*([^)]+)\)')
+    offenders = []
+    for name, default in literal.findall(body):
+        if name in fields and "_D." not in default:
+            offenders.append((name, default.strip()))
+    assert not offenders, (
+        f"these TofConfig constants are declared with their own literal default in the "
+        f"node: {offenders}. The node's value WINS over TofConfig, so pinning the "
+        "constant in the core would not reach the robot. Declare it as _D.<field>")
+
+    # ...and the single source must actually be the config object.
+    assert "_D = TofConfig()" in body, (
+        "the node no longer derives its parameter defaults from TofConfig at all")
