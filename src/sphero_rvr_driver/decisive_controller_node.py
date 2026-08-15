@@ -49,6 +49,11 @@ from sphero_rvr_core.decisive_control import (
     heading_error_to_point,
     select_target_point,
 )
+from sphero_rvr_core.escape_survey import (
+    SurveyConfig,
+    format_survey,
+    survey_from_scan,
+)
 from sphero_rvr_core.escape_outcome import (
     CLEARED, FROZEN, REFUSED, format_outcome,
 )
@@ -233,6 +238,16 @@ class DecisiveControllerNode(Node):
         # stays pure -- it does not parse scans -- so the bearing is computed here and
         # handed in.
         self._scan_lock = threading.Lock()
+        # Raw scan kept for the stuck-state survey, with the TF rotation it was read
+        # with. None until a scan arrives WITH a usable TF -- a survey built against
+        # the laser frame would be a mirror of the truth, which is the one error this
+        # project has made in both the control path and the analysis layer.
+        self._survey_scan = None
+        # Footprint values here MIRROR the deployed supervisor config; they affect only
+        # the survey's overlap COUNT, which is diagnostic. If they ever drive a
+        # decision, they must be read from the deployed config instead of restated.
+        self._survey_config = SurveyConfig()
+        self._ladder_was_active = False
         self._open_bearing_rad = 0.0
         self._open_bearing_at = None
         self._open_bearing_max_age_s = 1.0
@@ -435,6 +450,17 @@ class DecisiveControllerNode(Node):
         if self._avoid_enable:
             self._update_lidar_blocker(msg, yaw)
 
+        # Keep the raw scan for the stuck-state SURVEY. The gap search below reduces
+        # this whole scan to one bearing, which is precisely the impoverishment the
+        # survey exists to end: a robot that knows only "the widest gap is that way"
+        # cannot say what it is stuck ON. Stored with the TF rotation it was read
+        # with, so the survey can never be built against the laser frame by accident.
+        with self._scan_lock:
+            self._survey_scan = (
+                tuple(rng), msg.angle_min, msg.angle_increment,
+                msg.range_min, msg.range_max, math.degrees(yaw),
+            )
+
         def open_at(i):
             r = rng[i % n]
             return (r != r) or r > self._open_gap_min_range_m
@@ -467,6 +493,44 @@ class DecisiveControllerNode(Node):
         with self._scan_lock:
             self._open_bearing_rad = _wrap_angle(laser_bearing + yaw)
             self._open_bearing_at = time.monotonic()
+
+    def _log_stuck_survey(self, cause):
+        """The stuck state's FIRST ACT: measure, and say what was measured.
+
+        Scott, 2026-08-15: "The first thing when the rover gets stuck should be taking
+        measurements with the sensors and trying to figure a way out." Stage one of
+        that is this: the survey is BUILT and LOGGED and nothing consumes it yet.
+        Planning and execution land separately so the numbers can be checked against
+        the recordings before anything acts on them.
+
+        The line is the register's evidence as much as the plan's input. Three wedge
+        autopsies have each cost hours of reconstruction from a bag that this one line
+        would have supplied.
+
+        Never raises: a survey is diagnostics, and a diagnostic that can kill an escape
+        is worse than no diagnostic.
+        """
+        try:
+            with self._scan_lock:
+                snapshot = self._survey_scan
+            if snapshot is None:
+                self.get_logger().warn(
+                    f"SURVEY unavailable (cause={cause}): no scan with a usable TF yet")
+                return
+            ranges, angle_min, angle_inc, range_min, range_max, laser_yaw_deg = snapshot
+            survey = survey_from_scan(
+                ranges=ranges,
+                angle_min=angle_min,
+                angle_increment=angle_inc,
+                range_min=range_min,
+                range_max=range_max,
+                laser_yaw_deg=laser_yaw_deg,
+                config=self._survey_config,
+                cause=cause,
+            )
+            self.get_logger().warn(format_survey(survey))
+        except Exception as exc:                      # noqa: BLE001 - see docstring
+            self.get_logger().warn(f"SURVEY failed (cause={cause}): {exc}")
 
     def _update_lidar_blocker(self, msg, laser_to_base_yaw):
         """Nearest lidar return that is actually in our way, in the BASE frame.
@@ -716,6 +780,9 @@ class DecisiveControllerNode(Node):
         says so and stops; growing arcs and pivots here would put a second author on
         the same motion, which is the failure the stall ladder exists to have ended.
         """
+        # STUCK ENTRY 1 of 2: the give-up escape. Measure before moving.
+        self._log_stuck_survey("give_up_escape")
+
         result = BackUp.Result()
         feedback = BackUp.Feedback()
         req = goal_handle.request
@@ -931,6 +998,12 @@ class DecisiveControllerNode(Node):
                 )
                 self._ladder_active_pub.publish(
                     Bool(data=(ladder_result.action == "rung")))
+                # STUCK ENTRY 2 of 2: the ladder's first rung of a traversal. Logged
+                # once per traversal rather than per rung -- a survey every 3 s would
+                # bury the one that matters.
+                if ladder_result.action == "rung" and not self._ladder_was_active:
+                    self._log_stuck_survey(f"ladder:{ladder_result.reason}")
+                self._ladder_was_active = (ladder_result.action == "rung")
                 if ladder_result.freeze:
                     # The supervisor permitted motion and we did not move: something is
                     # physically there that no sensor on this robot can see. A DATA
