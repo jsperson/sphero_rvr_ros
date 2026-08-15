@@ -24,7 +24,7 @@ The chain, all of it arithmetic:
    **driver** tree, not `sphero_rvr_core/`) fires when a reverse is
    commanded and the **rear sector** minimum is within `reverse_stop_distance_m` (deployed:
    **0.25 m**). It sets `linear_x = 0.0` and **passes `angular_z` through untouched**.
-3. At tonight's wedge the rear bearings are 6/7/8 o'clock = 0.290 / **0.150** / 0.176 m. The
+3. At tonight's wedge the rear-right bearings are 4/5/6 o'clock = 0.176 / **0.150** / 0.290 m. The
    sector minimum is at most 0.176, comfortably inside 0.25. **`rear_hold` fires with
    certainty.**
 4. `rear_hold` zeroes the linear term; the escape supplied zero angular; the output is
@@ -76,7 +76,7 @@ alone would have produced the right fix.
 |---|---|---|
 | forward (12 o'clock) | **0.387 m OPEN**, never commanded in 683 rows | **0.266 m blocked** |
 | rear | clear by **3 mm** | **0.150 m — genuinely blocked** |
-| what was open | 12→6 o'clock, to 2.028 m | 1→5 and 9→10 o'clock, to **2.180 m** |
+| what was open | 12→6 o'clock, RIGHT side, to 2.017 m | 7→11 o'clock, LEFT side, plus 2→3, to **2.18 m** |
 | refusing gate | reverse trajectory projection ×350, right arc ×92 | **`rear_hold` ×4** |
 | the honest indictment | the rung SET — an available move was never tried | the escape's **directional vocabulary** — the only move it tries is the one direction physically blocked |
 
@@ -84,7 +84,7 @@ Tonight's table is authoritative and unusually clean: re-derived from the bag at
 stamps, `base_link<-laser` read from the bag's own `/tf_static`, and **`odom_yaw = −146.1°` and
 pose `x=−1.664 y=+0.493` at every one of the four** — the rover held station in position *and*
 heading for the whole episode. No bearing flips verdict across the four samples and the spread
-never exceeds 7 mm. **7 of 12 bearings open, 2.18 m of floor at 4 o'clock, and the robot declared
+never exceeds 7 mm. **7 of 12 bearings open, 2.18 m of floor at 8 o'clock, and the robot declared
 itself out of options.**
 
 Two consequences that the mission-2 data alone could not have given us:
@@ -92,7 +92,7 @@ Two consequences that the mission-2 data alone could not have given us:
 **(a) A2 is necessary but proven insufficient.** A straight-forward rung would have saved mission
 2. Tonight forward reads 0.266 m and a forward rung would have been refused, correctly. So the
 rung candidate cannot be "forward"; it must be **selected on sector evidence across the full
-360°**, which is the shape already pre-approved. Tonight the evidence points at 4 o'clock.
+360°**, which is the shape already pre-approved. Tonight the evidence points at 8 o'clock.
 
 **(b) A1 gets promoted, and its naive form gets falsified.** The argument for entry-trail retrace
 has been *"the rover drove in, so a clear corridor exists by construction."* Tonight is a
@@ -101,7 +101,7 @@ counterexample to the naive reading: the rover drove in, and the rear is blocked
 
 > **The trail is not a heading.**
 
-Blind reverse hits the 7 o'clock object. The recorded trail does not. On mission 2 the rear sector
+Blind reverse hits the 5 o'clock object. The recorded trail does not. On mission 2 the rear sector
 was clear by 3 mm and blind reverse would have worked, so that data could never have made this
 argument. Tonight blind reverse is refused *correctly* and the trail is still available. That
 moves trail-retrace from "cheaper than adjudicating a marginal sector" to **"the only primitive
@@ -129,12 +129,12 @@ sequence of commands* than a blind heading, not to bypass the arbiter.
 **What the trail must record.** Pose samples with timestamps, at the controller's own rate. The
 retrace consumes them newest-first, converting successive poses into commanded (v, ω) segments —
 which is exactly why "the trail is not a heading": the output is a *sequence* of arcs, and at
-tonight's pose the first segment curves away from the 7 o'clock object rather than into it.
+tonight's pose the first segment curves away from the 5 o'clock object rather than into it.
 
 ### 2.1 Which way does the arc turn? RULED — by the sensor-trust hierarchy
 
 When a reverse must become a reverse *arc*, the turn direction comes from one of two sources: the
-ladder's `open_bearing`, or the trail's own first segment. Tonight both point the same way (4
+ladder's `open_bearing`, or the trail's own first segment. Tonight both point the same way (8
 o'clock), so tonight's recording cannot discriminate between them. That is not a licence to choose
 by taste — **the established sensor-trust hierarchy decides it**, and it decides for the trail:
 
@@ -199,7 +199,7 @@ is the open bearing rather than a fixed forward/reverse, and a selection rule th
 
 Reverse-first exists for a good reason — reversing out of a nose-in wedge is usually right — so
 the candidate is added to the selection, not stapled to the front. At tonight's pose the sector
-evidence nominates 4 o'clock (2.180 m); at mission 2's it nominates 12 o'clock (0.387 m). One rule,
+evidence nominates 8 o'clock (2.18 m); at mission 2's it nominates 12 o'clock (0.387 m). One rule,
 two correct answers, which is the test of whether the rule is real.
 
 ---
@@ -218,6 +218,21 @@ So A3 is **not** "invent swept-arc geometry." It is **"apply the primitive the c
 trusts, at the gates that still use sector minima."** That is a far smaller and safer change than
 the brief anticipated, and it reuses tested code rather than adding a second author of swept-region
 maths.
+
+**The ordering defect cuts BOTH ways, and the fix must close both.** This is part of D40's
+acceptance, not a separate row:
+
+* **Over-conservative for reverse** — the coarse sector gate returns before the precise swept-arc
+  gate, so a reverse blocked by the rear sector is never adjudicated on what it actually sweeps.
+* **Under-evaluated for rotation** — `rear_hold` passes `angular_z` through *without the
+  projection ever evaluating that rotation*, while the rotation sweep radius is
+  hypot(0.18, 0.12) = **0.216 m** against an object measured at **0.150 m**. Recorded
+  `pivot_veto=false` and `cam_scale=1.00` at both refusal stamps, so the ToF veto did not cover it
+  either.
+
+One ordering defect, two signs, one fix, revert-proofs in both directions. (Stated as an
+observation, not a claim of imminent contact: whether that rotation would actually touch depends
+on where the overlap sits relative to the swept corners, and that is for the derivation to answer.)
 
 **The structural finding that makes this concrete:** `rear_hold` is evaluated at
 `src/sphero_rvr_driver/collision_stop.py:950`, and the trajectory projection at `:953` — **the coarse sector gate is
@@ -285,8 +300,8 @@ defeatability.
   allowed (forward at 0.387 m, and/or the retrace) while still **refusing the pure pivot**
   (0.165 < 0.189). A fix that grants the pivot has failed, not passed.
 * **Proof 1b — tonight's wedge pose replayed.** Four refusal frames, static geometry, ±7 mm. The
-  fixed escape must obtain motion — via reverse arc, via a 4-o'clock rung candidate, or via
-  retrace — while still **refusing straight reverse into the 0.150 m object at 7 o'clock**. This
+  fixed escape must obtain motion — via reverse arc, via an 8-o'clock rung candidate, or via
+  retrace — while still **refusing straight reverse into the 0.150 m object at 5 o'clock**. This
   is the stronger of the two proofs because the world does not move across the whole episode.
 * **Proof 1c — the un-grantable-command proof.** A test that fails against HEAD by asserting the
   give-up escape's commanded shape can be granted at a pose where `rear_hold` fires. This is the
@@ -303,6 +318,64 @@ defeatability.
 gets out of a corner it drove into, and the proof is a field recording of it doing so.
 
 ---
+
+## 6a. PROOF 1B RESULT — commit 1 is necessary but NOT sufficient, and why
+
+Replayed tonight's pose through the real supervisor with the deployed config and the recorded
+scans. Verdict: **world (c)**.
+
+| command | gate | output | delivers |
+|---|---|---|---|
+| old `(-0.10, 0.0)` | `rear_hold` | **(0.000, 0.000)** | nothing |
+| new `(-0.10, ±0.40)` | `rear_hold` | (0.000, ±0.400) | rotation only |
+| after ~13° of rotation | `*_trajectory_blocked` | **(0.000, 0.000)** | nothing |
+
+Only **12.5°** of rotation is needed to clear `rear_hold` (rear 0.150 → 0.275) against a 138°
+budget per invocation, which looks like sufficiency. It is not: past that rotation the trajectory
+projection — which `rear_hold` had been preempting — takes over and refuses **harder**, zeroing
+both axes where `rear_hold` at least passed angular through. Arc rate was swept 0.40 → 0.05 rad/s
+(radius 0.25 → 2.00 m) in both directions at four headings; **every one refused**. So it is not a
+too-tight-arc problem.
+
+**The reason reframes D40, and it exonerates the third gate family too.** At the refusal instants
+there are **28 lidar returns inside the robot's DECLARED footprint** (22 at the last), at
+x ≈ −0.155, y ≈ −0.065 against `footprint_rear_m: 0.16`. `evaluate_projected_trajectory` treats
+already-overlapped points as blocking unless the motion provably moves away, so **every refusal
+was correct by construction.**
+
+So the honest summary of the whole investigation: **all three refusal families — mission 2's pivot
+veto, tonight's `rear_hold`, and the trajectory projection — have now been shown correct on their
+own terms. The defect was never a lying gate. It is a vocabulary problem and a
+footprint-derivation problem.**
+
+**Commit 1's real effect:** it converts "refused instantly, 0.000 m, four times" into "rotates
+~13°, then pinned by a correct gate". That is progress and it is not an escape. A1/A2 carry the
+rest.
+
+### 6b. The footprint constant enters A3's scope
+
+The declared rear extent is **0.16 m** while the RVR's physical half-length is roughly **0.108 m**
+— the padding is known-generous (`footprint_front_m` was padded 2× per the register). Those 28
+returns are therefore real obstacle points roughly **4–6 cm behind the actual rear bumper**, which
+the declared footprint reports as *inside the robot*.
+
+Under standards rule 2 this is a derived-constant re-derivation: **footprint extents become
+MEASURED physical extents plus a STATED margin with its own derivation, not inherited padding.**
+It is a safety-constant *loosening*, so it gets the full apparatus, and specifically:
+
+* revert-proofs at **every** recorded pose, both specimens;
+* an explicit check of whether mission 2's pivot refusal survives the re-derived sweep radius —
+  0.165 m against a corner radius currently 0.189 m. **If the re-derived radius drops below
+  0.165, that verdict flips, and the honest thing is to say so rather than to discover it in a
+  room.**
+* **no constant moves until Scott's tape measurements exist.**
+
+**Measurement request for Scott (2 minutes, chassis off).** The lidar pivot is the known TF anchor
+(`base_link → laser` is published at x=+0.0045, y=−0.011, z=+0.1905), so measure from the lidar's
+rotation axis straight down to the floor, then out to the chassis edge in each of the four
+directions: **front, rear, left, right — the widest point of the physical chassis in each
+direction, in centimetres, ignoring the treads' flex.** Four numbers and which direction each
+belongs to is all that is needed.
 
 ## 7. What this note does not settle
 
