@@ -43,6 +43,7 @@ from sphero_rvr_core.decisive_control import (
     camera_points_to_polar,
     compute_drive_command,
     corridor_blocker,
+    escape_arc_command,
     freeze_mark_pose,
     WindowedFreezeMonitor,
     heading_error_to_point,
@@ -119,6 +120,11 @@ class DecisiveControllerNode(Node):
         # so 6 s of pure slip reaches ~0.17 m against a 0.30 m bar. Both sides send and
         # default to this same number; tests/test_escape_geometry.py pins the margin.
         self.declare_parameter("give_up_escape_timeout_s", 6.0)
+        # D40. The give-up escape's arc rate. Defaults to the ladder's flown pivot
+        # rate rather than a new number: REVERSE_ARC has used 0.40 in the field, and
+        # inventing a second rate here would be a fresh constant with no evidence
+        # behind it.
+        self.declare_parameter("give_up_escape_arc_rate_rad_s", 0.40)
         self.declare_parameter("ladder_reverse_speed_mps", 0.10)
         self.declare_parameter("ladder_forward_speed_mps", 0.10)
         self.declare_parameter("ladder_pivot_rate_rad_s", 0.40)
@@ -175,6 +181,8 @@ class DecisiveControllerNode(Node):
         )
         self._escape_distance_m = float(_p("give_up_escape_distance_m").value)
         self._escape_timeout_s = float(_p("give_up_escape_timeout_s").value)
+        self._escape_arc_rate_rad_s = float(
+            _p("give_up_escape_arc_rate_rad_s").value)
         self._avoid_enable = bool(_p("avoid_enable").value)
         self._avoid_config = AvoidanceConfig(
             engage_m=float(_p("avoid_engage_m").value),
@@ -760,8 +768,18 @@ class DecisiveControllerNode(Node):
                         goal_handle.succeed()
                         return result
 
+                # D40. A reverse ARC, never a straight reverse. `rear_hold` zeroes
+                # linear_x and passes angular_z through untouched, so the old
+                # `(-speed, 0.0)` was refused to a dead stop at exactly the poses this
+                # escape exists for -- four attempts, four refusals, 0.000 m each, on
+                # 2026-08-14b. The shape comes from the core so the revert-proof binds
+                # to what actually goes out (tests/test_escape_geometry.py).
+                linear, angular = escape_arc_command(
+                    speed, self._escape_arc_rate_rad_s, self._open_bearing(),
+                )
                 twist = Twist()
-                twist.linear.x = -float(speed)
+                twist.linear.x = float(linear)
+                twist.angular.z = float(angular)
                 self._cmd_pub.publish(twist)
                 time.sleep(period)
 

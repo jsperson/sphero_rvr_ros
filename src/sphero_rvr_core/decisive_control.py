@@ -551,6 +551,42 @@ def merge_positions(points, merge_radius_m: float) -> list:
     return [(m.x, m.y) for m in marks.live(0.0)]
 
 
+def escape_arc_command(speed_mps, arc_rate_rad_s, open_bearing_rad):
+    """The give-up escape's commanded (linear, angular) — a reverse ARC, never a
+    straight reverse.
+
+    THE DEFECT THIS EXISTS TO KILL (D40, gauntlet 2026-08-14b). The escape used to
+    command ``(-speed, 0.0)``. The supervisor's ``rear_hold`` gate zeroes ``linear_x``
+    and passes ``angular_z`` through UNTOUCHED, so a straight reverse becomes exactly
+    ``(0.0, 0.0)`` at every pose where the rear sector is inside
+    ``reverse_stop_distance_m``. Field result: four give-up escapes, four refusals,
+    "0.000 m in 6.0 s; supervisor: rear_hold", all at one pose with 7 of 12 bearings
+    open and 2.18 m of floor at 4 o'clock.
+
+    That is the UN-GRANTABLE-BY-CONSTRUCTION form of the recovery-defect family: the
+    code runs, the trigger fires, and the arbiter must refuse it anyway because of the
+    command's SHAPE. The check that catches it is asked of the arbiter, not the caller:
+    *can this command shape ever be granted at the poses where it is meant to fire?*
+
+    The stall ladder already knew: its REVERSE_ARC rung exists because a reverse arc
+    "is granted at exactly the poses where rung 1 is refused" (stall_ladder.py). This
+    function is that lesson, applied to the escape.
+
+    DIRECTION. ``open_bearing_rad`` is the lidar-height open bearing, and it is the
+    FALLBACK source by design -- the entry trail is the preferred one, because the
+    trail is an all-heights eyewitness (the robot's body swept that corridor) while a
+    lidar bearing is one horizontal plane at 0.19 m, blind to exactly the sub-lidar
+    object class that causes freezes. The trail arrives with A1; until then this is the
+    documented fallback, not a shortcut.
+
+    A ``None`` or zero bearing still yields a turn -- sign only, magnitude fixed --
+    because a reverse arc in an arbitrary direction is still grantable where a straight
+    reverse is not, and "no preference" must not collapse back into the broken shape.
+    """
+    turn = math.copysign(abs(float(arc_rate_rad_s)), open_bearing_rad or 1.0)
+    return (-abs(float(speed_mps)), turn)
+
+
 def freeze_mark_pose(x, y, yaw, front_m, rear_m, reversing=False):
     """Where a freeze mark goes: the edge of the footprint that was DRIVING INTO it.
 

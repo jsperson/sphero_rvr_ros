@@ -253,3 +253,138 @@ def test_a_supervisor_SLOWED_reverse_is_not_a_freeze():
         x -= 0.01 * 0.60                      # the slowest legitimate scaling
         assert not mon.update(x, 0.0, output_moving=True), (
             "a supervisor-SLOWED reverse was classified as a freeze")
+
+
+# ---------------------------------------------------------------------------
+# REVERT-PROOF 1c (D40) — the give-up escape's COMMAND SHAPE must be grantable
+# at the poses where it is meant to fire.
+#
+# Gauntlet 2026-08-14b: four give-up escapes, four refusals, all at one pose,
+# "refused: 0.000 m in 6.0 s; supervisor: rear_hold". The by-bearing table at
+# all four refusal stamps (re-derived from the bag, odom_yaw -146.1 deg at every
+# one, geometry stable to 7 mm) read 7 of 12 bearings OPEN with 2.18 m of floor
+# at 4 o'clock -- while the rear, the ONLY direction the escape ever tried, was
+# genuinely blocked at 0.150 m.
+#
+# Mechanism, arithmetic: rear_hold zeroes linear_x and passes angular_z through
+# UNTOUCHED. The escape commanded (-speed, 0.0). Zero linear from the gate plus
+# zero angular from the escape is exactly (0.0, 0.0), forever, at any pose where
+# the rear sector sits inside reverse_stop_distance_m.
+#
+# This is the UN-GRANTABLE-BY-CONSTRUCTION form of the recovery-defect family:
+# the code runs, the trigger fires, and the arbiter must refuse it anyway because
+# of the command's shape. The check is asked of the ARBITER, not the caller.
+# ---------------------------------------------------------------------------
+
+WEDGE_REAR_M = 0.150          # 7 o'clock, min over all four refusal frames
+WEDGE_OPEN_M = 2.18           # 4 o'clock, the floor that was never asked for
+
+
+def _wedge_scan(stamp=0.0, count=360):
+    """Tonight's refusal geometry: rear pinned at 0.150 m, open elsewhere."""
+    from tests.test_collision_stop import scan_with
+    return scan_with(rear=WEDGE_REAR_M, stamp=stamp, count=count)
+
+
+def _supervisor_at_the_wedge():
+    """A supervisor carrying the DEPLOYED reverse stop distance, not a default.
+
+    The deployed value is the one that decides whether rear_hold fires, so it is
+    read from config/collision_stop.yaml rather than trusted from the dataclass --
+    13 fields have differed between the two before, and a verdict flipped between
+    them.
+    """
+    from sphero_rvr_driver.collision_stop import (
+        CollisionStopConfig,
+        CollisionStopSupervisor,
+    )
+
+    deployed = _params("collision_stop.yaml", "reverse_stop_distance_m")
+    reverse_stop = deployed.get("reverse_stop_distance_m")
+    assert reverse_stop is not None, "deployed reverse_stop_distance_m not found"
+    assert WEDGE_REAR_M < reverse_stop, (
+        f"the recorded wedge rear ({WEDGE_REAR_M} m) must sit INSIDE the deployed "
+        f"reverse stop distance ({reverse_stop} m) or this pose does not reproduce "
+        f"the rear_hold refusal at all"
+    )
+
+    cfg = CollisionStopConfig(
+        reverse_stop_distance_m=float(reverse_stop),
+        min_valid_ranges=1,
+        min_valid_fraction=0.0,
+    )
+    sup = CollisionStopSupervisor(cfg, now=0.0)
+    sup.update_scan(_wedge_scan(stamp=0.0), now=0.0)
+    return sup
+
+
+def test_the_straight_reverse_the_escape_used_to_send_is_ungrantable_here():
+    """The defect, pinned as arithmetic so it cannot be argued about.
+
+    Not a regression guard -- a statement of WHY the shape had to change. If this
+    ever stops holding, the supervisor's rear_hold contract moved and revert-proof
+    1c below is measuring something else.
+    """
+    from sphero_rvr_driver.collision_stop import TwistCommand
+
+    sup = _supervisor_at_the_wedge()
+    decision = sup.apply_command(TwistCommand(-0.10, 0.0), now=0.1)
+
+    assert decision.reason == "rear_hold"
+    assert decision.output.linear_x == 0.0
+    assert decision.output.angular_z == 0.0, (
+        "a straight reverse at this pose yields NO motion on either axis -- "
+        "which is why four give-up escapes delivered 0.000 m in 6.0 s"
+    )
+
+
+def test_the_give_up_escape_command_shape_is_grantable_at_a_rear_hold_pose():
+    """REVERT-PROOF 1c. Fails against the straight-reverse escape.
+
+    The shape is taken from PRODUCTION (`escape_arc_command`), not restated here,
+    so this binds to what the escape actually sends. Mutating that function back to
+    a zero angular term must fail this test -- that mutation was run and it does.
+    """
+    from sphero_rvr_core.decisive_control import escape_arc_command
+    from sphero_rvr_driver.collision_stop import TwistCommand
+
+    linear, angular = escape_arc_command(
+        speed_mps=0.10, arc_rate_rad_s=0.40, open_bearing_rad=-0.9,
+    )
+    assert linear < 0.0, "the escape must still be a REVERSE"
+
+    sup = _supervisor_at_the_wedge()
+    decision = sup.apply_command(TwistCommand(linear, angular), now=0.1)
+
+    granted = (decision.output.linear_x, decision.output.angular_z)
+    assert granted != (0.0, 0.0), (
+        "the give-up escape's commanded shape is refused to a dead stop at the very "
+        "pose class it exists for -- un-grantable by construction (D40)"
+    )
+    assert decision.output.angular_z != 0.0, (
+        "rear_hold passes angular through untouched, so the arc term is what survives"
+    )
+
+
+def test_escape_arc_command_never_degenerates_to_a_straight_reverse():
+    """The shape invariant, across every direction input including the empty ones.
+
+    A None or zero bearing must NOT collapse back to angular 0.0 -- that is the
+    broken shape, and "no preference" is the case most likely to reintroduce it.
+    """
+    from sphero_rvr_core.decisive_control import escape_arc_command
+
+    for bearing in (-1.2, -0.01, 0.0, 0.01, 1.2, None):
+        linear, angular = escape_arc_command(0.10, 0.40, bearing)
+        assert linear < 0.0
+        assert angular != 0.0, f"degenerated to a straight reverse at bearing={bearing}"
+        assert abs(angular) == pytest.approx(0.40)
+
+
+def test_escape_arc_turns_toward_the_open_bearing():
+    """Sign follows the open side. Direction is the FALLBACK source (lidar-height);
+    the trail is the preferred one and arrives with A1."""
+    from sphero_rvr_core.decisive_control import escape_arc_command
+
+    assert escape_arc_command(0.10, 0.40, -0.9)[1] < 0.0     # open to the right
+    assert escape_arc_command(0.10, 0.40, +0.9)[1] > 0.0     # open to the left
