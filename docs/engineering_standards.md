@@ -128,9 +128,43 @@ false proofs were caught in a single night by this rule.
 Bind the proof to **production code**, not to a restatement of it — a test that hardcodes the
 shape it is meant to be verifying proves only its own consistency.
 
+**Corollary (2026-08-14): when a proof cannot bind to production without restating it, the
+minimum structure that lets it bind IS in scope** — flagged loudly, never done silently. D40's
+revert-proof needed the escape's command shape, but the node imports `rclpy` unguarded and cannot
+be imported by any dev-machine test; extracting the shape into a pure core function was the only
+way for the proof to test what actually goes on the wire. Extracting for testability is
+legitimate; extending capability under cover of it is not, and the difference belongs in the
+commit message.
+
+**Docstring standard for safety-adjacent pure functions.** A function the safety path depends on
+carries, in its own docstring: the defect it exists to kill, the failure family it belongs to,
+the check that catches that family, any trust hierarchy among its inputs, and the degenerate-input
+guard. The next person to touch it should not need the design note to know why it is shaped that
+way.
+
 ---
 
-## Appendix: operational traps that look like bugs
+## Appendix A: the premise tripwire — a test that SHOULD survive its own mutation
+
+Most tests in a revert-proof set go red when the fix is reverted. A **premise tripwire** does not,
+and that is its job: it asserts the *external contract the fix depends on*, not the fix.
+
+D40's example: `test_the_straight_reverse_the_escape_used_to_send_is_ungrantable_here` asserts that
+the supervisor's `rear_hold` zeroes **both** axes for a straight reverse at the recorded pose. It
+passes with the fix and passes with the fix mutated away, because it is a statement about
+`rear_hold`, not about the escape. If it ever goes red, `rear_hold`'s contract has moved and the
+revert-proof beside it is silently measuring something else.
+
+**Write one whenever a fix is justified by another component's behaviour.** Name it so its
+survival under mutation reads as intent rather than as a weak test, and say in the docstring what
+its going red would mean. Without it, a change to the depended-on component turns a real proof
+into a tautology with no alarm.
+
+The same idea covers recorded evidence: assert that the replayed geometry still sits inside the
+deployed threshold it is supposed to trip. If a config moves, the test should say "this pose no
+longer reproduces the failure" rather than quietly passing for a new reason.
+
+## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
 
