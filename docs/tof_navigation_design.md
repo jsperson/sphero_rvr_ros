@@ -28,7 +28,7 @@ inert:
 | B | **Pivot veto (D19)** | `collision_stop_node.py:464` `_camera_blocks_pivot` | **SAFETY.** Zeroes angular when a point is inside the swept corner circle | OPEN — same |
 | C | **Steering law** | `decisive_controller_node.py` `_on_camera_cloud` → `corridor_blocker` | Advisory. Changes the TARGET HEADING before `compute_drive_command`; emits no twist | Degrades to lidar-only blockers |
 | D | **Local costmap layer** | `lean_nav2.yaml:116` `camera_low` | **NONE IN PRACTICE** — see below | n/a |
-| E | **Telemetry** | `/collision_stop/state`: `cam_nearest`, `cam_scale`, `cam_output_linear`, `pivot_veto`, `cam_cloud_age`; recorder columns | Observability | n/a |
+| E | **Telemetry** | `/collision_stop/state`: `cam_nearest`, `cam_scale`, `cam_considered`, `cam_output_linear`, `pivot_veto`, `cam_cloud_age`; recorder columns | Observability | n/a |
 
 **D is inert and the design must not pretend otherwise.** `camera_low` marks the LOCAL
 costmap, and decisive mode removes the local costmap entirely (`explore.launch.py`

@@ -97,8 +97,13 @@ for name, lin, ang in ARCS:
         time.sleep(0.05)
     saved = st["state"]
     st["state"] = snap or saved
-    print("  %s -> cam_nearest=%-7s cam_scale=%-6s out_linear=%s"
-          % (name, field("cam_nearest"), field("cam_scale"), field("cam_output_linear")))
+    # cam_considered is what separates the two ways an arm can read "no brake":
+    # the swept path was genuinely clear, or nothing was in range to consider.
+    # An A/B on swept-vs-cone gating is exactly where that distinction decides
+    # whether an arm proved anything.
+    print("  %s -> cam_nearest=%-7s cam_scale=%-6s considered=%-4s out_linear=%s"
+          % (name, field("cam_nearest"), field("cam_scale"),
+             field("cam_considered"), field("cam_output_linear")))
     st["state"] = saved
 for _ in range(10):
     pub.publish(Twist())

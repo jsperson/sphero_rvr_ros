@@ -24,6 +24,7 @@ NEW seam for this stack, which is why `~/state` reports read errors rather than 
 silence be mistaken for clear floor.
 """
 
+import collections
 import dataclasses
 import math
 import sys
@@ -46,7 +47,7 @@ from sphero_rvr_driver.collision_stop import Transform2D
 
 from sphero_rvr_core.tof_frame import (
     ObstacleDetector, TofConfig, ZONES, N_ZONES, rule_a_rows, scan_min_by_column,
-    valid_mm, zone_point,
+    valid_mm, windowed_rate_hz, zone_point,
 )
 
 
@@ -195,6 +196,12 @@ class TofNode(Node):
         self._read_errors = 0
         self._frames = 0
         self._last_frame_at = None
+        # Frame stamps for the WINDOWED rate. `_frames` stays as the cumulative
+        # total because "how many frames since boot" is a genuine and separate
+        # question; what it must never again do is masquerade as the live rate.
+        # maxlen bounds memory at a few seconds of the fastest plausible sensor.
+        self._rate_window_s = 5.0
+        self._frame_stamps = collections.deque(maxlen=256)
         self._started = time.monotonic()
         self._open_sensor()
 
@@ -325,7 +332,9 @@ class TofNode(Node):
         stamp = self.get_clock().now().to_msg()
         with self._lock:
             self._frames += 1
-            self._last_frame_at = time.monotonic()
+            now_mono = time.monotonic()
+            self._last_frame_at = now_mono
+            self._frame_stamps.append(now_mono)
 
         points = []
         for i, value in enumerate(frame):
@@ -352,8 +361,11 @@ class TofNode(Node):
         count of detections reads as a count of obstacles unless the line says which."""
         with self._lock:
             frames, errors, last = self._frames, self._read_errors, self._last_frame_at
-        age = None if last is None else time.monotonic() - last
-        elapsed = max(1e-6, time.monotonic() - self._started)
+            stamps = list(self._frame_stamps)
+        now_mono = time.monotonic()
+        age = None if last is None else now_mono - last
+        rate = windowed_rate_hz(stamps, now_mono, self._rate_window_s)
+        rate_text = "None" if rate is None else f"{rate:.2f}"
         result = getattr(self, "_last_result", None)
         obstacles = result["obstacles"] if result else []
         rule_a = result["nearer_than_floor"] if result else []
@@ -363,7 +375,14 @@ class TofNode(Node):
         state = String()
         state.data = (
             f"{'OK' if self._sensor is not None and age is not None and age < 1.0 else 'STALE'} "
-            f"frames={frames} rate_hz={frames / elapsed:.2f} "
+            f"frames={frames} rate_hz={rate_text} "
+            # The window and the uptime travel WITH the rate, because
+            # `rate_hz=None` is honest but not self-explaining: paired with
+            # `uptime_s=0.3` it reads "too early to say", and paired with
+            # `uptime_s=400` it reads "this sensor has stopped delivering".
+            # Without them, None is just another number nobody can act on.
+            f"rate_window_s={self._rate_window_s:.1f} "
+            f"uptime_s={now_mono - self._started:.1f} "
             f"i2c_errors={errors} "
             f"frame_age_s={'None' if age is None else round(age, 3)} "
             f"obstacle_zones={len(obstacles)} "

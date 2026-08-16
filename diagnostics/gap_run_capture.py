@@ -252,6 +252,11 @@ def main():
                 "front": field("front"),
                 "cam_nearest": field("cam_nearest"),
                 "cam_scale": field("cam_scale"),
+                # How many points the brake considered after its OWN range and
+                # swept-path filters. Without it, a scale of 1.00 is ambiguous
+                # between "looked and the path was clear" and "the detections were
+                # out of reach" -- the ambiguity that cost autopsy #2 two sessions.
+                "cam_considered": field("cam_considered"),
                 "marks": st["marks"],
                 "nearest_mark": st["nearest_mark"],
             }

@@ -7,8 +7,8 @@ written off. Anything that is not recorded may have to be repeated.
 
 Records to a CSV, one row per sample:
   t, state, reason, front, rear, left, right, cam_cloud_age, cam_nearest, cam_scale,
-  pivot_veto, avoid_offset, cmd_vx, cmd_wz, out_vx, out_wz, odom_x, odom_y,
-  odom_yaw_deg
+  cam_considered, pivot_veto, avoid_offset, cmd_vx, cmd_wz, out_vx, out_wz, odom_x,
+  odom_y, odom_yaw_deg
 
   * state/front/rear/... come from /collision_stop/state -- did the brake see it,
     and did it act?
@@ -70,8 +70,18 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else None
 # /collision_stop/state; nothing was recording them, so the run also cannot say
 # whether those stops were real low obstacles or D27 sun phantoms. Two columns of an
 # existing instrument, and they turn a derivation into a reading.
+#
+# cam_considered was added 2026-08-15 after autopsy #2, and it is the column that
+# autopsy needed and did not have. `tof_obstacles` counts rule-B zones over the
+# SENSOR'S WHOLE REACH while cam_scale acts only within the brake's range window and
+# swept path -- two different populations, one log line, and for two sessions the
+# first stood in as a proxy for the second. "Zones cycled 0->10 while cam_scale never
+# left 1.00" was read as detections being lost between the sensor and the brake; they
+# were at 0.54-1.56 m against a 0.60 m reach, correctly ignored. This column is the
+# count AFTER the brake's own filters, so the comparison stops being a guess. EMPTY
+# means the brake did not look; 0 means it looked and found nothing.
 NUM_FIELDS = ("front", "rear", "left", "right", "cam_cloud_age",
-              "cam_nearest", "cam_scale")
+              "cam_nearest", "cam_scale", "cam_considered")
 # Boolean words, matched separately (see _on_state).
 BOOL_FIELDS = ("pivot_veto",)
 FIELDS = NUM_FIELDS + BOOL_FIELDS

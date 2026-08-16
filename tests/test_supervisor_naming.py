@@ -19,6 +19,10 @@ CONFIG = ROOT / "config" / "collision_stop.yaml"
 #: this rename -- see `test_the_telemetry_field_names_are_a_known_deferral`.
 TELEMETRY = {"cam_nearest", "cam_scale", "cam_cloud_age", "cam_output_linear"}
 
+#: Fields ADDED since the deferral was recorded. Additions are a different act from
+#: renames and are held to a different bar -- see the test below.
+TELEMETRY_ADDITIONS = {"cam_considered"}
+
 
 def test_no_camera_named_parameter_survives_in_the_supervisor():
     """A HALF-RENAME IS WORSE THAN NONE. Half the parameters describing the sensor and
@@ -54,10 +58,35 @@ def test_the_telemetry_field_names_are_a_known_deferral():
 
     So this asserts the deferral is INTACT rather than that it is correct. If the fields
     are ever renamed, this test is the place that records what it costs.
+
+    RENAMING AND ADDING ARE DIFFERENT ACTS, and this test used to treat them as one.
+    A rename breaks every consumer and silently ends the longitudinal comparison above,
+    because old CSVs keep the old column name and nothing says the two are the same
+    quantity. An APPENDED `key=value` field breaks no parser -- all of them look fields
+    up by name -- and costs the forensics nothing, since old recordings simply lack the
+    column. Conflating the two would have meant either blocking a cheap addition or, far
+    worse, being tempted to relax the check that guards the expensive one.
+
+    So: the four deferred names must ALL still be published, and any additional
+    `cam_*` field must be declared in `TELEMETRY_ADDITIONS` -- which keeps an addition
+    deliberate and reviewed without letting it look like a rename. (`cam_considered`
+    was added 2026-08-15 by autopsy #2: nothing reported how many points the brake
+    actually considered after its own filters, so `/tof/state`'s whole-reach zone count
+    stood in as a proxy and produced a confident wrong diagnosis for two sessions.)
     """
     published = set(re.findall(r"(cam_[a-z_]+)=", NODE.read_text()))
-    assert published == TELEMETRY, (
-        f"the /collision_stop/state camera fields changed: expected {sorted(TELEMETRY)}, "
-        f"found {sorted(published)}. If that was deliberate, update every consumer "
-        "(run_recorder, gap_run_capture, swept_brake_ab, and three docs) in the same "
-        "commit and say in the message what it costs the mount-move forensics")
+
+    missing = TELEMETRY - published
+    assert not missing, (
+        f"a DEFERRED /collision_stop/state field disappeared: {sorted(missing)}. These "
+        "are column names in every mission CSV ever recorded, and one comparison is "
+        "still owed against them -- `cam_nearest`'s distribution is what will timestamp "
+        "when the camera mount moved. Renaming or removing one ends that silently.")
+
+    undeclared = published - TELEMETRY - TELEMETRY_ADDITIONS
+    assert not undeclared, (
+        f"new /collision_stop/state camera fields {sorted(undeclared)} are published but "
+        "not declared. Adding one is fine and cheap -- consumers look fields up by name "
+        "-- but declare it in TELEMETRY_ADDITIONS and update the consumers that should "
+        "USE it (run_recorder, gap_run_capture, swept_brake_ab, and the telemetry row "
+        "in docs/tof_navigation_design.md) in the same commit.")

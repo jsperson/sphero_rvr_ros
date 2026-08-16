@@ -17,6 +17,7 @@ from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanIn
 from sphero_rvr_core.low_obstacle_brake import (
     forward_speed_scale,
     nearest_forward_obstacle,
+    points_in_swept_path,
     swept_path_obstacle,
 )
 
@@ -491,24 +492,35 @@ def main(args=None):
             return False
 
         def _apply_low_obstacle_brake(self, linear_x, angular_z, now):
-            """Additive forward limit from a FRESH camera low-obstacle cloud. Returns
-            (limited_linear_x, nearest_m, scale). Only reduces positive forward speed;
-            reverse/zero and a stale/absent cloud pass through unchanged (lidar-only).
+            """Additive forward limit from a FRESH sub-lidar obstacle cloud. Returns
+            (limited_linear_x, nearest_m, scale, considered_points). Only reduces
+            positive forward speed; reverse/zero and a stale/absent cloud pass
+            through unchanged (lidar-only).
 
             Checks the arc the rover is actually about to drive, not a fixed cone
             ahead: turning, a differential drive pivots about a centre off to one
             side, so the flank leads and sweeps ground the nose never covers. A
             straight-ahead cone reports CLEAR while the flank hits a chair leg.
+
+            `considered_points` is the count AFTER the range window and the swept
+            filter, and it is returned rather than recomputed by the caller so it can
+            never describe a different set from the `nearest` beside it. `None` means
+            the brake did not look at all -- disabled, not driving forward, or no
+            fresh cloud -- which is a different fact from looking and finding zero.
             """
             if not self._lowobs_enable or linear_x <= 0.0:
-                return linear_x, None, 1.0
+                return linear_x, None, 1.0, None
             with self._lowobs_lock:
                 pts = self._lowobs_points
                 stamp = self._lowobs_stamp
             if stamp is None or (now - stamp) > self._lowobs_max_age:
-                return linear_x, None, 1.0
+                return linear_x, None, 1.0, None
             if self._lowobs_swept:
                 nearest = swept_path_obstacle(
+                    pts, linear_x, angular_z, self._lowobs_half_width,
+                    self._lowobs_min_r, self._lowobs_max_r,
+                )
+                considered = points_in_swept_path(
                     pts, linear_x, angular_z, self._lowobs_half_width,
                     self._lowobs_min_r, self._lowobs_max_r,
                 )
@@ -516,8 +528,9 @@ def main(args=None):
                 nearest = nearest_forward_obstacle(
                     pts, self._lowobs_half_angle, self._lowobs_min_r, self._lowobs_max_r
                 )
+                considered = None
             scale = forward_speed_scale(nearest, self._lowobs_stop_m, self._lowobs_slow_m, self._lowobs_min_scale)
-            return linear_x * scale, nearest, scale
+            return linear_x * scale, nearest, scale, considered
 
         def _on_timer(self):
             with self._state_lock:
@@ -567,8 +580,11 @@ def main(args=None):
             if not self._context_ok():
                 return
             msg = Twist()
-            cam_linear, cam_nearest, cam_scale = self._apply_low_obstacle_brake(
-                decision.output.linear_x, decision.output.angular_z, self._now_seconds()
+            cam_linear, cam_nearest, cam_scale, cam_considered = (
+                self._apply_low_obstacle_brake(
+                    decision.output.linear_x, decision.output.angular_z,
+                    self._now_seconds(),
+                )
             )
             self._lowobs_nearest, self._lowobs_scale = cam_nearest, cam_scale
             msg.linear.x = cam_linear
@@ -621,6 +637,17 @@ def main(args=None):
                 f"requested=({decision.requested.linear_x:.3f},{decision.requested.angular_z:.3f}) "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f}) "
                 f"cam_nearest={_fmt_optional(cam_nearest)} cam_scale={cam_scale:.2f} "
+                # HOW MANY POINTS THE BRAKE ACTUALLY CONSIDERED, after its range
+                # window and swept-path filter. Absent until 2026-08-15, and its
+                # absence cost two sessions: /tof/state's `obstacle_zones` counts
+                # rule-B zones over the SENSOR'S WHOLE REACH, so "zones cycled 0->10
+                # while cam_scale never left 1.00" read as detections being lost
+                # between the sensor and the brake. They were not lost. They sat at
+                # 0.54-1.56 m against a 0.60 m brake reach -- a correct number about
+                # the wrong population, with no field on this line able to say so.
+                # EMPTY means the brake did not look (disabled / not driving forward
+                # / no fresh cloud); 0 means it looked and the swept path was clear.
+                f"cam_considered={_fmt_optional(cam_considered)} "
                 f"cam_output_linear={msg.linear.x:.3f} "
                 # The published command differs from decision.output whenever the
                 # pivot veto zeroed the turn, and the veto silently disengages when

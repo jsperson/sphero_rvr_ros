@@ -21,6 +21,46 @@ ZONES = 8
 N_ZONES = ZONES * ZONES
 
 
+def windowed_rate_hz(stamps, now, window_s):
+    """Frame rate over the LAST `window_s` seconds, or None if it cannot be measured.
+
+    THE DEFECT THIS EXISTS TO KILL: `/tof/state`'s `rate_hz` was
+    `frames / (now - node_start)` -- a cumulative average since startup. That number
+    cannot report the CURRENT rate and reads below band for minutes after boot, so a
+    genuinely slow sensor is indistinguishable from a healthy one warming up. On
+    2026-08-15 it published 5.87 while the true `/tof/points` rate was 7.06, and the
+    run card gates on that field.
+
+    THE FAILURE FAMILY is standards rule 6: a gate must measure the quantity it
+    CLAIMS to. The check is to ask what population the number covers -- here, "every
+    frame since boot" was answering a question nobody asked, beside a label that
+    promised the live rate.
+
+    Rate is measured over INTERVALS, not stamps, which is why a single stamp yields
+    None rather than a confident number: one frame in the window describes no
+    interval at all. Reporting 1/window_s there would manufacture a plausible low
+    rate out of no evidence, at exactly the moment (startup, or a sensor that just
+    died) when the reader most needs to be told "unknown".
+
+    Degenerate inputs: empty stamps, a non-positive window, or fewer than two stamps
+    inside the window all return None. Stamps at or before `now - window_s` are
+    excluded; the caller is expected to prune, and this does not mutate its input.
+    """
+    if window_s <= 0.0:
+        return None
+    cutoff = now - window_s
+    recent = [s for s in stamps if s > cutoff]
+    if len(recent) < 2:
+        return None
+    span = max(recent) - min(recent)
+    if span <= 0.0:
+        return None
+    # n stamps bound n-1 intervals. Dividing by `span` rather than by `window_s`
+    # keeps the answer honest while the window is still filling: a sensor 0.4 s into
+    # a 5 s window reports its ACTUAL rate, not a fifth of it.
+    return (len(recent) - 1) / span
+
+
 @dataclass(frozen=True)
 class TofConfig:
     """Geometry and thresholds. Every value is derived from the robot, the deployed
