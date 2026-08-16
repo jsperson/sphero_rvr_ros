@@ -55,6 +55,14 @@ in-place rotation.**
 * **Scott present, hand on the power switch.** This test deliberately commands duties in
   and above the range documented to grind; the rover has been powered down twice by
   in-place grinding.
+* **And a second, independent reason the hand on the switch is non-negotiable: the tank
+  command LATCHES in firmware, and SIGKILL or hard process death mid-burst is
+  uncatchable.** The tool handles every path it can — Ctrl-C and SIGTERM are caught as a
+  flag the burst loop reads, so an interrupt winds down through the ordinary stop, and
+  every abort stops the motors before it returns. But nothing in software survives a
+  `kill -9`, a pulled terminal, or a Python crash, and the last duty sent keeps running
+  because this tool is the only thing sending it. **In that case the power switch is not
+  a backup for the software abort — it is the ONLY abort.**
 * **Rotation in place only. `linear` stays 0.0.**
 * **Open floor, > 0.5 m clear all round** — a tank drive rotating can walk.
 * **Battery ≥ 25%** (duty behaviour is voltage-dependent; record the level with the
