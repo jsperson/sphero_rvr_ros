@@ -105,15 +105,34 @@ def test_specimen_3_has_open_floor_dead_ahead():
     assert 12 in survey.open_clocks
 
 
-def test_footprint_overlap_is_counted_at_the_pose_where_it_explains_the_refusals():
-    """08-14b had returns INSIDE the declared footprint, which is why the trajectory
-    projection refused everything correctly. A survey that did not count them would
-    report that pose as ordinary."""
-    overlapped = survey_of("wedge_20260814b")
-    assert overlapped.footprint_overlapped
-    assert overlapped.footprint_overlap_count >= 20, (
-        "the archived autopsy counted 28 returns inside the declared footprint"
-    )
+def test_footprint_overlap_at_08_14b_was_manufactured_by_the_padding():
+    """THE D40 FLIP-CHECK, predicted before it was run and recorded here either way.
+
+    The 08-14b autopsy's central finding was that 28 lidar returns sat INSIDE the
+    declared footprint, which made the trajectory projection's refusals correct by
+    construction -- "the padding manufactures poses no motion can leave". The declared
+    rear extent was 0.16 m against a physical ~0.10 m.
+
+    Scott's tape (2026-08-15) replaced the declared extents with measured ones. Run
+    against the SAME archived scan, the overlap goes 28 -> 0: not one of those returns
+    was inside the robot. Every one of them was inside the pad.
+
+    Both halves are asserted, because the historical fact is what makes the fix
+    legible -- a test that only checked the new number would leave the archive's "28
+    returns" looking like a measurement of the robot rather than of a constant.
+    """
+    padded = SurveyConfig(footprint_front_m=0.11, footprint_rear_m=0.16,
+                          footprint_left_m=0.10, footprint_right_m=0.10)
+    was = survey_of("wedge_20260814b", config=padded)
+    assert was.footprint_overlapped
+    assert was.footprint_overlap_count == 28, (
+        "the archived autopsy counted 28 returns inside the DECLARED footprint")
+
+    now = survey_of("wedge_20260814b")
+    assert not now.footprint_overlapped
+    assert now.footprint_overlap_count == 0, (
+        "with measured extents no return sits inside the robot at this pose -- if this "
+        "ever becomes non-zero again the tape and the config have diverged")
 
 
 def test_a_direction_nothing_can_speak_for_is_UNVOUCHED_not_open():

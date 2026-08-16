@@ -145,7 +145,13 @@ def test_the_margin_is_stated_not_assumed():
     cfg = deployed_config()
     radius = _pivot_radius(cfg)
     nearest = min(DEATH_POSE_PROFILE.values())
-    assert radius == pytest.approx(0.2087, abs=0.001), (
+    # 2026-08-15: this tripwire fired exactly as designed when Scott's tape replaced
+    # the declared extents, and it fired in the SAFE direction. The corner radius went
+    # 0.2087 -> 0.1760 m (rear 0.16 -> 0.1145 measured + cable allowance, lateral
+    # 0.10 -> 0.106 after the y-offset correction), so the verdict's margin GREW from
+    # 0.071 to 0.104 m. A smaller robot cannot be boxed where a larger one was not.
+    # The falsifier's conclusion is unchanged and now rests on more room, not less.
+    assert radius == pytest.approx(0.1760, abs=0.001), (
         f"pivot corner radius moved to {radius:.4f} — re-run the falsifier")
     assert nearest - radius > 0.05, (
         f"margin is only {nearest - radius:.3f} m; at that point the verdict is inside "

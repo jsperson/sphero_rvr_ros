@@ -84,10 +84,10 @@ class SurveyConfig:
     Deriving them from the rays here, in the one place that holds the rays, keeps
     the plan from becoming a second author of the supervisor's arithmetic."""
 
-    footprint_front_m: float = 0.11
-    footprint_rear_m: float = 0.16
-    footprint_left_m: float = 0.10
-    footprint_right_m: float = 0.10
+    footprint_front_m: float = 0.0965
+    footprint_rear_m: float = 0.1145
+    footprint_left_m: float = 0.098
+    footprint_right_m: float = 0.106
     """Declared footprint. Returns INSIDE it are the 08-14b class: with points
     overlapping the footprint, the trajectory projection refuses everything unless the
     motion provably moves away, and every refusal is then correct by construction.

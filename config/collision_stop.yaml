@@ -24,16 +24,55 @@ lidar_collision_stop_supervisor:
     min_range_m: 0.08
     max_range_m: 6.0
     sector_unknown_policy: blocked
-    # TRUE nose geometry: base_link sits at the robot center (lidar mounted at
-    # x=0.0045), and the RVR is ~0.216 m long, so the physical front is ~0.108 m
-    # forward. Was 0.22 — a ~2x conservative placeholder that doubled the front
-    # standoff. 0.11 = true nose + ~2 mm. This is the SAFETY floor: do not go
-    # below the real nose or the rover measures clearance from inside its body.
-    # Actual standoff comes from payload_margin + braking below.
-    footprint_front_m: 0.11
-    footprint_rear_m: 0.16
-    footprint_left_m: 0.10
-    footprint_right_m: 0.10
+    # MEASURED EXTENTS, 2026-08-15, Scott's tape. These are PURE MATTER: where the
+    # robot ends. Every pad keeps its own named constant below, because a margin
+    # folded into an extent stops being distinguishable from a measurement, and
+    # `footprint_rear_m: 0.16` against ~0.10 m of robot is what that looks like a
+    # year later.
+    #
+    # WHAT REPLACED WHAT, and why the old comment here was worse than no comment:
+    # it read "the RVR is ~0.216 m long, so the physical front is ~0.108 m forward
+    # ... 0.11 = true nose + ~2 mm". The tape says the front is 0.0965 m from
+    # base_link. That sentence overstated the nose by 11.5 mm and described 0.11 as
+    # a 2 mm margin when it was 13.5 mm — it is where "the footprint is honest"
+    # came from, and it was a claim, not a measurement (standards rule 6).
+    #
+    # ORIGIN, and it moves BOTH numbers. Scott measured from directly below the
+    # lidar spin axis. `launch/lidar.launch.py` publishes base_link -> laser at
+    # x = +0.0045, y = -0.011, so the tape origin is 4.5 mm FORWARD and 11 mm RIGHT
+    # of base_link. Raw tape (front 0.092, right 0.095, back 0.104, left 0.109)
+    # referenced to base_link:
+    #     front = 0.092 + 0.0045 = 0.0965   — to the RANGEFINDER'S LEADING EDGE
+    #     rear  = 0.104 - 0.0045 = 0.0995   — cable FULLY COMPRESSED, a MINIMUM
+    #     left  = 0.109 - 0.011  = 0.098
+    #     right = 0.095 + 0.011  = 0.106
+    # THE Y OFFSET REVERSES THE ASYMMETRY. The tape reads left-bigger by 14 mm;
+    # base_link reads RIGHT-bigger by 8 mm. Anything that consumed the raw tape as
+    # base_link extents would have padded the wrong side.
+    #
+    # CROSS-VALIDATION: run 1's leg sat at 0.091 m from base_link at contact,
+    # against a measured nose of 0.0965 — agreement to 5.5 mm between a bag
+    # reconstruction and a tape measure, by two entirely independent routes. (Not
+    # 1 mm: that compares the bag's base_link figure against the spin-axis tape
+    # figure, two origins 4.5 mm apart, and is flattered by exactly the error.)
+    #
+    # CALIBRATION IS NOT MATTER. `TofConfig.mount_x_m = 0.10` sits AHEAD of the
+    # measured nose 0.0965 and is NOT wrong: fitted constants reproduce READINGS in
+    # the sensor's own frame, the tape describes MATTER. The tape governs extents
+    # and stop margins; the fitted constants govern point placement. Neither
+    # corrects the other, and "fixing" the frame fit with this tape would break
+    # every point the ToF publishes.
+    footprint_front_m: 0.0965
+    # 0.0995 measured (cable fully compressed) + 0.015 cable allowance. The tape is
+    # a MINIMUM: taking it required compressing the power cable, which at rest
+    # extends further. The allowance is stated rather than measured because the
+    # pivot flip-check is insensitive to it across 0-20 mm (see
+    # tests/test_footprint_derivation.py), so a second measurement would spend
+    # Scott's time to change nothing. A compliant cable touch is not a rigid
+    # contact, but the reverse gate should not plan on crushing it either.
+    footprint_rear_m: 0.1145
+    footprint_left_m: 0.098
+    footprint_right_m: 0.106
     # No payload overhangs the front bumper, so keep this small — it only pads
     # the physical footprint. Was 0.05; trimmed to tone down the stop bubble.
     payload_margin_m: 0.02
@@ -48,26 +87,55 @@ lidar_collision_stop_supervisor:
     left_spin_max_angle_deg: 135.0
     right_spin_min_angle_deg: -135.0
     right_spin_max_angle_deg: -45.0
-    # Non-binding floor now. Effective hard-stop = max(stop_distance,
-    # footprint_front + payload_margin + braking) = max(0.12, 0.11 + 0.02 +
-    # 0.045) = ~0.175 m from base_link = ~0.067 m (~6.7 cm) off the physical
-    # nose. The physics term (footprint + braking) governs; stop_distance only
-    # floors it. Toned 0.35 -> 0.12 so it no longer inflates the stop.
+    # THIS TERM GOVERNS, and the comment that used to sit here said the opposite.
+    # It read: "Non-binding floor now. Effective hard-stop = max(stop_distance,
+    # footprint_front + payload_margin + braking) = max(0.12, 0.11 + 0.02 + 0.045)
+    # = ~0.175 m ... The physics term governs; stop_distance only floors it. Toned
+    # 0.35 -> 0.12". Every number in it was from a config that no longer exists:
+    # stop_distance is 0.30, not 0.12, and braking_distance_margin_m is 0.02, not
+    # 0.045. Recomputed from the DEPLOYED values and the measured footprint:
+    #     physics = footprint_front 0.0965 + payload 0.02 + braking 0.02 = 0.1365
+    #     effective = max(0.30, 0.1365) = 0.30  <- this constant, by 0.164 m
+    # So the hard stop stands 0.30 m from base_link = ~0.204 m off the measured
+    # nose. The physics term has not been binding for some time and the comment
+    # asserting otherwise is how nobody noticed. Whether 0.30 is the RIGHT number
+    # is a separate question from the footprint re-derivation and is not settled
+    # here: shrinking the footprint did not move this, it only exposed it.
     stop_distance_m: 0.30
-    # 0.20 (was 0.45). Small SLOW band just above the ~0.175 m stop — a brief
-    # ease-off, then the hard stop. Must stay > stop_distance_m.
+    # Small SLOW band above the hard stop — a brief ease-off, then the stop. Must
+    # stay > stop_distance_m, and does: 0.50 > 0.30, a 0.20 m band.
+    # RE-CHECKED 2026-08-15 against the measured footprint, UNCHANGED: this is
+    # derived from stop_distance_m, which the footprint change did not move. Its
+    # old comment ("0.20 (was 0.45) ... just above the ~0.175 m stop") described
+    # neither the deployed value nor the deployed stop.
     slow_distance_m: 0.50
+    # RE-CHECKED, UNCHANGED, AND FLAGGED. Rear physics = footprint_rear 0.1145 +
+    # payload 0.02 + braking 0.02 = 0.1545, so this constant governs the reverse
+    # gate by 0.096 m — it is now the binding term by a wide margin, exactly as
+    # stop_distance_m is at the front. That matters because D40's finding was that
+    # reverse gets refused at poses physics allows, and an over-large reverse stop
+    # is one of the ways that happens. NOT changed here: the footprint
+    # re-derivation exposed it, it did not derive it, and moving a reverse gate is
+    # a behavioural change that needs its own evidence and its own gate.
     reverse_stop_distance_m: 0.25
-    # Added to every footprint edge during command-trajectory projection.
+    # Added to every footprint edge during command-trajectory projection. The
+    # footprint it pads shrank on 2026-08-15 (rear 0.16 -> 0.1145), so the padded
+    # rectangle shrank with it — this is the term D40 indicted for manufacturing
+    # poses no motion can leave (28 lidar returns sat INSIDE the declared
+    # footprint at the 08-14b pose). UNCHANGED at 0.02: the padding was never the
+    # defect, the extent it padded was.
     trajectory_clearance_margin_m: 0.02
     # 0.25 (was 0.50). 0.50 s to stop from a <=0.10 m/s crawl was very
     # conservative and inflated the dynamic braking bubble; the tank drive halts
     # far faster than that. Halving it pulls the effective stop distance in.
     measured_stop_time_s: 0.25
     braking_distance_margin_m: 0.02
-    # 0.30 (was 0.45). Hysteresis above the ~0.175 m stop so it doesn't chatter,
-    # but low enough that a short back-off re-opens clearance and lets it resume
-    # — 0.45 would have forced ~0.28 m of backing before the latch cleared.
+    # Hysteresis above the hard stop so it doesn't chatter, but low enough that a
+    # short back-off re-opens clearance and lets it resume. Deployed 0.40 against
+    # a deployed stop of 0.30 = 0.10 m of backing to clear the latch.
+    # RE-CHECKED 2026-08-15, UNCHANGED. Its old comment ("0.30 (was 0.45) ...
+    # above the ~0.175 m stop") named neither the deployed value nor the deployed
+    # stop; the arithmetic it offered was for a config two revisions gone.
     release_distance_m: 0.40
     release_time_s: 0.50
     # 0.70 (was 0.0). 0.0 let the SLOW zone scale speed straight down through the

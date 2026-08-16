@@ -15,6 +15,32 @@ from sphero_rvr_driver.collision_stop import (
 )
 
 
+def geometry_config(**kwargs):
+    """A config whose FOOTPRINT IS STATED, for the tests that place obstacles relative
+    to it.
+
+    These are mechanism tests: they check that the trajectory projection blocks a point
+    entering the swept rectangle and clears one that recedes, with obstacles hand-placed
+    a few centimetres outside a specific footprint. They used bare `CollisionStopConfig()`
+    and so silently inherited whatever the dataclass defaults happened to be -- which
+    made them tests of the mechanism AND of the defaults at once, without saying so.
+
+    On 2026-08-15 the defaults were corrected to Scott's measured extents (front 0.22 ->
+    0.0965, lateral 0.14 -> 0.098/0.106, payload 0.05 -> 0.02) and eight of these went
+    red: the robot had shrunk out from under points chosen for a larger one. Nothing was
+    wrong with the mechanism.
+
+    The numbers below are the OLD defaults, preserved deliberately so each test keeps
+    exactly the geometry it was written against. They describe no real robot and are not
+    meant to -- which is the point of naming them here instead of inheriting them.
+    """
+    return CollisionStopConfig(
+        footprint_front_m=0.22, footprint_rear_m=0.16,
+        footprint_left_m=0.14, footprint_right_m=0.14,
+        payload_margin_m=0.05, **kwargs,
+    )
+
+
 def scan_with(front=None, rear=None, left=None, right=None, *, stamp=0.0, count=360):
     ranges = [2.0] * count
     angle_min = -math.pi
@@ -272,7 +298,7 @@ def test_front_stop_latches_until_clear_release_time_and_manual_reset():
 
 
 def test_front_stop_allows_only_rear_clear_supervised_reverse_escape():
-    supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=0.0)
+    supervisor = CollisionStopSupervisor(geometry_config(), now=0.0)
     supervisor.update_scan(
         # Put the front return inside the expanded projected footprint. This
         # proves the same known point that latches STOP is excluded only from
@@ -356,7 +382,7 @@ def test_slow_band_scales_forward_without_changing_turn():
 
 
 def test_reverse_and_side_obstacles_hold_unsafe_components():
-    supervisor = CollisionStopSupervisor(CollisionStopConfig(), now=0.0)
+    supervisor = CollisionStopSupervisor(geometry_config(), now=0.0)
     supervisor.update_scan(scan_with(rear=0.20, left=0.20, right=0.20, stamp=0.0), now=0.0)
 
     assert supervisor.apply_command(TwistCommand(-0.1, 0.0), now=0.0).output.linear_x == 0.0
@@ -442,7 +468,7 @@ def test_projected_turn_in_place_is_directional_next_to_overlapped_point():
 
 
 def test_projected_curved_escape_requires_sampled_clearance_to_recede():
-    cfg = CollisionStopConfig()
+    cfg = geometry_config()
     # With the point directly beside the rover, forward translation alone is
     # tangential and cannot use the radial shortcut. The left curve qualifies
     # only because every sampled footprint clearance increases; the mirrored
@@ -467,7 +493,7 @@ def test_projected_curved_escape_requires_sampled_clearance_to_recede():
 
 
 def test_projected_motion_is_directional_for_a_known_overlapped_front_point():
-    cfg = CollisionStopConfig()
+    cfg = geometry_config()
     scan = scan_with_point(0.0, 0.15, stamp=0.0)
 
     forward = evaluate_projected_trajectory(
@@ -488,7 +514,7 @@ def test_projected_motion_is_directional_for_a_known_overlapped_front_point():
 
 
 def test_tangential_motion_does_not_claim_to_move_away_from_known_obstacle():
-    cfg = CollisionStopConfig()
+    cfg = geometry_config()
     scan = scan_with_point(90.0, 0.15, stamp=0.0)
 
     projected = evaluate_projected_trajectory(
@@ -528,7 +554,7 @@ def test_projected_trajectory_fails_closed_when_every_point_would_be_excluded():
 
 
 def test_projected_forward_motion_blocks_obstacle_entering_corner_sweep():
-    cfg = CollisionStopConfig()
+    cfg = geometry_config()
     scan = scan_with_point(31.0, 0.30, stamp=0.0)
     supervisor = CollisionStopSupervisor(cfg, now=0.0)
     supervisor.update_scan(scan, now=0.0)
@@ -554,7 +580,7 @@ def test_projected_turn_blocks_only_obstacle_entering_swept_footprint(
     angular_z,
     reason,
 ):
-    cfg = CollisionStopConfig()
+    cfg = geometry_config()
     scan = scan_with_point(angle_deg, 0.27, stamp=0.0)
     projected = evaluate_projected_trajectory(
         scan,

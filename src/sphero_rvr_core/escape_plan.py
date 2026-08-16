@@ -139,10 +139,18 @@ class PlanConfig:
     """A candidate direction must read at least this far to be worth proposing.
 
     Range only. WIDTH adequacy -- "a sector wide enough for the swept path" -- is
-    deliberately NOT tested here, because the swept path depends on the footprint
-    extents, and those are blocked on Scott's tape measurements (design note 6b). A
-    width test built on the current padded extents would be derived under a model we
-    already know is wrong, which is exactly what standards rule 2 forbids.
+    still NOT tested here, but the reason has changed and the change is worth stating.
+
+    It was blocked: the swept path depends on the footprint extents, and those were
+    padded placeholders, so a width test would have been derived under a model already
+    known to be wrong (standards rule 2). THAT BLOCKER LIFTED on 2026-08-15 -- the
+    extents are now measured (`tests/test_footprint_derivation.py`), and the rear one
+    that made the padding pathological went 0.16 -> 0.1145. A width test is buildable
+    now and is BANKED rather than built, because it is a new capability rather than a
+    re-derivation, and this batch was gated to the latter.
+
+    `adequate_opening_m` itself is a RANGE threshold and is not footprint-derived, so
+    the extent change does not move it. Re-checked 2026-08-15, unchanged.
     """
 
     speed_mps: float = 0.10

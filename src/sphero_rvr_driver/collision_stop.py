@@ -80,11 +80,17 @@ class CollisionStopConfig:
     min_range_m: float = 0.08
     max_range_m: float = 6.0
     sector_unknown_policy: str = "blocked"
-    footprint_front_m: float = 0.22
-    footprint_rear_m: float = 0.16
-    footprint_left_m: float = 0.14
-    footprint_right_m: float = 0.14
-    payload_margin_m: float = 0.05
+    # MEASURED EXTENTS (Scott's tape, 2026-08-15), referenced to base_link. These
+    # matched neither the deployed YAML nor `escape_survey`'s copy until now -- three
+    # sets of footprint defaults existed simultaneously, and this one was the most
+    # wrong (front 0.22 against a physical 0.0965). A bench probe that forgot to load
+    # the YAML answered from a robot twice the size of the real one.
+    # `tests/test_footprint_derivation.py` now fails if the three ever disagree again.
+    footprint_front_m: float = 0.0965
+    footprint_rear_m: float = 0.1145
+    footprint_left_m: float = 0.098
+    footprint_right_m: float = 0.106
+    payload_margin_m: float = 0.02
     front_stop_min_angle_deg: float = -30.0
     front_stop_max_angle_deg: float = 30.0
     front_slow_min_angle_deg: float = -45.0
