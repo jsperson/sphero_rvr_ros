@@ -394,6 +394,31 @@ the decisive controller has earned its place and the recommendation is wrong.
 
 **Total: 2–3 days**, matching Scott's tolerance — *if* the packages are present.
 
+### THE SEAM THAT WILL KILL THIS MIGRATION IF IT IS FORGOTTEN
+
+**Nav2's `BackUp` recovery commands reverse. Our collision supervisor holds reverse
+whenever the rear sector is inside `reverse_stop_distance_m` (0.25 m).** On mission 1
+the rover sat at **rear 0.243 m — seven millimetres inside the threshold — and refused
+reverse 61 times in one minute.**
+
+If the supervisor is not taught to permit `BackUp`, **every stock reverse recovery dies
+exactly the way our bespoke ones did**, and we will read that as "stock is no better"
+and abandon the migration on the strength of our own gate. That is D40's
+un-grantable-by-construction defect wearing stock clothes, and it is the most likely
+way this prototype produces a false negative.
+
+Two candidate resolutions, both needing their own gate:
+
+* **Whitelist reverse while a `BackUp` behaviour is active** — the supervisor already
+  knows about arbitration; this is a new permission, not a new sensor.
+* **Re-derive `reverse_stop_distance_m`**, which the footprint work already flagged as
+  governing by 96 mm over its own rear-physics term (0.1545 m).
+
+Its absence from this document was caught by
+`tests/test_stock_middle_config.py::test_the_reverse_seam_is_documented_as_an_open_risk`,
+which asserts the risk is written down before anything flies. A prototype whose most
+likely failure mode is undocumented is a prototype that will be misread.
+
 ### Replay acceptance set (all already in the vault)
 
 1. Run 1's vanish sequence (`tests/fixtures/run1_vanish_20260815.json`) — the hold must

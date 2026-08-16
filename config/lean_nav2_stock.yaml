@@ -1,0 +1,247 @@
+# STOCK-MIDDLE PROTOTYPE — the config half of docs/navigation_reckoning.md.
+#
+# NOT FLOWN. NOT MERGED. This is the exhibit beside the morning architecture decision:
+# what the stack looks like if the middle layer is configured rather than hand-rolled.
+#
+# ============================================================================
+# MEASURE FIRST — THIS CONFIG IS NOT SAFE TO FLY UNTIL ONE NUMBER IS MEASURED
+# ============================================================================
+# The RVR has a motor BREAKAWAY threshold: below it the tracks grind instead of
+# turning. It has never been measured. We know only that 0.9 rad/s was chosen to be
+# above it and that 0.4 rad/s is below it (gauntlet mission 1: 41 consecutive
+# commanded pure rotations at exactly 0.400 rad/s produced 0-1 mm of motion --
+# docs/autopsy_phantom_freeze_2026-08-16.md). So breakaway lies in (0.4, 0.9].
+#
+# Every angular constant below is marked MEASURE-FIRST and carries a provisional
+# value. Flying this config before the sweep would reproduce the exact defect it is
+# meant to fix, and we would misread it as "stock does not work on this robot" for
+# the second time.
+#
+# The sweep: in-place rotation at 0.30 -> 0.90 rad/s in 0.10 steps, 2 s each,
+# recording odom_yaw. Fifteen minutes, human present, chassis on open floor.
+# ============================================================================
+#
+# WHAT DIFFERS FROM config/lean_nav2.yaml, and why:
+#
+#  1. controller_server and local_costmap are LAUNCHED. They exist in the current
+#     config and are never started (explore.launch.py:36 says so outright), which is
+#     why Nav2's collision-checked recoveries refuse in 2 ms (D36) -- they check
+#     against a local costmap that does not exist.
+#
+#  2. TWO ObstacleLayer instances, not one. Raytrace clearing is 2D per layer: a
+#     lidar ray passing OVER a sub-lidar obstacle clears its cell. So the lidar gets
+#     a layer that marks and clears, and touch/freeze marks get a layer that the
+#     lidar cannot erase -- with the ToF as that layer's only clearing source.
+#     This is also D42's fix: marks become POINTS and the costmap does the
+#     robot-radius maths once, via inflation, instead of us painting 0.14 m discs
+#     that then get inflated again.
+#
+#  3. SimpleProgressChecker, NOT PoseProgressChecker. Pose- counts in-place rotation
+#     as progress, so a jammed-but-pivoting RVR never trips it -- which is precisely
+#     tonight's failure mode, and it means the stock checker as we had it configured
+#     would ALSO have missed it.
+#
+#  4. No DenoiseLayer: it removes small obstacle groups, and small obstacle groups
+#     are exactly what a touch mark is.
+#
+#  5. No velocity_smoother: open-loop ramps fight the collision supervisor. RPP is
+#     stateless on measured odom, so supervisor zeroing degrades cleanly into
+#     FAILED_TO_MAKE_PROGRESS -> recovery instead of a fight.
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.25
+      downsample_costmap: false
+      allow_unknown: true
+      max_iterations: 1000000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: true
+
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      # SIMPLE, NOT POSE. PoseProgressChecker credits in-place ROTATION as progress,
+      # and on 2026-08-16 the rover sat commanding 0.400 rad/s pivots that the motors
+      # could not execute -- rotating 1.8-2.2 degrees over 2-3 s. Against
+      # PoseProgressChecker's required_movement_angle that reads as "making progress"
+      # and nothing trips for movement_time_allowance (30 s in the old config).
+      # SimpleProgressChecker asks only for TRANSLATION, which is the honest question
+      # for a robot that is supposed to be going somewhere.
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.05
+      movement_time_allowance: 12.0
+
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      stateful: true
+      xy_goal_tolerance: 0.12
+      # MEASURE-FIRST, and it is bounded from BELOW, which is counter-intuitive.
+      # The tightest achievable yaw tolerance is about (pivot_rate / controller_
+      # frequency): one control cycle of rotation. At a decisive pivot rate this is
+      # coarse, and tightening it makes the goal unreachable -- the robot overshoots,
+      # turns back, overshoots, and grinds. Do NOT tighten below ~0.25 rad.
+      yaw_goal_tolerance: 0.30
+
+    FollowPath:
+      # RPP DIRECTLY -- NO RotationShimController.
+      #
+      # The shim is the component that produced the original motor grinding: its
+      # whole purpose is to stop and rotate in place to face the path, and the old
+      # config ran it at rotate_to_heading_angular_vel 0.4, less than half the
+      # decisive controller's 0.9 "above breakaway" pivot rate. RPP's own
+      # use_rotate_to_heading gives the same pivot-then-drive behaviour with one
+      # authority over the rotation rate instead of two.
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.20
+      lookahead_dist: 0.26
+      min_lookahead_dist: 0.15
+      max_lookahead_dist: 0.36
+      lookahead_time: 1.3
+      use_velocity_scaled_lookahead_dist: true
+      transform_tolerance: 0.2
+
+      # Regulation: slow for curvature and near obstacles, but never below the
+      # drivetrain's floor. A "regulated" speed under breakaway is a stall.
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.30
+      # MEASURE-FIRST. Provisional 0.10 = the supervisor's own crawl floor. Must end
+      # up at or above the measured linear breakaway.
+      regulated_linear_scaling_min_speed: 0.10
+
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.60
+      # MEASURE-FIRST, AND THIS IS THE ONE THAT MATTERS. 0.4 is the value that ground
+      # the motors and, on 2026-08-16, produced 41 commanded rotations with no motion.
+      # Provisional 0.9 matches the decisive controller's pivot_rate_rad_s, chosen to
+      # be above breakaway. Replace with (measured_breakaway * 1.25) after the sweep.
+      rotate_to_heading_angular_vel: 0.90
+      max_angular_accel: 1.20
+
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      # Measured extents (Scott's tape, 2026-08-15) -- see tests/test_footprint_
+      # derivation.py. robot_radius is the circumscribed radius of that rectangle.
+      robot_radius: 0.145
+      always_send_full_costmap: false
+      plugins: ["scan_layer", "touch_layer", "inflation_layer"]
+
+      # LIDAR: marks AND clears. Clearing is what makes a costmap forget, and the
+      # absence of forgetting is D42.
+      scan_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        footprint_clearing_enabled: true
+        scan:
+          topic: /scan
+          data_type: "LaserScan"
+          marking: true
+          clearing: true
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          inf_is_valid: false
+
+      # TOUCH MARKS: a separate instance because raytrace clearing is 2D PER LAYER.
+      # A lidar ray at 0.19 m passes straight over a chair leg and would clear its
+      # cell out of a shared layer -- erasing the one obstacle class this robot
+      # cannot see. Here the lidar has no authority at all, and only the ToF, which
+      # can actually observe the sub-lidar band, is allowed to clear.
+      #
+      # The mark cloud is OWNED and republished by the classifier (~1 Hz), so
+      # expected_update_rate is 0.0: this source is never "stale", it is a belief the
+      # owner maintains. Same pattern as kobuki_bumper2pc.
+      touch_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: touch tof
+        footprint_clearing_enabled: false
+        touch:
+          topic: /decisive_controller/freeze_marks
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          expected_update_rate: 0.0
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.5
+          obstacle_max_range: 2.0
+        tof:
+          topic: /tof/points
+          data_type: "PointCloud2"
+          marking: true
+          clearing: true
+          expected_update_rate: 0.0
+          # The ToF's honest envelope. Its structural blind band starts at 0.167 m
+          # (blind_band_outer_range_m) and rule B reaches ~0.60 m; clearing outside
+          # that would be clearing on evidence the sensor cannot supply.
+          obstacle_min_range: 0.17
+          obstacle_max_range: 0.60
+          raytrace_min_range: 0.17
+          raytrace_max_range: 0.60
+          min_obstacle_height: 0.02
+          max_obstacle_height: 0.20
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        cost_scaling_factor: 4.0
+        # 0.16 kept from the flown config. With marks now painted as POINTS rather
+        # than robot-radius discs, this is the ONLY place the robot's size enters --
+        # which is D42's double-booking fix.
+        inflation_radius: 0.16
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    local_costmap_topic: local_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_costmap_topic: global_costmap/costmap_raw
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    # MEASURE-FIRST, and the ecosystem already agrees with us here: Spin's
+    # min_rotational_vel exists precisely so a minimum-effective-speed base never
+    # receives a sub-threshold command. Nav2's default is 0.4 -- the exact value that
+    # does nothing on this robot. Provisional 0.9; set to the measured breakaway.
+    min_rotational_vel: 0.90
+    max_rotational_vel: 1.20
+    rotational_acc_lim: 1.20
