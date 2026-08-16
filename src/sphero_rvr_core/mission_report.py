@@ -70,7 +70,14 @@ def build_report(
     goals_aborted_after_recovery=None,
     goals_aborted_without_recovery=None,
     planner_rejections=0,
-    remaining_candidates=0,
+    # DEFAULTS TO UNKNOWN, NOT TO ZERO, and that is the whole point of this line.
+    # It defaulted to 0 until 2026-08-16, and on that night the START_BLOCKED call
+    # site omitted the argument -- so gauntlet mission 1's report published
+    # `remaining_candidates: 0` while the explorer had never counted them. A reader
+    # (me) quoted it as "nothing left to explore" in the run analysis. That is the
+    # fabricated-zero this function's own docstring forbids, produced by the default
+    # rather than by a caller, which is the one route the docstring did not cover.
+    remaining_candidates=None,
     map_files=None,
     freeze_events=None,
     freeze_mark_merge_radius_m=DEFAULT_FREEZE_MARK_MERGE_RADIUS_M,

@@ -700,6 +700,22 @@ class CoverageExplorerNode(Node):
                     goals_aborted_after_recovery=self._goals_aborted_after_recovery,
                     goals_aborted_without_recovery=self._goals_aborted_without_recovery,
                     planner_rejections=self._planner_rejections,
+                    # THE FORENSIC FIELDS, which this call site omitted until
+                    # 2026-08-16. Gauntlet mission 1 ended here, and its report carried
+                    # `freeze_events: []` while the status line counted 5 and the log
+                    # named four positions -- the run's central evidence, absent from
+                    # the artifact the run is judged by. `remaining_candidates` was
+                    # likewise unset and defaulted to a fabricated 0.
+                    #
+                    # This is not a terminal report: being wedged is not the end of a
+                    # mission, and freeing the rover resumes it. But it IS the report
+                    # that gets read when a run stops here, so it has to carry what
+                    # happened.
+                    remaining_candidates=self._remaining_candidates(),
+                    freeze_events=list(self._freeze_events),
+                    freeze_mark_merge_radius_m=float(
+                        self.get_parameter("freeze_mark_merge_radius_m").value),
+                    escape_events=list(self._escape_events),
                 ))))
             return
         if time.monotonic() < self._blocked_until:
