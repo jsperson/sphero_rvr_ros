@@ -94,8 +94,21 @@ And then the middle layer put the robot in a prison it built itself:
 5. It sat still with 0.78 m of open floor ahead until we stopped it.
 
 **Phantom freezes → real marks → real inscribed burial → truthful block.** Scott
-confirmed *no contact behind the rover*, so step 1 may itself be a misclassification —
-which would make the entire chain an artifact of code we wrote.
+confirmed *no contact behind the rover*, and the autopsy since written
+(`docs/autopsy_phantom_freeze_2026-08-16.md`) **convicts step 1 from the recording**:
+
+> The supervisor clamps every angular command to **0.4 rad/s**
+> (`collision_stop.yaml:156`). The decisive controller commands pivots at **0.9**
+> precisely because *"the controller must never command a below-breakaway speed"*
+> (`docs/decisive_controller.md:59`). **41 consecutive commanded rotations at exactly
+> 0.400 rad/s produced 0–1 mm of motion.** The motors could not execute the command,
+> the robot did not move, and the freeze classifier blamed an invisible obstacle.
+
+**So the entire chain is an artifact of code we wrote — and worse, of a guarantee
+defeated by the layer beneath it.** We forked the middle of Nav2 to escape
+sub-breakaway in-place rotation, then rebuilt that exact failure one layer down, where
+the guarantee written to prevent it could not see it. This is the single strongest
+argument in this document and it was found after the document was drafted.
 
 **Every link in that chain is a component Nav2 ships and we replaced.**
 
