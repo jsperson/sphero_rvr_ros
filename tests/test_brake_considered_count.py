@@ -165,20 +165,54 @@ def test_the_refusal_never_eats_a_translating_command():
 def test_the_production_caller_can_never_trigger_the_refusal():
     """PREMISE TRIPWIRE -- survives its own mutation, on purpose.
 
-    Raising inside a safety-path primitive is only safe because
-    `_apply_low_obstacle_brake` returns early on `linear_x <= 0.0`, so the flying
-    system never reaches it. This asserts that early return still exists. If it ever
-    goes, an exception becomes reachable inside the publish loop, and this test is
-    where that gets noticed rather than in a room.
+    Raising inside a safety-path primitive is only safe if the flying system never
+    reaches the raise. THE PREMISE CHANGED ON 2026-08-15 and this test is what caught
+    it: the hold-on-vanish fix (D39) deliberately removed the single
+    `linear_x <= 0.0` early return, because a held belief has to be carried and
+    retired during exactly the cycles the brake used to sit out -- reverse, zero
+    command, stale cloud. There are now TWO call sites into the swept-path geometry,
+    so the guarantee needs two checks and one of them can no longer be a regex.
+
+    The behavioural half is the stronger one, and it is possible because
+    `BlindBandHold` is pure: drive the real class through every command shape a
+    supervisor can emit, including the non-translating ones the primitive refuses,
+    and require that nothing escapes. A textual assertion could only ever have
+    described the guard; this exercises it.
     """
     import re
     from pathlib import Path
 
+    from sphero_rvr_core.low_obstacle_brake import BlindBandHold
+
+    # 1. THE NEW CALL SITE, exercised. A pivot, a stationary command, a reverse and a
+    #    sub-threshold crawl all reach the hold in production now.
+    shapes = [(0.0, 0.0), (0.0, 0.6), (0.0, -0.6), (-0.10, 0.0), (-0.10, 0.4),
+              (1e-4, 0.0), (_MIN := 1e-3, 0.0), (0.10, 0.0), (0.10, 0.40)]
+    for belief_seed in ([], [(0.181, 0.0)]):
+        hold = BlindBandHold(0.1672, 0.06, HALF_W, MIN_R, MAX_R)
+        if belief_seed:
+            hold.update(belief_seed, True, 0.14, 0.0, (0.0, 0.0, 0.0))
+        for v, w in shapes:
+            for looked in (True, False):
+                for delta in ((0.0, 0.0, 0.0), None):
+                    hold.update([(0.30, 0.0)], looked, v, w, delta)
+
+    # 2. THE OLD CALL SITE, still guarded. The direct primitive calls must remain
+    #    behind a non-positive-speed return, or the raise is reachable again.
     node = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver"
             / "collision_stop_node.py").read_text()
     body = node[node.index("def _apply_low_obstacle_brake"):]
-    body = body[:body.index("def _on_timer")]
-    assert re.search(r"if not self\._lowobs_enable or linear_x <= 0\.0:\s*\n\s*return", body), (
+    body = body[:body.index("def _pose_delta_since_last")]
+    guard = re.search(r"if linear_x <= 0\.0:\s*\n\s*return", body)
+    assert guard, (
         "the low-obstacle brake's non-positive-speed early return is gone, so "
         "NoSweptPath is now reachable from the publish path"
+    )
+    first_direct_call = min(
+        (body.index(name) for name in ("points_in_swept_path(", "swept_path_obstacle(")
+         if name in body),
+        default=None,
+    )
+    assert first_direct_call is not None and guard.start() < first_direct_call, (
+        "a direct swept-path call now precedes the non-positive-speed guard"
     )

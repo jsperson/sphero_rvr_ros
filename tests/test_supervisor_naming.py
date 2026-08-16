@@ -21,7 +21,17 @@ TELEMETRY = {"cam_nearest", "cam_scale", "cam_cloud_age", "cam_output_linear"}
 
 #: Fields ADDED since the deferral was recorded. Additions are a different act from
 #: renames and are held to a different bar -- see the test below.
-TELEMETRY_ADDITIONS = {"cam_considered"}
+TELEMETRY_ADDITIONS = {"cam_considered", "cam_hold_active", "cam_hold_reason"}
+"""`cam_hold_active` / `cam_hold_reason` added 2026-08-15 with the D39 hold.
+
+Declared here rather than renaming anything, but note what they exist to disambiguate:
+`cam_nearest` keeps its meaning -- the value the brake ACTED on -- and that value can
+now be a HELD BELIEF rather than a live sighting. Its distribution is therefore not a
+pure sighting distribution across this commit, and the owed longitudinal comparison
+must filter on `cam_hold_active=false` to compare like with like. That is exactly the
+population trap this file exists to keep visible, arriving this time through a change
+in what a column MEANS rather than in what it is called.
+"""
 
 
 def test_no_camera_named_parameter_survives_in_the_supervisor():

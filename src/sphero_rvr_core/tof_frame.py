@@ -452,6 +452,62 @@ def _point_from_ray_length(row: int, col: int, r: float, cfg: TofConfig) -> tupl
     return (cfg.mount_x_m + r * ux, r * uy, cfg.mount_height_m + r * uz)
 
 
+def blind_band_range_floor_m(row: int, col: int, cfg: TofConfig) -> float:
+    """Nearest `base_link` RANGE this zone can ever report -- the structural floor.
+
+    `min_valid_mm` discards anything shorter as physically impossible, so a reading of
+    exactly `min_valid_mm` is the closest thing this zone is capable of expressing.
+    Converted through the mount geometry that becomes a hard floor on what the sensor
+    can EVER say about the ground ahead, no matter what is actually there.
+
+    IN RANGE, NOT IN x, AND THE DIFFERENCE IS THE POINT. The 2026-08-15 run-1 archive
+    states this band as a table of x floors (0.152-0.164 m), which is the right
+    quantity for asking "how far ahead of the bumper is the invisible band". It is the
+    WRONG quantity for the brake, whose `nearest` is `hypot(x, y)` -- comparing a
+    last-seen range against an x floor compares two different measurements of two
+    different things and reads as a safe margin when it is not. Same failure family as
+    reading `obstacle_zones` as the brake's point count (standards rule 1), caught
+    here before it reached code rather than after a session of confusion.
+    """
+    p = zone_point(row, col, cfg.min_valid_mm, cfg)
+    if p is None:
+        raise ValueError(
+            f"min_valid_mm={cfg.min_valid_mm} is not a valid reading by this config's "
+            f"own `valid_mm`, so the sensor has no expressible floor. That is a config "
+            f"contradiction, not a geometry question."
+        )
+    return math.hypot(p[0], p[1])
+
+
+def blind_band_range_floors(cfg: TofConfig) -> list:
+    """Every zone's structural floor as (row, col, range_m), for tables and probes.
+
+    A tool that prints the band prints THIS, so a published table and the constant the
+    brake consumes can never drift apart -- the shape of defect the bearings mirror
+    error taught (one authority, and the raw number beside every label)."""
+    return [(r, c, blind_band_range_floor_m(r, c, cfg))
+            for r in range(ZONES) for c in range(ZONES)]
+
+
+def blind_band_outer_range_m(cfg: TofConfig) -> float:
+    """The OUTER edge of the structurally invisible band, in `base_link` range.
+
+    The MAXIMUM over zones, not the minimum: the band is invisible if ANY zone that
+    could be looking at the object cannot express it, so the honest edge is the worst
+    zone's floor. Taking the minimum would name the band by its most capable zone and
+    understate it by the spread (~12 mm here) in the unsafe direction.
+
+    THIS IS A LOWER BOUND ON WHERE OBJECTS VANISH, NOT THE VANISH RANGE. It is the
+    range below which the sensor is structurally incapable of reporting. Thin objects
+    die earlier, to fill-fraction and the terrain gate: run 1's table leg was lost at
+    0.181 m, 17 mm ABOVE this floor. Anything derived from this constant is therefore
+    a floor on a floor, and no stop distance built on it can promise an object stays
+    visible through the stop -- which is precisely why the brake holds its belief on a
+    vanish instead of trusting a threshold to prevent one.
+    """
+    return max(rng for _, _, rng in blind_band_range_floors(cfg))
+
+
 def floor_ground_range_m(row: int, col: int, cfg: TofConfig) -> Optional[float]:
     """Ground range IN base_link at which this zone's ray meets the floor, or None for
     a ray that never gets there.

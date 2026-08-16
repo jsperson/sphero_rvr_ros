@@ -15,11 +15,13 @@ from typing import Any, Callable, Optional
 
 from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanInput, Transform2D, TwistCommand
 from sphero_rvr_core.low_obstacle_brake import (
+    BlindBandHold,
     forward_speed_scale,
     nearest_forward_obstacle,
     points_in_swept_path,
     swept_path_obstacle,
 )
+from sphero_rvr_core.tof_frame import TofConfig, blind_band_outer_range_m
 
 
 @dataclass(frozen=True)
@@ -230,6 +232,31 @@ def main(args=None):
             self._lowobs_nearest: Optional[float] = None
             self._lowobs_scale: float = 1.0
 
+            # HOLD-ON-VANISH (D39). Both operands are DERIVED here, not configured:
+            # the band edge from the shipped sensor geometry, the closure allowance
+            # from this brake's own freshness contract. A YAML knob for either would
+            # let the deployed config disagree with the sensor it describes.
+            self._lowobs_hold_enable = bool(
+                self.get_parameter("low_obstacle_hold_on_vanish_enable").value)
+            self._lowobs_odom_frame = str(self.get_parameter("odom_frame").value)
+            band_outer_m = blind_band_outer_range_m(TofConfig())
+            one_frame_closure_m = (
+                float(self.get_parameter("max_forward_mps").value) * self._lowobs_max_age)
+            self._lowobs_hold = BlindBandHold(
+                band_outer_m, one_frame_closure_m, self._lowobs_half_width,
+                self._lowobs_min_r, self._lowobs_max_r,
+            )
+            self._lowobs_hold_pose: Optional[Transform2D] = None
+            self._lowobs_hold_active: bool = False
+            self._lowobs_hold_reason: str = "clear"
+            self.get_logger().info(
+                f"low-obstacle hold-on-vanish {'ENABLED' if self._lowobs_hold_enable else 'disabled'}: "
+                f"band_outer={band_outer_m:.4f} m (derived), "
+                f"one_frame_closure={one_frame_closure_m:.4f} m "
+                f"(max_forward_mps x low_obstacle_max_age_s), "
+                f"arms below {band_outer_m + one_frame_closure_m:.4f} m"
+            )
+
             requested_cmd_topic = str(self.get_parameter("requested_cmd_topic").value)
             motor_cmd_topic = str(self.get_parameter("motor_cmd_topic").value)
             scan_topic = str(self.get_parameter("scan_topic").value)
@@ -353,6 +380,16 @@ def main(args=None):
                 # cone. half_width is the robot half-width plus a little margin.
                 "low_obstacle_swept_path": True,
                 "low_obstacle_half_width_m": 0.16,
+                # HOLD-ON-VANISH (D39). Default TRUE: Scott's bar is that contact with
+                # anything the rangefinder detected or could have detected is a defect,
+                # and this brake's fail direction is over-caution. The band edge and the
+                # closure allowance are DERIVED at construction, so there is deliberately
+                # no knob for either -- only for whether the mechanism runs at all.
+                "low_obstacle_hold_on_vanish_enable": True,
+                # Frame the hold measures its own motion against. Only ever read through
+                # TF: a belief transported by COMMANDED motion would be retired by moves
+                # the arbiter refused, which is D40's defect relocated into the brake.
+                "odom_frame": "odom",
             }.items():
                 self.declare_parameter(name, value)
 
@@ -508,29 +545,85 @@ def main(args=None):
             the brake did not look at all -- disabled, not driving forward, or no
             fresh cloud -- which is a different fact from looking and finding zero.
             """
-            if not self._lowobs_enable or linear_x <= 0.0:
+            if not self._lowobs_enable:
                 return linear_x, None, 1.0, None
             with self._lowobs_lock:
                 pts = self._lowobs_points
                 stamp = self._lowobs_stamp
-            if stamp is None or (now - stamp) > self._lowobs_max_age:
-                return linear_x, None, 1.0, None
-            if self._lowobs_swept:
-                nearest = swept_path_obstacle(
-                    pts, linear_x, angular_z, self._lowobs_half_width,
-                    self._lowobs_min_r, self._lowobs_max_r,
+            fresh = stamp is not None and (now - stamp) <= self._lowobs_max_age
+
+            # THE HOLD RUNS ON EVERY CYCLE, INCLUDING THE ONES THE BRAKE SITS OUT.
+            # The three early returns this replaced -- reverse, zero command, stale
+            # cloud -- are exactly the cycles during which a held belief must be
+            # carried and retired. Skipping them would mean a belief could only be
+            # cleared while driving forward INTO the thing it represents, and a stale
+            # cloud would release the hold, which is the released-into-contact defect
+            # rebuilt out of a freshness check.
+            hold = None
+            if self._lowobs_hold_enable and self._lowobs_swept:
+                hold = self._lowobs_hold.update(
+                    pts if fresh else [], fresh, linear_x, angular_z,
+                    self._pose_delta_since_last(),
                 )
+                self._lowobs_hold_active = hold.active
+                self._lowobs_hold_reason = hold.reason
+
+            if linear_x <= 0.0:
+                return linear_x, None, 1.0, None
+            if not fresh and hold is None:
+                return linear_x, None, 1.0, None
+
+            if self._lowobs_swept:
                 considered = points_in_swept_path(
                     pts, linear_x, angular_z, self._lowobs_half_width,
                     self._lowobs_min_r, self._lowobs_max_r,
+                ) if fresh else None
+                nearest = hold.nearest_m if hold is not None else swept_path_obstacle(
+                    pts, linear_x, angular_z, self._lowobs_half_width,
+                    self._lowobs_min_r, self._lowobs_max_r,
                 )
-            else:
+            elif fresh:
                 nearest = nearest_forward_obstacle(
                     pts, self._lowobs_half_angle, self._lowobs_min_r, self._lowobs_max_r
                 )
                 considered = None
+            else:
+                return linear_x, None, 1.0, None
             scale = forward_speed_scale(nearest, self._lowobs_stop_m, self._lowobs_slow_m, self._lowobs_min_scale)
             return linear_x * scale, nearest, scale, considered
+
+        def _pose_delta_since_last(self) -> Optional[tuple]:
+            """Measured motion since the previous call as `(dx, dy, dyaw)` in the
+            PREVIOUS base_link frame, or None when it could not be measured.
+
+            None is not an error path to be smoothed over -- it is the input that makes
+            the hold refuse to retire a belief. A gap in TF means the rover's own
+            displacement is unknown, and a belief that cannot be placed cannot be shown
+            to be gone. Returning a zero delta instead would silently assert the rover
+            had not moved, which is a claim nothing measured.
+            """
+            try:
+                stamped = self._tf_buffer.lookup_transform(
+                    self._lowobs_odom_frame, self._config.base_frame, Time(),
+                    timeout=Duration(seconds=self._config.tf_timeout_s),
+                )
+            except Exception:
+                self._lowobs_hold_pose = None
+                return None
+            pose = _transform2d_from_transform_stamped(stamped)
+            if not pose.is_finite():
+                self._lowobs_hold_pose = None
+                return None
+            previous, self._lowobs_hold_pose = self._lowobs_hold_pose, pose
+            if previous is None:
+                # First fix after a gap: a delta needs two poses, and inventing a zero
+                # here would claim the rover held still across the whole outage.
+                return None
+            wx, wy = pose.x - previous.x, pose.y - previous.y
+            cos_y, sin_y = math.cos(previous.yaw), math.sin(previous.yaw)
+            dyaw = math.atan2(math.sin(pose.yaw - previous.yaw),
+                              math.cos(pose.yaw - previous.yaw))
+            return (cos_y * wx + sin_y * wy, -sin_y * wx + cos_y * wy, dyaw)
 
         def _on_timer(self):
             with self._state_lock:
@@ -648,6 +741,16 @@ def main(args=None):
                 # EMPTY means the brake did not look (disabled / not driving forward
                 # / no fresh cloud); 0 means it looked and the swept path was clear.
                 f"cam_considered={_fmt_optional(cam_considered)} "
+                # WHETHER THIS FRAME'S LIMIT CAME FROM A SIGHTING OR A BELIEF, and
+                # why. Without these, a hold is indistinguishable on the recording
+                # from an ordinary stop, and the one question the next autopsy will
+                # ask -- "was the brake looking at something, or remembering it?" --
+                # would again be answerable only by replaying the bag through the
+                # production code. `cam_hold_reason` names the specific silence:
+                # vanished_in_band / held_no_look / held_no_pose / retired_sight_through,
+                # with an `_off_path` suffix when a belief is held but not clamping.
+                f"cam_hold_active={str(self._lowobs_hold_active).lower()} "
+                f"cam_hold_reason={self._lowobs_hold_reason} "
                 f"cam_output_linear={msg.linear.x:.3f} "
                 # The published command differs from decision.output whenever the
                 # pivot veto zeroed the turn, and the veto silently disengages when

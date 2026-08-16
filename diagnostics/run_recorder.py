@@ -7,8 +7,8 @@ written off. Anything that is not recorded may have to be repeated.
 
 Records to a CSV, one row per sample:
   t, state, reason, front, rear, left, right, cam_cloud_age, cam_nearest, cam_scale,
-  cam_considered, pivot_veto, avoid_offset, cmd_vx, cmd_wz, out_vx, out_wz, odom_x,
-  odom_y, odom_yaw_deg
+  cam_considered, pivot_veto, cam_hold_active, cam_hold_reason, avoid_offset, cmd_vx,
+  cmd_wz, out_vx, out_wz, odom_x, odom_y, odom_yaw_deg
 
   * state/front/rear/... come from /collision_stop/state -- did the brake see it,
     and did it act?
@@ -80,11 +80,25 @@ OUT = sys.argv[2] if len(sys.argv) > 2 else None
 # were at 0.54-1.56 m against a 0.60 m reach, correctly ignored. This column is the
 # count AFTER the brake's own filters, so the comparison stops being a guess. EMPTY
 # means the brake did not look; 0 means it looked and found nothing.
+#
+# cam_hold_active / cam_hold_reason were added 2026-08-15 with the D39 hold, and they
+# are what keeps cam_nearest readable. cam_nearest still means "the range the brake
+# acted on", but that range can now be a HELD BELIEF rather than a live sighting --
+# so without these two columns a recording cannot distinguish "the brake is looking at
+# something" from "the brake is remembering something it can no longer see", which is
+# the exact question run 1's autopsy had to answer by replaying the bag through
+# production code. Any longitudinal comparison of cam_nearest across this commit must
+# filter on cam_hold_active=false to compare like with like.
 NUM_FIELDS = ("front", "rear", "left", "right", "cam_cloud_age",
               "cam_nearest", "cam_scale", "cam_considered")
 # Boolean words, matched separately (see _on_state).
-BOOL_FIELDS = ("pivot_veto",)
-FIELDS = NUM_FIELDS + BOOL_FIELDS
+BOOL_FIELDS = ("pivot_veto", "cam_hold_active")
+# Free-form tokens: a reason, not a number and not a boolean. Its own pattern for the
+# same reason BOOL_FIELDS has one -- a numeric match would record an empty column for
+# every sample instead of failing, and a telemetry gap that looks like data is worse
+# than one that looks like a gap.
+WORD_FIELDS = ("cam_hold_reason",)
+FIELDS = NUM_FIELDS + BOOL_FIELDS + WORD_FIELDS
 
 
 class Recorder(Node):
@@ -154,6 +168,9 @@ class Recorder(Node):
             # above would silently record an empty column for every sample rather
             # than fail, which is how a telemetry gap hides in plain sight.
             hit = re.search(rf"\b{k}=(true|false)\b", d)
+            self.near[k] = hit.group(1) if hit else ""
+        for k in WORD_FIELDS:
+            hit = re.search(rf"\b{k}=([a-z_]+)", d)
             self.near[k] = hit.group(1) if hit else ""
 
     def _on_avoid(self, m):

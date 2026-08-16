@@ -208,3 +208,47 @@ lidar_collision_stop_supervisor:
     # Robot geometry, sensor-independent: unchanged from the camera era.
     low_obstacle_swept_path: true
     low_obstacle_half_width_m: 0.16
+    # HOLD-ON-VANISH (D39), confirmed in the field 2026-08-15 run 1, 17:25:44-49.
+    # The brake tracked a table leg from 1.043 m to a hard stop at 0.181 m; the near
+    # returns then LEFT the sensor's visibility band with neither the object nor the
+    # rover moving; the brake released to full speed and the rover drove 90 mm back
+    # into the leg and struck it with the rangefinder. With this true, a belief is
+    # retired only by a look that COULD have seen and did not.
+    #
+    # THERE IS DELIBERATELY NO CONSTANT HERE, only the on/off. Both operands are
+    # derived in the node so the deployed config cannot disagree with the sensor:
+    #   band outer edge  = 0.1672 m, the worst zone's floor from min_valid_mm = 60
+    #                      converted through the shipped mount geometry. In RANGE, not
+    #                      x -- the run-1 archive states this band as x (0.152-0.164)
+    #                      and the brake compares hypot(x, y), so transcribing the
+    #                      archive's figures here would pin the wrong quantity.
+    #   closure          = max_forward_mps x low_obstacle_max_age_s = 0.20 x 0.30
+    #                      = 0.060 m, which is the SAME travel budget already derived
+    #                      at low_obstacle_max_age_s above, reused rather than
+    #                      restated so the two cannot drift apart.
+    #   arms below       = 0.2272 m. Run 1's last trustworthy reading was 0.181 m.
+    #
+    # NOTE WHAT THIS DOES AND DOES NOT COVER, because the pair is the whole safety
+    # argument, and the two clauses use DIFFERENT operands:
+    #   low_obstacle_stop_distance_m protects objects that stay VISIBLE through the
+    #   approach. Its clause is band 0.1672 + the worst observed range decrease under
+    #   command-zero (0.027 m, run 2) = 0.194 m, against the deployed 0.20 -- clear by
+    #   5.8 mm. That is a range DECREASE, not travel; on a broad sloping object new
+    #   nearer points appear without the rover moving, and calling it creep would
+    #   state cloud evolution as physics.
+    #   The HOLD covers objects that vanish. Its threshold (0.227 m) is deliberately
+    #   larger than the stop distance, because the trigger is a lost belief rather
+    #   than a stopping distance.
+    # Thin objects vanish EARLIER than the structural floor -- run 1's leg was lost at
+    # 0.181 m, 17 mm above it -- so no stop distance derived from any single specimen
+    # can promise visibility. This hold is the load-bearing mechanism for the vanish
+    # class, not a second belt.
+    # Fail direction (Scott): held-too-long is over-caution and acceptable;
+    # released-into-contact is the defect.
+    low_obstacle_hold_on_vanish_enable: true
+    # The hold transports its belief by MEASURED motion read from TF, never by
+    # integrating commands. A command the arbiter zeroed would move a belief on travel
+    # that never happened and retire it into the object it was protecting -- D40's
+    # "the code ran, so the robot moved" relocated into the safety path. No TF, no
+    # transport, and the hold holds.
+    odom_frame: odom
