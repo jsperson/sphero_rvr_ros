@@ -362,7 +362,13 @@ class FakeDriver:
         wheel_slip_factor=1.0,
         motor_fault=False,
         writes_reach_the_transport=True,
+        spin_up_ticks=0,
     ):
+        # Ticks a burst takes to reach its steady rate. The real drivetrain took ~0.4 s of
+        # a 2 s burst on 2026-08-16, and that ramp is what made the steady-half gyro mean
+        # and the whole-burst encoder rate incomparable. Zero means an instant step.
+        self.spin_up_ticks = spin_up_ticks
+        self._ticks_at_duty = 0
         self.writes_reach_the_transport = writes_reach_the_transport
         self.transport_writes = 0
         self.clock = clock
@@ -424,6 +430,12 @@ class FakeDriver:
 
     def tick(self):
         rate = self.response(abs(self.last_duty))
+        if self.last_duty:
+            self._ticks_at_duty += 1
+            if self.spin_up_ticks:
+                rate *= min(1.0, self._ticks_at_duty / float(self.spin_up_ticks))
+        else:
+            self._ticks_at_duty = 0
         if self.emit and self.imu_callback is not None:
             self.imu_callback(FakeImuSample(angular_velocity=(0.0, 0.0, rate)))
         wheel_rate = rate * self.wheel_slip_factor
@@ -749,3 +761,231 @@ async def test_render_table_states_the_verdict_and_the_battery():
 
     assert "MOVING_DUTY_FOUND" in text
     assert "BATTERY = 37%" in text
+
+
+# ======================================================================================
+# Curve mode (--no-early-stop): mapping the production band the knee-finder cannot reach
+#
+# 2026-08-16 measured breakaway at tank 10-12, BELOW every deployed constant (23/28/32/45).
+# The knee-finder stops one step past the knee, so no ordinary run can ever sample the
+# band the config actually commands. Curve mode removes the early stop -- and because the
+# early stop was also what kept the rover out of the bog, it is replaced by a hard cap.
+# ======================================================================================
+
+
+def test_curve_mode_is_off_unless_asked_for():
+    assert sweep.SweepConfig().no_early_stop is False
+    assert sweep.SweepConfig().validated().no_early_stop is False
+
+
+def test_curve_mode_unlocks_the_production_band_the_knee_finder_refuses():
+    band = (23, 28, 32, 45)
+
+    config = sweep.SweepConfig(duties=band, no_early_stop=True).validated()
+    assert config.duties == band
+
+    # The very same ladder is refused by the knee-finder, twice over: it starts at the
+    # production floor and it stops below the documented breakaway region. That is the
+    # whole reason curve mode has to exist rather than being a different --duties string.
+    with pytest.raises(sweep.RefusalError):
+        sweep.SweepConfig(duties=band).validated()
+
+
+def test_curve_mode_refuses_to_run_the_default_knee_finder_ladder():
+    # The default ladder climbs to 100. With nothing stopping it at the knee, that is a
+    # march through the bog, so curve mode will not accept a ladder by omission.
+    with pytest.raises(sweep.RefusalError) as excinfo:
+        sweep.SweepConfig(no_early_stop=True).validated()
+    assert "requires an explicit --duties" in str(excinfo.value)
+
+
+def test_curve_mode_refuses_to_climb_above_the_highest_deployed_duty():
+    with pytest.raises(sweep.RefusalError) as excinfo:
+        sweep.SweepConfig(duties=(23, 45, 70), no_early_stop=True).validated()
+    assert str(sweep.CURVE_MODE_MAX_DUTY) in str(excinfo.value)
+
+
+def test_the_curve_mode_cap_is_the_highest_duty_production_can_command():
+    # If a deployed ceiling ever rises, the cap follows it -- and if someone raises the
+    # cap on its own, this test says why that is a different decision.
+    assert sweep.CURVE_MODE_MAX_DUTY == sweep.PRODUCTION_PIVOT_MAX_DUTY
+
+
+def test_curve_mode_keeps_the_ordinary_ladder_bounds_that_are_not_about_the_knee():
+    for duties in ((23, 200), (45, 23), (0, 23)):
+        with pytest.raises(sweep.RefusalError):
+            sweep.SweepConfig(duties=duties, no_early_stop=True).validated()
+
+
+async def test_curve_mode_runs_every_rung_instead_of_stopping_past_the_knee():
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(12))
+
+    _config, report = await run_sweep(
+        driver, clock, duties=(10, 12, 16, 23, 28, 32, 45), no_early_stop=True
+    )
+
+    assert [step.duty for step in report.steps] == [10, 12, 16, 23, 28, 32, 45]
+    rotating = [s for s in report.steps if s.mean_abs_yaw_rate > 0.1]
+    assert len(rotating) > 2, "curve mode exists to produce a curve, not a knee"
+
+
+async def test_the_knee_finder_still_stops_when_curve_mode_is_off():
+    # The contrast test: same ladder, same drivetrain, early stop restored.
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(12))
+
+    _config, report = await run_sweep(driver, clock, duties=(10, 12, 16, 23, 28, 32, 80))
+
+    assert [step.duty for step in report.steps] == [10, 12, 16]
+
+
+async def test_curve_mode_still_aborts_when_the_pivot_walks():
+    # Removing the early stop must not remove the abort that would have caught the bog.
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(12), translation_m_per_tick=0.06 / 40.0)
+
+    _config, report = await run_sweep(
+        driver, clock, duties=(10, 12, 16, 23, 28, 32, 45), no_early_stop=True
+    )
+
+    assert report.aborted is not None and "walks" in report.aborted
+    assert [step.duty for step in report.steps][-1] != 45, "the abort must end the ladder"
+
+
+async def test_curve_mode_still_aborts_on_a_firmware_motor_fault():
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(12), motor_fault=True)
+
+    _config, report = await run_sweep(
+        driver, clock, duties=(10, 12, 16, 23, 45), no_early_stop=True
+    )
+
+    assert report.aborted is not None and "MOTOR FAULT" in report.aborted
+
+
+def test_curve_mode_announces_itself_because_the_preamble_cannot(monkeypatch):
+    # The safety preamble is printed before the arguments are parsed, so it always
+    # describes the knee-finder. An operator who is told "it stops at the knee" and then
+    # watches it not stop has been misled by the tool.
+    monkeypatch.setattr(sweep, "scan_port_holders", lambda _port: [])
+    # Stop before any hardware, without building a coroutine nothing will await.
+    monkeypatch.setattr(sweep, "sweep_with_hardware", lambda *_a, **_k: None)
+    monkeypatch.setattr(sweep, "asyncio", SimpleNamespace(run=lambda _c: sweep.EXIT_OK))
+    lines = []
+
+    sweep.main(["--arm", "--no-early-stop", "--duties", "23,28,45"], out=lines.append)
+
+    assert any("CURVE MODE" in line and "does NOT stop at the knee" in line for line in lines)
+
+
+# ======================================================================================
+# The wheel-vs-body window (D32) -- the run-1 self-catch
+#
+# 2026-08-16 run 1 printed "DISAGREE by 0.212 rad/s ... slip". It was comparing the gyro's
+# STEADY-HALF mean against an encoder rate differenced over the WHOLE burst. Recomputed on
+# one window the two agreed to 0.08%. The bug was in the comparison, not the robot.
+# ======================================================================================
+
+
+async def test_step_records_the_whole_burst_gyro_as_well_as_the_steady_half():
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(70, base=1.2), spin_up_ticks=20)
+
+    _config, report = await run_sweep(driver, clock)
+
+    moving = [s for s in report.steps if s.mean_abs_yaw_rate > 0.1]
+    assert moving
+    for step in moving:
+        assert step.full_burst_mean_abs_yaw_rate is not None
+        # Spin-up drags the whole-burst mean below the steady half. If these are ever
+        # equal the ramp is not being modelled and this file proves nothing.
+        assert step.full_burst_mean_abs_yaw_rate < step.mean_abs_yaw_rate
+
+
+async def test_a_spinning_up_burst_is_not_reported_as_slip():
+    # THE REGRESSION. Wheels track the body exactly (slip factor 1.0); only the ramp
+    # differs between the two windows. The old comparison called this slip.
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(70, base=1.2), spin_up_ticks=20)
+
+    _config, report = await run_sweep(driver, clock)
+
+    text = sweep.wheel_body_disagreement(report.steps)
+    assert "agree within" in text, text
+    assert "DISAGREE" not in text
+
+    # And prove the artifact was real: comparing the steady half instead -- what the tool
+    # used to do -- manufactures a gap far outside tolerance.
+    worst = max(
+        abs(abs(s.encoder_yaw_rate) - s.mean_abs_yaw_rate)
+        for s in report.steps
+        if s.encoder_yaw_rate is not None and s.mean_abs_yaw_rate > 0.1
+    )
+    assert worst > 0.10
+
+
+async def test_real_slip_is_still_caught_when_the_burst_ramps():
+    # The fix must not blind the detector: same ramp, but the wheels genuinely overrun.
+    clock = FakeClock()
+    driver = FakeDriver(
+        clock, knee_at(70, base=1.2), spin_up_ticks=20, wheel_slip_factor=2.0
+    )
+
+    _config, report = await run_sweep(driver, clock)
+
+    assert "DISAGREE" in sweep.wheel_body_disagreement(report.steps)
+
+
+def test_wheel_body_says_nothing_rather_than_comparing_the_wrong_window():
+    # A step from before the whole-burst field existed must be skipped, not silently
+    # compared against the steady half again.
+    step = _step(0, 70, 1.2, encoder_yaw_rate=0.9)
+    assert step.full_burst_mean_abs_yaw_rate is None
+    assert sweep.wheel_body_disagreement([step]) == ""
+
+
+def test_wheel_body_disagreement_names_both_causes_and_claims_neither():
+    step = _step(0, 70, 1.2, encoder_yaw_rate=0.4, full_burst_mean_abs_yaw_rate=1.2)
+    text = sweep.wheel_body_disagreement([step])
+
+    assert "DISAGREE" in text
+    assert "slip" in text and "scale error" in text
+    assert "whole-burst window" in text
+    # The disclaimer is the point. Run 1 asserted "slip" from a number that could not
+    # tell slip from a scale error, and the tool still cannot. It must say so.
+    assert "does not distinguish" in text
+
+
+async def test_csv_step_summary_carries_both_gyro_windows():
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(70, base=1.2), spin_up_ticks=20)
+    config, report = await run_sweep(driver, clock)
+
+    text = sweep.render_csv(config, report, "stamp")
+    summary_header = [
+        line for line in text.splitlines() if line.startswith("# step summary:")
+    ][0]
+    assert "full_burst_mean_abs_yaw_rate" in summary_header
+
+    columns = summary_header.split(":", 1)[1].strip().split(",")
+    summary_rows = [
+        line[1:].strip().split(",")
+        for line in text.splitlines()
+        if line.startswith("# ") and line[2:3].isdigit()
+    ]
+    assert summary_rows, "expected per-step summary rows"
+    for row in summary_rows:
+        assert len(row) == len(columns)
+
+
+async def test_csv_header_records_which_mode_produced_the_table():
+    clock = FakeClock()
+    driver = FakeDriver(clock, knee_at(12))
+    config, report = await run_sweep(
+        driver, clock, duties=(10, 12, 16, 23, 45), no_early_stop=True
+    )
+
+    text = sweep.render_csv(config, report, "stamp")
+
+    assert "no_early_stop=1" in text and "curve mode" in text

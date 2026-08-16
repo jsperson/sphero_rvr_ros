@@ -83,6 +83,18 @@ DOCUMENTED_BREAKAWAY_RAW255 = (140, 160)  # "140-160 breaks away then bogs"
 PRODUCTION_PIVOT_MIN_DUTY = 23
 PRODUCTION_PIVOT_MAX_DUTY = 45
 
+# CURVE MODE (--no-early-stop) exists because the ordinary ladder cannot map the
+# production band: it stops one step past the knee, and 2026-08-16 measured that knee at
+# tank 10-12 -- below EVERY deployed constant. So no ordinary run ever reaches 23/28/32/45,
+# and the rate-vs-duty curve the config's MEASURE-FIRST markers need is unobtainable.
+#
+# Removing the early stop removes the thing that kept the rover out of the bog, so curve
+# mode replaces it with a hard cap rather than leaving nothing there. The cap is the
+# highest duty this repo actually deploys: there is no reason to grind above a duty no
+# production path can command, and the documented bog begins not far above it. Raising
+# this is a reviewed change, not a flag.
+CURVE_MODE_MAX_DUTY = PRODUCTION_PIVOT_MAX_DUTY
+
 
 def raw255_to_tank127(duty_raw255: float) -> int:
     """Convert a 0-255 raw-motor duty magnitude to the +/-127 tank scale."""
@@ -236,6 +248,9 @@ class SweepConfig:
     imu_ready_samples: int = 10
     imu_stale_s: float = 0.75
     csv_path: str = ""
+    # Curve mode: run EVERY rung instead of stopping one past the knee. Every abort
+    # stays armed; only the early stop is removed. See CURVE_MODE_MAX_DUTY.
+    no_early_stop: bool = False
 
     def validated(self) -> "SweepConfig":
         duties = tuple(self.duties) or tuple(default_ladder())
@@ -250,18 +265,36 @@ class SweepConfig:
             )
         if any(b <= a for a, b in zip(duties, duties[1:])):
             raise RefusalError(f"duties must ascend strictly; got {list(duties)}")
-        if duties[0] >= PRODUCTION_PIVOT_MIN_DUTY:
-            raise RefusalError(
-                f"ladder must start BELOW the production pivot floor "
-                f"({PRODUCTION_PIVOT_MIN_DUTY}); got {duties[0]}"
-            )
-        breakaway_top = raw255_to_tank127(DOCUMENTED_BREAKAWAY_RAW255[1])
-        if duties[-1] < breakaway_top:
-            raise RefusalError(
-                f"ladder must reach at least {breakaway_top} "
-                f"(= raw-motor {DOCUMENTED_BREAKAWAY_RAW255[1]}/255, the top of the "
-                f"documented breakaway region); got {duties[-1]}"
-            )
+        if self.no_early_stop:
+            # Curve mode maps the deployed band, so the knee-finding bounds do not apply:
+            # the ladder is SUPPOSED to sit inside production, and forcing it up to the
+            # documented breakaway region would march a rover that no longer stops at the
+            # knee straight into the bog. One bound replaces both.
+            if not self.duties:
+                raise RefusalError(
+                    "--no-early-stop requires an explicit --duties ladder. The default "
+                    "ladder is a knee-finder that climbs to 100; running it with the "
+                    "early stop removed would grind through every rung above breakaway."
+                )
+            if duties[-1] > CURVE_MODE_MAX_DUTY:
+                raise RefusalError(
+                    f"with --no-early-stop every duty must be <= {CURVE_MODE_MAX_DUTY} "
+                    f"(the highest duty any deployed config commands); got {duties[-1]}. "
+                    "Nothing removes the early stop AND climbs into the bog."
+                )
+        else:
+            if duties[0] >= PRODUCTION_PIVOT_MIN_DUTY:
+                raise RefusalError(
+                    f"ladder must start BELOW the production pivot floor "
+                    f"({PRODUCTION_PIVOT_MIN_DUTY}); got {duties[0]}"
+                )
+            breakaway_top = raw255_to_tank127(DOCUMENTED_BREAKAWAY_RAW255[1])
+            if duties[-1] < breakaway_top:
+                raise RefusalError(
+                    f"ladder must reach at least {breakaway_top} "
+                    f"(= raw-motor {DOCUMENTED_BREAKAWAY_RAW255[1]}/255, the top of the "
+                    f"documented breakaway region); got {duties[-1]}"
+                )
         if not 0.0 < self.burst_s <= MAX_BURST_S:
             raise RefusalError(f"burst-s must be in (0, {MAX_BURST_S}]; got {self.burst_s}")
         if self.settle_s < MIN_SETTLE_S:
@@ -321,6 +354,13 @@ class StepResult:
     mean_abs_yaw_rate: float
     peak_abs_yaw_rate: float
     sample_count: int
+    # The same gyro over the WHOLE burst, spin-up included. `mean_abs_yaw_rate` above is
+    # the steady half and is the right figure for "did this duty turn the robot"; this one
+    # is the only figure that may be compared against the encoders, which are read at the
+    # burst boundaries and divided by the full dt. Comparing the steady half against a
+    # whole-burst encoder rate manufactures a deficit the size of the spin-up -- that is
+    # exactly what the 2026-08-16 run 1 reported as 0.212 rad/s of "slip" that was not there.
+    full_burst_mean_abs_yaw_rate: Optional[float] = None
     encoder_yaw_rate: Optional[float] = None
     encoder_translation_m: Optional[float] = None
     motor_stall: bool = False
@@ -634,6 +674,9 @@ class SweepRunner:
         steady_from = burst_start + self.config.burst_s * STEADY_FRACTION
         steady = self.imu.between(steady_from, burst_end)
         rates = [abs(s.yaw_rate) for s in steady]
+        # Whole-burst gyro, on the SAME window the encoders are differenced over, so the
+        # wheel-vs-body comparison is between two measurements of the same interval.
+        whole = [abs(s.yaw_rate) for s in self.imu.between(burst_start, burst_end)]
         state = self._driver_state()
 
         encoder_yaw_rate = None
@@ -650,6 +693,7 @@ class SweepRunner:
             mean_abs_yaw_rate=(sum(rates) / len(rates)) if rates else 0.0,
             peak_abs_yaw_rate=max(rates) if rates else 0.0,
             sample_count=len(rates),
+            full_burst_mean_abs_yaw_rate=(sum(whole) / len(whole)) if whole else None,
             encoder_yaw_rate=encoder_yaw_rate,
             encoder_translation_m=encoder_translation,
             motor_stall=bool(state.get("motor_stall_triggered", False)),
@@ -713,8 +757,10 @@ class SweepRunner:
                 if result.mean_abs_yaw_rate >= threshold:
                     steps_after_knee += 1
                     # The knee plus one confirming step, then stop -- climbing further
-                    # buys nothing and the bog is where the motors get hurt.
-                    if steps_after_knee >= 2:
+                    # buys nothing and the bog is where the motors get hurt. Curve mode
+                    # keeps climbing on purpose, bounded by CURVE_MODE_MAX_DUTY instead;
+                    # every abort below is still armed and still ends the run.
+                    if steps_after_knee >= 2 and not self.config.no_early_stop:
                         self.out("rotation confirmed one step past the knee; stopping the ladder")
                         break
         except AbortError as exc:
@@ -795,6 +841,9 @@ def render_csv(config: SweepConfig, report: SweepReport, stamp: str) -> str:
         f"(= tank {raw255_to_tank127(DOCUMENTED_BREAKAWAY_RAW255[0])}-"
         f"{raw255_to_tank127(DOCUMENTED_BREAKAWAY_RAW255[1])})",
         f"# production pivot band tank {PRODUCTION_PIVOT_MIN_DUTY}-{PRODUCTION_PIVOT_MAX_DUTY}",
+        f"# no_early_stop={int(config.no_early_stop)}"
+        + (f" (curve mode, every rung run, cap {CURVE_MODE_MAX_DUTY})"
+           if config.no_early_stop else " (knee-finder, stops one past the knee)"),
     ]
     if report.aborted:
         head.append(f"# ABORTED: {report.aborted}")
@@ -802,16 +851,20 @@ def render_csv(config: SweepConfig, report: SweepReport, stamp: str) -> str:
     for row in report.rows:
         lines.append(",".join(str(row[column]) for column in CSV_COLUMNS))
     lines.append("# step summary: duty,duty_raw255_equiv,mean_abs_yaw_rate,peak,"
-                 "samples,encoder_yaw_rate,encoder_translation_m,motor_stall,motor_writes")
+                 "samples,full_burst_mean_abs_yaw_rate,encoder_yaw_rate,"
+                 "encoder_translation_m,motor_stall,motor_writes")
     for step in report.steps:
         lines.append(
-            "# %d,%d,%.4f,%.4f,%d,%s,%s,%s,%d"
+            "# %d,%d,%.4f,%.4f,%d,%s,%s,%s,%s,%d"
             % (
                 step.duty,
                 step.duty_raw255_equiv,
                 step.mean_abs_yaw_rate,
                 step.peak_abs_yaw_rate,
                 step.sample_count,
+                ""
+                if step.full_burst_mean_abs_yaw_rate is None
+                else f"{step.full_burst_mean_abs_yaw_rate:.4f}",
                 "" if step.encoder_yaw_rate is None else f"{step.encoder_yaw_rate:.4f}",
                 ""
                 if step.encoder_translation_m is None
@@ -862,22 +915,34 @@ def render_table(report: SweepReport) -> str:
 
 def wheel_body_disagreement(steps: Sequence[StepResult], tolerance: float = 0.10) -> str:
     """D32's never-run measurement: does the wheel odometry the pivot loop regulates on
-    agree with what the body actually did?"""
+    agree with what the body actually did?
+
+    Both sides must describe the SAME interval. The encoders are differenced across the
+    whole burst, so the gyro figure here is the whole-burst mean -- never the steady-half
+    mean the verdict uses. Steps recorded before that field existed are skipped rather
+    than compared on the wrong window: silence beats a manufactured disagreement.
+    """
     pairs = [
-        (s.duty, s.encoder_yaw_rate, s.mean_abs_yaw_rate)
+        (s.duty, s.encoder_yaw_rate, s.full_burst_mean_abs_yaw_rate)
         for s in steps
-        if s.encoder_yaw_rate is not None
+        if s.encoder_yaw_rate is not None and s.full_burst_mean_abs_yaw_rate is not None
     ]
     if not pairs:
         return ""
     worst = max(pairs, key=lambda p: abs(abs(p[1]) - p[2]))
     gap = abs(abs(worst[1]) - worst[2])
     if gap <= tolerance:
-        return f"agree within {gap:.3f} rad/s across {len(pairs)} steps"
+        return (
+            f"agree within {gap:.3f} rad/s across {len(pairs)} steps "
+            "(whole-burst window, both sides)"
+        )
     return (
         f"DISAGREE by {gap:.3f} rad/s at duty {worst[0]} "
-        f"(wheels {abs(worst[1]):.3f}, body {worst[2]:.3f}) -- slip, and the pivot loop "
-        "regulates on the wheels"
+        f"(wheels {abs(worst[1]):.3f}, body {worst[2]:.3f}, whole-burst window). "
+        "The pivot loop regulates on the wheels, so the wheels are what it believes. "
+        "Candidates: tread slip, or an odometry scale error in wheel_track_m / "
+        "counts_per_meter -- a gap that holds its RATIO across duties is a scale error, "
+        "one that varies with duty is slip. This tool does not distinguish them."
     )
 
 
@@ -901,6 +966,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-battery", type=int, default=SweepConfig.min_battery_pct)
     parser.add_argument("--imu-interval-ms", type=int, default=SweepConfig.imu_interval_ms)
     parser.add_argument("--csv", default="")
+    parser.add_argument(
+        "--no-early-stop",
+        action="store_true",
+        help=(
+            "curve mode: run EVERY rung instead of stopping one past the knee, to map "
+            f"rate-vs-duty across the production band. Requires --duties, caps every "
+            f"rung at {CURVE_MODE_MAX_DUTY}, and leaves every abort armed."
+        ),
+    )
     return parser
 
 
@@ -915,6 +989,7 @@ def config_from_args(args) -> SweepConfig:
         min_battery_pct=args.min_battery,
         imu_interval_ms=args.imu_interval_ms,
         csv_path=args.csv or os.path.expanduser(f"~/breakaway_{stamp}.csv"),
+        no_early_stop=args.no_early_stop,
     ).validated()
 
 
@@ -1030,6 +1105,16 @@ def main(argv: Optional[Sequence[str]] = None, out: Callable[[str], None] = prin
     except RefusalError as exc:
         out(f"REFUSED: {exc}")
         return EXIT_REFUSED
+
+    if config.no_early_stop:
+        # The preamble above is printed before the arguments are parsed, so it describes
+        # the knee-finder. Say plainly that this run does NOT stop at the knee.
+        out(
+            "CURVE MODE (--no-early-stop): this run does NOT stop at the knee. It will "
+            f"drive every rung of {','.join(str(d) for d in config.duties)}, including "
+            "duties above breakaway, one bounded burst each. Aborts stay armed; the "
+            "power switch is still the only abort software cannot perform."
+        )
 
     holders = scan_port_holders(config.port)
     if holders is None:
