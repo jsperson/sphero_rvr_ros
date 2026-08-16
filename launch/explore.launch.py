@@ -393,7 +393,7 @@ def generate_launch_description():
             supervised,
             lidar,
             mapping,
-                tof,
+            tof,
             semantic_map,
             vlm_scene,
             *nav2_nodes,
