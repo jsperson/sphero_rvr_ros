@@ -1,5 +1,21 @@
 # RUN CARD — measure the pivot duty that actually moves this robot
 
+> ## ✅ FLOWN 2026-08-16. THE NUMBER IS MEASURED — read this before running anything here.
+>
+> Two sweeps, rubber gym flooring, 83 % battery, binary `5b880aa`, Scott at the switch.
+> **Breakaway is between tank duty 10 and 12** (duties 2–10 give exactly zero rotation
+> with 41 motor packets written per burst). Every deployed constant is far above it:
+> `pivot_min_duty` 28 ≈ 2.5×, `pivot_max_duty` 45 ≈ 4.1×.
+>
+> **The verdict in §3 came back the OTHER WAY from what §0 feared.** Moving duty is *below*
+> both ceilings, so the ceilings are innocent, `pivot_min_duty` 23/28 is **correct rather
+> than defective** (duty 12 is bimodal — one clean pivot, one 15.9 cm one-tread arc — and a
+> floor exists to clear that margin), and **D45 is refuted**. The mission-1 mechanism is now
+> D47, inside the driver between Twist-in and wire-out.
+>
+> Artifacts and both READMEs: `03_validation/breakaway_2026-08-16/`.
+> **Still outstanding: the curve run in §2b**, which is a different invocation.
+
 **Twenty minutes. Scott present. First act with the robot, ahead of any architecture
 work.**
 
@@ -88,6 +104,37 @@ clamps in between.
 cd ~/ros2_ws/src/sphero_rvr_ros
 python3 diagnostics/pivot_duty_sweep.py --arm          # default ladder spans 12..100
 ```
+
+### 2b. THE CURVE RUN — the second invocation, and the one still outstanding
+
+**Both sweeps of 2026-08-16 are DONE and the knee is measured: breakaway is tank 10–12.**
+What is still missing is the rate-vs-duty curve across the production band, because the
+knee-finder stops one step past the knee and the knee is *below* every deployed constant —
+so no ordinary run can ever reach 23/28/32/45. `--no-early-stop` (curve mode, `05d25ca`)
+exists for exactly that and is offline-tested. The invocation:
+
+```bash
+# on the Pi, same preflight as section 2. NOT YET RUN.
+python3 diagnostics/pivot_duty_sweep.py --arm --no-early-stop \
+        --duties 16,20,23,28,32,45
+```
+
+**START AT 16, NOT 12.** Duty 12 is measured **bimodal** — a clean 1.48 rad/s pivot in run
+1, a 0.84 rad/s one-tread arc that walked 15.9 cm and tripped the translation abort in run
+2, same battery and surface, six minutes apart. If 12 comes up in its arc mode it correctly
+aborts the ENTIRE curve run before a single production duty is sampled. Its data point
+already exists twice; re-buying it risks the whole run for nothing.
+
+Curve mode runs every rung, so it needs an explicit ladder, caps every rung at
+`CURVE_MODE_MAX_DUTY` (45, the highest duty any deployed config commands), keeps every
+abort armed, and announces itself at run time because the preamble above prints before the
+arguments are parsed and therefore always describes the knee-finder.
+
+**This run feeds the constants re-derivation in section 4. It does NOT explain mission 1** —
+that mechanism is D47, inside the driver, and the next ordinary gauntlet answers it for
+free now that `/diagnostics` is in the bag.
+
+---
 
 The default ladder is `12 16 20 23 28 32 36 40 45 50 56 62 70 76 84 92 100`: below both
 production floors, through **all four** deployed pivot constants (23/28/32/45), and past
