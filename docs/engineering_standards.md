@@ -164,6 +164,29 @@ The same idea covers recorded evidence: assert that the replayed geometry still 
 deployed threshold it is supposed to trip. If a config moves, the test should say "this pose no
 longer reproduces the failure" rather than quietly passing for a new reason.
 
+## Appendix A2: a module states the SHAPE it consumes; the deployed config states the SOURCE
+
+**Naming a topic, device, or producer in source prose is a config-is-a-claim hazard**,
+because the claim is unenforced and outlives the arrangement it described.
+
+`low_obstacle_brake.py`'s module docstring said the layer reads `/camera/low_obstacles`.
+The deployed `collision_stop.yaml` has pointed it at `/tof/obstacles` since the ToF took
+over the brake, so the file confidently described a system that had not existed for some
+time — and the same stale sentence still sat in `explore.launch.py`'s
+`start_low_obstacle` help text, where it told an operator that enabling the camera would
+feed the brake. It would not; it would publish to a topic nothing reads. Landed
+2026-08-15 (`b8bc0b9`).
+
+**In practice:** the module says what it consumes — "base_link points", "an 8x8 frame of
+millimetre readings" — and the deployed YAML says where that comes from. Where a
+producer-specific fact genuinely matters (the camera's ~0.06 m origin offset), attach it
+to the producer by name and say it applies only to that one.
+
+**The wider rule:** any sentence in source that a config file can falsify is a claim
+under standards rule 6, and it is worse than a wrong constant, because nothing gates on
+prose. The test that catches it does not exist — a reader does. So prefer not writing
+the claim.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:

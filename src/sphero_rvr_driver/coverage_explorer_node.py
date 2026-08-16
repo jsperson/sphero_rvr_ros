@@ -79,6 +79,7 @@ from sphero_rvr_core.mission_report import (
     map_yaml_text,
     occupancy_grid_to_pgm,
 )
+from sphero_rvr_core.costmap_window import extract_window, format_window
 from sphero_rvr_core.coverage_exploration import (
     CoverageConfig,
     candidate_goals,
@@ -181,6 +182,11 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("report_topic", "/coverage_explorer/report")
         self.declare_parameter("save_map_on_end", True)
         self.declare_parameter("map_save_dir", os.path.expanduser("~/.ros/missions"))
+        # D43 dump extent. 0.60 m at the deployed 0.05 m resolution is a 25x25 square
+        # -- wide enough to show clear floor AROUND a lethal patch, which is the
+        # feature that separates stale occupancy from a pose offset. A tighter window
+        # shows only the blob and settles nothing.
+        self.declare_parameter("costmap_dump_radius_m", 0.60)
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
         # Defaults to FALSE: bringing the stack up must not commit the robot to
         # moving. Set true only for an unattended run that genuinely wants liftoff
@@ -262,7 +268,23 @@ class CoverageExplorerNode(Node):
         # So the WHOLE tick is one critical section: a timer firing while the
         # previous tick still runs is skipped, not queued.
         self._tick_busy = threading.Lock()
-        self._mission_start = time.monotonic()
+        # D41: THE MISSION CLOCK STARTS WHEN THE MISSION ARMS, NOT WHEN THE NODE IS
+        # READY. It used to be stamped right here, in __init__, which was correct
+        # until D29 made the stack come up DISARMED and moved liftoff to a service
+        # call. Nothing re-anchored this, so every mission since measured from
+        # node-ready and over-reported: 2.94x on 2026-08-14b (638.2 s against 217.5 s
+        # armed), 4.35x on 08-15a, 3.25x on 08-15b. Every derived RATE went with it,
+        # which invalidated cross-run coverage-rate comparison in both directions --
+        # the project's main better-or-worse metric.
+        #
+        # The class lesson (standards rule 2): a re-anchoring change obliges
+        # re-checking every quantity measured from the old anchor. D29 moved the
+        # anchor and this was the quantity nobody re-checked.
+        #
+        # None until armed, deliberately. A pre-arm stamp is what made the bug
+        # possible, and `None` makes an un-armed report say "no mission clock"
+        # instead of quietly measuring from bringup.
+        self._mission_start = None
         self._goals_sent = 0
         self._goals_succeeded = 0
         # THE ABORT COUNTER, SPLIT (design reverse_before_give_up_design.md, amendment
@@ -324,7 +346,7 @@ class CoverageExplorerNode(Node):
         # entire 53 s mission ran and died DURING the gate checks, and the operator
         # watched a stopped rover with no idea a mission had happened at all. Launch
         # is no longer liftoff -- a service is.
-        self._armed = bool(self.get_parameter("autostart").value)
+        self._armed = False
         self._consecutive_empty = 0
         self._ever_had_target = False
         # None means NOT YET COUNTED. See _publish_status: a fabricated 0 here would
@@ -411,11 +433,42 @@ class CoverageExplorerNode(Node):
                             callback_group=cbg)
         self.create_service(Trigger, "~/mission/stop", self._on_mission_stop,
                             callback_group=cbg)
+        if bool(self.get_parameter("autostart").value):
+            self._arm("autostart")
         self.get_logger().info(
             "coverage_explorer ready (coverage + frontier mission) — "
             + ("ARMED, mission running" if self._armed else
                "DISARMED, waiting for mission/start")
         )
+
+    def _arm(self, reason):
+        """ONE AUTHOR FOR ARMING, and the only place the mission clock starts.
+
+        Both routes in -- the `mission/start` service and `autostart` -- come
+        through here, because D41 happened precisely when one quantity was stamped
+        somewhere other than where the mission actually began. Two arming paths
+        setting the clock separately would rebuild that defect with an extra place to
+        forget.
+
+        It also emits the ARM line. Disarm has logged itself since D29; arming never
+        did, so the single most important instant in a run -- the one every duration
+        is measured from -- was the one instant absent from the launch log, and every
+        after-the-fact alignment had to infer it from goal traffic.
+        """
+        self._armed = True
+        self._mission_start = time.monotonic()
+        self.get_logger().warn(f"MISSION ARMED ({reason}) — the mission clock starts now")
+
+    def _mission_elapsed_s(self):
+        """Seconds since ARM, or 0.0 if the mission never armed.
+
+        A report from an un-armed node is describing a mission that did not run, so
+        0.0 is the honest figure; the old code would have reported however long the
+        node had been up.
+        """
+        if self._mission_start is None:
+            return 0.0
+        return time.monotonic() - self._mission_start
 
     def _publish_generation(self):
         self._generation_pub.publish(Int32(data=int(self._active_goal_generation)))
@@ -451,6 +504,45 @@ class CoverageExplorerNode(Node):
             cm.info.resolution, wx, wy,
         ) is True
 
+    def _dump_costmap_window(self, wx, wy):
+        """Write the costmap around the blocked pose, and log it too.
+
+        BOTH destinations on purpose. The file survives the session for an autopsy;
+        the log line is what a tailing operator sees at the moment it happens, and it
+        is also what ends up in the launch log every archived run already keeps. A
+        dump that only exists as a file is a dump nobody notices was taken.
+
+        NEVER RAISES. This is diagnostics attached to a failure path, and a
+        diagnostic that can turn "the planner is blocked" into "the explorer crashed"
+        is worse than no diagnostic -- the same rule the stuck-survey follows.
+        """
+        try:
+            cm = self._costmap
+            if cm is None:
+                self.get_logger().warn("COSTMAP_DUMP unavailable: no costmap received")
+                return
+            window = extract_window(
+                cm.data, cm.info.width, cm.info.height,
+                cm.info.origin.position.x, cm.info.origin.position.y,
+                cm.info.resolution, wx, wy,
+                float(self.get_parameter("costmap_dump_radius_m").value),
+            )
+            text = format_window(window, wx, wy)
+            self.get_logger().warn(text)
+            # The SAME directory the mission maps go to, read from the deployed
+            # parameter rather than hardcoded: a dump that lands somewhere else is a
+            # dump the artifact-collection step does not sweep up, and every one of
+            # these runs is archived by copying that directory.
+            out_dir = os.path.expanduser(str(self.get_parameter("map_save_dir").value))
+            os.makedirs(out_dir, exist_ok=True)
+            path = os.path.join(
+                out_dir, f"blocked_{time.strftime('%Y%m%d_%H%M%S')}.txt")
+            with open(path, "w") as fh:
+                fh.write(text + "\n")
+            self.get_logger().warn(f"COSTMAP_DUMP written to {path}")
+        except Exception as exc:                  # noqa: BLE001 - see docstring
+            self.get_logger().warn(f"COSTMAP_DUMP failed: {exc}")
+
     def _robot_world(self, frame):
         try:
             tf = self._tf_buffer.lookup_transform(frame, self._base_frame, rclpy.time.Time())
@@ -480,8 +572,7 @@ class CoverageExplorerNode(Node):
             response.success = True
             response.message = "already running"
             return response
-        self._armed = True
-        self.get_logger().info("mission STARTED by service")
+        self._arm("mission/start service")
         response.success = True
         response.message = "mission started"
         return response
@@ -587,6 +678,12 @@ class CoverageExplorerNode(Node):
                     "minimum; aim for 0.5 m). Not issuing goals."
                 )
                 self._blocked_logged = True
+                # D43: SNAPSHOT THE COSTMAP AT THE INSTANT OF THE BLOCK. The two
+                # candidate mechanisms -- a stale SLAM static layer, or a map-frame
+                # pose offset -- are indistinguishable from outside and cannot be
+                # separated after the fact from a bag that never recorded the grid.
+                # Taken here, paired with the scan, one dump convicts one of them.
+                self._dump_costmap_window(wx, wy)
                 # Wedged is not a mission END -- freeing the rover resumes it -- so
                 # this does NOT consume the terminal report latch. But it IS the
                 # answer to "what is it doing", and it is actionable, so say it on the
@@ -596,7 +693,7 @@ class CoverageExplorerNode(Node):
                     OUTCOME_START_BLOCKED,
                     covered_cells=len(self._covered),
                     resolution=res,
-                    duration_s=time.monotonic() - self._mission_start,
+                    duration_s=self._mission_elapsed_s(),
                     goals_sent=self._goals_sent,
                     goals_succeeded=self._goals_succeeded,
                     goals_aborted=self._goals_aborted,
@@ -788,7 +885,7 @@ class CoverageExplorerNode(Node):
             outcome,
             covered_cells=len(self._covered),
             resolution=resolution,
-            duration_s=time.monotonic() - self._mission_start,
+            duration_s=self._mission_elapsed_s(),
             goals_sent=self._goals_sent,
             goals_succeeded=self._goals_succeeded,
             goals_aborted=self._goals_aborted,

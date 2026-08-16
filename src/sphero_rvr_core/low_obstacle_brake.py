@@ -26,6 +26,29 @@ are already base_link, so no such offset applies to them.
 
 import math
 
+#: Below this the command is not TRANSLATING, and a non-translating command has no
+#: forward corridor to ask about. One constant, used by both the turning test and the
+#: refusal below, so the two can never disagree about where translation begins --
+#: which is exactly the gap a second threshold would open.
+_MIN_TRANSLATION_MPS = 1e-3
+
+
+class NoSweptPath(ValueError):
+    """Raised when a command has no swept path to answer about.
+
+    RAISED, NOT RETURNED, and the distinction is the whole point. `None` already
+    means "the swept path is clear" in this module, and `forward_speed_scale(None,
+    ...)` returns 1.0 -- full speed. So returning None for an unanswerable query
+    would not be a refusal at all; it would be the most permissive answer the API
+    can give, handed out for the one input the function cannot model. Fail-open,
+    wearing a refusal's clothes.
+
+    A raise cannot destabilise the flying system, because production never reaches
+    it: `_apply_low_obstacle_brake` returns early on `linear_x <= 0.0` before this
+    module is called. It can only fire for a NEW caller, at development time, which
+    is precisely who this guard exists for.
+    """
+
 
 def nearest_forward_obstacle(points_xy, half_angle_rad, min_range_m=0.0, max_range_m=float("inf")):
     """Nearest forward range among base-frame (x_forward, y_left) points inside the
@@ -59,6 +82,10 @@ def swept_path_obstacle(points_xy, linear_mps, angular_rad_s, half_width_m,
     its distance from that centre falls within [|R| - half_width, |R| + half_width].
     Returns the straight-line range to the nearest such point (comparable to the
     cone version, so the existing stop/slow distances still apply).
+
+    Raises `NoSweptPath` for a non-translating command -- see `_swept_path_ranges`.
+    `None` here means CLEAR, so an unanswerable query cannot be reported as None
+    without it reading as full speed ahead.
     """
     best = None
     for rng in _swept_path_ranges(points_xy, linear_mps, angular_rad_s, half_width_m,
@@ -94,7 +121,9 @@ def points_in_swept_path(points_xy, linear_mps, angular_rad_s, half_width_m,
 
     Degenerate input: no points, or none surviving the filters, returns 0 -- which
     is a different fact from `swept_path_obstacle` returning None only because the
-    cloud was empty, and the pair is what distinguishes them.
+    cloud was empty, and the pair is what distinguishes them. A non-translating
+    command raises `NoSweptPath` rather than returning 0, because 0 here means
+    "looked and found nothing" and this function did not look.
     """
     return sum(1 for _ in _swept_path_ranges(points_xy, linear_mps, angular_rad_s,
                                              half_width_m, min_range_m, max_range_m))
@@ -105,8 +134,25 @@ def _swept_path_ranges(points_xy, linear_mps, angular_rad_s, half_width_m,
     """Ranges of the points that threaten the commanded arc. ONE author for the
     swept-path geometry: `swept_path_obstacle` takes the minimum of this and
     `points_in_swept_path` takes its length, so the count can never describe a
-    different set from the distance reported beside it."""
-    turning = abs(angular_rad_s) > 1e-3 and abs(linear_mps) > 1e-3
+    different set from the distance reported beside it.
+
+    REFUSES a non-translating command rather than answering about the wrong motion.
+    A stationary command and a pure pivot both have |v| below the translation
+    threshold, and neither sweeps a forward corridor -- a pivot sweeps the
+    footprint's corner CIRCLE, which is a different question this function does not
+    model and deliberately does not try to. Until 2026-08-15 such a command fell
+    through the `turning` test into the straight branch and got the corridor ahead
+    of the robot: a confident, plausible, and wrong answer.
+
+    Modelling the rotation annulus is explicitly NOT in scope here. Refusal is.
+    """
+    if abs(linear_mps) <= _MIN_TRANSLATION_MPS:
+        raise NoSweptPath(
+            f"linear_mps={linear_mps!r} is not translating, so there is no swept "
+            f"path to report. A pivot sweeps the footprint's corner circle, not a "
+            f"forward corridor -- ask the pivot gate, not this function."
+        )
+    turning = abs(angular_rad_s) > 1e-3 and abs(linear_mps) > _MIN_TRANSLATION_MPS
     if turning:
         radius = linear_mps / angular_rad_s          # +ve => centre to the left
         cx, cy = 0.0, radius

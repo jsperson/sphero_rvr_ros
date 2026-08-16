@@ -15,6 +15,7 @@ import math
 import pytest
 
 from sphero_rvr_core.low_obstacle_brake import (
+    NoSweptPath,
     points_in_swept_path,
     swept_path_obstacle,
 )
@@ -112,28 +113,72 @@ def test_zero_considered_is_not_the_same_fact_as_not_looking():
     assert swept_path_obstacle([], 0.20, 0.0, HALF_W, MIN_R, MAX_R) is None
 
 
-def test_a_ZERO_command_is_read_as_a_STRAIGHT_CORRIDOR_not_as_no_motion():
-    """A sharp edge on the primitive, pinned because it surprised me and will
-    surprise the next caller.
+@pytest.mark.parametrize("v,w", [
+    (0.0, 0.0),        # stationary
+    (0.0, 0.40),       # PURE PIVOT -- the shape 2c's execute stage will ask about
+    (0.0, -0.40),
+    (0.0005, 0.40),    # under the translation threshold: a pivot with drift
+    (-0.0005, 0.0),
+])
+def test_a_non_translating_command_is_REFUSED_not_answered(v, w):
+    """The edge pinned as a recording on 2026-08-15, now closed.
 
-    With v = w = 0 the `turning` test fails (both terms under 1e-3), so control falls
-    into the STRAIGHT branch and `linear_mps >= 0.0` admits the forward corridor. A
-    stationary command therefore reports the points ahead of the robot rather than
-    none. This is pre-existing behaviour of `swept_path_obstacle`, unchanged by the
-    count being added -- but it is only SAFE because the node early-returns on
-    `linear_x <= 0.0` before ever reaching here.
+    UNTIL THIS GUARD a non-translating command fell through the `turning` test
+    (which needs |v| > 1e-3) into the STRAIGHT branch, where `linear_mps >= 0.0`
+    admitted the forward corridor. A pivot query therefore got a confident,
+    plausible answer about a motion it was not asking about. A pivot sweeps the
+    footprint's CORNER CIRCLE; a forward corridor is a different question, and
+    modelling the rotation annulus is deliberately not in scope -- refusal is.
 
-    So the guard lives in the caller, not in the primitive. A future caller that asks
-    this function about a PIVOT (0, w) or a stationary pose expecting "what would a
-    rotation sweep" gets an answer about a forward corridor instead, which is a
-    plausible number about the wrong motion. If that caller ever appears, the guard
-    has to move in here -- and this test is where that decision gets made rather than
-    discovered.
+    THE GUARD MOVED INTO THE PRIMITIVE rather than staying in the caller, because
+    the caller that would misuse it is not hypothetical: the escape planner's
+    execute stage asks plan-time "would this shape be granted" questions and a pivot
+    is one of the shapes. The guard that lives in the caller is the guard the next
+    caller forgets -- the arbiter-not-caller lesson from the other direction.
+
+    IT RAISES RATHER THAN RETURNING None, and that is the load-bearing choice.
+    `None` already means CLEAR here, and `forward_speed_scale(None, ...)` is 1.0 --
+    full speed. Returning None for an unanswerable query would hand out the most
+    permissive answer in the API for the one input the function cannot model:
+    fail-open wearing a refusal's clothes.
+
+    The threshold is the SAME constant the turning test uses, so the two can never
+    disagree about where translation begins. A second threshold would leave a band
+    of near-pivots still getting the corridor answer.
     """
     pts = _grid()
-    ahead = points_in_swept_path(pts, 0.0, 0.0, HALF_W, MIN_R, MAX_R)
-    straight = points_in_swept_path(pts, 0.20, 0.0, HALF_W, MIN_R, MAX_R)
-    assert ahead == straight > 0, (
-        "a zero command answers the same question as a straight drive; if this ever "
-        "changes, every caller relying on the caller-side guard needs re-checking"
+    with pytest.raises(NoSweptPath):
+        swept_path_obstacle(pts, v, w, HALF_W, MIN_R, MAX_R)
+    with pytest.raises(NoSweptPath):
+        points_in_swept_path(pts, v, w, HALF_W, MIN_R, MAX_R)
+
+
+def test_the_refusal_never_eats_a_translating_command():
+    """The guard must not swallow the real work. Anything genuinely translating still
+    answers, including the slowest speed the escape actually commands (0.10 m/s)."""
+    pts = _grid()
+    for v, w in ((0.10, 0.0), (0.10, 0.40), (-0.10, 0.40), (0.0011, 0.0)):
+        swept_path_obstacle(pts, v, w, HALF_W, MIN_R, MAX_R)
+        points_in_swept_path(pts, v, w, HALF_W, MIN_R, MAX_R)
+
+
+def test_the_production_caller_can_never_trigger_the_refusal():
+    """PREMISE TRIPWIRE -- survives its own mutation, on purpose.
+
+    Raising inside a safety-path primitive is only safe because
+    `_apply_low_obstacle_brake` returns early on `linear_x <= 0.0`, so the flying
+    system never reaches it. This asserts that early return still exists. If it ever
+    goes, an exception becomes reachable inside the publish loop, and this test is
+    where that gets noticed rather than in a room.
+    """
+    import re
+    from pathlib import Path
+
+    node = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver"
+            / "collision_stop_node.py").read_text()
+    body = node[node.index("def _apply_low_obstacle_brake"):]
+    body = body[:body.index("def _on_timer")]
+    assert re.search(r"if not self\._lowobs_enable or linear_x <= 0\.0:\s*\n\s*return", body), (
+        "the low-obstacle brake's non-positive-speed early return is gone, so "
+        "NoSweptPath is now reachable from the publish path"
     )
