@@ -43,7 +43,6 @@ def generate_launch_description():
     enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
     use_decisive_controller = LaunchConfiguration("use_decisive_controller")
     use_coverage_explorer = LaunchConfiguration("use_coverage_explorer")
-    start_low_obstacle = LaunchConfiguration("start_low_obstacle")
     start_tof = LaunchConfiguration("start_tof")
     start_semantic_map = LaunchConfiguration("start_semantic_map")
     start_vlm_scene = LaunchConfiguration("start_vlm_scene")
@@ -110,25 +109,21 @@ def generate_launch_description():
     #      camera staying up is what made the retry cheap.
     # These nodes tolerate the camera starting after them -- they subscribe and wait.
     #
-    # CAMERA floor-boundary detection -> /camera/low_obstacles.
+    # THE CAMERA IS NOT A NAVIGATION SENSOR ON THIS ROBOT. Retired 2026-08-16 by
+    # Scott's charter: "We want to use the camera to obtain intelligence about the
+    # environment (object locations, faces, etc) but it should not be involved in the
+    # safety stack or direct navigation."
     #
-    # NOTE WHAT THIS DOES *NOT* FEED. The collision brake reads whatever
-    # `low_obstacle_topic` in config/collision_stop.yaml names, and that has been
-    # `/tof/obstacles` since the ToF took the brake over. So enabling this node today
-    # publishes to a topic NOTHING SUBSCRIBES TO. The comment here claimed it fed the
-    # brake, and so did the argument's help text below; both were describing a system
-    # that had not existed for some time (standards Appendix A2 -- a module states the
-    # SHAPE it consumes, the deployed config states the SOURCE).
+    # The monocular floor-boundary detector (`low_obstacle` -> /camera/low_obstacles)
+    # used to be startable from here. It is gone, and so is its console entry point,
+    # so it cannot be launched at all. What it cost while it ran: ~34% of a CPU on a
+    # Pi that saturated at load 10.7 on gauntlet mission 1, starving the ToF to
+    # 5.4 Hz -- below the rate its own staleness bound is derived from -- while
+    # publishing to a topic the brake stopped reading long ago. Shedding it and the
+    # camera together took load 10.7 -> 3.1 and the ToF 5.4 -> 6.9 Hz.
     #
-    # It does still feed the LOCAL costmap, and it is deliberately NOT a global
-    # costmap source -- see lean_nav2.yaml.
-    low_obstacle = Node(
-        package="sphero_rvr_driver",
-        executable="low_obstacle",
-        name="low_obstacle",
-        output="screen",
-        condition=IfCondition(start_low_obstacle),
-    )
+    # The camera itself is started on demand by the Track 2 observe path, never here.
+
     # THE SUB-LIDAR BRAKE'S ACTUAL PRODUCER -> /tof/obstacles.
     #
     # DEFAULTS TRUE, and that is the whole point of putting it here. The supervisor
@@ -347,17 +342,6 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
-                "start_low_obstacle",
-                default_value="false",
-                description=(
-                    "Start low_obstacle: CAMERA floor-boundary detection of "
-                    "sub-lidar-plane obstacles -> /camera/low_obstacles. Feeds the "
-                    "LOCAL costmap. It does NOT feed the collision brake -- the "
-                    "brake reads low_obstacle_topic from collision_stop.yaml, which "
-                    "is /tof/obstacles; see start_tof. Needs a camera stream."
-                ),
-            ),
-            DeclareLaunchArgument(
                 "start_tof",
                 default_value="true",
                 description=(
@@ -409,8 +393,7 @@ def generate_launch_description():
             supervised,
             lidar,
             mapping,
-            low_obstacle,
-            tof,
+                tof,
             semantic_map,
             vlm_scene,
             *nav2_nodes,

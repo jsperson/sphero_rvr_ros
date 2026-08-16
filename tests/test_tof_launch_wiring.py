@@ -114,18 +114,46 @@ def test_the_brake_reads_the_topic_the_launched_node_publishes():
     )
 
 
-def test_the_camera_node_no_longer_claims_to_feed_the_brake(launch_src):
-    """The stale-prose half. A false sentence in the launch file's own help text is
-    read by an operator choosing what to start, and nothing gates on prose."""
-    block = _decl_block(launch_src, "start_low_obstacle")
-    assert "collision brake uses" not in block, (
-        "start_low_obstacle still claims the camera feeds the collision brake; it "
-        "publishes to /camera/low_obstacles, which the brake stopped reading"
-    )
-    assert "NOT feed the collision brake" in block or "does NOT feed" in block, (
-        "the correction must SAY what the node does not do -- an operator reading a "
-        "silence draws the old conclusion"
-    )
+def test_the_camera_cannot_be_started_as_a_navigation_sensor(launch_src):
+    """SCOTT'S CHARTER, 2026-08-16, pinned: *"We want to use the camera to obtain
+    intelligence about the environment (object locations, faces, etc) but it should not
+    be involved in the safety stack or direct navigation."*
+
+    This test used to guard the *help text* of a `start_low_obstacle` argument, because
+    the prose falsely claimed the camera fed the collision brake. The argument is now
+    gone entirely, which is the stronger guarantee: the monocular detector cannot be
+    started from this launch at all, and its console entry point is removed, so there is
+    no path to run it. A test about wording is replaced by a test about capability.
+
+    What it cost while it ran (gauntlet mission 1): ~34% of a CPU on a Pi that hit load
+    10.7 and starved the ToF to 5.4 Hz -- under the rate its own staleness bound is
+    derived from -- to publish a cloud the brake had stopped reading.
+    """
+    assert "start_low_obstacle" not in launch_src, (
+        "the monocular camera detector is startable again; Scott's charter is that the "
+        "camera is an intelligence sensor, never a navigation or safety one")
+    assert 'executable="low_obstacle"' not in launch_src, (
+        "the monocular low_obstacle node is back in the launch")
+
+    setup = (Path(__file__).resolve().parents[1] / "setup.py").read_text()
+    assert "low_obstacle_node:main" not in setup, (
+        "the low_obstacle console entry point is back; without the launch arg this is "
+        "the only other way to start it, so both must stay gone")
+
+
+def test_the_camera_is_not_in_default_bringup(launch_src):
+    """The camera driver is started on demand by Track 2's observe path, never by the
+    motion stack. `camera.launch.py` stays a separate, explicit launch.
+
+    Checked on the ACTUAL launch arguments, not by grepping for the string
+    "camera.launch" -- that phrase appears in this file only inside a comment
+    explaining that the camera is deliberately *not* started here, so a string test
+    would fail on its own explanation and pressure someone into deleting the
+    explanation. (Second time tonight; see tests/test_costmap_window_scale.py.)
+    """
+    assert '"start_camera": "false"' in launch_src, (
+        "the included mapping launch is no longer explicitly told not to start the "
+        "camera; the charter requires it stay out of default bringup")
 
 
 def test_the_launched_executable_exists_in_the_entry_points():

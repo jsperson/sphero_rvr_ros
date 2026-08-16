@@ -83,7 +83,6 @@ setup(
             "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",
             "vlm_scene = sphero_rvr_driver.vlm_scene_node:main",
-            "low_obstacle = sphero_rvr_driver.low_obstacle_node:main",
             "tof = sphero_rvr_driver.tof_node:main",
             "vlm_explorer = sphero_rvr_driver.vlm_explorer_node:main",
             "semantic_map = sphero_rvr_driver.semantic_map_node:main",

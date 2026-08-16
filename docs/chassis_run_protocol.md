@@ -60,8 +60,20 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
 ## Bringup order (separate terminals / tmux panes on the Pi)
 
 ```bash
-# Pane 1 — camera first; separate launch, SURVIVES motion-stack restarts:
-ros2 launch sphero_rvr_driver camera.launch.py
+# Pane 1 — DO NOT START THE CAMERA. Retired from bringup 2026-08-16 by Scott's
+# charter: the camera is an INTELLIGENCE sensor (objects, scenes, faces), invoked
+# on demand by Track 2's observe path — never part of default bringup, never in the
+# safety stack, never in direct navigation.
+#
+# It is not a preference. On gauntlet mission 1 the camera plus the monocular
+# detector burned ~66% of a CPU on a Pi that reached load 10.7 and starved the ToF
+# to 5.4 Hz — below the rate its own staleness bound is derived from — to feed a
+# topic the collision brake stopped reading. Shedding both took load to 3.1 and the
+# ToF to 6.9 Hz, and only then was the run flyable.
+#
+# The monocular `low_obstacle` node no longer exists in the launch or as an entry
+# point. `camera.launch.py` still exists and is started only when something needs
+# eyes.
 
 # Pane 2 — recorder BEFORE anything motor-capable; NOT installed by setup.py,
 # run it from the source tree. 1800 s ceiling, explicit outfile:
