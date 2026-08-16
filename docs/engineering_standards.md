@@ -218,6 +218,52 @@ The failure mode this prevents is the obedient one: implementing a form that rea
 correct, passes review because it matches what was asked, and is fail-open in a
 module the reviewer was not holding in their head.
 
+## 9. The footprint is a claim about where the robot ENDS; hardware changes re-open it
+
+**Every stop distance is derived from the declared footprint, so the footprint is a
+safety constant — and unlike the others, it changes when someone picks up a
+screwdriver, with nothing in the repo to notice.**
+
+On 2026-08-15 the rover's rangefinder physically struck a table leg (Scott, attended).
+Reconstructed from the bag: the leg sat at **≈0.091 m from `base_link`** at contact,
+against a declared `footprint_front_m` of **0.110 m** and a ToF optical origin
+(`mount_x_m`) of **0.100 m**. The declared front allows only **10 mm** over the
+sensor's optical reference, so any lens, housing or bracket protruding further makes
+the rangefinder the foremost hardware — outside the footprint every gate is derived
+from. Compounding it, `min_valid_mm = 60` converts through the mount geometry to a
+floor of **x ≥ 0.152 m** on anything that sensor can ever report: a **42 mm band ahead
+of the bumper that is structurally invisible, with the foremost hardware inside it**.
+
+This is standards rule 2 (a new model obliges re-checking every constant derived under
+the old one) arriving through a door nothing watches: **the model that moved was
+physical**. Adding a forward-mounted sensor silently re-derived "where the robot ends"
+and no constant was re-checked.
+
+**In practice:** measure extents to the FOREMOST HARDWARE, not to the chassis, and
+re-measure whenever anything is mounted, moved, or re-bracketed. State beside the
+footprint constants what physical part each one is measured to. A sensor that reaches
+past the footprint is a sensor that will touch what it cannot see.
+
+## 10. An instrument that recorded nothing does not outrank a human who watched it
+
+**Absence of evidence in a window you chose is not evidence of absence.**
+
+The same night, autopsy #2 concluded "no contact appears in this recording" and offered
+that against Scott's direct report of a collision. Both halves were wrong. The contact
+was real, and it was in the OTHER run — the analysis had searched the episode keyed to a
+relayed timestamp rather than every close approach in both bags, exactly as Scott
+suspected (*"perhaps you're looking at the wrong part of the recording"*).
+
+Note the honest claim available at the time was **"no contact in the six seconds I
+examined"**, which is much weaker and would have prompted the wider search immediately.
+The stronger phrasing was not supported by the work done, and it was the phrasing that
+got weighed against an eyewitness.
+
+**In practice:** when an instrument disagrees with an attended observation, the
+instrument is the hypothesis and the observation is the datum. Widen the window and
+the population FIRST — every episode, both directions, all runs — and state the search
+extent in the same sentence as the negative result, or do not report the negative.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
