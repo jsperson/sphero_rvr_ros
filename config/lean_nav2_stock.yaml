@@ -4,21 +4,37 @@
 # what the stack looks like if the middle layer is configured rather than hand-rolled.
 #
 # ============================================================================
-# MEASURE FIRST — THIS CONFIG IS NOT SAFE TO FLY UNTIL ONE NUMBER IS MEASURED
+# MEASURED 2026-08-16. The angular constants below are DERIVED, not guessed.
 # ============================================================================
-# The RVR has a motor BREAKAWAY threshold: below it the tracks grind instead of
-# turning. It has never been measured. We know only that 0.9 rad/s was chosen to be
-# above it and that 0.4 rad/s is below it (gauntlet mission 1: 41 consecutive
-# commanded pure rotations at exactly 0.400 rad/s produced 0-1 mm of motion --
-# docs/autopsy_phantom_freeze_2026-08-16.md). So breakaway lies in (0.4, 0.9].
+# Source: 03_validation/breakaway_2026-08-16/ (four runs, rubber gym flooring --
+# the operating surface -- 80-83 % battery). Authority in code:
+# src/sphero_rvr_core/pivot_curve.py.
 #
-# Every angular constant below is marked MEASURE-FIRST and carries a provisional
-# value. Flying this config before the sweep would reproduce the exact defect it is
-# meant to fix, and we would misread it as "stock does not work on this robot" for
-# the second time.
+#     in-place pivot rate ~= 0.1344 * tank_duty - 0.213     valid for duty 23..45
+#     duties <= 10:  EXACTLY 0.000 rad/s, with motor packets provably written
+#     duties 12..22: BIMODAL -- clean pivot or a one-tread arc that walks 16-22 cm
+#     deployed band 28..45  ->  3.55 .. 5.83 rad/s
 #
-# The sweep: in-place rotation at 0.30 -> 0.90 rad/s in 0.10 steps, 2 s each,
-# recording odom_yaw. Fifteen minutes, human present, chassis on open floor.
+# THE HEADER THIS REPLACES SAID "breakaway lies in (0.4, 0.9]". THAT WAS WRONG IN
+# BOTH DIRECTIONS. The rate curve is discontinuous: it jumps from zero straight to
+# ~0.8-1.5 rad/s at breakaway, so 0.4 AND 0.9 both fall in a gap that NO DUTY
+# PRODUCES. 0.9 was not "above breakaway" -- it was equally unexecutable, just
+# unexecutable in a way that never got tested.
+#
+# Consequences for this file, and they are the whole point of the prototype:
+#
+#  * 0.4 rad/s (stock's old rotate_to_heading_angular_vel, and Nav2's Spin default)
+#    was never executable by this drivetrain. The grinding that motivated the entire
+#    bespoke middle is what a 0.4 rad/s request looks like when the hardware's only
+#    answers are 0.000 and 0.8+. THAT IS A CONFIG FACT, NOT AN ARCHITECTURE FACT.
+#  * The slowest clean in-place rotation this robot can make is 3.55 rad/s at the
+#    deployed pivot_min_duty of 28. There is no such thing as a gentle pivot here.
+#    Any angular constant below that is silently raised by the driver (raise-and-log)
+#    rather than executed, so writing one here would be writing fiction.
+#
+# STILL UNMEASURED, and marked as such below rather than quietly derived from the
+# pivot curve: ARC rates while driving (a different command path -- see
+# docs/run_card_arc_rate_FUTURE.md), linear breakaway, and every acceleration limit.
 # ============================================================================
 #
 # WHAT DIFFERS FROM config/lean_nav2.yaml, and why:
@@ -90,11 +106,18 @@ controller_server:
       plugin: "nav2_controller::SimpleGoalChecker"
       stateful: true
       xy_goal_tolerance: 0.12
-      # MEASURE-FIRST, and it is bounded from BELOW, which is counter-intuitive.
-      # The tightest achievable yaw tolerance is about (pivot_rate / controller_
-      # frequency): one control cycle of rotation. At a decisive pivot rate this is
-      # coarse, and tightening it makes the goal unreachable -- the robot overshoots,
-      # turns back, overshoots, and grinds. Do NOT tighten below ~0.25 rad.
+      # MEASURED, and bounded from BELOW, which is counter-intuitive.
+      #
+      # The tightest achievable yaw tolerance is one control cycle of rotation:
+      #     pivot_rate / controller_frequency = 3.55 / 20.0 = 0.178 rad
+      # and that is the FLOOR, at the slowest pivot the drivetrain can make. Tightening
+      # below it makes the goal unreachable by construction -- the robot overshoots,
+      # turns back, overshoots, and grinds, which is the failure this whole prototype
+      # exists to stop reproducing.
+      #
+      # 0.30 rad keeps ~1.7 control cycles of margin. Do NOT tighten below 0.20.
+      # (2026-08-11's return-to-start missed heading by 24 deg = 0.42 rad and Scott
+      # still called it good, so there is no operational pressure to tighten this.)
       yaw_goal_tolerance: 0.30
 
     FollowPath:
@@ -119,17 +142,33 @@ controller_server:
       # drivetrain's floor. A "regulated" speed under breakaway is a stall.
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.30
-      # MEASURE-FIRST. Provisional 0.10 = the supervisor's own crawl floor. Must end
-      # up at or above the measured linear breakaway.
+      # STILL UNMEASURED -- and note what the pivot curve does NOT tell us. It
+      # measured opposing treads in place; LINEAR breakaway (both treads driving the
+      # same way) is a different regime and could sit anywhere. Given the pivot path
+      # turned out to have a hard dead zone, assuming linear has none would be the
+      # same mistake in a new costume. Provisional 0.10 = the supervisor's crawl
+      # floor, kept until a linear sweep exists.
       regulated_linear_scaling_min_speed: 0.10
 
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.60
-      # MEASURE-FIRST, AND THIS IS THE ONE THAT MATTERS. 0.4 is the value that ground
-      # the motors and, on 2026-08-16, produced 41 commanded rotations with no motion.
-      # Provisional 0.9 matches the decisive controller's pivot_rate_rad_s, chosen to
-      # be above breakaway. Replace with (measured_breakaway * 1.25) after the sweep.
-      rotate_to_heading_angular_vel: 0.90
+      # MEASURED. THIS IS THE ONE THAT MATTERS, AND IT IS THE HEART OF THE A/B.
+      #
+      # 0.4 was stock's old value: unexecutable, and the source of the grinding that
+      # motivated the fork. 0.9 was the "above breakaway" replacement: ALSO
+      # unexecutable, and never tested. Neither number can be produced by any duty.
+      #
+      # 3.55 rad/s is the slowest CLEAN in-place rotation this drivetrain makes --
+      # the curve at the deployed pivot_min_duty of 28. Anything lower is raised to
+      # this by the driver anyway; writing it here keeps the layers honest about what
+      # will actually happen. Anything higher is available (up to 5.83) but there is
+      # no reason to spin faster than necessary near obstacles.
+      rotate_to_heading_angular_vel: 3.55
+      # UNMEASURED -- angular ACCELERATION has never been characterised on this
+      # drivetrain, and the pivot curve says nothing about it (every rung was a
+      # steady-state mean over the back half of a burst). Left at its provisional
+      # value deliberately rather than derived from a measurement that does not cover
+      # it. Raising it is a change that needs its own evidence.
       max_angular_accel: 1.20
 
       use_collision_detection: true
@@ -238,10 +277,14 @@ behavior_server:
       plugin: "nav2_behaviors::DriveOnHeading"
     wait:
       plugin: "nav2_behaviors::Wait"
-    # MEASURE-FIRST, and the ecosystem already agrees with us here: Spin's
-    # min_rotational_vel exists precisely so a minimum-effective-speed base never
-    # receives a sub-threshold command. Nav2's default is 0.4 -- the exact value that
-    # does nothing on this robot. Provisional 0.9; set to the measured breakaway.
-    min_rotational_vel: 0.90
-    max_rotational_vel: 1.20
+    # MEASURED. The ecosystem already agreed with us here: Spin's min_rotational_vel
+    # exists precisely so a minimum-effective-speed base never receives a
+    # sub-threshold command. Nav2's default is 0.4 -- the exact value that does
+    # nothing on this robot, and 0.9 would have done nothing either.
+    #
+    # 3.55 = the curve at pivot_min_duty 28, the slowest clean pivot available.
+    # 5.83 = the curve at pivot_max_duty 45, the fastest the deployed band allows.
+    min_rotational_vel: 3.55
+    max_rotational_vel: 5.83
+    # UNMEASURED (acceleration), left provisional on purpose -- see max_angular_accel.
     rotational_acc_lim: 1.20

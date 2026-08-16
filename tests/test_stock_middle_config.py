@@ -80,14 +80,71 @@ def test_the_rotation_shim_is_not_used():
     assert "use_rotate_to_heading: true" in text
 
 
-def test_every_measure_first_constant_is_marked():
-    """Provisional constants must SAY they are provisional. This config cannot be flown
-    until the breakaway sweep runs, and the next person to open it must learn that from
-    the file rather than from a chat log."""
+def test_the_angular_constants_are_measured_and_cite_the_measurement():
+    """This guard was written when every angular constant was provisional, and it
+    demanded four MEASURE-FIRST markers. The sweep has since run
+    (03_validation/breakaway_2026-08-16), so the invariant it protects has INVERTED: the
+    angular constants must now be derived, and must say where from. A guard that still
+    demanded 'MEASURE-FIRST' would be enforcing a state we deliberately left."""
     text = raw()
-    assert text.count("MEASURE-FIRST") >= 4, (
-        "the provisional angular/linear constants must be marked MEASURE-FIRST")
-    assert "has never been measured" in text
+
+    assert "MEASURE-FIRST" not in text, (
+        "an angular constant is still marked MEASURE-FIRST, but the measurement exists"
+    )
+    assert "breakaway_2026-08-16" in text, "the config must cite the run it derives from"
+    assert "pivot_curve" in text, "and the module that owns the curve"
+
+
+def test_no_angular_constant_asks_for_a_rate_the_drivetrain_cannot_produce():
+    """THE WHOLE POINT. 0.4 was stock's old rotation rate and Nav2's Spin default; 0.9
+    was the 'above breakaway' replacement. Measured: the rate curve jumps from exactly
+    zero to ~0.8-1.5 rad/s, so NEITHER is producible by any duty, and the slowest clean
+    in-place rotation is 3.55 rad/s at the deployed pivot_min_duty of 28.
+
+    A config that asks for an unproducible rate is not merely mis-tuned -- it is asking
+    for something the driver will silently substitute, which is how three layers came to
+    hold opinions none of them executed."""
+    import re
+
+    from sphero_rvr_core import pivot_curve as pc
+
+    floor = pc.minimum_clean_rate(28)
+    text = raw()
+
+    rotational_keys = (
+        "rotate_to_heading_angular_vel",
+        "min_rotational_vel",
+        "max_rotational_vel",
+    )
+    found = {}
+    for key in rotational_keys:
+        match = re.search(rf"^\s*{key}:\s*([0-9.]+)", text, re.M)
+        assert match, f"{key} is missing from the stock config"
+        found[key] = float(match.group(1))
+
+    for key, value in found.items():
+        assert value >= floor, (
+            f"{key} = {value} is below the slowest clean pivot this drivetrain can make "
+            f"({floor:.2f} rad/s). The driver would raise it silently; the config would "
+            "be fiction."
+        )
+    assert found["max_rotational_vel"] <= pc.maximum_clean_rate(45) + 1e-6, (
+        "max_rotational_vel exceeds what the deployed duty band can deliver"
+    )
+
+
+def test_constants_the_curve_does_not_cover_are_marked_UNMEASURED():
+    """The curve measured IN-PLACE PIVOTS. Accelerations, linear breakaway and arc rates
+    are different regimes, and deriving them from this curve would be the raw-motor
+    error class again. They must be labelled, not quietly inherited."""
+    text = raw()
+    assert text.count("UNMEASURED") >= 3, (
+        "acceleration limits and linear breakaway must be marked UNMEASURED rather than "
+        "silently derived from a pivot measurement"
+    )
+    assert "run_card_arc_rate_FUTURE" in text, (
+        "the arc gap must point at its close path, not just carry a label"
+    )
 
 
 # --- D42: marks must be points, and the lidar must not erase them -------------------
