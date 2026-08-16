@@ -6,21 +6,29 @@ no freeze marks in range (run 2's block predates its first mark by 17.5 s; run 1
 marks were 1.3 m away and TTL-expired). The costmap said the robot's own cell was
 lethal and every other instrument said the floor was clear.
 
-THE MECHANISM IS STILL UNCONVICTED, and the reason is that the two candidates are
-INDISTINGUISHABLE FROM OUTSIDE:
+THE MECHANISM IS CONVICTED AS OF 2026-08-16, AND IT WAS NEITHER CANDIDATE.
 
-  * the SLAM static layer carrying stale occupancy where the rover is standing, or
-  * a map-frame pose offset putting "own cell" on a genuinely occupied cell.
+The two suspects were a SLAM static layer carrying stale occupancy, or a map-frame
+pose offset putting "own cell" on genuinely occupied ground. On gauntlet mission 1
+this dump fired eight times and the answer was simpler and worse: the block was
+TRUE. The rover had buried its own cell in inflation by planting five freeze marks
+that cannot be cleared (`clearing: false`), each inflating to a ~0.56 m sterilised
+disc. Costmap fidelity was never the problem; our own marks were.
 
-Both produce the identical symptom, and neither can be separated after the fact from
-a bag that never recorded the costmap. One dump, taken at the instant of the block
-and paired with the scan, separates them: stale occupancy shows a lethal patch
-sitting where the robot is with clear cells around it, while a pose offset shows the
-robot's marker landing on structure that is really there a short distance away.
+AND THIS FILE GOT ITS OWN ANSWER BACKWARDS WHILE REPORTING IT. The window prints
+`centre_blocked` and renders `#` for at/above-inscribed cells. Both used a local
+`INSCRIBED_COST = 253` -- the raw `costmap_2d` scale -- against a
+`nav_msgs/OccupancyGrid` whose values stop at 100 and encode inscribed as 99. So on
+the night it mattered, the instrument printed `centre_blocked=False` beside a gate
+that had correctly refused, and drew a robot buried in inscribed cost as a field of
+`+`. The constant is now imported rather than copied, and pinned by
+`tests/test_costmap_window_scale.py`.
 
-So this is not a debugging convenience. It is the ONE measurement that turns a
-standing suspicion -- open since 2026-08-10 -- into a conviction, and it has to be
-taken at the moment, by the robot, because nothing else can.
+So this is not a debugging convenience. It is the ONE measurement that turned a
+standing suspicion -- open since 2026-08-10 -- into a conviction, and it had to be
+taken at the moment, by the robot, because nothing else could. It is also proof that
+an instrument needs its own adversary: this one was believed for four minutes on the
+strength of a number it had computed wrongly.
 
 Pure: a flat costmap array in, text out. No ROS, so the replay and the tests bind on
 a machine with no rclpy.
@@ -28,12 +36,30 @@ a machine with no rclpy.
 
 from typing import Optional
 
-__all__ = ["INSCRIBED_COST", "CostmapWindow", "extract_window", "format_window"]
+from sphero_rvr_core.coverage_exploration import INSCRIBED_COST
 
-#: Nav2's inscribed-cost threshold: at or above this a planner treats the cell as in
-#: collision. Duplicated from `coverage_exploration` rather than imported so this
-#: module stays standalone; the value is a Nav2 constant, not a tuning choice.
-INSCRIBED_COST = 253
+#: RE-EXPORTED, NOT REDEFINED, and the difference cost a gauntlet mission.
+#:
+#: This module used to carry its own copy, with the reasoning: "Duplicated from
+#: `coverage_exploration` rather than imported so this module stays standalone; the
+#: value is a Nav2 constant, not a tuning choice." Both halves of that sentence are
+#: true and together they produced the defect: it IS a Nav2 constant, but there are
+#: TWO of them. The raw `costmap_2d` scale runs 0..255 with 253 = inscribed; the
+#: `nav_msgs/OccupancyGrid` that Nav2 PUBLISHES runs -1..100 with 99 = inscribed.
+#: The copy here was 253, against a grid whose maximum value is 100.
+#:
+#: WHAT IT COST (2026-08-16 gauntlet mission 1). The explorer's gate reads the
+#: OccupancyGrid and compared correctly against 99, so `START POSE BLOCKED` was
+#: TRUE -- the rover really had buried its own cell. The D43 auto-dump, built
+#: specifically to convict that mechanism, compared 99 >= 253, printed
+#: `centre_blocked=False`, and rendered every inscribed cell as `+` instead of `#`.
+#: The instrument built to find the truth reported its exact inverse, on its first
+#: flight, with the whole batch watching.
+#:
+#: The standalone-ness this bought was worth nothing: `coverage_exploration` is pure,
+#: imports nothing but the standard library, and does not import this module -- so
+#: there is no cycle and never was. One constant, one author.
+__all__ = ["INSCRIBED_COST", "CostmapWindow", "extract_window", "format_window"]
 
 
 class CostmapWindow:
