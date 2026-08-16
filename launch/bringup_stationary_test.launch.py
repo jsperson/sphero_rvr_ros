@@ -36,8 +36,10 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 #: The marker every guard test greps for. Its presence in a launch file means "this
 #: launch cannot fly" -- it publishes a pose that is only true while the rover is parked.
@@ -54,11 +56,25 @@ def generate_launch_description() -> LaunchDescription:
     args = [
         DeclareLaunchArgument("nav2_params_file", default_value=str(default_nav2_params)),
         DeclareLaunchArgument("start_lidar", default_value="true"),
+        # REPLAY MODE. With a recorded bag supplying /tf and /scan, the static publishers
+        # must be OFF (the bag's own odom->base_link is the real, moving one) and the
+        # clock must come from the bag. Publishing a static odom->base_link on top of a
+        # replayed one is not a harmless duplicate -- it is two answers to "where is the
+        # robot", which is the seam class this project keeps getting bitten by.
+        DeclareLaunchArgument("static_odom", default_value="true"),
+        DeclareLaunchArgument("use_sim_time", default_value="false"),
     ]
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    sim_time_param = {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)}
 
+    # `condition=None if start_lidar is None else None` -- what this line said before --
+    # is always None, so the argument did nothing and the lidar always started. Harmless
+    # in live mode and WRONG in replay, where a live scanner would publish /scan on top of
+    # the bag's recorded one and the costmap would silently mix a recording with the room
+    # it is sitting in. A flag that does nothing is worse than no flag.
     lidar = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(str(share / "launch" / "lidar.launch.py")),
-        condition=None if start_lidar is None else None,
+        condition=IfCondition(start_lidar),
     )
 
     # THE STATIC TF. Named after the marker so a grep for the marker finds the node.
@@ -70,6 +86,7 @@ def generate_launch_description() -> LaunchDescription:
         name=STATIONARY_TEST_MARKER.lower(),
         output="screen",
         arguments=["0", "0", "0", "0", "0", "0", "odom", "base_link"],
+        condition=IfCondition(LaunchConfiguration("static_odom")),
     )
     # map->odom, likewise: no SLAM in this test, so the global frame is pinned.
     static_map = Node(
@@ -78,6 +95,7 @@ def generate_launch_description() -> LaunchDescription:
         name=f"{STATIONARY_TEST_MARKER.lower()}_map",
         output="screen",
         arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
+        condition=IfCondition(LaunchConfiguration("static_odom")),
     )
 
     nav2_nodes = [
@@ -86,7 +104,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="planner_server",
             name="planner_server",
             output="screen",
-            parameters=[nav2_params_file],
+            parameters=[nav2_params_file, sim_time_param],
         ),
         # THE POINT OF THE WHOLE EXERCISE: controller_server runs, and with it the local
         # costmap that explore.launch.py:36 documents as absent -- the absence that made
@@ -96,7 +114,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="controller_server",
             name="controller_server",
             output="screen",
-            parameters=[nav2_params_file],
+            parameters=[nav2_params_file, sim_time_param],
             remappings=[("cmd_vel", "/cmd_vel")],
         ),
         Node(
@@ -104,7 +122,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="behavior_server",
             name="behavior_server",
             output="screen",
-            parameters=[nav2_params_file],
+            parameters=[nav2_params_file, sim_time_param],
             remappings=[("cmd_vel", "/cmd_vel")],
         ),
         Node(
@@ -114,6 +132,7 @@ def generate_launch_description() -> LaunchDescription:
             output="screen",
             parameters=[
                 nav2_params_file,
+                sim_time_param,
                 {
                     "autostart": True,
                     "node_names": [

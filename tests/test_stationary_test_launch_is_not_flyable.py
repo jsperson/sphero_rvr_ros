@@ -77,3 +77,35 @@ def test_the_stationary_launch_does_not_start_the_driver_or_the_explorer():
             f"the stationary test launch starts {forbidden}, which can command motion. "
             "This launch exists to prove wiring, not to drive."
         )
+
+
+# --- flags must actually gate something ----------------------------------------------
+
+def test_every_declared_launch_argument_is_used_by_a_condition_or_parameter():
+    """A launch flag that gates nothing is worse than no flag: it advertises a safety
+    property the file does not have. `start_lidar` was declared and then applied as
+    `condition=None if start_lidar is None else None` -- always None, so the lidar always
+    started. Harmless live; in replay it would have published a live /scan on top of the
+    bag's recorded one and mixed a recording with the room."""
+    source = _read(STATIONARY_LAUNCH)
+
+    import re
+
+    declared = set(re.findall(r'DeclareLaunchArgument\(\s*"([a-z_]+)"', source))
+    assert declared, "no launch arguments found -- the regex or the file changed"
+
+    for name in declared:
+        uses = source.count(f'"{name}"')
+        assert uses >= 2, (
+            f"launch argument {name!r} is declared but never referenced again -- it "
+            "gates nothing"
+        )
+
+    # And specifically: the two that matter for replay safety must reach a condition.
+    assert "condition=IfCondition(start_lidar)" in source, (
+        "start_lidar must actually gate the lidar include"
+    )
+    assert source.count('IfCondition(LaunchConfiguration("static_odom"))') >= 2, (
+        "static_odom must gate BOTH static publishers; a replay with one of them still "
+        "running has two answers to 'where is the robot'"
+    )
