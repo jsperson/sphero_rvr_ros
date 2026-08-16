@@ -331,6 +331,41 @@ test — it is only stronger when the data can tell the answers apart.**
 them diverge and check the fixtures actually vary it. If none does, construct the case
 and say in the test that it is constructed and why. Then mutate both ways.
 
+## Appendix A5: a guard that greps prose fails on its own explanation
+
+**Three times in one night (2026-08-16), a guard written to forbid a defect went red on
+the comment explaining that defect — and the only way to make it green was to delete the
+explanation.**
+
+The pattern, each time:
+
+* `test_costmap_window_scale.py` forbade the literal `253`. The module's docstring now
+  explains, at length, why 253 was wrong. Red.
+* `test_tof_launch_wiring.py` forbade `"camera.launch"` in the motion-stack launch. That
+  phrase appears there only inside a comment saying the camera is deliberately *not*
+  started. Red.
+* `test_stock_middle_config.py` forbade `RotationShimController`, `DenoiseLayer` and
+  `PoseProgressChecker`. All three appear in the config's comments explaining why they
+  are absent. Red, red, red.
+
+**The failure mode is not the red test — it is what the red test makes you do.** The
+cheapest way to green is to remove the sentence that records why the defect existed,
+which is usually the most valuable line in the file. A guard that punishes documentation
+will, eventually, get the documentation deleted.
+
+**In practice:** assert on what the machine reads, not on what the human wrote.
+
+* YAML → strip `#` lines before matching.
+* Python → parse with `ast` and inspect literals, assignments and call keywords.
+* Launch files → assert on the actual declared arguments and node actions.
+
+And when the assertion genuinely *is* about the prose — "this comment must still say
+what the node does not do" — say so explicitly and read the raw text on purpose, in a
+separate helper with a name that admits it.
+
+**The tell:** if a guard would pass on an empty file, or would pass more easily after
+deleting a comment, it is measuring the wrong surface.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
