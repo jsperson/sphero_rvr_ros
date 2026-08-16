@@ -264,6 +264,42 @@ instrument is the hypothesis and the observation is the datum. Widen the window 
 the population FIRST — every episode, both directions, all runs — and state the search
 extent in the same sentence as the negative result, or do not report the negative.
 
+## 11. A belief is a different population from a reading
+
+**Every filter written for sensor readings must be re-justified before it touches a
+remembered one — and the same goes for every rule about what may update it.**
+
+The D39 hold (2026-08-15) gives the brake a memory: when returns vanish inside the
+sensor's structurally invisible band, it keeps believing the obstacle instead of reading
+silence as clearance. Two defects were written into the first draft, caught by the
+mutation discipline, and they are the same mistake twice:
+
+* **A validity floor applied to a belief.** The corridor test passed
+  `low_obstacle_min_range_m` (0.14 m) through, exactly as the live path does. That floor
+  exists to reject *readings the producer cannot be trusted on*. Applied to a belief, it
+  drops the object out of the corridor as soon as it transports inside 0.14 m — **releasing
+  the brake for the objects held closest**. The original defect, rebuilt inside the class
+  written to prevent it, out of a window borrowed from the wrong population.
+* **A farther sighting retiring a nearer belief.** The draft handed each live reading
+  straight back. Run 1's stray 0.201 m return — the one that restored full commanded speed
+  seconds before the collision — would have overwritten the 0.181 m belief. With the rover
+  stationary, a return further out is not evidence the object receded; it is evidence of
+  partial visibility, which is the failure mode itself. Left in, a thin object could be
+  walked outward one legal-looking return at a time until it retired itself.
+
+The clause that resolves the second is the mechanism's soul: **only MEASURED MOTION may
+push a belief away.** A reacquisition can pull a belief nearer; nothing a sensor says can
+push it further.
+
+Note that neither defect is visible from the live path's tests, and neither would have
+failed a review that asked "does this match how the live path filters?" — matching the
+live path is what produced both.
+
+**In practice:** when a module gains state, enumerate every filter, threshold and update
+rule it inherited and say out loud what population each was derived for. Then mutate the
+new state away and check the revert-proof still dies on the field symptom; both of these
+were found that way and neither was found by reading.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
