@@ -8,6 +8,39 @@ rover.** He was right, and the recording says why.
 
 ---
 
+> ## ⚠⚠⚠ THIRD PASS, 2026-08-16 evening — MISSION 2 FLEW WITH `/diagnostics` RECORDED
+>
+> **No D47-class deaf spell occurred.** Across 33 sustained-command episodes,
+> `motor_transport_write_count` advanced in **every one**; `fail_safe_active`,
+> `motor_fault` and `emergency_stopped` were **never true**. All three D47 candidates —
+> latched fail-safe, motion-generation invalidation, transport starvation — are
+> unsupported by this flight. Consistent with `aborted_without_recovery = 0`.
+>
+> **The one no-motion-while-commanded window was a real obstruction, and the driver said
+> so:** 7.76 s, 233 commands at 0.400 rad/s, **128 motor packets written**, and
+> **`motor_stall = TRUE`** — the only stall span in the mission. It is the chair leg Scott
+> watched the robot hit.
+>
+> **Two defects this exposes, both about a fact that exists and is not consumed:**
+> 1. The freeze classifier says *"an obstacle no sensor on this robot can see."* For that
+>    freeze **a sensor did see it** — `motor_stall`, published on `/diagnostics`, which the
+>    classifier does not read. The robot's touch sense exists and nothing listens.
+> 2. **The escape ladder plants a freeze mark for the PLANNER and then drives forward
+>    through it.** After FREEZE #1 the ladder reversed, re-froze 2 cm away, pivoted, then
+>    ran `drive_open (+0.10, +0.40)` straight back into the same obstacle. The mark is not
+>    in the ladder's own decision loop, and `drive_open` picks "open" from a lidar survey
+>    that cannot see a chair leg.
+>
+> Mission 1 remains unresolved: it had no `/diagnostics`, so whether its episodes were
+> stalls or genuinely deaf cannot be recovered from that recording. This flight establishes
+> the method, not mission 1's answer.
+> Evidence: `03_validation/gauntlet_2026-08-16_mission2_diagnostics/`.
+> **Caveat carried:** the driver's own status publishes at **1.00 Hz**, so cumulative
+> counters are exact but flags are sampled once a second and a sub-second stall can pass
+> unseen. Six of seven freezes showed no stall; that is a floor, not a count.
+
+---
+
 > ## ⚠⚠ SECOND CORRECTION, 2026-08-16 afternoon — MEASURED ON THE FLOOR. THE CAUSAL CHAIN BELOW IS FALSIFIED.
 >
 > **The duty ceiling did not cause these freezes. Two independent lines of evidence kill it.**
