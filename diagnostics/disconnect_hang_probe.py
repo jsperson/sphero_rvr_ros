@@ -60,6 +60,58 @@ alive and sleeping with `_desired_velocity` already cleared, so it commands noth
 it fails to complete a shutdown rather than failing to stop the rover. Worth confirming
 against the real transport, which this probe does not use.
 
+CAPTURED 2026-08-16: THE "INTERMITTENT FLAKE" AND THE HANG ARE THE SAME DEFECT.
+
+148 runs of the whole `tests/test_driver_safety.py` file, Mac, Python 3.9.6:
+
+    11 HANGS   (7.4%) -- always at test #29, `test_stale_stop_transient_failure_
+                          retries_safe_stop_without_fail_safe`, at its UNBOUNDED
+                          `await driver.disconnect()`. Every hang log stops at
+                          exactly 28 progress dots. Never any other test.
+     3 FAILURES (2.0%) -- always test #12, `test_stale_velocity_command_causes_
+                          validated_raw_motor_off_packet`, at line 354's
+                          `await asyncio.wait_for(driver.disconnect(), timeout=1.0)`,
+                          raising `asyncio.exceptions.TimeoutError`.
+
+**Both faces are `disconnect()`.** The only difference is whether the call site bounds
+it: 2 of the 19 `disconnect()` calls in that file use a 1.0 s `wait_for`, and those are
+the ones that produce a red test instead of a hung process. This is precisely what the
+paragraph above predicted, so the "flakes under CPU load" framing is now dead twice
+over -- it is not load, and it is not a flake; it is this hang, seen through a timeout.
+
+The captured traceback also shows the `wait_for` race directly:
+
+    fut = <Task finished name='Task-78' coro=<RVRDriver.disconnect() done, ...> result=None>
+
+`wait_for` raised TimeoutError against a task that had **already finished with
+result=None**: the timeout fired while disconnect was still pending, and the coroutine
+then completed during `_cancel_and_wait`, so `fut.result()` did not raise CancelledError
+and Python 3.9 fell through to `raise exceptions.TimeoutError()` (tasks.py:496). Whether
+disconnect would have returned on its own or only because the cancel unblocked it, this
+log cannot say.
+
+A SHARPER CLUE THAN "1.67% OF DISCONNECTS", offered as a hypothesis and NOT confirmed:
+the rate is not uniform across call sites. Seventeen unbounded `disconnect()` calls in
+that file, and exactly ONE ever hangs. The three tests that drive a short
+`command_timeout` (the stale-command safe-stop path) are #12, #29 and #30 -- and #12 and
+#29 are the two that misbehave. #30 is the odd one out and never misbehaved in 148 runs;
+it is also the only one that ends with `_fail_safe_active` True, which makes the control
+loop `continue` at the top and park in a plain `asyncio.sleep` rather than inside a
+`wait_for` on a dispatcher round-trip. That fits the mechanism above: the cancel has to
+land on a `wait_for`, not on a sleep, to get lost. **This is inference from which tests
+do and do not misbehave -- the control loop's state at cancel time was never
+instrumented.** Instrumenting it is the first move for whoever takes the fix.
+
+REPRODUCTION (the whole file is required -- isolating test #29 gave 5/5 clean):
+
+    for i in $(seq 1 150); do
+      timeout 90 python3 -m pytest tests/test_driver_safety.py -p no:cacheprovider \
+          -q --tb=long -rf > /tmp/d31.log 2>&1
+      rc=$?; [ $rc -ne 0 ] && echo "run $i rc=$rc" && break
+    done
+
+Expect roughly 1 red run in 10; rc=124 is the hang, rc=1 is the same defect timing out.
+
 USAGE
     python3 diagnostics/disconnect_hang_probe.py            # 40 runs, report the rate
     python3 diagnostics/disconnect_hang_probe.py 100        # more runs
