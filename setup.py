@@ -19,6 +19,7 @@ setup(
                 "launch/mapping.launch.py",
                 "launch/explore.launch.py",
                 "launch/camera.launch.py",
+                "launch/bringup_stationary_test.launch.py",
             ],
         ),
         (
@@ -34,6 +35,7 @@ setup(
                 "config/coverage_explorer.yaml",
                 "config/camera.yaml",
                 "config/ekf.yaml",
+                "config/lean_nav2_stock.yaml",
             ],
         ),
         (
