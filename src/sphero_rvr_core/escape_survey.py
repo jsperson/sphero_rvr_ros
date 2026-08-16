@@ -70,6 +70,20 @@ class SurveyConfig:
     open_m: float = 0.30
     """A clock position counts as open at or above this range."""
 
+    front_sector_half_deg: float = 30.0
+    rear_sector_half_deg: float = 30.0
+    """Half-widths of the ARBITER's own front-stop and rear-hold windows
+    (`front_stop_min/max_angle_deg`, `rear_stop_angle_width_deg` in
+    `config/collision_stop.yaml`). They are here because the plan stage must ask
+    "would the supervisor refuse this shape?" and that question is decided on the
+    supervisor's SECTOR minima, not on 30-degree clock buckets. A bucket minimum
+    cannot answer it in either direction: the bucket is neither a subset nor a
+    superset of the sector, so a planner reading buckets would sometimes withhold a
+    move the arbiter would have granted -- which is the D40 sin exactly.
+
+    Deriving them from the rays here, in the one place that holds the rays, keeps
+    the plan from becoming a second author of the supervisor's arithmetic."""
+
     footprint_front_m: float = 0.11
     footprint_rear_m: float = 0.16
     footprint_left_m: float = 0.10
@@ -88,11 +102,20 @@ class DirectionReading:
     range_m: Optional[float]
     vouched_by: str
 
+    open_m: float = 0.30
+    """The threshold this reading was judged against, carried WITH the reading.
+
+    It used to be read off the class (`DirectionReading._open_m`), which meant
+    `is_open` answered against the hardcoded 0.30 no matter what `SurveyConfig` the
+    caller passed, while `Survey.open_clocks` answered against the config. Two
+    definitions of "open" that agreed only while nobody supplied a real config --
+    and the deployed-config rule says every caller eventually will. Caught before
+    the plan stage consumed it; the plan's "adequate opening" test is this predicate.
+    """
+
     @property
     def is_open(self) -> bool:
-        return self.range_m is not None and self.range_m >= DirectionReading._open_m
-
-    _open_m: float = 0.30
+        return self.range_m is not None and self.range_m >= self.open_m
 
 
 @dataclass
@@ -106,10 +129,22 @@ class Survey:
     min_clock: Optional[int] = None
     min_bearing_deg: Optional[float] = None
     footprint_overlap_count: int = 0
+    front_sector_min_m: Optional[float] = None
+    rear_sector_min_m: Optional[float] = None
+    """The arbiter's own windows, so the plan can ask the ARBITER's question. None
+    means no ray fell in that window, which under the deployed
+    `sector_unknown_policy: blocked` is a REFUSAL, not a clearance."""
     tof_zones: Optional[int] = None
     tof_available: bool = False
     trail_available: bool = False
     trail_length_m: Optional[float] = None
+    trail_first_clock: Optional[int] = None
+    """Which way the trail's newest segment leads, in body-frame clock positions.
+
+    A1 has not landed, so nothing fills this yet and `trail_available` is False at
+    every live call site. That is deliberate and it is stated rather than defaulted:
+    the plan will not propose a retrace it cannot aim, because a candidate that can
+    never be aimed is the never-triggered form of the recovery-defect family."""
     cause: str = "unknown"
     ray_count: int = 0
     finite_ray_count: int = 0
@@ -140,6 +175,7 @@ def survey_from_scan(
     tof_available: bool = False,
     trail_available: bool = False,
     trail_length_m: Optional[float] = None,
+    trail_first_clock: Optional[int] = None,
     cause: str = "unknown",
 ) -> Survey:
     """Build a survey from one scan, in the BODY frame.
@@ -152,6 +188,8 @@ def survey_from_scan(
     best: dict = {}
     overlap = 0
     finite = 0
+    front_sector_min = None
+    rear_sector_min = None
     lo = max(float(range_min), 0.0)
     hi = float(range_max)
 
@@ -171,6 +209,12 @@ def survey_from_scan(
         if (-config.footprint_rear_m <= px <= config.footprint_front_m
                 and -config.footprint_right_m <= py <= config.footprint_left_m):
             overlap += 1
+        if abs(bearing) <= config.front_sector_half_deg:
+            if front_sector_min is None or value < front_sector_min:
+                front_sector_min = value
+        if abs(bearing) >= 180.0 - config.rear_sector_half_deg:
+            if rear_sector_min is None or value < rear_sector_min:
+                rear_sector_min = value
         clock = bearing_deg_to_clock(bearing)
         if clock not in best or value < best[clock][0]:
             best[clock] = (value, bearing)
@@ -185,6 +229,7 @@ def survey_from_scan(
             bearing_deg=round(bearing, 1),
             range_m=value,
             vouched_by=VOUCH_LIDAR,
+            open_m=config.open_m,
         )
     for clock in range(1, 13):
         if clock not in directions:
@@ -193,6 +238,7 @@ def survey_from_scan(
                 bearing_deg=float(_normalize_deg(-(clock % 12) * 30.0)),
                 range_m=None,
                 vouched_by=VOUCH_UNVOUCHED,
+                open_m=config.open_m,
             )
 
     open_clocks = tuple(sorted(
@@ -209,10 +255,13 @@ def survey_from_scan(
         min_clock=min_clock,
         min_bearing_deg=with_range[min_clock].bearing_deg if min_clock else None,
         footprint_overlap_count=overlap,
+        front_sector_min_m=front_sector_min,
+        rear_sector_min_m=rear_sector_min,
         tof_zones=tof_zones,
         tof_available=tof_available,
         trail_available=trail_available,
         trail_length_m=trail_length_m,
+        trail_first_clock=trail_first_clock,
         cause=cause,
         ray_count=len(ranges),
         finite_ray_count=finite,
@@ -233,6 +282,9 @@ def format_survey(survey: Survey) -> str:
             f"(bearing={survey.min_bearing_deg:+.1f})"
         )
     parts.append(f"footprint_overlap={survey.footprint_overlap_count}")
+    for label, value in (("front_sector", survey.front_sector_min_m),
+                         ("rear_sector", survey.rear_sector_min_m)):
+        parts.append(f"{label}={'NONE' if value is None else format(value, '.3f')}")
     parts.append(
         f"tof={'zones=' + str(survey.tof_zones) if survey.tof_available else 'UNAVAILABLE'}"
     )

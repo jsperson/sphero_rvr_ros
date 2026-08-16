@@ -49,6 +49,10 @@ from sphero_rvr_core.decisive_control import (
     heading_error_to_point,
     select_target_point,
 )
+from sphero_rvr_core.escape_plan import (
+    CAUSE_FREEZE,
+    CAUSE_VISIBLE,
+)
 from sphero_rvr_core.escape_survey import (
     SurveyConfig,
     format_survey,
@@ -494,7 +498,7 @@ class DecisiveControllerNode(Node):
             self._open_bearing_rad = _wrap_angle(laser_bearing + yaw)
             self._open_bearing_at = time.monotonic()
 
-    def _log_stuck_survey(self, cause):
+    def _log_stuck_survey(self, cause, freeze=None):
         """The stuck state's FIRST ACT: measure, and say what was measured.
 
         Scott, 2026-08-15: "The first thing when the rover gets stuck should be taking
@@ -529,6 +533,13 @@ class DecisiveControllerNode(Node):
                 cause=cause,
             )
             self.get_logger().warn(format_survey(survey))
+            if freeze is not None:
+                # Logged beside the survey, not folded into `cause`, so an autopsy
+                # can grep the classification without parsing a label. The plan
+                # stage consumes this, not the string.
+                self.get_logger().warn(
+                    f"SURVEY_CAUSE_CLASS cause={cause} "
+                    f"class={CAUSE_FREEZE if freeze else CAUSE_VISIBLE}")
         except Exception as exc:                      # noqa: BLE001 - see docstring
             self.get_logger().warn(f"SURVEY failed (cause={cause}): {exc}")
 
@@ -1002,7 +1013,16 @@ class DecisiveControllerNode(Node):
                 # once per traversal rather than per rung -- a survey every 3 s would
                 # bury the one that matters.
                 if ladder_result.action == "rung" and not self._ladder_was_active:
-                    self._log_stuck_survey(f"ladder:{ladder_result.reason}")
+                    # The ladder OWNS the freeze classification and already computed
+                    # it, so it states the fact rather than the survey inferring one
+                    # from a provenance string. `cause` is what the plan stage
+                    # conditions its first candidate on -- a FREEZE ranks the trail
+                    # first -- so a string parsed back out of a label would be a
+                    # proxy standing in for a fact its owner is holding.
+                    self._log_stuck_survey(
+                        f"ladder:{ladder_result.reason}",
+                        freeze=ladder_result.freeze,
+                    )
                 self._ladder_was_active = (ladder_result.action == "rung")
                 if ladder_result.freeze:
                     # The supervisor permitted motion and we did not move: something is
