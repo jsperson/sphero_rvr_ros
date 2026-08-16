@@ -8,13 +8,19 @@
 > `pivot_min_duty` 28 ≈ 2.5×, `pivot_max_duty` 45 ≈ 4.1×.
 >
 > **The verdict in §3 came back the OTHER WAY from what §0 feared.** Moving duty is *below*
-> both ceilings, so the ceilings are innocent, `pivot_min_duty` 23/28 is **correct rather
-> than defective** (duty 12 is bimodal — one clean pivot, one 15.9 cm one-tread arc — and a
-> floor exists to clear that margin), and **D45 is refuted**. The mission-1 mechanism is now
-> D47, inside the driver between Twist-in and wire-out.
+> both ceilings, so the ceilings are innocent and **D45 is refuted**. The mission-1
+> mechanism is now D47, inside the driver between Twist-in and wire-out.
 >
-> Artifacts and both READMEs: `03_validation/breakaway_2026-08-16/`.
-> **Still outstanding: the curve run in §2b**, which is a different invocation.
+> **CORRECTED AFTER RUN 3 (curve run, aborted).** This banner previously said
+> `pivot_min_duty` 23/28 is "correct rather than defective" because duty 12 is bimodal and
+> a floor clears that margin. **Run 3 retired that:** duty **16** is bimodal too —
+> 2.071 rad/s / −0.6 cm in run 1 versus 1.077 rad/s / **−21.8 cm** in run 3. The upper edge
+> of the bimodal band is **unknown**, and nothing establishes that the production floor
+> clears it. `pivot_min_duty` is neither vindicated nor convicted; it is unmeasured.
+>
+> Artifacts and all three READMEs: `03_validation/breakaway_2026-08-16/`.
+> **Still outstanding: the curve run in §2b — attempted and ABORTED on its first rung.**
+> See §2b for why it may not be obtainable in free space at all.
 
 **Twenty minutes. Scott present. First act with the robot, ahead of any architecture
 work.**
@@ -118,6 +124,15 @@ exists for exactly that and is offline-tested. The invocation:
 python3 diagnostics/pivot_duty_sweep.py --arm --no-early-stop \
         --duties 16,20,23,28,32,45
 ```
+
+> **⚠ ATTEMPTED 2026-08-16 17:43 AND ABORTED ON RUNG ONE.** Duty 16 translated **−21.8 cm**
+> against the 5 cm limit; the ladder never reached 20/23/28/32/45. **No curve, and
+> hypothesis 4 is still untested.** Starting at 16 was still correct — 12 would have
+> aborted the same way — but the walking is not confined to the rungs we thought.
+> Before re-flying this, decide which of run 3's three options applies (shorter bursts, a
+> deliberately raised translation limit with a spotter, or accepting that the curve is not
+> obtainable in free space). Do not simply re-run the line below and expect a different
+> result. See `03_validation/breakaway_2026-08-16/README_run3.md`.
 
 **START AT 16, NOT 12.** Duty 12 is measured **bimodal** — a clean 1.48 rad/s pivot in run
 1, a 0.84 rad/s one-tread arc that walked 15.9 cm and tripped the translation abort in run
