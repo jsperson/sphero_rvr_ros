@@ -36,6 +36,29 @@ This document answers that. It is an audit, not a plan to write more code.
 > comparison has not happened yet. Any A/B that re-flies stock must re-fly it at a rate
 > the curve says exists.
 
+> ### AMENDMENT, 2026-08-16 evening — the marks made the prison PERMANENT; they did not INVENT it
+>
+> Appended, not rewritten. **This does not unmake the ruling**, and the load-bearing
+> pro-A evidence is untouched: D36's structural cause is dead (proved on the Pi,
+> `docs/stock_middle_stationary_bringup_2026-08-16.md`), and two of five covered freezes
+> happened where a stock costmap held open floor in every direction. But the document
+> Scott ruled from must carry what we now know.
+>
+> Mission 2's recorded scans replayed into a live Nav2 local costmap
+> (`docs/replay_exhibit_stock_costmap_2026-08-16.md`) show that at **three of five covered
+> freezes — the chair-leg corner — a stock costmap built from lidar and inflation alone,
+> with none of our freeze marks present, ALSO put the robot's own cell at inscribed cost.**
+> So `START POSE BLOCKED` (D43) was not purely an artifact of our own marking. At those
+> positions the robot was genuinely wedged, and a decaying-memory costmap would have seen
+> it too.
+>
+> The difference that remains real is **persistence**: our marks never decayed, so the
+> prison outlived the obstacle, while a stock obstacle layer clears on raytrace. **That
+> difference is undemonstrable in open-loop replay** — showing decay requires the robot to
+> drive away and come back — so it is stated here as an expectation, not as evidence.
+>
+> Coverage: five of seven freezes; the first two predate the probe's first sample.
+
 ## VERDICT
 
 **We deleted the middle of Nav2 and spent three weeks rebuilding a worse version of it
