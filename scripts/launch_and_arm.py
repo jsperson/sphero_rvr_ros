@@ -243,7 +243,13 @@ def main():
     gate_preflight()
 
     say("record", f"recorder -> {csv_path}")
-    spawn(f"cd {REPO}/diagnostics && python3 run_recorder.py 1800 {csv_path}",
+    # Absolute path, no `cd`. spawn() wraps every command in `bash -lc "SETUP && exec CMD"`,
+    # and `exec` takes an EXECUTABLE -- so a command beginning with the shell builtin `cd`
+    # dies instantly with "exec: cd: not found" and the process never starts. This was the
+    # only spawn that used `cd`, so it was the only one that never ran: the first real
+    # mission use of this script brought the whole stack up with NO recorder at all.
+    # gate_recording caught it, which is the one reason this cost minutes and not a flight.
+    spawn(f"python3 {REPO}/diagnostics/run_recorder.py 1800 {csv_path}",
           f"{home}/recorder_{stamp}.log")
 
     say("bringup", "explore.launch.py (no camera, no monocular detector) ...")

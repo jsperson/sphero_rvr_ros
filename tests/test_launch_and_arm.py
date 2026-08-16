@@ -186,3 +186,55 @@ def test_the_bag_records_both_sides_of_the_driver_seam():
             "A mission recording that cannot answer a question about a seam is the "
             "reason an autopsy convicts the wrong component."
         )
+
+
+# --- every spawned command must survive `exec` ---------------------------------------
+
+# spawn() runs `bash -lc "SETUP && exec CMD"`. `exec` replaces the shell with an
+# EXECUTABLE, so a CMD beginning with a shell builtin -- `cd`, `export`, `source` -- dies
+# with "exec: cd: not found" and the process never starts. On 2026-08-16 the recorder was
+# spawned as `cd {REPO}/diagnostics && python3 run_recorder.py ...`; it was the only spawn
+# that used `cd`, and it had therefore NEVER run. The first real mission use brought the
+# entire stack up with no recorder at all.
+SHELL_BUILTINS = ("cd", "export", "source", "alias", "set", "unset", "eval")
+
+
+def spawn_command_literals():
+    """The first f-string literal of every spawn() call -- where the command starts."""
+    commands = []
+    for node in ast.walk(TREE):
+        if not isinstance(node, ast.Call):
+            continue
+        if (getattr(node.func, "id", None) or getattr(node.func, "attr", None)) != "spawn":
+            continue
+        arg = node.args[0] if node.args else None
+        if isinstance(arg, ast.JoinedStr):
+            for value in arg.values:
+                if isinstance(value, ast.Constant) and value.value.strip():
+                    commands.append(value.value.strip())
+                    break
+        elif isinstance(arg, ast.Constant):
+            commands.append(arg.value.strip())
+    return commands
+
+
+def test_no_spawned_command_starts_with_a_shell_builtin():
+    commands = spawn_command_literals()
+    assert commands, "no spawn() commands found -- the AST walk is broken, not the script"
+    for command in commands:
+        head = command.split()[0]
+        assert head not in SHELL_BUILTINS, (
+            f"spawn({command!r}...) starts with the shell builtin {head!r}. "
+            "spawn() execs its command, so this process will never start -- silently, "
+            "while the mission proceeds believing it did."
+        )
+
+
+def test_no_spawned_command_chains_with_a_shell_operator():
+    # `exec` takes one command. `&&`, `;` and `|` in a spawn are a sign the command is
+    # being written as a shell script that exec cannot honour.
+    for command in spawn_command_literals():
+        for operator in ("&&", ";", "|"):
+            assert operator not in command, (
+                f"spawn({command!r}...) uses {operator!r}; exec runs a single executable."
+            )
