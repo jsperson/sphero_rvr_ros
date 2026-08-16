@@ -44,6 +44,7 @@ def generate_launch_description():
     use_decisive_controller = LaunchConfiguration("use_decisive_controller")
     use_coverage_explorer = LaunchConfiguration("use_coverage_explorer")
     start_low_obstacle = LaunchConfiguration("start_low_obstacle")
+    start_tof = LaunchConfiguration("start_tof")
     start_semantic_map = LaunchConfiguration("start_semantic_map")
     start_vlm_scene = LaunchConfiguration("start_vlm_scene")
     serial_port = LaunchConfiguration("serial_port")
@@ -109,15 +110,48 @@ def generate_launch_description():
     #      camera staying up is what made the retry cheap.
     # These nodes tolerate the camera starting after them -- they subscribe and wait.
     #
-    # Sub-lidar obstacle detection -> /camera/low_obstacles, consumed by the
-    # collision brake (and the LOCAL costmap; it is deliberately NOT a global
-    # costmap source -- see lean_nav2.yaml).
+    # CAMERA floor-boundary detection -> /camera/low_obstacles.
+    #
+    # NOTE WHAT THIS DOES *NOT* FEED. The collision brake reads whatever
+    # `low_obstacle_topic` in config/collision_stop.yaml names, and that has been
+    # `/tof/obstacles` since the ToF took the brake over. So enabling this node today
+    # publishes to a topic NOTHING SUBSCRIBES TO. The comment here claimed it fed the
+    # brake, and so did the argument's help text below; both were describing a system
+    # that had not existed for some time (standards Appendix A2 -- a module states the
+    # SHAPE it consumes, the deployed config states the SOURCE).
+    #
+    # It does still feed the LOCAL costmap, and it is deliberately NOT a global
+    # costmap source -- see lean_nav2.yaml.
     low_obstacle = Node(
         package="sphero_rvr_driver",
         executable="low_obstacle",
         name="low_obstacle",
         output="screen",
         condition=IfCondition(start_low_obstacle),
+    )
+    # THE SUB-LIDAR BRAKE'S ACTUAL PRODUCER -> /tof/obstacles.
+    #
+    # DEFAULTS TRUE, and that is the whole point of putting it here. The supervisor
+    # ships with `low_obstacle_brake_enable: true` pointed at `/tof/obstacles`, and a
+    # brake with no producer FAILS OPEN silently -- `_apply_low_obstacle_brake`
+    # returns the command unchanged when no cloud has ever arrived, which is correct
+    # behaviour for a sensor that died and indistinguishable from one never started.
+    # Until now this node was not in any launch file, so every ToF run was one
+    # forgotten command away from believing it had a brake it did not have.
+    #
+    # NO PARAMETERS PASSED, deliberately and verified rather than assumed: the node's
+    # declared defaults ARE the flying configuration. Checked against the robot's own
+    # words in the 2026-08-15b bag -- `/tof/state` reported `stop_distance_m=0.45
+    # rules=rule_a+b rule_b=pinned margin_m=0.06`, matching TofConfig's 0.45 / True /
+    # 0.06. Gating on the state line rather than on a config file is the D-class
+    # lesson from the night rule B was silently OFF with every test green, and
+    # `tests/test_tof_launch_wiring.py` pins the agreement.
+    tof = Node(
+        package="sphero_rvr_driver",
+        executable="tof",
+        name="tof",
+        output="screen",
+        condition=IfCondition(start_tof),
     )
     # Map-frame object memory from VLM sightings -> /semantic_map/objects.
     # Costs one cloud VLM call per observation.
@@ -316,10 +350,22 @@ def generate_launch_description():
                 "start_low_obstacle",
                 default_value="false",
                 description=(
-                    "Start low_obstacle: camera floor-boundary detection of "
-                    "sub-lidar-plane obstacles -> /camera/low_obstacles, which the "
-                    "collision brake uses to stop for things the lidar cannot see "
-                    "(chair legs, shoes). Needs a camera stream."
+                    "Start low_obstacle: CAMERA floor-boundary detection of "
+                    "sub-lidar-plane obstacles -> /camera/low_obstacles. Feeds the "
+                    "LOCAL costmap. It does NOT feed the collision brake -- the "
+                    "brake reads low_obstacle_topic from collision_stop.yaml, which "
+                    "is /tof/obstacles; see start_tof. Needs a camera stream."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "start_tof",
+                default_value="true",
+                description=(
+                    "Start tof: the 8x8 time-of-flight sensor -> /tof/obstacles, "
+                    "which IS what the collision brake reads. Defaults TRUE because "
+                    "the brake ships enabled and fails OPEN with no producer, so a "
+                    "run without this node believes it has a sub-lidar brake and "
+                    "does not. Set false only when the I2C sensor is absent."
                 ),
             ),
             DeclareLaunchArgument(
@@ -364,6 +410,7 @@ def generate_launch_description():
             lidar,
             mapping,
             low_obstacle,
+            tof,
             semantic_map,
             vlm_scene,
             *nav2_nodes,

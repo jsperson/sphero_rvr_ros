@@ -187,6 +187,37 @@ under standards rule 6, and it is worse than a wrong constant, because nothing g
 prose. The test that catches it does not exist — a reader does. So prefer not writing
 the claim.
 
+## Appendix A3: the ruling names the INTENT; the implementation owns the SEMANTICS
+
+Two corrections on 2026-08-15, both in the same direction, both worth keeping as a
+pair because they show where a review's authority ends.
+
+**One.** The ruling was: a non-translating command should be refused by returning
+`None` with a reason. But in `low_obstacle_brake`, `None` already means *the swept
+path is clear*, and `forward_speed_scale(None, ...)` returns 1.0 — full speed. So the
+prescribed form would have handed out the most permissive answer in the API for the
+one input the function cannot model: **fail-open wearing a refusal's clothes**,
+achieving the exact opposite of what was asked for. It raises instead. Mutating the
+raise back to the `None` form kills all five refusal cases, which settles it
+empirically rather than by argument.
+
+**Two.** The same ruling said `v == 0`. The function's own `turning` test needs
+`|v| > 1e-3`, so exact-zero would have left the band `0 < |v| <= 1e-3` still falling
+into the straight branch and still answering a near-pivot with a forward corridor —
+the identical defect at 1e-4 m/s. The guard uses the *same constant* the turning test
+uses, so the two cannot disagree about where translation begins.
+
+**The rule:** a ruling is binding on WHAT should be true — here, "a command with no
+swept path must be refused, and refusal is the scope, not annulus modelling." It is
+not binding on a form whose local semantics the reviewer could not see. When the two
+conflict, implement the intent, say plainly that you deviated and why, and make the
+deviation falsifiable — a mutation that shows the prescribed form failing is worth
+more than the argument for it.
+
+The failure mode this prevents is the obedient one: implementing a form that reads
+correct, passes review because it matches what was asked, and is fail-open in a
+module the reviewer was not holding in their head.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:

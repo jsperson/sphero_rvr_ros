@@ -1,0 +1,195 @@
+"""The preflight script's DISCIPLINES, which are testable off-robot even though its
+gates are not.
+
+The gates need ROS, an I2C sensor and a chassis, so their verdicts can only be earned
+on the Pi. But the rules the script exists to encode -- kill by explicit PID never by
+pattern, chassis-alive first, "could not tell" is not "fine" -- are structure and
+arithmetic, and every one of them was bought with a session. They get checked here so
+that the only thing left unverified on this machine is the part that genuinely needs
+hardware.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "preflight_pi.py"
+
+
+@pytest.fixture(scope="module")
+def preflight():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import preflight_pi
+    finally:
+        sys.path.pop(0)
+    return preflight_pi
+
+
+@pytest.fixture(scope="module")
+def source():
+    return SCRIPT.read_text()
+
+
+def test_nothing_pattern_kills(source):
+    """`pkill -f <pattern>` MATCHES YOUR OWN SSH COMMAND LINE and has killed the
+    operator's session mid-teardown four times. A preflight is run over SSH by
+    definition, so this is the one script where that trap is guaranteed to fire.
+
+    Checks INVOCATIONS, not the word. The first version of this test failed on the
+    script's own warning against pkill, which would have taught the next reader to
+    delete the warning to get the suite green -- a test that punishes documenting a
+    trap is worse than no test.
+    """
+    executing = ("sh(", "subprocess", "Popen", "os.system", "check_output")
+    for lineno, line in enumerate(source.splitlines(), 1):
+        for forbidden in ("pkill", "killall", "pgrep -f"):
+            if forbidden in line and any(tok in line for tok in executing):
+                pytest.fail(
+                    f"line {lineno} EXECUTES {forbidden!r}: {line.strip()!r} -- it "
+                    f"matches the operator's own ssh command line and has ended four "
+                    f"sessions"
+                )
+
+
+def test_the_kill_list_can_never_contain_our_own_process(preflight):
+    """The same trap in the form it would actually take here: a PID list that was not
+    filtered. Handing this function our own PID must be a no-op, not suicide."""
+    own = preflight._own_process_tree()
+    assert os.getpid() in own, "our own PID must be in the exclusion set"
+
+    targeted = preflight.kill_pids([os.getpid()])
+    assert targeted == [], "the preflight tried to kill the process running it"
+
+    # PID 1 and below are never targets either.
+    assert preflight.kill_pids([0, 1]) == []
+
+
+def test_the_exclusion_set_covers_ancestors_not_just_self(preflight):
+    """The SSH session is the PARENT, so excluding only `getpid()` would still kill
+    the shell the operator is sitting in."""
+    own = preflight._own_process_tree()
+    assert len(own) >= 2, f"only {own} excluded; ancestors are not being walked"
+    assert os.getppid() in own
+
+
+def test_chassis_alive_is_the_FIRST_gate_that_touches_hardware(preflight):
+    """Order is the point of this script. The chassis being off is invisible from
+    everywhere except the serial link, and odom, the SLAM anchor, the map and every
+    goal cascade from it -- each failing in a way that looks like its own problem."""
+    pre = [g.name for g in preflight.GATES if g.stage == "pre"]
+    assert "chassis_alive" in pre
+    hardware = [n for n in pre if n in ("chassis_alive", "lidar_not_occluded", "tof_state")]
+    assert hardware[0] == "chassis_alive"
+    # ...but the cheap checks that make its verdict trustworthy come first.
+    assert pre.index("serial_port_free") < pre.index("chassis_alive"), (
+        "probing the chassis while something else holds the port produces a false "
+        "dead-chassis verdict"
+    )
+
+
+def test_the_probes_own_teardown_is_gated_immediately_after_it(preflight):
+    """A previous version of this probe orphaned an rvr_node holding /dev/ttyAMA0,
+    produced 874 'dispatcher reader failed' and no odom -- indistinguishable from a
+    dead chassis. The probe nearly manufactured the symptom it detects, so the
+    teardown is a GATE rather than an assumption."""
+    pre = [g.name for g in preflight.GATES if g.stage == "pre"]
+    assert pre.index("port_free_after_probe") == pre.index("chassis_alive") + 1
+
+
+def test_the_port_is_the_authority_not_a_missing_pid(source):
+    """`ros2 run` spawns the node as a CHILD; killing the wrapper leaves the node
+    holding the device. So the verdict comes from fuser, not from a PID being gone."""
+    assert "def port_holders" in source
+    assert "fuser" in source
+    body = source[source.index("def gate_port_free_after_probe"):
+                  source.index("def gate_lidar_not_occluded")]
+    assert "port_holders()" in body, (
+        "the post-probe gate must ask the PORT, not check that a pid disappeared"
+    )
+
+
+def test_the_chassis_probe_signals_the_GROUP_not_the_wrapper(source):
+    body = source[source.index("def gate_chassis_alive"):
+                  source.index("def gate_port_free_after_probe")]
+    assert "start_new_session=True" in body, (
+        "without its own session the group signal would reach our own processes"
+    )
+    assert "killpg" in body, "killing the wrapper alone leaves the node on the port"
+
+
+def test_the_graph_is_asked_of_ros_not_of_ps(source):
+    """`ros2 node list` is the question; a node can be in `ps` and absent from the
+    graph, and vice versa. Trusting `ps` has produced wrong verdicts before."""
+    body = source[source.index("def ros_nodes"):source.index("def topic_once")]
+    assert "ros2 node list" in body
+    assert " ps " not in body and "'ps'" not in body
+
+
+def test_scan_reads_are_not_truncated(source):
+    """`ros2 topic echo` TRUNCATES arrays, and a truncated scan cannot answer an
+    occlusion question."""
+    body = source[source.index("def topic_once"):source.index("# ----", source.index("def topic_once"))]
+    assert "--full-length" in body
+
+
+def test_the_tof_gate_reads_the_state_line_and_not_the_yaml(source):
+    """`/tof/state` once said `rules=rule_a_only` with the pinned margin sitting in
+    the config and every test green -- one gate away from flying the first rule-B
+    mission with rule B off."""
+    body = source[source.index("def gate_tof_state"):
+                  source.index("def gate_supervisor_latch_cleared")]
+    assert "/tof/state" in body
+    for yaml_ish in ("yaml", "collision_stop.yaml", "get_parameter"):
+        assert yaml_ish not in body, (
+            f"the ToF gate consults {yaml_ish}; it must gate on the sensor's own words"
+        )
+
+
+def test_clear_estop_is_called_BEFORE_reset(source):
+    """An ordering written down nowhere and discovered live. `reset` refuses while the
+    estop is latched, producing a plausible failure that sends the operator looking in
+    the wrong place."""
+    body = source[source.index("def gate_supervisor_latch_cleared"):]
+    body = body[:body.index("# ----")]
+    assert body.index("clear_estop") < body.index("/collision_stop/reset")
+
+
+def test_UNKNOWN_exits_non_zero_because_could_not_tell_is_not_fine(preflight, monkeypatch):
+    """A preflight that shrugs is a preflight that gets believed. Every gate that
+    could not be evaluated must block bringup exactly like a failure."""
+    unknown = preflight.Gate(
+        "synthetic", "pre", lambda: preflight.Result(preflight.UNKNOWN, "cannot tell"))
+    monkeypatch.setattr(preflight, "GATES", [unknown])
+    assert preflight.main(["--stage", "pre"]) == 1
+
+
+def test_a_clean_stage_exits_zero(preflight, monkeypatch):
+    ok = preflight.Gate("synthetic", "pre",
+                        lambda: preflight.Result(preflight.PASS, "fine"))
+    monkeypatch.setattr(preflight, "GATES", [ok])
+    assert preflight.main(["--stage", "pre"]) == 0
+
+
+def test_a_raising_gate_becomes_UNKNOWN_rather_than_crashing_the_run(preflight, monkeypatch):
+    """One broken gate must not cost the operator the other seven verdicts."""
+    def boom():
+        raise RuntimeError("gate exploded")
+
+    monkeypatch.setattr(preflight, "GATES", [
+        preflight.Gate("boom", "pre", boom),
+        preflight.Gate("fine", "pre", lambda: preflight.Result(preflight.PASS, "ok")),
+    ])
+    assert preflight.main(["--stage", "pre"]) == 1
+    assert preflight.GATES[1].result.verdict == preflight.PASS
+
+
+def test_every_failure_path_tells_the_operator_what_to_do(preflight):
+    """A gate that fails without a remedy is a gate ignored on the third run."""
+    for gate in preflight.GATES:
+        src = gate.run.__doc__ or ""
+        assert src.strip(), f"{gate.name} has no docstring explaining itself"
+        assert gate.why, f"{gate.name} has no `why`"
