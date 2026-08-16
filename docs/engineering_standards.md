@@ -300,6 +300,37 @@ rule it inherited and say out loud what population each was derived for. Then mu
 new state away and check the revert-proof still dies on the field symptom; both of these
 were found that way and neither was found by reading.
 
+## Appendix A4: an archive cannot always tell two rules apart
+
+**A test written over recorded specimens passes when the specimens cannot distinguish
+the rule from its absence — and it looks like the strongest kind of test there is.**
+
+The 2c execute stage (2026-08-15) has two neighbouring rules: a FREEZE retires the
+whole direction, a REFUSAL retires only that command shape at that clock. Both were
+tested by replaying the three archived wedge poses.
+
+Both tests passed. Neither could have failed. **On all three specimens every clock
+carries exactly one candidate**, so retiring "the direction" and retiring "the shape at
+that clock" remove the identical thing, and the two rules produce byte-identical
+sequences. The freeze rule could have been deleted entirely with the suite still green.
+
+The fix was not more specimens — no archived pose has the needed shape. It was to
+construct the one pose where the rules diverge (two candidate kinds at a single clock)
+and then **mutate each rule and require that it is killed by its own test and only its
+own**: conflating freeze into refusal must kill the freeze test and leave the refusal
+test green, and the reverse must do the reverse. A rule whose mutation kills nothing is
+untested; a rule whose mutation kills *both* tests means the tests are measuring one
+thing twice.
+
+This is the sibling of "one configuration cannot separate hypotheses" (a level bench
+hid three sensor-model errors because the constraint was correlated). Same shape, moved
+from measurement into testing: **replaying real data is not automatically a stronger
+test — it is only stronger when the data can tell the answers apart.**
+
+**In practice:** for any pair of neighbouring rules, name the input feature that makes
+them diverge and check the fixtures actually vary it. If none does, construct the case
+and say in the test that it is constructed and why. Then mutate both ways.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:

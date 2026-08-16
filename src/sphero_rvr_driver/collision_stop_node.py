@@ -602,10 +602,18 @@ def main(args=None):
             to be gone. Returning a zero delta instead would silently assert the rover
             had not moved, which is a claim nothing measured.
             """
+            # TIMEOUT ZERO, DELIBERATELY, AND IT IS NOT THE SCAN PATH'S 0.05 s.
+            # This asks for the LATEST available transform, not one at a particular
+            # stamp, so a timeout can only ever be spent in the case where no transform
+            # exists at all -- precisely when waiting buys nothing. And this runs inside
+            # `_state_lock` on every publish cycle, against a 0.10 s timer: blocking
+            # 0.05 s per cycle on a dead TF tree would eat half the arbitration budget
+            # to learn something the failure path already handles. Fail fast, and the
+            # hold holds -- the safe direction costs nothing here.
             try:
                 stamped = self._tf_buffer.lookup_transform(
                     self._lowobs_odom_frame, self._config.base_frame, Time(),
-                    timeout=Duration(seconds=self._config.tf_timeout_s),
+                    timeout=Duration(seconds=0.0),
                 )
             except Exception:
                 self._lowobs_hold_pose = None

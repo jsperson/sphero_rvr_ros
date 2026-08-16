@@ -260,6 +260,19 @@ def gate_installed_tree_matches():
     This check earned its place twice in one day. `colcon build --symlink-install`
     makes most of it symlinks, so a mismatch means a genuinely stale copy -- which is
     the case that has flown twice.
+
+    THERE IS ONLY ONE COLCON PACKAGE, and the name that looks like a second one is not.
+    `sphero_rvr_core` is a plain Python package shipped INSIDE `sphero_rvr_driver`; it
+    has no `package.xml` and colcon has never heard of it. So:
+
+        colcon build --packages-select sphero_rvr_core sphero_rvr_driver
+
+    prints `WARNING: ignoring unknown package 'sphero_rvr_core'` and then builds
+    everything that matters anyway. That warning is CORRECT AND HARMLESS, and it looks
+    exactly like a build that half-failed. Build `sphero_rvr_driver` and the core comes
+    with it -- which is why this gate walks the whole source tree rather than a package
+    list, and why it would catch a genuinely stale core even though colcon cannot name
+    one.
     """
     if not SRC_TREE.exists():
         return Result(UNKNOWN, f"source tree not found at {SRC_TREE}",
