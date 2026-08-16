@@ -20,6 +20,7 @@ from .packet import (
     TARGET_BT,
     TARGET_MCU,
 )
+from .pivot_curve import plan_pivot
 from .safety import clamp_velocity, is_stale, now_seconds
 from .state import RVRState, VelocityCommand
 from .transport import Transport
@@ -124,6 +125,12 @@ class RVRDriver:
         self._pivot_duty_gain = max(0.0, float(pivot_duty_gain))
         self._closed_loop_pivot = bool(closed_loop_pivot)
         self._pivot_duty_cmd = 0.0
+        # The last plan the curve produced, exposed for diagnostics: what was asked for,
+        # what the drivetrain will actually do, and whether those are the same number.
+        # D48's lesson in the other direction -- publish the fact rather than make a layer
+        # above infer it.
+        self._last_pivot_plan = None
+        self._last_pivot_note = None
         self._measured_yaw_rate = 0.0
         self._heading_max_speed = max(0, min(255, int(heading_max_speed)))
         self._target_heading_deg = 0.0
@@ -738,14 +745,29 @@ class RVRDriver:
                 # 0.86-2.28), and 180+ is already 3.6-6.7 rad/s. There is no stable
                 # open-loop set point in that gap, which is exactly what this
                 # feedback loop exists to solve.
-                sign = 1.0 if velocity.angular_rad_s > 0.0 else -1.0
-                error = self._pivot_target_rate_rad_s - abs(self._measured_yaw_rate)
-                self._pivot_duty_cmd += self._pivot_duty_gain * error
-                self._pivot_duty_cmd = min(
-                    float(self._pivot_max_duty),
-                    max(float(self._pivot_min_duty), self._pivot_duty_cmd),
+                # CURVE-HONEST PIVOT (2026-08-16). The closed loop that used to live here
+                # is retired, and the reason is a measurement, not a preference: its
+                # target was 1.3 rad/s while its own floor duty delivers 3.57, so the
+                # error was permanently negative, the integrator sat pinned at
+                # `pivot_min_duty` forever, and the "feedback" never fed anything back.
+                # A loop saturated at one end for its whole life is an open-loop constant
+                # wearing a loop's clothes -- and it discarded the commanded rate,
+                # which under a restored stock middle is the number that matters.
+                #
+                # So: map the REQUESTED rate through the measured curve to the duty that
+                # produces it. See sphero_rvr_core.pivot_curve for the data and the
+                # sub-minimum policy.
+                plan = plan_pivot(
+                    velocity.angular_rad_s,
+                    min_duty=self._pivot_min_duty,
+                    max_duty=self._pivot_max_duty,
                 )
-                duty = int(round(sign * self._pivot_duty_cmd))
+                self._pivot_duty_cmd = float(abs(plan.duty))
+                self._last_pivot_plan = plan
+                if plan.note is not None and plan.note != self._last_pivot_note:
+                    LOGGER.info("pivot: %s", plan.note)
+                    self._last_pivot_note = plan.note
+                duty = plan.duty
                 await self._send_from_control_loop(
                     lambda seq: self.commands.drive_tank_normalized(
                         seq,

@@ -10,6 +10,32 @@ This document answers that. It is an audit, not a plan to write more code.
 
 ---
 
+> # ✅ RULED, 2026-08-16 — OPTION A. Scott, verbatim:
+> ### *"We can go with your recommendation for the A/B. Remember - relentlessly pushing for functionality."*
+>
+> **Option A is the architecture: restore the stock middle, phased per §6, functionality
+> over ceremony at every step.** The §3a experiment waits on Scott's next staging.
+>
+> **And the missing measurement arrived the same evening.** The pivot rate curve was
+> measured on the operating surface (`03_validation/breakaway_2026-08-16/README_run4.md`):
+> `rate ≈ 0.1344 × duty − 0.213` over duties 23–45, a hard dead zone at duty ≤ 10, and a
+> bimodal walk band from 12 to somewhere below 23.
+>
+> **Every rate this document quotes as contested was unexecutable.** The controller's 0.9,
+> the supervisor's 0.4, `rvr_node`'s second 0.4 — all three fall in a gap the drivetrain
+> cannot produce at any duty, bracketed by direct measurement on both sides (duties 2–10
+> give *exactly* 0.000 rad/s with motor packets provably written; duty 12 gives 1.477).
+> The pivot loop's own 1.3 rad/s target lands inside the walk band. `pivot_min_duty` 28
+> delivers **3.568 rad/s** — 2.74× that target and 8.9× the commanded clamp.
+>
+> **This sharpens the A/B rather than settling it.** Stock's
+> `rotate_to_heading_angular_vel` 0.4 was never executable by this drivetrain, so the
+> grinding that motivated the fork is what a 0.4 rad/s request looks like when the
+> hardware's only answers are 0.000 and 0.8+. **That is a config fact, not an architecture
+> fact.** It means stock was under-tested, not that it was unsuitable — and the honest
+> comparison has not happened yet. Any A/B that re-flies stock must re-fly it at a rate
+> the curve says exists.
+
 ## VERDICT
 
 **We deleted the middle of Nav2 and spent three weeks rebuilding a worse version of it
