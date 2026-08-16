@@ -5,7 +5,7 @@
 when it goes wrong. If this card and the protocol disagree, the protocol wins on
 procedure and this card wins on what is new.
 
-**Binary:** `3f89949`. **Gauntlet counter: 0 of 3.** This is the restart the contact
+**Binary:** `640e440`. **Gauntlet counter: 0 of 3.** This is the restart the contact
 batch earned.
 
 ---
@@ -36,7 +36,7 @@ batch earned.
 ```bash
 # on the Pi
 cd ~/ros2_ws/src/sphero_rvr_ros && git pull --ff-only && git rev-parse --short HEAD
-#   must print 3f89949 -- TRUST THE SHA, NOT THE PULL'S OUTPUT
+#   must print 640e440 -- TRUST THE SHA, NOT THE PULL'S OUTPUT
 cd ~/ros2_ws && colcon build --packages-select sphero_rvr_driver     # ~3 s
 #   there is only ONE colcon package; sphero_rvr_core ships inside it and colcon has
 #   never heard of it. Naming it prints "ignoring unknown package" and builds fine.
@@ -47,6 +47,21 @@ python3 ~/ros2_ws/src/sphero_rvr_ros/scripts/preflight_pi.py   # ~25 s, does the
 The preflight covers the installed-tree verify, clock sync, an empty ROS graph and the
 chassis. It diagnosed a dead chassis in 25 s where the manual sequence took five
 minutes. Read its remedies rather than improvising.
+
+**Two things it will say tonight, both expected:**
+* `installed_tree_matches` now reports `... 2 package dir(s) are SYMLINKS to source
+  (cannot be stale, not evidence)`. That wording is deliberate — `--symlink-install`
+  makes the deployed files the same inodes as the source, so they cannot be stale and
+  the check cannot fail for them. It is a PASS that is honest about what it did not
+  prove. Before tonight this gate returned **NOT CLEARED on a perfectly good build**.
+* `chassis_alive` FAILs until Scott powers the chassis. That is the gate working.
+
+**Running the test suite on the Pi? Expect 10 red that are not real.** With
+`install/setup.bash` sourced, ROS's environment breaks pytest's `caplog` capture, so
+every test asserting on captured log text fails — in `test_dispatcher.py`,
+`test_driver_safety.py`, `test_avoidance_wiring.py`. Verified pre-existing: the same 10
+fail identically at the pre-batch SHA `85ab0be`. With `PYTHONPATH=src` instead, the Pi
+runs **927 passed, 8 skipped** — identical to the Mac. Do not debug these before a run.
 
 **One extra check this run, because the whole batch turns on it:**
 
@@ -140,7 +155,7 @@ this session's own SSH command line and has been demonstrated to do so — then
 `ros2 node list` empty and `ros2 daemon stop`.
 
 Vault: `03_validation/gauntlet_2026-08-15_mission1/` with a README naming the binary
-(`3f89949`), what was new (hold-on-vanish live, measured footprint) and the outcome.
+(`640e440`), what was new (hold-on-vanish live, measured footprint) and the outcome.
 
 **Scoring:** mission 1 of 3. Read `stall_survival_ladder.md` §7.1's no-count rule before
 recording the count.
