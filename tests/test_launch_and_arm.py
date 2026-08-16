@@ -151,3 +151,38 @@ def test_no_arm_mode_exists_and_skips_only_the_arming():
     for gate in REQUIRED_GATES:
         assert main_src.index(gate + "(") < no_arm_at, (
             f"{gate}() is skipped in --no-arm mode; the rehearsal must gate identically")
+
+
+# --- the recording must capture the seam it is used to reason across ------------------
+
+# 2026-08-16: mission 1's bag held 41 commands at 0.4 rad/s on /cmd_vel_motor and an
+# /odom that never moved, and could not say whether the driver ever wrote a motor packet.
+# rvr_node publishes precisely that on /diagnostics and always did. The bag simply did
+# not record it, so the autopsy inferred across the driver's seam and blamed a pivot
+# ceiling that a floor measurement later exonerated. A recording that omits the owner's
+# own statement of fact turns every question at that seam into an inference.
+REQUIRED_BAG_TOPICS = [
+    "/cmd_vel",              # what Nav2 asked for
+    "/cmd_vel_motor",        # what the supervisor passed to the driver's door
+    "/diagnostics",          # WHETHER THE DRIVER ACTED ON IT -- the seam
+    "/collision_stop/state",
+    "/odom",
+    "/scan",
+]
+
+
+def test_the_bag_records_both_sides_of_the_driver_seam():
+    record = [
+        line for line in SRC.splitlines() if "ros2 bag record" in line
+    ]
+    assert record, "launch_and_arm.py no longer records a bag"
+    # The command is split across adjacent f-string literals; take the whole statement.
+    start = SRC.index("ros2 bag record")
+    command = SRC[start:SRC.index("\n\n", start)]
+
+    for topic in REQUIRED_BAG_TOPICS:
+        assert f"{topic} " in command or command.rstrip().endswith(topic), (
+            f"{topic} is not in the bag record list. "
+            "A mission recording that cannot answer a question about a seam is the "
+            "reason an autopsy convicts the wrong component."
+        )

@@ -254,9 +254,18 @@ def main():
     time.sleep(args.settle_s)
 
     say("record", f"bag -> {bag_dir}")
+    # /diagnostics is NOT optional, and its absence cost the 2026-08-16 autopsy its
+    # answer. Mission 1 recorded 41 commands at 0.4 rad/s on /cmd_vel_motor against an
+    # /odom that never moved, and nothing in the bag could say whether the driver turned
+    # those commands into motor packets. rvr_node was publishing exactly that the whole
+    # time -- motor_transport_write_count, motion_transport_write_count,
+    # last_motor_payload_hex, last_motor_transport_write_epoch_s, fail_safe_active,
+    # motor_stall, motor_fault -- on /diagnostics, unrecorded. The owner published the
+    # fact; the recording dropped it, so the analysis had to infer across the seam and
+    # convicted the wrong component.
     spawn(f"ros2 bag record -s mcap -o {bag_dir} /cmd_vel /cmd_vel_motor "
-          f"/collision_stop/state /odom /scan /tf /tf_static /tof/obstacles "
-          f"/tof/points /tof/state", f"{home}/bag_{stamp}.log")
+          f"/diagnostics /collision_stop/state /odom /scan /tf /tf_static "
+          f"/tof/obstacles /tof/points /tof/state", f"{home}/bag_{stamp}.log")
     time.sleep(8)
 
     gate_params()

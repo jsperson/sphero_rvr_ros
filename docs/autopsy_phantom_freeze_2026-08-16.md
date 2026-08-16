@@ -8,6 +8,70 @@ rover.** He was right, and the recording says why.
 
 ---
 
+> ## ⚠⚠ SECOND CORRECTION, 2026-08-16 afternoon — MEASURED ON THE FLOOR. THE CAUSAL CHAIN BELOW IS FALSIFIED.
+>
+> **The duty ceiling did not cause these freezes. Two independent lines of evidence kill it.**
+>
+> **1. The measurement.** The breakaway sweep ran on rubber gym flooring — the operating
+> surface — at 83 % battery, binary `5b880aa`. Tank duties 2–10 produce *exactly* zero
+> rotation with 41 motor packets written per burst; duty 12 rotates. **Breakaway is
+> between tank 10 and 12.** Every deployed constant is far above it: `pivot_min_duty` 28
+> is ~2.5× breakaway, `pivot_max_duty` 45 is ~4.1×. The pivot loop clamps to *at least*
+> `pivot_min_duty` on its first cycle, so the very first packet of any pivot was already
+> well over twice the duty needed to turn this robot. The chain's second box — "motors do
+> not turn" — is false. (Archive:
+> `03_validation/breakaway_2026-08-16/`. The `≤128 does not move` figure this autopsy
+> reasoned from is a **raw-motor, carpet** measurement and transfers to neither the tank
+> scale nor this surface.)
+>
+> **2. The episode contains a command the pivot path never touches.** Re-read row by row,
+> convicted episode A is not 32 rows of pivot. It is **20 rows of pure rotation followed
+> by 11 rows of pure reverse at −0.1 m/s** — and the robot moved for neither. A straight
+> reverse goes through `drive_tank_si_units` at the bottom of the control loop and never
+> enters the pivot branch at all. **No pivot-ceiling story can explain a reverse that also
+> produced nothing.** Whatever stopped the robot stopped both command shapes.
+>
+> **What IS established, from the bag rather than inferred:**
+> - `/cmd_vel_motor` carried 0.400 rad/s **densely — ~30–50 Hz, no gap over 0.1 s — for
+>   2.04 s**, then −0.100 m/s for 1.17 s. This is `rvr_node`'s own subscribed topic
+>   (`supervised_rvr.launch.py` remaps its `cmd_vel` to `/cmd_vel_motor`), so the commands
+>   were genuinely at the driver's door. The recorder CSV's 41 held samples are confirmed
+>   by the real message stream, not an artifact of a 10 Hz sampler holding a stale value.
+> - `/odom` was **healthy throughout — 10 Hz, no gap** — and reported `twist.linear.x` and
+>   `twist.angular.z` of **exactly 0.000**, with pose bit-identical to 0.1 mm. The wheels
+>   did not turn. This is not a stale-publisher artifact; it was checked.
+>
+> **So the defect is INSIDE the driver, between a Twist arriving and a motor packet
+> reaching the wire — and the recording cannot see it.** `rvr_node` publishes
+> `motor_transport_write_count`, `motion_transport_write_count`, `last_motor_payload_hex`,
+> `last_motor_transport_write_epoch_s`, `fail_safe_active`, `motor_stall` and
+> `motor_fault` on `/diagnostics`, at 10 Hz, and **always did**. The mission bag did not
+> record `/diagnostics`. The owner published the fact; the recording dropped it; the
+> analysis inferred across the seam and convicted the wrong component. Fixed in
+> `scripts/launch_and_arm.py` with a guard test.
+>
+> **Everything downstream of box one still stands** — the freeze classifier, D42's
+> permanent marks, D43's truthful block. The mission still died the way the chain below
+> describes. **What changed is the first box: the actuator ceiling is innocent, and the
+> reason the wheels did not turn is not yet known.**
+>
+> Reclassifications this forces:
+> - **D45 — REFUTED as written.** Not "an actuator ceiling no layer above the driver knows
+>   about". The ceiling is fine.
+> - **The historical freeze record is no longer suspect *for this reason*.** The advice to
+>   re-read prior freezes against "which driver path was executing" is withdrawn: the pivot
+>   path was capable of moving the robot the whole time.
+> - **`pivot_min_duty` 23/28 is CORRECT, not defective.** Duty 12 was measured **bimodal**
+>   — a clean 1.48 rad/s pivot in one run, a 0.84 rad/s one-tread arc that walked 15.9 cm
+>   six minutes later. A floor exists to stay clear of exactly that margin.
+> - **NEW, unexplained:** a driver that receives dense commands and writes nothing to the
+>   wheels, for both a pivot and a reverse, for ~3 s, then releases. Mechanism unknown.
+>   Candidates that survive the evidence: a latched `fail_safe_active` (which makes
+>   `set_velocity` raise), motion-generation invalidation, or transport starvation. All
+>   three are distinguishable from `/diagnostics` alone on the next mission.
+
+---
+
 > ## ⚠ CORRECTION, same night, before this was ever acted on
 >
 > **The mechanism first published here was WRONG, and the review loop caught it.**
