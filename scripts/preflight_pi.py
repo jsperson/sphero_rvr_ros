@@ -254,6 +254,36 @@ def gate_serial_port_free():
     return Result(PASS, f"{SERIAL_PORT} is free")
 
 
+def _deployed_roots():
+    """Every directory the flying stack can actually import these packages FROM.
+
+    `install/` IS NOT THAT DIRECTORY for this workspace, and assuming it was made this
+    gate report "49 source file(s) not installed at all" on a perfectly good build --
+    a FALSE FAIL that says NOT CLEARED FOR BRINGUP and whose printed remedy (rebuild)
+    cannot possibly fix it. A gate that cries wolf before a run is worse than no gate,
+    because the next person learns to skip the whole script.
+
+    `colcon build --symlink-install` on a pure-Python ament package writes an
+    `.egg-link` under `install/` pointing at `build/<pkg>/src`, and that is where
+    Python resolves the modules from -- confirmed by asking the interpreter:
+    `inspect.getfile(sphero_rvr_core)` returns the BUILD path. So the tree to check is
+    the one the egg-links name, plus `install/` itself for anything genuinely copied.
+
+    The gate's power is unchanged: it still compares byte-for-byte against source and
+    still fails on a stale deployed copy. It just looks where the code actually lives.
+    """
+    roots = [INSTALL_TREE] if INSTALL_TREE.exists() else []
+    for link in INSTALL_TREE.rglob("*.egg-link"):
+        try:
+            target = link.read_text().splitlines()[0].strip()
+        except (OSError, IndexError):
+            continue
+        path = Path(target)
+        if path.is_dir():
+            roots.append(path)
+    return roots
+
+
 def gate_installed_tree_matches():
     """The installed tree must match the source tree, file by file.
 
@@ -281,10 +311,15 @@ def gate_installed_tree_matches():
         return Result(FAIL, f"no install tree at {INSTALL_TREE}",
                       remedy="colcon build --symlink-install")
 
+    roots = _deployed_roots()
+    if not roots:
+        return Result(FAIL, "no deployed copy of the packages found",
+                      remedy="colcon build --symlink-install")
+
     mismatched, checked, missing = [], 0, []
     for src in sorted((SRC_TREE / "src").rglob("*.py")):
         rel = src.relative_to(SRC_TREE / "src")
-        matches = list(INSTALL_TREE.rglob(str(rel)))
+        matches = [m for root in roots for m in root.rglob(str(rel))]
         if not matches:
             missing.append(str(rel))
             continue
@@ -310,7 +345,26 @@ def gate_installed_tree_matches():
         return Result(FAIL, f"{len(missing)} source file(s) not installed at all: "
                             f"{missing[:5]}",
                       remedy="colcon build --symlink-install")
-    return Result(PASS, f"{checked} installed file(s) match source")
+
+    # SAY WHAT THIS PASS IS WORTH, because for most of these files it is worth nothing
+    # and a bare PASS would claim otherwise.
+    #
+    # `--symlink-install` links the whole PACKAGE DIRECTORY back at the source tree, so
+    # the deployed file and the source file are the SAME INODE -- verified the hard way:
+    # appending a line to the build copy changed the source file too. Those files cannot
+    # be stale, and comparing them to themselves cannot fail. This gate only has teeth
+    # for genuinely COPIED files, which is exactly the deployment where staleness is
+    # possible.
+    #
+    # A guard that cannot fail is not a guard, and one reporting a confident PASS over
+    # a set it cannot test is the phantom-guard shape this project has now shipped
+    # three times. So the count is split rather than totalled.
+    linked = sum(1 for root in roots for p in root.iterdir()
+                 if p.is_symlink() and (SRC_TREE / "src" / p.name).exists()) if roots else 0
+    if linked:
+        return Result(PASS, f"{checked} file(s) match source; {linked} package dir(s) "
+                            f"are SYMLINKS to source (cannot be stale, not evidence)")
+    return Result(PASS, f"{checked} installed file(s) match source (real copies)")
 
 
 def gate_chassis_alive():
