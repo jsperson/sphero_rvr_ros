@@ -45,12 +45,18 @@ OUTCOME_GOALS_KEEP_FAILING = "ABORTED_GOALS_KEEP_FAILING"
 # "goals keep failing" -- which blames the software for a fact about the furniture.
 OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES = "INCOMPLETE_BLOCKED_BY_UNSEEN_OBSTACLES"
 
+#: The operator called mission/stop. A mission a human ended is still a mission that
+#: happened, and it must leave the same artifact as one that ended itself -- 2026-08-16
+#: mission 2 was stopped by service and produced NO report by any route (D50).
+OUTCOME_STOPPED_BY_OPERATOR = "STOPPED_BY_OPERATOR"
+
 ALL_OUTCOMES = (
     OUTCOME_COMPLETE,
     OUTCOME_NO_PLANNABLE_TARGETS,
     OUTCOME_START_BLOCKED,
     OUTCOME_GOALS_KEEP_FAILING,
     OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES,
+    OUTCOME_STOPPED_BY_OPERATOR,
 )
 
 # map_server's PGM convention.

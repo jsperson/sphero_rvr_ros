@@ -73,6 +73,7 @@ from sphero_rvr_core.mission_report import (
     OUTCOME_COMPLETE,
     OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES,
     OUTCOME_GOALS_KEEP_FAILING,
+    OUTCOME_STOPPED_BY_OPERATOR,
     OUTCOME_NO_PLANNABLE_TARGETS,
     OUTCOME_START_BLOCKED,
     build_report,
@@ -182,6 +183,12 @@ class CoverageExplorerNode(Node):
         self.declare_parameter("report_topic", "/coverage_explorer/report")
         self.declare_parameter("save_map_on_end", True)
         self.declare_parameter("map_save_dir", os.path.expanduser("~/.ros/missions"))
+        # D50: where the mission report JSON lands. Same directory as the map by
+        # default, because the two describe the same run and separating them means
+        # someone eventually archives one without the other.
+        self.declare_parameter(
+            "mission_report_dir", os.path.expanduser("~/.ros/missions")
+        )
         # D43 dump extent. 0.60 m at the deployed 0.05 m resolution is a 25x25 square
         # -- wide enough to show clear floor AROUND a lethal patch, which is the
         # feature that separates stale occupancy from a pose offset. A tighter window
@@ -629,6 +636,17 @@ class CoverageExplorerNode(Node):
         self._armed = False
         self._cancel_active()
         self.get_logger().info("mission STOPPED by service")
+        # D50: an operator-ended mission is still a mission that happened, and until
+        # 2026-08-16 this path produced NO report by any route -- it disarmed and
+        # returned. _finish is idempotent (guarded by _reported), so calling it here
+        # records a stop that ends a running mission and does nothing to one that has
+        # already reported its own outcome.
+        if was:
+            self._finish(
+                OUTCOME_STOPPED_BY_OPERATOR,
+                self._map.info.resolution if self._map is not None else 0.0,
+                self._remaining_candidates(),
+            )
         response.success = True
         response.message = "mission stopped" if was else "was not running"
         return response
@@ -918,6 +936,36 @@ class CoverageExplorerNode(Node):
         )
         self._report_pub.publish(String(data=json.dumps(report)))
         self.get_logger().info(f"mission report -> {json.dumps(report)}")
+        self._write_report_file(report)
+
+    def _write_report_file(self, report):
+        """Put the report on DISK, not only on a latched topic and in a log line.
+
+        D50. 2026-08-16 mission 2 ended, published its report, logged it -- and left no
+        report file, because writing one had always been someone else's job: a capture
+        step outside this node. The numbers survived only because the status topic was
+        sampled by hand before teardown. A mission whose evidence depends on somebody
+        remembering to catch a topic has optional evidence.
+
+        Failure is logged and swallowed, never raised, for the same reason `_save_map`
+        does it: a report that cannot be written must not also destroy the mission it is
+        trying to describe.
+        """
+        try:
+            directory = os.path.expanduser(
+                str(self.get_parameter("mission_report_dir").value)
+            )
+            os.makedirs(directory, exist_ok=True)
+            path = os.path.join(
+                directory, f"report_{time.strftime('%Y%m%d_%H%M%S')}.json"
+            )
+            with open(path, "w") as handle:
+                json.dump(report, handle, indent=2, sort_keys=True)
+            self.get_logger().info(f"mission report written -> {path}")
+            return path
+        except Exception as exc:
+            self.get_logger().error(f"mission report file FAILED: {exc}")
+            return None
 
     def _save_map(self):
         """Write the current /map as a map_server PGM+YAML pair.
