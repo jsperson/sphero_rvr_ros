@@ -1,154 +1,174 @@
-# RUN CARD — measure the breakaway threshold
+# RUN CARD — measure the pivot duty that actually moves this robot
 
-**Fifteen minutes. Scott present. First act with the robot, ahead of any architecture
-work.** This is the number three safety constants are derived from and nobody has ever
-measured it.
+**Twenty minutes. Scott present. First act with the robot, ahead of any architecture
+work.**
 
----
-
-## 0. Why this is first
-
-The RVR's motors have a **breakaway** threshold: below it the tracks grind instead of
-turning. Everything downstream of that fact is currently folklore:
-
-* `pivot_rate_rad_s: 0.9` — chosen to be *"above breakaway"*, value unmeasured
-* `max_angular_rad_s: 0.4` — the supervisor's clamp, **below** it
-* `rotate_to_heading_angular_vel: 0.4` — the Nav2 config, **below** it
-
-On gauntlet mission 1 that gap killed the mission:
-**41 consecutive commanded pure rotations at exactly 0.400 rad/s produced 0–1 mm of
-motion.** The robot didn't move, the freeze classifier blamed an invisible obstacle,
-planted marks, and the marks buried the rover's own cell
-(`docs/autopsy_phantom_freeze_2026-08-16.md`).
-
-**All we know is breakaway ∈ (0.4, 0.9].** Both the bespoke stack and the stock-middle
-prototype need the real number, so this measurement is useful whichever way Scott rules
-on the architecture.
+> **⚠ THIS CARD WAS REWRITTEN AFTER REVIEW. Its first version was defective in three
+> independent ways and would have produced a confident wrong number.** What it got wrong
+> is recorded in §8, because the failure mode — a measurement procedure that manufactures
+> its own answer — is the same class as the defect it is trying to measure.
 
 ---
 
-## 1. THE CONSTRAINT THAT BITES — read before staging
+## 0. What we are measuring, and why it is a DUTY and not a rate
 
-**The supervisor clamps every angular command to 0.4 rad/s** (`collision_stop.yaml:156`,
-`collision_stop.py:1048`). **You cannot measure above 0.4 through the normal path** — the
-clamp silently rewrites the command and every step above 0.4 would return the same
-answer.
+An in-place pivot on this robot does **not** execute the commanded angular rate. For
+`|linear| < 0.005` and `|angular| > 0`, `driver.py:708` takes a **closed-loop pivot
+controller** that uses the command only for its **sign**, then drives toward a fixed
+internal target of 1.3 rad/s by ramping a duty:
 
-**Raise the cap for the test, do not bypass the supervisor:**
+```python
+sign  = 1.0 if velocity.angular_rad_s > 0.0 else -1.0
+error = self._pivot_target_rate_rad_s - abs(self._measured_yaw_rate)   # 1.3, always
+self._pivot_duty_cmd += self._pivot_duty_gain * error                  # gain 0.6
+self._pivot_duty_cmd = min(pivot_max_duty, max(pivot_min_duty, ...))   # ceiling 32
+```
+
+**Commanded 0.4 and commanded 0.9 are the same command to this controller.** Sweeping
+commanded rate would return one answer seven times and "prove" a drivetrain that cannot
+turn.
+
+The open question is the ceiling. `pivot_max_duty` is **32** on the ±127 scale of
+`drive_tank_normalized`; the only moving-duty figure in the repo is a comment about the
+**raw-motor** branch on a 0–255 scale ("≤128 does not move at all, 140–160 breaks away").
+**32/127 ≈ 64/255 — about half of what that comment says does nothing.** Whether the two
+paths are equivalent in torque is an inference, and this test exists to replace it with a
+measurement.
+
+**THE NUMBER WE WANT: the lowest `drive_tank_normalized` duty that produces sustained
+in-place rotation.**
+
+---
+
+## 1. Safety envelope — non-negotiable
+
+* **Scott present, hand on the power switch.** This test deliberately commands duties in
+  and above the range documented to grind; the rover has been powered down twice by
+  in-place grinding.
+* **Rotation in place only. `linear` stays 0.0.**
+* **Open floor, > 0.5 m clear all round** — a tank drive rotating can walk.
+* **Battery ≥ 25%** (duty behaviour is voltage-dependent; record the level with the
+  result, because this number is only valid near the battery state it was taken at).
+* **Bounded bursts: 2 s per step, ≥ 3 s stopped between.** Sustained sub-moving duty is
+  the damaging case.
+* **Abort on:** any translation over ~5 cm, grinding that does not resolve into rotation
+  within the burst, or any hot-motor smell.
+* **Do not launch the lidar or the explorer.** Driver only.
+
+---
+
+## 2. Procedure — a DIRECT DUTY SWEEP, bypassing the pivot controller's ceiling
+
+The pivot controller cannot be swept from outside (it discards the command), and its
+ceiling is the thing under test. So drive the duty directly through the driver's own
+command builder, with the driver node **not running** — one process, one authority, no
+clamps in between.
 
 ```bash
-ros2 param set /lidar_collision_stop_supervisor max_angular_rad_s 1.0
-ros2 param get /lidar_collision_stop_supervisor max_angular_rad_s   # confirm 1.0
+# on the Pi. NOTHING ELSE RUNNING -- confirm `ros2 node list` is empty first.
+cd ~/ros2_ws/src/sphero_rvr_ros
+python3 diagnostics/pivot_duty_sweep.py --duties 20,28,32,40,50,60,70,80,90,100 \
+                                        --burst-s 2.0 --settle-s 3.0
 ```
 
-Keeping the supervisor in the loop means the collision gates, the ToF brake and the D39
-hold all stay live during the sweep. **Bypassing it by publishing to `/cmd_vel_motor`
-directly would remove every safety layer at once — do not.**
+`diagnostics/pivot_duty_sweep.py` **does not exist yet — write it first** (offline, no
+robot). It must:
 
-**Restore it afterwards** (`0.4`), or restart the stack, and confirm by reading the
-param back. A raised cap left behind is a rover that turns faster than every constant in
-the config assumes.
+1. open the serial transport directly and send `drive_tank_normalized(seq, -d, +d)`
+   at the control period for `burst-s`, then `(0,0)`;
+2. read yaw from the IMU/odom stream and report **achieved rad/s** per duty;
+3. refuse to run if any ROS node holds `/dev/ttyAMA0`;
+4. stop on the first duty that produces sustained rotation **and one step beyond**, so
+   we get the knee and its confirmation without climbing into the bog;
+5. write a CSV to `~/breakaway_<stamp>.csv`.
+
+**Why not through ROS:** `rvr_node` and the supervisor each clamp `max_angular_rad_s` to
+0.4, both read their config **once at `__init__`** (`rvr_node.py:155`,
+`collision_stop_node.py:190`) with **no** `add_on_set_parameters_callback` anywhere — so
+`ros2 param set` changes the parameter server while the live clamp keeps the cached
+value, and `ros2 param get` cheerfully confirms the change that did not take effect. Two
+authorities for one constant, in the measurement procedure itself.
 
 ---
 
-## 2. Safety envelope — non-negotiable
+## 3. Reading it
 
-* **Scott present, hand on the power switch.** This test deliberately commands the rates
-  documented to grind the motors; the rover was powered down twice by this in the past.
-* **Rotation in place ONLY. Zero translation commands.** `linear.x` stays 0.0 throughout.
-* **Open floor**, > 0.5 m clear all round — a tank drive rotating can walk slightly.
-* **Battery ≥ 25%.**
-* **Abort immediately** on: any translation, any grinding noise that does not resolve
-  into rotation, any smell of hot motor, or a rover that walks more than ~5 cm.
-* **Bounded bursts: 2 s per step, ≥ 3 s stopped between.** Sustained sub-breakaway
-  commanding is the damaging case; short bursts with cooling gaps are not.
-* **Do not launch the lidar.** It is not needed and its disc is one more thing to spin
-  down. If it comes up with the stack anyway, `/stop_motor` before teardown.
+```
+duty  achieved rad/s   note
+  20      ____         [silent / grinding / rotating]
+  28      ____         <- pivot_min_duty
+  32      ____         <- pivot_max_duty, the CEILING under test
+  40      ____
+  ...
+MOVING DUTY = ___      (lowest duty with sustained rotation)
+BATTERY = ___%
+```
+
+**The verdict this test delivers:** if moving-duty **> 32**, then the closed-loop pivot
+controller is structurally incapable of turning this robot, every in-place pivot in
+production has been a no-op, and the historical freeze record is largely phantom.
+If moving-duty **≤ 32**, the ceiling is fine and the mission-1 episodes had another
+cause — say so plainly and reopen the autopsy.
+
+**Behavioural verification, not parameter confirmation:** the only evidence that a duty
+took effect is a **measurably different achieved yaw rate**. If two adjacent duties give
+the same achieved rate, something upstream is clamping and the sweep is invalid — stop
+and find it before trusting any reading.
 
 ---
 
-## 3. Procedure
-
-```bash
-# on the Pi -- driver + supervisor only, no explorer, no nav2, no camera
-ros2 launch sphero_rvr_driver explore.launch.py start_motion_stack:=true \
-    start_explore:=false use_coverage_explorer:=false use_decisive_controller:=false
-
-ros2 param set /lidar_collision_stop_supervisor max_angular_rad_s 1.0
-
-# recorder, so the sweep is an artifact and not a memory
-cd ~/ros2_ws/src/sphero_rvr_ros/diagnostics
-python3 run_recorder.py 600 ~/breakaway_$(date +%Y%m%d_%H%M%S).csv
-```
-
-Then, for **w in 0.30 0.40 0.50 0.60 0.70 0.80 0.90**:
-
-```bash
-# 2 s of pure rotation, then stop and let it settle
-timeout 2 ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist \
-    "{linear: {x: 0.0}, angular: {z: W}}"
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
-    "{linear: {x: 0.0}, angular: {z: 0.0}}"
-sleep 3
-```
-
-**Record for each step:** commanded `w`, `odom_yaw_deg` before and after, and whether it
-was audibly grinding, rotating, or silent. The CSV captures the first two; the third is
-Scott's ear and it matters — *grinding* and *not moving* are different failures.
-
----
-
-## 4. The reading
-
-**Breakaway is the lowest `w` that produces sustained rotation** — not the lowest that
-produces *any* movement. A step that twitches and stops is below it.
-
-Expect a sharp knee rather than a gradient. Report as:
-
-```
-w=0.30  ->  __ deg in 2 s   [grinding / silent / rotating]
-w=0.40  ->  __ deg          (expected ~0: this is mission 1's measured dead value)
-...
-w=0.90  ->  __ deg          (expected clean rotation)
-
-BREAKAWAY = ___ rad/s        (lowest w with sustained rotation)
-```
-
-**Sanity check against the field:** 0.40 must come back at or near zero. If it rotates
-cleanly, then mission 1's 41 dead commands had a *different* cause and the autopsy needs
-reopening — say so rather than explaining it away.
-
----
-
-## 5. What the number feeds, immediately
+## 4. What the number feeds
 
 | constant | now | becomes |
 |---|---|---|
-| `max_angular_rad_s` (supervisor clamp) | 0.4 | **≥ breakaway**, or the supervisor keeps commanding stalls |
-| `pivot_rate_rad_s` (decisive controller) | 0.9 | breakaway × ~1.25, derived rather than asserted |
-| `rotate_to_heading_angular_vel` (stock prototype) | 0.9 provisional | breakaway × ~1.25 |
-| `min_rotational_vel` (stock Spin behaviour) | 0.9 provisional | breakaway |
+| `pivot_max_duty` | 32 | **above moving-duty with margin** — the primary fix |
+| `pivot_min_duty` | 23 / 28 | at or just below moving-duty, so the ramp starts useful |
+| `max_angular_rad_s` (supervisor **and** `rvr_node`) | 0.4 both | re-derived for the non-pivot paths |
+| `rotate_to_heading_angular_vel`, `min_rotational_vel` (stock prototype) | 0.9 provisional | derived from the achieved-rate curve |
 
-Every **MEASURE-FIRST** marker in `config/lean_nav2_stock.yaml` is waiting on this one
-number, and `tests/test_stock_middle_config.py` refuses to let that config be considered
-flyable until it exists.
+Every **MEASURE-FIRST** marker in `config/lean_nav2_stock.yaml` waits on this.
 
 ---
 
-## 6. Opportunistic, only if zero-risk
+## 5. Opportunistic, only if zero-risk
 
-If the IMU is already up, record gyro alongside odom. Same session answers D32's
-discriminator question (wheel-odom yaw vs measured yaw under a known command) at no
-extra robot time. **Skip it if it needs any extra bringup** — this card's job is one
-number.
+Record IMU gyro alongside odom yaw — same session answers D32's wheel-odom-vs-measured
+question at no extra robot time. **Skip if it needs extra bringup.**
 
 ---
 
-## 7. After
+## 6. After
 
-Restore `max_angular_rad_s` to `0.4` **and read it back**. Stop the lidar motor by
-service if it came up. Processes by explicit PID. Confirm `ros2 node list` is empty, then
-`ros2 daemon stop`.
+Processes by explicit PID. `ros2 node list` empty, `ros2 daemon stop`. Archive the CSV to
+`03_validation/breakaway_2026-08-16/` with a README naming the moving duty, the battery
+level, the binary, and every reading.
 
-Archive the CSV to `03_validation/breakaway_2026-08-16/` with a README naming the
-measured value, the binary, and the seven readings.
+---
+
+## 7. Offline prerequisite
+
+**Write and unit-test `diagnostics/pivot_duty_sweep.py` before Scott stages.** A test
+that needs debugging while a human stands over a robot wastes the expensive resource in
+the room, which is Scott.
+
+---
+
+## 8. What the first version of this card got wrong
+
+Kept deliberately: a procedure that manufactures its own answer is the same failure class
+as the defects being investigated, and this one was caught by review rather than by the
+floor.
+
+1. **It swept commanded angular rate.** The pivot path discards the magnitude, so all
+   seven steps would have returned the same result.
+2. **It raised only the supervisor's clamp.** `rvr_node` holds a second
+   `max_angular_rad_s: 0.4` at the driver's door; everything above 0.4 would have been
+   re-clamped there.
+3. **It verified with `ros2 param set` + `param get`.** Both nodes cache config at
+   `__init__` and register no parameter callback, so the live clamp would never have
+   moved and the confirmation would have read the wrong authority.
+
+Together those three would have produced a clean-looking dataset showing a drivetrain
+dead above 0.3 rad/s — **a wrong autopsy, manufactured by its own procedure, and exactly
+what the original card's falsifier section was written to fear.** The falsifier is what
+made it findable; that part was right and is kept.

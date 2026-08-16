@@ -8,29 +8,70 @@ rover.** He was right, and the recording says why.
 
 ---
 
-## The finding
+> ## ⚠ CORRECTION, same night, before this was ever acted on
+>
+> **The mechanism first published here was WRONG, and the review loop caught it.**
+> I wrote that the supervisor's 0.4 rad/s clamp sat below the drivetrain's breakaway
+> rate, so the motors could not execute the commanded pivot.
+>
+> **The commanded rate never reaches the motors on this path at all.** For a pure
+> rotation (`|linear| < 0.005`, `|angular| > 0`) the driver takes a **closed-loop pivot
+> controller** (`driver.py:708`) which uses the commanded `angular_rad_s` **only for its
+> sign**, and then drives toward a fixed internal target of **1.3 rad/s**:
+>
+> ```python
+> sign  = 1.0 if velocity.angular_rad_s > 0.0 else -1.0
+> error = self._pivot_target_rate_rad_s - abs(self._measured_yaw_rate)   # 1.3, always
+> self._pivot_duty_cmd += self._pivot_duty_gain * error
+> self._pivot_duty_cmd = min(pivot_max_duty, max(pivot_min_duty, self._pivot_duty_cmd))
+> ```
+>
+> So a commanded 0.4 and a commanded 0.9 produce **identical** behaviour. The 0.4 clamp
+> is real and is a defect elsewhere, but it is **not** why the robot failed to turn.
+>
+> **The corrected mechanism is below, and it is worse.**
 
-**The supervisor clamps every angular command to 0.4 rad/s. The drivetrain cannot
-rotate in place at 0.4 rad/s. So a commanded pivot produces no motion, and the freeze
-classifier — which defines a freeze as "permitted to move and did not" — reports an
-obstacle that does not exist.**
+## The finding (corrected)
 
-Four files, each correct on its own terms:
+**The in-place pivot controller cannot reach the duty this drivetrain needs to move,
+because it clamps at roughly half of it. The commanded rate is irrelevant — the pivot
+path discards it.**
+
+Two numbers from our own source, and they do not fit together:
 
 ```
-decisive_control.py:35     pivot_rate_rad_s = 0.9
-                           "In-place pivot rate -- decisive, above breakaway
-                            (never a slow creep)."
-docs/decisive_controller.md:59
-                           "All above the motor breakaway ON PURPOSE -- the controller
-                            must NEVER command a below-breakaway speed."
-config/collision_stop.yaml:156     max_angular_rad_s: 0.4
-collision_stop.py:1048     angular = clamp(command.angular_z, +/-0.4)
+driver.py:717  (the code's own carpet measurement, raw-motor angular duty, 0-255 scale)
+    "angular duty <=128 does not move at all, 140-160 breaks away then bogs"
+
+rvr_node.py:46  pivot_max_duty = 32          <- the closed-loop pivot's ceiling
+commands.py:164 drive_tank_normalized clamps to +/-127   <- the scale it is sent on
 ```
 
-**The controller's central safety-of-hardware guarantee — never command below breakaway —
-is void in production, because the layer beneath it silently rewrites the command to a
-value the guarantee exists to forbid.**
+**32 on a ±127 scale is ≈64 on the 0–255 scale the measurement used — about half the
+128 that the driver's own comment says produces no motion at all.**
+
+The integrator makes it worse: `pivot_duty_gain` 0.6 against a constant error of ~1.3
+adds ~0.8 duty per 0.05 s cycle, so it reaches its ceiling of 32 in about two seconds
+and then stops climbing, permanently, no matter how long the pivot is commanded.
+
+**Caveat, stated rather than buried:** the two figures come from different firmware
+paths — `drive_tank_normalized` versus raw-motor duty — and I have not measured that
+they are equivalent in torque. The scale conversion is arithmetic; the equivalence is an
+inference. **This is exactly what the floor test must settle**, and it is why the
+breakaway measurement is now a DUTY sweep rather than a rate sweep
+(`docs/run_card_breakaway_2026-08-16.md`).
+
+What the field data shows is consistent with it: **41 commanded pure rotations, 0–1 mm
+of motion**, over episodes of 3.2 s and 2.0 s — long enough for the integrator to
+saturate and still produce nothing.
+
+**And the guarantee above it is void either way.** The controller documents that it
+"must NEVER command a below-breakaway speed" and pivots at 0.9
+(`decisive_control.py:35`, `docs/decisive_controller.md:59`). Two clamps then rewrite it
+— `collision_stop.py:1048` to 0.4, and `rvr_node`'s own `max_angular_rad_s: 0.4` at the
+driver's door — and the pivot path discards the number entirely regardless. **Three
+layers each hold an opinion about the pivot rate and none of them is the one that
+executes.**
 
 ---
 
@@ -73,7 +114,9 @@ compared the wrong rows.** This autopsy avoided it only by matching on behaviour
 ## The causal chain, end to end
 
 ```
-supervisor clamps pivot 0.9 -> 0.4 rad/s          (below breakaway)
+controller commands a pivot (0.9, clamped to 0.4, discarded anyway)
+        v
+closed-loop pivot targets 1.3 rad/s, ramps duty, SATURATES AT 32/127
         v
 motors do not turn; robot does not move
         v
@@ -93,7 +136,7 @@ with 0.78 m of open floor dead ahead.
 ```
 
 **Every step after the first is a component behaving exactly as designed.** The mission
-was killed by a unit mismatch at a seam.
+was killed by an actuator ceiling that no layer above the driver knows exists.
 
 ---
 
@@ -104,9 +147,10 @@ was killed by a unit mismatch at a seam.
 - **D42 — field-convicted as the amplifier.** Permanent marks turned a transient
   misclassification into a permanent prison.
 - **D25/D33 phantom-freeze suspicions — a mechanism now exists.** Prior freezes recorded
-  as "an obstacle no sensor can see" should be re-read against the commanded angular
-  rate at the time. **The historical freeze record is suspect wherever the command was
-  a pivot.**
+  as "an obstacle no sensor can see" should be re-read against WHICH DRIVER PATH was
+  executing. **The historical freeze record is suspect wherever the command was a pure
+  in-place pivot**, because that path could not have moved the robot regardless of what
+  was in the room.
 - **Scott's touch-tolerance doctrine is unaffected but was being spent on nothing.** The
   freeze signature was meant to be the robot's touch sense. Here it fired on an
   actuator limit.
@@ -115,23 +159,31 @@ was killed by a unit mismatch at a seam.
 
 ## What is NOT yet known
 
-**The breakaway threshold has never been measured.** We know 0.9 was chosen to be above
-it and that 0.4 is below it — so it lies in **(0.4, 0.9]** — but the actual value is
-undocumented anywhere in the repo. Every constant in this chain is derived from a number
-nobody has measured.
+**The moving duty has never been measured on the path production actually uses.** The
+only figure in the repo is a comment about the RAW-MOTOR branch ("<=128 does not move,
+140-160 breaks away"), while in-place pivots go through `drive_tank_normalized` on a
+±127 scale with a ceiling of 32. Whether those are equivalent in torque is an
+**inference, not a measurement**, and every constant in this chain rests on it.
 
-**That measurement is the first thing to do**, and it is cheap: command in-place rotation
-at 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90 rad/s for 2 s each and record `odom_yaw`.
-Fifteen minutes on the floor, and it turns three constants from folklore into
-derivations.
+**The measurement must therefore sweep DUTY on the pivot path, not commanded rate.**
+Sweeping commanded angular rate would measure nothing at all: the pivot controller
+discards the magnitude, so every step would return the same answer and the sweep would
+"prove" a drivetrain that cannot turn — a wrong autopsy manufactured by its own
+procedure. Card: `docs/run_card_breakaway_2026-08-16.md`.
+
+**A second thing is now unknown that was not before:** whether `_measured_yaw_rate` was
+even reporting during those episodes. The integrator's climb depends on it, and if it
+read a nonzero rate while the robot stood still, the loop would have stopped winding up
+early. The bag has `/odom` and the IMU; this is answerable offline and is banked.
 
 ---
 
 ## Candidate fixes, in preference order
 
-1. **Raise `max_angular_rad_s` above breakaway** (once measured). It exists to bound
-   speed for safety, but a cap that produces *grinding without motion* is not a safety
-   feature — it is a way to damage motors while standing still.
+1. **Raise `pivot_max_duty` to above the measured moving duty.** This is now the
+   primary fix: the ceiling, not the commanded rate, is what stops the robot turning.
+   `max_angular_rad_s` (0.4, in BOTH the supervisor and `rvr_node`) still wants raising
+   above breakaway for the non-pivot paths, but it is no longer the headline.
 2. **The supervisor must not silently rewrite a command into an unexecutable one.** If a
    request is below the drivetrain's floor, the honest answers are *refuse it* (and say
    so in `reason`) or *round it up to the floor* — never "deliver something the hardware

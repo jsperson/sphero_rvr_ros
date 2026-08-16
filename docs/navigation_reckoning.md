@@ -52,11 +52,18 @@ diagnosed that as our escape being wrong and built three more escapes.
 **The bespoke stack ground the motors with sub-breakaway in-place rotation on gauntlet
 mission 1 — the exact failure it was built to prevent.**
 
-The controller commands pivots at 0.9 rad/s *because* below breakaway the motors grind
-(`"the controller must never command a below-breakaway speed"`). The supervisor clamps
-every angular command to **0.4**. The motors get 0.4. **41 consecutive commanded
-rotations, 0–1 mm of motion.** The freeze classifier called it an invisible obstacle,
-planted marks, and the marks buried the rover's own cell.
+**41 consecutive commanded pure rotations produced 0–1 mm of motion.** The freeze
+classifier called it an invisible obstacle, planted marks, and the marks buried the
+rover's own cell.
+
+The mechanism is worse than a mis-tuned rate, and my first account of it was wrong
+(corrected in the autopsy after review). A pure in-place pivot does not execute the
+commanded rate at all: `driver.py:708` takes a closed-loop controller that reads only the
+command's **sign**, targets a fixed 1.3 rad/s, and ramps a duty that **saturates at 32**
+on a ±127 scale — against the driver's own carpet note that duty ≤128 on the 0–255 scale
+"does not move at all". **Three layers hold an opinion about the pivot rate — the
+controller's 0.9, the supervisor's 0.4 clamp, `rvr_node`'s second 0.4 clamp — and none of
+them is the one that executes.**
 
 We forked the middle of Nav2 to escape this failure, then rebuilt it one layer down,
 where the guarantee written to prevent it could not see it. **A unit mismatch at a seam
