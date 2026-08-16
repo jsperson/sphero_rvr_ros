@@ -312,6 +312,8 @@ async def test_estop_rejects_motor_capable_paths_until_clear_then_only_new_motio
     with pytest.raises(RuntimeError, match="emergency stop active"):
         await driver.raw_motors(1, 20, 1, 20)
     with pytest.raises(RuntimeError, match="emergency stop active"):
+        await driver.drive_tank_normalized(-45, 45)
+    with pytest.raises(RuntimeError, match="emergency stop active"):
         await driver.drive_to_position_si(yaw_angle=0.0, x=1.0, y=0.0, linear_speed=0.2)
     with pytest.raises(RuntimeError, match="emergency stop active"):
         await driver.start_ir_following(far_code=4, near_code=5)

@@ -31,6 +31,39 @@ rover.** He was right, and the recording says why.
 >
 > **The corrected mechanism is below, and it is worse.**
 
+> ## ⚠ SECOND CORRECTION, 2026-08-16 ~03:40, while building the sweep tool
+>
+> **The ceiling quoted below is the DATACLASS DEFAULT, not what the mission ran.**
+>
+> `rvr_node.RVRNodeConfig` defaults to `pivot_min_duty 23 / pivot_max_duty 32 /
+> pivot_duty_gain 0.6`, and `config/rvr.yaml` sets none of the three, so those are the
+> numbers for `rvr.launch.py` and `supervised_rvr.launch.py` on their own. But the
+> gauntlet was launched by `scripts/launch_and_arm.py` → `explore.launch.py`, whose
+> `rvr_params_file` defaults to `config/lean_rvr_tank_si.yaml` and is passed straight
+> through `supervised_rvr.launch.py` into the driver node. That file sets:
+>
+> ```yaml
+> pivot_min_duty: 28
+> pivot_max_duty: 45      # <- the ceiling mission 1 actually ran
+> pivot_duty_gain: 1.0
+> ```
+>
+> **What changes:** `45` on the ±127 scale is **90/255**, not 64/255 — so the ceiling is
+> about **70%** of the documented no-move duty of 128, not "about half". And the
+> integrator climbs at gain 1.0 × error 1.3 = 1.3 duty per 0.05 s cycle, so it walks
+> from 28 to 45 in roughly **0.65 s**, not two seconds.
+>
+> **What does not change:** 90 is still below 128. Both deployed ceilings are still
+> under the duty the driver's own comment says produces no motion at all, the 3.2 s and
+> 2.0 s episodes are still far longer than the saturation time, and the finding stands.
+> **The measurement is what settles it, and now it has to span both ceilings** —
+> `diagnostics/pivot_duty_sweep.py` samples 23, 28, 32 and 45 explicitly, with a test
+> that fails if any of them leaves the ladder.
+>
+> This is [[probe-the-deployed-config]] again, in the document that exists to correct
+> an inference: two numbers were read from a dataclass instead of from the YAML the
+> launch file actually passes.
+
 ## The finding (corrected)
 
 **The in-place pivot controller cannot reach the duty this drivetrain needs to move,

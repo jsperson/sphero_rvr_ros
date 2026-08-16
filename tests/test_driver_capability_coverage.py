@@ -332,6 +332,15 @@ async def test_driver_state_velocity_and_emergency_stop_capabilities():
         ),
         ("raw_motors", (1, 120, 2, 80), RVRDriver(FakeTransport()).commands.CID_RAW_MOTORS, bytes([1, 120, 2, 80]), False),
         (
+            # Opposing treads: the exact packet shape the closed-loop pivot builds, and
+            # the one diagnostics/pivot_duty_sweep.py sweeps by duty.
+            "drive_tank_normalized",
+            (-45, 45),
+            RVRDriver(FakeTransport()).commands.CID_DRIVE_TANK_NORMALIZED,
+            struct.pack(">bb", -45, 45),
+            False,
+        ),
+        (
             "drive_to_position_si",
             (90.0, 1.25, -0.5, 0.75, 2),
             RVRDriver(FakeTransport()).commands.CID_DRIVE_TO_POSITION_SI,

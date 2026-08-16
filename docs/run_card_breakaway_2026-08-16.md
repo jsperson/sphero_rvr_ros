@@ -38,6 +38,16 @@ measurement.
 **THE NUMBER WE WANT: the lowest `drive_tank_normalized` duty that produces sustained
 in-place rotation.**
 
+> **CORRECTION (2026-08-16, found while building the tool): there are TWO deployed
+> ceilings, and the mission ran the higher one.** `32` above is the `RVRNodeConfig`
+> dataclass default, which `config/rvr.yaml` never overrides. The gauntlet launches
+> through `explore.launch.py`, whose default `rvr_params_file` is
+> `config/lean_rvr_tank_si.yaml`: **`pivot_min_duty 28`, `pivot_max_duty 45`,
+> `pivot_duty_gain 1.0`**. So the ceiling under test is **45/±127 ≈ 90/255**, about 70%
+> of the documented no-move duty rather than half of it. Both ceilings are still below
+> 128, so the verdict logic in §3 is unchanged — but the sweep must span **23, 28, 32
+> and 45**, and it does. See the second correction block in the autopsy.
+
 ---
 
 ## 1. Safety envelope — non-negotiable
@@ -65,29 +75,47 @@ command builder, with the driver node **not running** — one process, one autho
 clamps in between.
 
 ```bash
-# on the Pi. NOTHING ELSE RUNNING -- confirm `ros2 node list` is empty first.
+# on the Pi. NOTHING ELSE RUNNING -- the tool checks, but confirm `ros2 node list`
+# is empty anyway. It REFUSES without --arm; that is the point of --arm.
 cd ~/ros2_ws/src/sphero_rvr_ros
-python3 diagnostics/pivot_duty_sweep.py --duties 20,28,32,40,50,60,70,80,90,100 \
-                                        --burst-s 2.0 --settle-s 3.0
+python3 diagnostics/pivot_duty_sweep.py --arm          # default ladder spans 12..100
 ```
 
-`diagnostics/pivot_duty_sweep.py` **does not exist yet — write it first** (offline, no
-robot). It must:
+The default ladder is `12 16 20 23 28 32 36 40 45 50 56 62 70 76 84 92 100`: below both
+production floors, through **all four** deployed pivot constants (23/28/32/45), and past
+the ±127 equivalents of the documented raw-motor breakaway region (140→70, 160→80). To
+override: `--duties 20,28,32,40,50,60,70,80,90,100 --burst-s 2.0 --settle-s 3.0`. The
+tool refuses a ladder that starts at or above the production floor or stops below 80,
+because either one would produce a table that cannot answer the question.
 
-1. open the serial transport directly and send `drive_tank_normalized(seq, -d, +d)`
-   at the control period for `burst-s`, then `(0,0)`;
-2. read yaw from the **wheel-encoder stream** and report **achieved rad/s** per duty --
-   encoders, because that is the same source the production pivot loop regulates on
-   (`rvr_node.py:563`), so the sweep measures what the controller sees. **This is the
-   bulk of the work and the reason this is not a small script:** it needs the sensor
-   stream configured, the streaming packets decoded, and the odom tracker driven, all
-   without the ROS node. Budget for that honestly; do not start it on a tired context.
-   (An IMU cross-check is worth recording alongside, since encoders measure WHEEL
-   rotation and a grinding wheel that slips would under-report BODY rotation.);
-3. refuse to run if any ROS node holds `/dev/ttyAMA0`;
-4. stop on the first duty that produces sustained rotation **and one step beyond**, so
+`diagnostics/pivot_duty_sweep.py` **is written and offline-tested** (`tests/
+test_pivot_duty_sweep.py`, 47 tests, mutation-checked). What it does:
+
+1. opens the serial transport directly and sends `drive_tank_normalized(seq, -d, +d)`
+   at the control period for `burst-s`, then `(0,0)` — one process, one authority, and
+   the driver's control loop is never given a velocity so it never sends anything;
+2. **reads yaw from the IMU gyro** (`enable_imu_streaming` in the core driver — no ROS
+   needed) and reports **achieved rad/s** per duty. The gyro measures BODY rotation,
+   which is the question; the production loop regulates on WHEEL encoders, which is a
+   different question and the one D32 has never had answered. So encoder counts are
+   polled at each burst boundary too, and **wheel-vs-body disagreement is printed as a
+   result** — a grinding wheel that slips reports rotation the chassis did not make.
+   The gyro path has never run in production (`publish_imu` is false everywhere), so the
+   tool proves the stream is alive before commanding anything and prints **INSTRUMENT
+   DEAD** and refuses rather than recording a table of zeros;
+3. refuses to run if anything else holds `/dev/ttyAMA0` (reads `/proc/*/fd` and names
+   the pid), if `--arm` is absent, or if the battery is under 25%;
+4. stops on the first duty that produces sustained rotation **and one step beyond**, so
    we get the knee and its confirmation without climbing into the bog;
-5. write a CSV to `~/breakaway_<stamp>.csv`.
+5. aborts mid-run on a firmware motor fault, on the gyro stream going quiet, or on more
+   than 5 cm of encoder-measured translation — a pivot that walks is an abort, not a
+   data point;
+6. writes a CSV to `~/breakaway_<stamp>.csv` with the whole run configuration in the
+   header (battery, ladder, bursts, git SHA, gyro noise floor), because a duty number
+   without the conditions it was taken under is not a measurement;
+7. counts the motor packets the driver actually wrote. **An all-zero sweep cannot tell a
+   dead drivetrain from a dead command path**, so the verdict says which one the write
+   counter shows.
 
 **Why not through ROS:** `rvr_node` and the supervisor each clamp `max_angular_rad_s` to
 0.4, both read their config **once at `__init__`** (`rvr_node.py:155`,
@@ -100,22 +128,26 @@ authorities for one constant, in the measurement procedure itself.
 
 ## 3. Reading it
 
+The tool prints this; nothing has to be transcribed by hand.
+
 ```
-duty  achieved rad/s   note
-  20      ____         [silent / grinding / rotating]
-  28      ____         <- pivot_min_duty
-  32      ____         <- pivot_max_duty, the CEILING under test
-  40      ____
+duty  raw255  achieved rad/s (gyro)  peak    n   pkts  encoders rad/s  translation
+  23      46                  0.000   ...                              <- pivot_min_duty (defaults)
+  28      56                  0.000   ...                              <- pivot_min_duty (missions)
+  32      64                  0.000   ...                              <- ceiling, defaults
+  45      90                  0.000   ...                              <- CEILING MISSIONS RAN
   ...
-MOVING DUTY = ___      (lowest duty with sustained rotation)
+VERDICT: MOVING_DUTY_FOUND | SWEEP_INVALID | NO_ROTATION_IN_RANGE
 BATTERY = ___%
 ```
 
-**The verdict this test delivers:** if moving-duty **> 32**, then the closed-loop pivot
-controller is structurally incapable of turning this robot, every in-place pivot in
-production has been a no-op, and the historical freeze record is largely phantom.
-If moving-duty **≤ 32**, the ceiling is fine and the mission-1 episodes had another
-cause — say so plainly and reopen the autopsy.
+**The verdict this test delivers,** evaluated against **both** deployed ceilings and
+printed for each: if moving-duty is **above a ceiling**, the closed-loop pivot on that
+config is structurally incapable of turning this robot, every in-place pivot it ran was
+a no-op, and the historical freeze record from it is largely phantom. If moving-duty is
+**at or below the ceiling**, that ceiling is fine and the mission-1 episodes had another
+cause — say so plainly and reopen the autopsy. The mission ceiling is **45**; the 32 is
+what the non-mission launches use.
 
 **Behavioural verification, not parameter confirmation:** the only evidence that a duty
 took effect is a **measurably different achieved yaw rate**. If two adjacent duties give
@@ -128,8 +160,8 @@ and find it before trusting any reading.
 
 | constant | now | becomes |
 |---|---|---|
-| `pivot_max_duty` | 32 | **above moving-duty with margin** — the primary fix |
-| `pivot_min_duty` | 23 / 28 | at or just below moving-duty, so the ramp starts useful |
+| `pivot_max_duty` | **45 (missions)** / 32 (defaults) | **above moving-duty with margin** — the primary fix, in BOTH places |
+| `pivot_min_duty` | **28 (missions)** / 23 (defaults) | at or just below moving-duty, so the ramp starts useful |
 | `max_angular_rad_s` (supervisor **and** `rvr_node`) | 0.4 both | re-derived for the non-pivot paths |
 | `rotate_to_heading_angular_vel`, `min_rotational_vel` (stock prototype) | 0.9 provisional | derived from the achieved-rate curve |
 
@@ -137,10 +169,13 @@ Every **MEASURE-FIRST** marker in `config/lean_nav2_stock.yaml` waits on this.
 
 ---
 
-## 5. Opportunistic, only if zero-risk
+## 5. D32, no longer opportunistic — it is the instrument
 
-Record IMU gyro alongside odom yaw — same session answers D32's wheel-odom-vs-measured
-question at no extra robot time. **Skip if it needs extra bringup.**
+This card originally listed "record IMU gyro alongside odom yaw" as a nice-to-have.
+It is now the **primary** measurement, and the encoders are the cross-check, because
+the question is whether the BODY turned and encoders only know what the WHEELS did.
+The tool prints the disagreement either way, so D32's wheel-odom-vs-measured question
+gets answered by this run whatever the duty result is.
 
 ---
 
@@ -152,11 +187,17 @@ level, the binary, and every reading.
 
 ---
 
-## 7. Offline prerequisite
+## 7. Offline prerequisite — DONE
 
-**Write and unit-test `diagnostics/pivot_duty_sweep.py` before Scott stages.** A test
-that needs debugging while a human stands over a robot wastes the expensive resource in
-the room, which is Scott.
+`diagnostics/pivot_duty_sweep.py` and `tests/test_pivot_duty_sweep.py` were written and
+tested offline on 2026-08-16, **against a fake driver, with no hardware involved**. The
+suite runs 47 tests over the refusals, the instrument-death paths, the ladder's bounds
+and early stop, the validity verdict in both directions, the scale conversion, and the
+CSV header; 23 deliberate mutations of the tool were each confirmed to turn the suite
+red. A test that needs debugging while a human stands over a robot wastes the expensive
+resource in the room, which is Scott.
+
+**The tool has never been run against the rover.** First contact is Scott's staging.
 
 ---
 

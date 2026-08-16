@@ -361,6 +361,23 @@ class RVRDriver:
             motor_capable=True,
         )
 
+    async def drive_tank_normalized(self, left_velocity: int, right_velocity: int) -> None:
+        """Send one normalized tank-drive packet (+/-127 per tread), directly.
+
+        Same command the closed-loop pivot builds in the control loop, exposed so
+        a diagnostic can command a chosen DUTY instead of a rate. The pivot path
+        discards the commanded rate, so duty is the only thing an external caller
+        can vary -- see ``diagnostics/pivot_duty_sweep.py``. Motor-capable, so it
+        honours emergency stop and the motion-generation invalidation that every
+        other motor command honours; it does NOT go through ``clamp_velocity``,
+        exactly like :meth:`raw_motors`.
+        """
+        await self._send(
+            lambda seq: self.commands.drive_tank_normalized(seq, left_velocity, right_velocity),
+            CommandPriority.NORMAL,
+            motor_capable=True,
+        )
+
     async def drive_to_position_si(
         self,
         yaw_angle: float,
