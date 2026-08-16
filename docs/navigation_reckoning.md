@@ -27,7 +27,7 @@ That single decision is the root of the defect family that has consumed the proj
 | local costmap | nothing — we run **blind below the global map** | D42, D43, tonight |
 | stock local planning (RPP, already configured) | `decisive_control.py` | D40 vocabulary problem |
 | collision-checked Spin/BackUp/DriveOnHeading | `stall_ladder.py`, give-up escape, 2a/2b/2c | D36, D40, three "recovery that never runs" defects |
-| progress checkers | our freeze classifier | tonight's 5 freezes, possibly phantom |
+| progress checkers | our freeze classifier | tonight's 5 freezes — **phantom, convicted (D45)** |
 | obstacle memory with decay | freeze-mark discs | D42 mark prison, **tonight's ending** |
 
 **`behavior_server` is running in our stack right now with Spin, BackUp and Wait
@@ -47,7 +47,50 @@ diagnosed that as our escape being wrong and built three more escapes.
 - **LLM ON TOP:** stuck strategy, exploration targeting, mission logic — the
   latency-tolerant judgment that 2a/2b/2c approximated in deterministic code.
 
-### And the sharpest finding, which may make most of the above cheap
+### The closing argument, found after this document was drafted
+
+**The bespoke stack ground the motors with sub-breakaway in-place rotation on gauntlet
+mission 1 — the exact failure it was built to prevent.**
+
+The controller commands pivots at 0.9 rad/s *because* below breakaway the motors grind
+(`"the controller must never command a below-breakaway speed"`). The supervisor clamps
+every angular command to **0.4**. The motors get 0.4. **41 consecutive commanded
+rotations, 0–1 mm of motion.** The freeze classifier called it an invisible obstacle,
+planted marks, and the marks buried the rover's own cell.
+
+We forked the middle of Nav2 to escape this failure, then rebuilt it one layer down,
+where the guarantee written to prevent it could not see it. **A unit mismatch at a seam
+between two of our own components killed the mission.** Full chain:
+`docs/autopsy_phantom_freeze_2026-08-16.md`.
+
+---
+
+## THE DECISION — Scott's, and these are the three real options
+
+**A. Restore the stock middle (recommended).** Phases in §6, ~2–3 days, each revertable
+with a physical kill criterion. Start with the one-hour experiment in 3a. Risk: a
+migration during a period when the robot already doesn't work. Mitigation: the replay
+acceptance set already exists in the vault, and the floor we keep is the part that has
+never failed.
+
+**B. Fix the seam and keep the bespoke middle.** Cheapest by far: raise the supervisor
+clamp above breakaway and tonight's mission-killer disappears. Honest case for it — the
+bespoke layer's individual defects are now each understood and most are one-line fixes.
+Honest case against — that has been true for three weeks, and each fix has revealed the
+next defect in the same layer. This option bets that D45 was the last one.
+
+**C. Measure first, decide after (the null option, and it is not cowardice).** The
+breakaway sweep is 15 minutes and is required by **both** A and B. Nothing in A can be
+validated without it, and B's fix *is* it. **Whatever Scott chooses, the sweep happens
+first** — see `docs/run_card_breakaway_2026-08-16.md`.
+
+**My recommendation is A, and my strongest argument for it is not the defect count — it
+is that every defect this week lived in the layer we wrote, and none lived in the layer
+we kept.**
+
+---
+
+### The sharpest finding, which may make most of A cheap
 
 The decisive controller exists because stock **RPP + RotationShim ground the motors** —
 a real hardware failure that powered the rover down twice. But Nav2's tuning guide
