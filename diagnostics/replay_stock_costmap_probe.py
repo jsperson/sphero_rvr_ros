@@ -153,9 +153,12 @@ def main(argv=None) -> int:
     parser.add_argument("--out", default="replay_probe.csv")
     parser.add_argument("--period-s", type=float, default=0.25)
     parser.add_argument("--seconds", type=float, default=0.0, help="0 = until Ctrl-C")
-    args = parser.parse_args(argv)
+    # parse_known_args, not parse_args: everything after --ros-args belongs to rclpy, and
+    # argparse must hand it over rather than reject the whole invocation. Without this the
+    # probe cannot be told use_sim_time, which is the one parameter a replay needs.
+    args, ros_args = parser.parse_known_args(argv)
 
-    rclpy.init()
+    rclpy.init(args=([sys.argv[0]] + ros_args) if ros_args else None)
     node = Probe(args.out, args.period_s)
     started = time.time()
     try:
