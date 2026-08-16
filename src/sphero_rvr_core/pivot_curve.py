@@ -61,6 +61,11 @@ MEASURED_BATTERY_PCT = 80
 
 CURVE_CITATION = "03_validation/breakaway_2026-08-16/README_run4.md"
 
+#: What counts as "in place". ONE definition, shared by the driver's control loop and by
+#: the velocity clamp -- when those two disagreed about which path a command was on, the
+#: clamp governed a path the command never took.
+PIVOT_LINEAR_EPSILON_MPS = 0.005
+
 
 def rate_for_duty(duty: float) -> float:
     """Yaw rate (rad/s, magnitude) the curve predicts for a tank duty magnitude.

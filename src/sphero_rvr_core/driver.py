@@ -20,8 +20,14 @@ from .packet import (
     TARGET_BT,
     TARGET_MCU,
 )
-from .pivot_curve import plan_pivot
-from .safety import clamp_velocity, is_stale, now_seconds
+from .pivot_curve import PIVOT_LINEAR_EPSILON_MPS, maximum_clean_rate, plan_pivot
+from .safety import (
+    clamp_velocity,
+    clamp_velocity_for_path,
+    is_pivot_command,
+    is_stale,
+    now_seconds,
+)
 from .state import RVRState, VelocityCommand
 from .transport import Transport
 
@@ -88,6 +94,9 @@ class RVRDriver:
         pivot_min_duty: int = 23,
         pivot_duty_gain: float = 0.6,
         closed_loop_pivot: bool = True,
+        # None = derive from the measured curve at pivot_max_duty, which is what you want.
+        # Set it only to hold pivots below what the drivetrain can do, never above.
+        max_pivot_rate_rad_s: Optional[float] = None,
         heading_max_speed: int = 60,
         imu_stream_interval_ms: Optional[int] = None,
     ):
@@ -131,6 +140,16 @@ class RVRDriver:
         # above infer it.
         self._last_pivot_plan = None
         self._last_pivot_note = None
+        # The pivot path's OWN ceiling, derived from the measured curve at the deployed
+        # pivot_max_duty -- not from max_angular_rad_s, which governs arcs and is
+        # UNMEASURED. See safety.clamp_velocity_for_path for why the two must not be the
+        # same number.
+        self._max_pivot_rate_rad_s = (
+            maximum_clean_rate(self._pivot_max_duty)
+            if max_pivot_rate_rad_s is None
+            else max(0.0, float(max_pivot_rate_rad_s))
+        )
+
         self._measured_yaw_rate = 0.0
         self._heading_max_speed = max(0, min(255, int(heading_max_speed)))
         self._target_heading_deg = 0.0
@@ -296,14 +315,31 @@ class RVRDriver:
         await self.clear_streaming_service(target=TARGET_MCU)
         self._imu_streaming_active = False
 
+    def _takes_pivot_path(self, linear_mps: float, angular_rad_s: float) -> bool:
+        """Will this command reach the in-place pivot branch in the control loop?
+
+        Mirrors the branch condition exactly, including the ``closed_loop_pivot`` gate:
+        with the gate off the command falls through to an ARC path, so the arc authority
+        is the correct one to clamp it against. A clamp that guesses the wrong path is a
+        clamp governing something the command never does.
+        """
+        return self._closed_loop_pivot and is_pivot_command(
+            linear_mps, angular_rad_s, PIVOT_LINEAR_EPSILON_MPS
+        )
+
     async def set_velocity(self, linear_mps: float, angular_rad_s: float) -> None:
         self._raise_if_emergency_stopped()
         if self._fail_safe_active:
             raise RuntimeError("fail-safe fault active; clear safe stop before driving")
-        velocity = clamp_velocity(
+        # The command is clamped against the authority for the path it will ACTUALLY
+        # take. A pivot clamped by the arc limit is what D45 was: 0.4 rad/s enforced at
+        # the driver's door on a path whose slowest producible rate is 3.55.
+        velocity = clamp_velocity_for_path(
             VelocityCommand(linear_mps, angular_rad_s),
             max_linear_mps=self._max_linear_mps,
             max_angular_rad_s=self._max_angular_rad_s,
+            max_pivot_rate_rad_s=self._max_pivot_rate_rad_s,
+            is_pivot=self._takes_pivot_path(linear_mps, angular_rad_s),
         )
         if velocity.linear_mps == 0.0 and velocity.angular_rad_s == 0.0:
             # A zero Twist is the terminal command used by every supervised
@@ -731,7 +767,7 @@ class RVRDriver:
                 continue
             if (
                 self._closed_loop_pivot
-                and abs(velocity.linear_mps) < 0.005
+                and abs(velocity.linear_mps) < PIVOT_LINEAR_EPSILON_MPS
                 and abs(velocity.angular_rad_s) > 0.0
             ):
                 # IN-PLACE PIVOT -- handled here, ABOVE the raw-motor branch.
