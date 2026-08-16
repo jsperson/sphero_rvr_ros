@@ -6,6 +6,7 @@ that describes this band states it in `x`; the brake compares `range`; a test th
 transcribed the README's figures would pin the wrong quantity and pass.
 """
 
+import json
 import math
 import re
 from pathlib import Path
@@ -13,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from sphero_rvr_core.low_obstacle_brake import (
-    BlindBandHold, forward_speed_scale, nearest_swept_point, transport_point,
+    BlindBandHold, forward_speed_scale, nearest_swept_point, swept_path_obstacle,
+    transport_point,
 )
 from sphero_rvr_core.tof_frame import (
     TofConfig, blind_band_outer_range_m, blind_band_range_floor_m, zone_point,
@@ -38,6 +40,7 @@ SLOW = _yaml_float("low_obstacle_slow_distance_m")
 MIN_R = _yaml_float("low_obstacle_min_range_m")
 MAX_R = _yaml_float("low_obstacle_max_range_m")
 HALF_W = _yaml_float("low_obstacle_half_width_m")
+MIN_SCALE = _yaml_float("low_obstacle_min_forward_scale")
 
 
 def _hold():
@@ -88,36 +91,120 @@ def test_band_outer_takes_the_worst_zone_not_the_best():
 
 # --- the field sequence this was built from ----------------------------------------
 
+def _fixture():
+    path = Path(__file__).resolve().parent / "fixtures" / "run1_vanish_20260815.json"
+    return json.loads(path.read_text())
+
+
+def _pose_delta_series(odom):
+    """Measured deltas between consecutive odom samples, in the PREVIOUS base_link
+    frame -- the same arithmetic `collision_stop_node._pose_delta_since_last` does, so
+    the replay feeds the hold what production would feed it."""
+    def at(t):
+        prev = None
+        for p in odom:
+            if p["t_rel_s"] <= t:
+                prev = p
+            else:
+                break
+        return prev
+    return at
+
+
 def test_run1_vanish_holds_instead_of_releasing():
-    """RUN 1, 2026-08-15 17:25:44-49, the sequence that put the rangefinder into a
-    table leg. Tracked to a hard stop at 0.181 m, then the returns left the band with
-    neither the object nor the rover moving.
+    """THE REVERT-PROOF, replayed from run 1's OWN RECORDING.
 
-    THIS IS THE REVERT-PROOF. Against the pre-fix code the second frame yields None,
-    `forward_speed_scale(None, ...)` returns 1.0, and the rover re-drives -- the field
-    symptom exactly. The assertion is written against the SCALE, not an internal, so
-    it indicts the behaviour rather than the implementation.
+    `tests/fixtures/run1_vanish_20260815.json` is extracted from
+    `bag_20260815_172129_0.mcap` by `diagnostics/extract_bag_window.py`, pairing
+    `/tof/obstacles`, `/collision_stop/state` and `/odom` from the same bag -- no clock
+    fit, and the window located BY SIGNATURE (the frame where `cam_scale` leaves 0.00
+    while `cam_nearest` jumps outward) rather than by a timestamp relayed through a
+    recorder whose t=0 has been 53 s off before. The extractor found exactly the
+    archived numbers: scale 0.00 -> 0.65, nearest 0.181 -> 0.251.
+
+    What the recording shows, and what the fix must change:
+
+        t_rel    points   live nearest   PRODUCTION did   this hold does
+        -0.178      8        0.1815         scale 0.00      scale 0.00
+        -0.031      8        0.2506      -> scale 0.65      scale 0.00   <- the release
+         1.116      0          None      -> scale 1.00      scale 0.00   <- full speed
+         1.258      1        0.2006         scale 1.00      scale 0.00   <- the stray
+
+    At -0.031 the rover had not moved (odom identical across the preceding second) and
+    neither had the leg. The object left the sensor's band and production read that as
+    clearance.
+
+    THE REPLAYED MOTION IS COUNTERFACTUAL AND THAT IS STATED, NOT HIDDEN: the odom in
+    this window is the rover driving into the leg, which is motion the fix would have
+    prevented. Feeding it back in transports the belief NEARER (0.1815 -> 0.1159), so
+    the replay is strictly harder on the hold than reality would have been. It also
+    means this test exercises the belief crossing INSIDE `low_obstacle_min_range_m`
+    (0.14) on real data -- the case where applying the sensor's validity floor to a
+    belief would silently release the clamp.
     """
+    fx = _fixture()
     hold = _hold()
-    leg = (0.181, 0.0)
+    pose_at = _pose_delta_series(fx["odom"])
+    previous = None
+    released = []
 
-    seen = _fwd(hold, [leg])
+    for frame in fx["clouds"]:
+        t = frame["t_rel_s"]
+        if not (-0.6 <= t <= 1.4):
+            continue
+        current = pose_at(t)
+        delta = None
+        if previous is not None and current is not None:
+            wx, wy = current["x"] - previous["x"], current["y"] - previous["y"]
+            c, s = math.cos(previous["yaw"]), math.sin(previous["yaw"])
+            dyaw = math.atan2(math.sin(current["yaw"] - previous["yaw"]),
+                              math.cos(current["yaw"] - previous["yaw"]))
+            delta = (c * wx + s * wy, -s * wx + c * wy, dyaw)
+        previous = current
+
+        result = hold.update(frame["points_xy"], True, 0.14, 0.0, delta)
+        scale = forward_speed_scale(result.nearest_m, STOP, SLOW, MIN_SCALE)
+        if scale > 0.0:
+            released.append((t, scale, result.reason))
+
+    # THE FIELD SYMPTOM, ASSERTED FIRST. Against the pre-fix module the frames at
+    # -0.031 (0.65), 1.116 (1.00) and 1.258 (1.00) all appear here.
+    assert released == [], f"the brake released on recorded data: {released}"
+
+
+def test_the_recording_contains_the_release_it_is_supposed_to_indict():
+    """PREMISE TRIPWIRE -- a revert-proof over a fixture that does not contain the
+    defect would pass forever and prove nothing.
+
+    Replays the same clouds through the STATELESS primitive the fix replaced, and
+    requires that it does release. If a future re-extraction quietly grabs the wrong
+    window, this fails rather than the test above silently going green.
+    """
+    fx = _fixture()
+    scales = []
+    for frame in fx["clouds"]:
+        if not (-0.6 <= frame["t_rel_s"] <= 1.4):
+            continue
+        nearest = swept_path_obstacle(frame["points_xy"], 0.14, 0.0, HALF_W, MIN_R, MAX_R)
+        scales.append(forward_speed_scale(nearest, STOP, SLOW, MIN_SCALE))
+
+    assert 0.0 in scales, "the window must contain the tracked approach"
+    assert max(scales) == 1.0, "the window must contain the full-speed release"
+    assert scales.index(0.0) < scales.index(1.0), "the release must FOLLOW the hold"
+
+
+def test_the_stray_return_does_not_govern_over_a_nearer_belief():
+    """Run 1's stray 0.201 m return restored full commanded speed in the field. A
+    farther sighting must never retire a nearer belief -- with the rover stationary it
+    is evidence of partial visibility, not of the object receding."""
+    hold = _hold()
+    seen = _fwd(hold, [(0.181, 0.0)])
     assert seen.reason == "live"
-    assert forward_speed_scale(seen.nearest_m, STOP, SLOW) == 0.0
-
-    # The returns vanish. The rover has not moved -- odom was frozen through this.
-    # THE SPEED ASSERTION COMES FIRST ON PURPOSE: against the pre-fix module this line
-    # fails with 1.0 == 0.0, which is the field symptom itself (the rover accelerating
-    # back into the leg). Leading with `.active` would kill the mutation on an internal
-    # flag and prove only that a new field exists.
     vanished = _fwd(hold, [], pose_delta=(0.0, 0.0, 0.0))
     assert forward_speed_scale(vanished.nearest_m, STOP, SLOW) == 0.0
     assert vanished.nearest_m == pytest.approx(0.181)
-    assert vanished.active
-    assert vanished.reason == "vanished_in_band"
+    assert vanished.active and vanished.reason == "vanished_in_band"
 
-    # And the stray 0.201 m return that restored full commanded speed in the field
-    # does not, because it is FURTHER than the belief and the nearer one governs.
     stray = _fwd(hold, [(0.201, 0.0)])
     assert forward_speed_scale(stray.nearest_m, STOP, SLOW) == 0.0
 
