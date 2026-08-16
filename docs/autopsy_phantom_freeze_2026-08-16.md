@@ -171,10 +171,14 @@ discards the magnitude, so every step would return the same answer and the sweep
 "prove" a drivetrain that cannot turn — a wrong autopsy manufactured by its own
 procedure. Card: `docs/run_card_breakaway_2026-08-16.md`.
 
-**A second thing is now unknown that was not before:** whether `_measured_yaw_rate` was
-even reporting during those episodes. The integrator's climb depends on it, and if it
-read a nonzero rate while the robot stood still, the loop would have stopped winding up
-early. The bag has `/odom` and the IMU; this is answerable offline and is banked.
+**That second unknown is now CLOSED, and it makes the trap worse.** The loop's feedback
+comes from **wheel-encoder odometry** (`rvr_node.py:563` feeds
+`driver.set_measured_yaw_rate(sample.angular_rad_s)` from `_odom_tracker`). When the
+motors are stalled the wheels do not turn, so the encoders correctly report ~0 rad/s,
+so `error = 1.3 - 0 = 1.3` — the **maximum** error — and the integrator ramps at full
+rate. **Every part of the loop behaves correctly. It demands more duty, honestly, and
+the ceiling of 32 refuses to give it any.** The controller is not mis-tuned; it is
+capped below the range where it could ever succeed.
 
 ---
 

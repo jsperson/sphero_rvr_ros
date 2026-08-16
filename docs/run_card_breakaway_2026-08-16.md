@@ -76,7 +76,14 @@ robot). It must:
 
 1. open the serial transport directly and send `drive_tank_normalized(seq, -d, +d)`
    at the control period for `burst-s`, then `(0,0)`;
-2. read yaw from the IMU/odom stream and report **achieved rad/s** per duty;
+2. read yaw from the **wheel-encoder stream** and report **achieved rad/s** per duty --
+   encoders, because that is the same source the production pivot loop regulates on
+   (`rvr_node.py:563`), so the sweep measures what the controller sees. **This is the
+   bulk of the work and the reason this is not a small script:** it needs the sensor
+   stream configured, the streaming packets decoded, and the odom tracker driven, all
+   without the ROS node. Budget for that honestly; do not start it on a tired context.
+   (An IMU cross-check is worth recording alongside, since encoders measure WHEEL
+   rotation and a grinding wheel that slips would under-report BODY rotation.);
 3. refuse to run if any ROS node holds `/dev/ttyAMA0`;
 4. stop on the first duty that produces sustained rotation **and one step beyond**, so
    we get the knee and its confirmation without climbing into the bog;
