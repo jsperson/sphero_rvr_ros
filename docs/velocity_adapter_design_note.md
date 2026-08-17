@@ -152,15 +152,16 @@ available; it is only stationary correction that is impossible.
 ## Every candidate, evaluated against the ACCELERATION-RAMP mechanism
 
 The first draft's menu was written against an error-taper that does not exist. Re-run
-against the real mechanism — a ~59-cycle acceleration ramp from rest — the options score
-very differently:
+against the real mechanism — a THREE-command onset ramp plus a reversal limit cycle —
+the options score very differently:
 
-**(a) refuse-and-zero (deadband).** Sub-floor requests command nothing. Against a ramp,
-this is **actively broken**: RPP's first ~59 commands are sub-floor, so the robot would
-refuse *all* of them, `curr_speed.angular.z` would stay 0, and the next command would be
-clamped to 0.06 again. **The ramp never escapes its own first step — rotation never starts
-at all, permanently.** This is a deadlock, not a stall risk. It was my first draft's
-preferred option, and it would have hung the robot on its first turn.
+**(a) refuse-and-zero (deadband).** Sub-floor requests command nothing. Against the ONSET
+ramp this is **actively broken**: the first command is 0.06, refusing it leaves
+`curr_speed.angular.z` at 0, so the next command is clamped to 0.06 again. **The ramp never
+escapes its own first step — rotation never starts at all, permanently.** A deadlock, not a
+stall risk. It was my first draft's preferred option and it would have hung the robot on
+its first turn. (The onset ramp is only three commands when they are EXECUTED — refusing
+them is what makes it permanent.)
 
 **(b) config-only: raise the acceleration limit above floor/dt.** Every emitted rotation
 command is at or above the floor from the first cycle. Commanded rate equals executed
