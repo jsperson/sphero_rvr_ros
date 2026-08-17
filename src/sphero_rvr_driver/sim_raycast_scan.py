@@ -72,13 +72,12 @@ class RaycastScanPublisher(Node):
             raise SimScanRefused(f"map_yaml not found: {yaml_path}")
         pgm_path = yaml_path.parent / yaml_path.read_text().split("image:")[1].split()[0]
         self._map = load_map(yaml_path.read_text(), pgm_path.read_bytes())
+        # f-string, not printf args: RcutilsLogger takes exactly one message argument
+        # and raises TypeError otherwise -- which killed this node at startup once.
         self.get_logger().warning(
-            "SIM RAYCAST SCAN -- NOT A SENSOR. Map %s (%dx%d @ %.3f m), %d blocked cells.",
-            pgm_path.name,
-            self._map.width,
-            self._map.height,
-            self._map.resolution,
-            int(self._map.blocked.sum()),
+            f"SIM RAYCAST SCAN -- NOT A SENSOR. Map {pgm_path.name} "
+            f"({self._map.width}x{self._map.height} @ {self._map.resolution:.3f} m), "
+            f"{int(self._map.blocked.sum())} blocked cells."
         )
 
         self._beams = int(self.get_parameter("beams").value)
