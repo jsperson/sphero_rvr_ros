@@ -198,6 +198,7 @@ async def test_battery_queries_are_answered_so_the_node_does_not_warn_every_seco
         lambda c, s: c.get_temperature(s),
         lambda c, s: c.get_ambient_light(s),
         lambda c, s: c.get_motor_fault_state(s),
+        lambda c, s: c.get_thermal_protection_status(s),
     ],
 )
 async def test_every_query_the_node_polls_is_answered(build):

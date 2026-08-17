@@ -223,6 +223,9 @@ class SimTransport(FakeTransport):
             )
         if packet.device_id == DID_DRIVE and cid == RVRCommands.CID_GET_MOTOR_FAULT:
             return bytes([0])
+        if packet.device_id == DID_SENSOR and cid == RVRCommands.CID_GET_THERMAL_PROTECTION:
+            # left temp, left status, right temp, right status -- both nominal.
+            return struct.pack(">f", 30.0) + bytes([0]) + struct.pack(">f", 30.0) + bytes([0])
         if packet.device_id == DID_SYSTEM_INFO:
             if cid == RVRCommands.CID_GET_MAIN_APP_VERSION:
                 return struct.pack(">HHH", 1, 0, 0)
