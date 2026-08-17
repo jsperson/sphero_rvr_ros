@@ -206,6 +206,31 @@ the falsifier, not a formality. It must be curve-faithful, not idealised: the de
 comes out at the floor rate), the measured `0.1344·duty − 0.213` inside the band, and the
 walk band treated as hostile.
 
+## Falsifier attempt 1 FAILED, and the re-registration for attempt 2
+
+**Attempt 1 (empty world, all-clear scan) could not reproduce the hunt**: on the BROKEN
+config the goal SUCCEEDED, yaw economy was 223 °/m (passing the <360 threshold against the
+field's 4029), and only 3 rotation commands were issued against the field's 64. Cause: the
+rig was scoped with no obstacles, so RPP never collides, never aborts, never reverses —
+and the reversal limit cycle cannot occur. **A rig that cannot fail on the known-bad config
+cannot certify the good one**, so the result was discarded rather than reported as a pass.
+
+Attempt 2 raycasts mission 2's real saved map. **Expectations registered BEFORE running,
+so they cannot be tuned to whatever appears:**
+
+| signature | BROKEN config must show | FIXED config must show |
+|---|---|---|
+| goal outcome | ABORTED, or completed with terrible economy | SUCCEEDED |
+| yaw economy | **> 1000 °/m** (field: 4029) | **< 360 °/m** |
+| sub-floor rotation commands | **> 25 %** of pure-rotation commands (field: 35/64 ≈ 55 %) | **zero** |
+| `out_wz` sign alternations | **> 40 /m** (field: ~130 /m) | **< 20 /m** |
+| collision aborts + recoveries | **present** — this is the generator | may occur; must not hunt |
+
+**If attempt 2 still fails to reproduce the hunt, that is a finding about the hunt's true
+generator — supervisor latching, scan timing, odom noise — and we iterate on the model
+rather than lowering the bar.** The bar is written down here first precisely so it cannot
+drift.
+
 ## Why config-only rather than the policy redesign
 
 The policy question — what *should* happen to a sub-floor request — remains real and
