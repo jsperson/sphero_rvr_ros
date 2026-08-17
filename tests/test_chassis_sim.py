@@ -88,8 +88,58 @@ def test_a_pivot_rotates_without_translating():
     chassis = CurveFaithfulChassis()
     chassis.apply_tank_normalized(-28, 28, 1.0)
 
-    assert chassis.state.yaw == pytest.approx(pc.rate_for_duty(28), abs=1e-9)
+    # NOT the instant curve value: the body spins up with a fitted time constant, so one
+    # second of command yields slightly less than one second at full rate.
+    assert 0.0 < chassis.state.yaw < pc.rate_for_duty(28)
+    assert chassis.state.yaw == pytest.approx(pc.rate_for_duty(28), rel=0.05)
     assert chassis.state.x == 0.0 and chassis.state.y == 0.0
+
+
+def test_rotation_spins_up_rather_than_snapping():
+    """A model with no dynamics cannot produce a dynamic instability.
+
+    RPP centres its acceleration window on the MEASURED speed from odom, so how the
+    achieved rate ARRIVES is part of the control loop. An instant snap gives tidy odom and
+    therefore tidy commands, and the first raycast falsifier showed exactly that: the
+    mechanism reproduced (58% sub-floor commands vs the field's 55%) while the severity
+    did not.
+    """
+    from sphero_rvr_core.chassis_sim import ROTATION_SPINUP_TAU_S
+
+    chassis = CurveFaithfulChassis()
+    target = pc.rate_for_duty(28)
+
+    # After one tau the first-order response should be ~63% of the way there.
+    chassis.apply_tank_normalized(-28, 28, ROTATION_SPINUP_TAU_S)
+    assert chassis._achieved_yaw_rate == pytest.approx(0.632 * target, rel=0.05)
+
+    # And it keeps climbing toward the curve value rather than sitting there.
+    for _ in range(20):
+        chassis.apply_tank_normalized(-28, 28, 0.05)
+    assert chassis._achieved_yaw_rate == pytest.approx(target, rel=0.02)
+
+
+def test_the_spinup_constant_is_the_one_fitted_from_the_bags():
+    # Frozen, not tuned. Fitted from breakaway run 1: duty 12 -> 0.267 s, duty 16 ->
+    # 0.188 s, taken at the midpoint. If this number ever moves, it must move because a
+    # NEW measurement moved it -- never because a falsifier wanted it to.
+    from sphero_rvr_core.chassis_sim import ROTATION_SPINUP_TAU_S
+
+    assert ROTATION_SPINUP_TAU_S == 0.22
+    assert 0.188 <= ROTATION_SPINUP_TAU_S <= 0.267, "outside the fitted range"
+
+
+def test_a_stop_coasts_down_instead_of_teleporting_to_zero():
+    chassis = CurveFaithfulChassis()
+    for _ in range(30):
+        chassis.apply_tank_normalized(-28, 28, 0.05)
+    spinning = chassis._achieved_yaw_rate
+    assert spinning > 1.0
+
+    chassis.apply_tank_normalized(0, 0, 0.05)
+    assert 0.0 < chassis._achieved_yaw_rate < spinning, (
+        "a stop is a command to zero, not teleportation -- the field's odom shows the tail"
+    )
 
 
 def test_a_pivot_in_the_dead_zone_moves_nothing_at_all():
@@ -148,7 +198,7 @@ async def test_the_transport_integrates_between_motor_writes():
     clock.t = 1.0
     await transport.write(commands.drive_tank_normalized(2, -28, 28).encode())
 
-    assert transport.chassis.state.yaw == pytest.approx(pc.rate_for_duty(28), abs=1e-9)
+    assert transport.chassis.state.yaw == pytest.approx(pc.rate_for_duty(28), rel=0.05)
 
 
 @pytest.mark.asyncio

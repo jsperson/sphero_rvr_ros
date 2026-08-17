@@ -75,11 +75,38 @@ class ChassisState:
     duty_log: List[tuple] = field(default_factory=list)
 
 
+#: First-order spin-up time constant for in-place rotation, FITTED FROM RECORDED DATA and
+#: then frozen -- never tuned against a falsifier target, which would be the fabricated-
+#: input failure mode in its most flattering costume.
+#:
+#: Fit source: breakaway run 1 (`03_validation/breakaway_2026-08-16/`), the ramp inside
+#: each burst, solving v(t) = v_ss * (1 - exp(-t/tau)) per early sample:
+#:     duty 12 -> median tau 0.267 s (n=7, range 0.162-0.312)
+#:     duty 16 -> median tau 0.188 s (n=10, range 0.112-0.340)
+#: Taken as a single constant at the midpoint.
+#:
+#: HONESTY LINE: tau is clearly DUTY-DEPENDENT -- it falls as duty rises -- and both fits
+#: come from LOW duties, because those are the only bursts the breakaway sweep recorded
+#: before its early stop. Using one constant across the whole band is an approximation, and
+#: at production duties (28-45) the true tau is probably shorter than 0.22 s.
+ROTATION_SPINUP_TAU_S = 0.22
+
+
 class CurveFaithfulChassis:
-    """Integrates robot motion from the commands actually written to the wire."""
+    """Integrates robot motion from the commands actually written to the wire.
+
+    Rotation is NOT applied instantly. The real drivetrain takes ~0.2 s to reach its
+    commanded rate, and that lag matters more than it looks: RPP centres its acceleration
+    window on the MEASURED speed from odom, so how the achieved rate arrives is part of
+    the control loop, not a cosmetic detail. A model that snaps instantly to the curve
+    value produces tidy odom and therefore tidy commands -- and cannot reproduce a
+    dynamic instability, because it has no dynamics.
+    """
 
     def __init__(self, state: Optional[ChassisState] = None):
         self.state = state or ChassisState()
+        #: The rate the body is ACTUALLY turning at, which lags the commanded rate.
+        self._achieved_yaw_rate = 0.0
 
     # -- the measured truth ------------------------------------------------------------
 
@@ -114,6 +141,12 @@ class CurveFaithfulChassis:
     def apply_tank_normalized(self, left: int, right: int, dt: float) -> None:
         """An in-place pivot: opposing treads. Rotation from the curve, no translation."""
         if left == 0 and right == 0:
+            # A stop is a command to zero, not teleportation: the body coasts down with
+            # the same time constant. Modelling stops as instant would remove the tail
+            # that the field's odom plainly shows.
+            rate = self._advance_rotation(0.0, dt)
+            self.state.yaw += rate * dt
+            self._advance_encoders(rate * dt * WHEEL_TRACK_M / 2.0, 0.0)
             return
         # Production only ever emits (-d, +d) here; a mismatch means someone changed the
         # command builder and the model's premise no longer holds.
@@ -122,10 +155,23 @@ class CurveFaithfulChassis:
                 f"tank_normalized({left}, {right}) is not an opposing-tread pivot; the "
                 "curve only describes opposing treads"
             )
-        rate = self.yaw_rate_for_duty(right)
+        target = self.yaw_rate_for_duty(right)
+        rate = self._advance_rotation(target, dt)
         self.state.yaw += rate * dt
         self._advance_encoders(rate * dt * WHEEL_TRACK_M / 2.0, 0.0)
         self.state.duty_log.append((dt, right))
+
+    def _advance_rotation(self, target: float, dt: float) -> float:
+        """First-order approach to `target`, returning the rate applied over this step.
+
+        The encoders therefore report the LAGGED rate, which is the channel RPP's
+        acceleration clamp reads -- the coupling this whole rig exists to reproduce.
+        """
+        if dt <= 0.0:
+            return self._achieved_yaw_rate
+        alpha = 1.0 - math.exp(-dt / ROTATION_SPINUP_TAU_S)
+        self._achieved_yaw_rate += (target - self._achieved_yaw_rate) * alpha
+        return self._achieved_yaw_rate
 
     def apply_tank_si(self, left_mps: float, right_mps: float, dt: float) -> None:
         """An arc. IDEAL KINEMATICS -- unmeasured regime, see the module banner."""
