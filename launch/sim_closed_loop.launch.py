@@ -73,7 +73,14 @@ def generate_launch_description() -> LaunchDescription:
         executable="static_transform_publisher",
         name="sim_static_base_to_laser",
         output="screen",
-        arguments=["0", "0", "0.19", "0", "0", "0", "base_link", "laser"],
+        # THE REAL MEASURED MOUNT, from lidar.launch.py -- including the ~179 deg yaw
+        # that makes raw scan angle 0 point BEHIND the robot. A sim that used
+        # identity here would exercise a robot we do not own.
+        arguments=[
+            "--x", "0.004500", "--y", "-0.011000", "--z", "0.190500",
+            "--roll", "0.0", "--pitch", "0.0", "--yaw", "3.1239668018215028",
+            "--frame-id", "base_link", "--child-frame-id", "laser",
+        ],
     )
 
     driver = Node(
@@ -98,12 +105,22 @@ def generate_launch_description() -> LaunchDescription:
     # rig that refusal zeroes /cmd_vel_motor and the loop never closes. An all-clear scan
     # keeps the supervisor's CLAMP in the path (the point) while its obstacle logic sees
     # an empty world (out of scope, and stated as such).
-    clear_scan = Node(
+    # RAYCAST against the real recorded room, not an all-clear scan. The first falsifier
+    # used all-clear and the BROKEN config passed everything -- with nothing to collide
+    # with, RPP just arcs to the goal and never reverses, so the hunt cannot occur. The
+    # beam pose comes from TF (map -> laser), so the real ~179 deg mount rotation is
+    # inherited rather than reimplemented.
+    scan = Node(
         package="sphero_rvr_driver",
-        executable="sim_clear_scan",
-        name="sim_clear_scan",
+        executable="sim_raycast_scan",
+        name="sim_raycast_scan",
         output="screen",
-        parameters=[{"i_understand_this_publishes_a_fake_clear_scan": True}],
+        parameters=[{
+            "i_understand_this_publishes_a_simulated_scan": True,
+            "map_yaml": LaunchConfiguration("map_yaml"),
+            "beams": 720,
+            "rate_hz": 10.0,
+        }],
     )
 
     map_server = Node(
@@ -168,5 +185,5 @@ def generate_launch_description() -> LaunchDescription:
     ]
 
     return LaunchDescription(
-        args + [static_map, static_laser, clear_scan, driver, supervisor, map_server] + nav2
+        args + [static_map, static_laser, scan, driver, supervisor, map_server] + nav2
     )

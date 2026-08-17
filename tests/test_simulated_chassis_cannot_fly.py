@@ -141,8 +141,27 @@ def test_no_flight_launch_publishes_a_fake_scan(relative):
     path = ROOT / relative
     if not path.exists():
         pytest.skip(f"{relative} not present")
-    assert "sim_clear_scan" not in path.read_text(), (
+    text = path.read_text()
+    assert "sim_clear_scan" not in text and "sim_raycast_scan" not in text, (
         f"{relative} starts the fake clear-scan publisher. That blinds the supervisor "
         "into granting every command -- the reflex layer is the part of this stack that "
         "has never failed, and this would switch it off."
     )
+
+
+def test_the_raycast_scan_node_also_refuses_without_consent():
+    source = (ROOT / "src" / "sphero_rvr_driver" / "sim_raycast_scan.py").read_text()
+    assert "SimScanRefused" in source and "raise SimScanRefused" in source
+    assert "declare_parameter(CONSENT_PARAMETER, False)" in source
+
+
+def test_the_sim_rig_uses_the_REAL_laser_mount_not_identity():
+    """A simulator that mounts the lidar straight exercises a robot we do not own.
+
+    The real base_link->laser yaw is 3.1239668 rad (~179 deg) -- raw scan angle 0 points
+    BEHIND the rover. Getting that wrong would produce a plausible scan of a mirrored
+    world, and every collision decision downstream would be confidently wrong.
+    """
+    source = (ROOT / "launch" / "sim_closed_loop.launch.py").read_text()
+    assert "3.1239668018215028" in source, "the sim must use the measured mount yaw"
+    assert '"--x", "0.004500"' in source
