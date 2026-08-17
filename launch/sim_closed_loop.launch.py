@@ -38,6 +38,16 @@ def generate_launch_description() -> LaunchDescription:
 
     args = [
         DeclareLaunchArgument(
+            "map_yaml",
+            # The global costmap needs SOMETHING to plan in. With no map the planner
+            # aborts before the robot moves at all (error 207) and the rig proves
+            # nothing -- found the hard way on the first falsifier attempt. A recorded
+            # mission map gives free space to plan through; the LOCAL costmap stays
+            # empty regardless, since there is no lidar, so collision behaviour is still
+            # deliberately out of scope.
+            default_value="/home/jsperson/.ros/missions/mission_20260816_171934.yaml",
+        ),
+        DeclareLaunchArgument(
             "nav2_params_file",
             default_value=str(share / "config" / "lean_nav2_stock.yaml"),
         ),
@@ -81,6 +91,14 @@ def generate_launch_description() -> LaunchDescription:
         remappings=[("cmd_vel", "/cmd_vel"), ("cmd_vel_motor", "/cmd_vel_motor")],
     )
 
+    map_server = Node(
+        package="nav2_map_server",
+        executable="map_server",
+        name="map_server",
+        output="screen",
+        parameters=[{"yaml_filename": LaunchConfiguration("map_yaml")}],
+    )
+
     nav2 = [
         Node(
             package="nav2_planner",
@@ -117,8 +135,23 @@ def generate_launch_description() -> LaunchDescription:
             executable="lifecycle_manager",
             name="lifecycle_manager_explore",
             output="screen",
-            parameters=[nav2_params],
+            parameters=[
+                nav2_params,
+                # map_server is lifecycle-managed here too: launched unmanaged it sits
+                # `unconfigured`, silent, and looking healthy in `ros2 node list` -- the
+                # same costume slam_toolbox wears, and the third time this pattern has
+                # cost a bringup.
+                {"node_names": [
+                    "map_server",
+                    "controller_server",
+                    "planner_server",
+                    "behavior_server",
+                    "bt_navigator",
+                ]},
+            ],
         ),
     ]
 
-    return LaunchDescription(args + [static_map, static_laser, driver, supervisor] + nav2)
+    return LaunchDescription(
+        args + [static_map, static_laser, driver, supervisor, map_server] + nav2
+    )
