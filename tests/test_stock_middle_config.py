@@ -134,17 +134,25 @@ def test_no_angular_constant_asks_for_a_rate_the_drivetrain_cannot_produce():
 
 
 def test_constants_the_curve_does_not_cover_are_marked_UNMEASURED():
-    """The curve measured IN-PLACE PIVOTS. Accelerations, linear breakaway and arc rates
-    are different regimes, and deriving them from this curve would be the raw-motor
-    error class again. They must be labelled, not quietly inherited."""
+    """The curve measured IN-PLACE PIVOTS. Regimes it does not cover must be labelled,
+    not quietly inherited.
+
+    This guard used to COUNT the word UNMEASURED and require three. That broke the moment
+    acceleration became genuinely derived (it is now fixed by the floor/dt arithmetic),
+    which is the guard punishing us for doing the right thing. It now names the regimes
+    that are actually still unmeasured, so deriving one correctly removes it from the list
+    instead of failing the build.
+    """
     text = raw()
-    assert text.count("UNMEASURED") >= 3, (
-        "acceleration limits and linear breakaway must be marked UNMEASURED rather than "
-        "silently derived from a pivot measurement"
-    )
-    assert "run_card_arc_rate_FUTURE" in text, (
-        "the arc gap must point at its close path, not just carry a label"
-    )
+
+    assert "UNMEASURED" in text
+    # Linear breakaway: both treads driving the same way is a different regime, and the
+    # pivot path turned out to have a hard dead zone -- assuming linear has none would be
+    # the same mistake in a new costume.
+    assert "regulated_linear_scaling_min_speed" in text
+    assert "STILL UNMEASURED" in text, "linear breakaway must stay labelled"
+    # Arc rates, with a close path rather than just a label.
+    assert "run_card_arc_rate_FUTURE" in text
 
 
 # --- D42: marks must be points, and the lidar must not erase them -------------------
@@ -276,3 +284,31 @@ def test_the_lifecycle_manager_section_exists_and_manages_the_controller():
     )
     for required in ("planner_server", "behavior_server", "bt_navigator"):
         assert required in names
+
+
+def test_the_angular_acceleration_limit_clears_the_floor_in_ONE_control_cycle():
+    """The fix's arithmetic, pinned so it cannot silently regress.
+
+    RPP's rotate command is clamped to an acceleration ramp from the measured speed. If
+    accel * dt is below the slowest rate this drivetrain can produce, the FIRST command
+    from rest is already sub-floor -- and every sub-floor command is raised to the floor
+    duty and executed at full rate, which is the reversal limit cycle's coupling.
+    """
+    import re
+
+    import yaml
+
+    from sphero_rvr_core import pivot_curve as pc
+
+    parsed = yaml.safe_load(raw())
+    freq = parsed["controller_server"]["ros__parameters"]["controller_frequency"]
+    accel = parsed["controller_server"]["ros__parameters"]["FollowPath"]["max_angular_accel"]
+    spin = parsed["behavior_server"]["ros__parameters"]["rotational_acc_lim"]
+    floor = pc.minimum_clean_rate(28)
+
+    assert accel / freq >= floor, (
+        f"max_angular_accel {accel} at {freq} Hz gives a first command of "
+        f"{accel / freq:.3f} rad/s, below the {floor:.2f} rad/s floor this drivetrain "
+        "can actually produce"
+    )
+    assert spin / freq >= floor, "behavior_server's Spin has the identical defect"

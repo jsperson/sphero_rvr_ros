@@ -164,12 +164,27 @@ controller_server:
       # will actually happen. Anything higher is available (up to 5.83) but there is
       # no reason to spin faster than necessary near obstacles.
       rotate_to_heading_angular_vel: 3.55
-      # UNMEASURED -- angular ACCELERATION has never been characterised on this
-      # drivetrain, and the pivot curve says nothing about it (every rung was a
-      # steady-state mean over the back half of a burst). Left at its provisional
-      # value deliberately rather than derived from a measurement that does not cover
-      # it. Raising it is a change that needs its own evidence.
-      max_angular_accel: 1.20
+      # DERIVED, and it looks absurd on purpose. See
+      # docs/velocity_adapter_design_note.md.
+      #
+      # RPP's rotateToHeading clamps its command to an acceleration ramp measured from
+      # the CURRENT SPEED reported by odom. With 1.20 the first command from rest is
+      # 1.20 * (1/20 Hz) = 0.060 rad/s -- and the measured first cmd_wz in 3a was
+      # exactly 0.06. Every such sub-floor command is raised by the driver to the floor
+      # duty and executed at 3.55 rad/s, so the robot snaps while the controller
+      # believes it is easing. Worse, after an overshoot the window is centred on a
+      # large noisy measured rate, and the controller and drivetrain lock into a
+      # reversal limit cycle with the acceleration clamp as the coupling.
+      #
+      # Required: max_angular_accel * dt >= minimum_clean_rate(pivot_min_duty)
+      #           i.e.  >= 3.55 / 0.05 = 71.0 rad/s^2.  Set to 80.0 for margin.
+      #
+      # A small acceleration limit is NOT a safety property on this drivetrain: it
+      # cannot change rotation speed more slowly than 0 -> 3.55 in one command, because
+      # nothing exists between the dead zone and the floor. A small limit is a fiction
+      # that generates commands the hardware converts into what a large limit would
+      # have produced anyway, minus the honesty.
+      max_angular_accel: 80.0
 
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
@@ -286,8 +301,9 @@ behavior_server:
     # 5.83 = the curve at pivot_max_duty 45, the fastest the deployed band allows.
     min_rotational_vel: 3.55
     max_rotational_vel: 5.83
-    # UNMEASURED (acceleration), left provisional on purpose -- see max_angular_accel.
-    rotational_acc_lim: 1.20
+    # Same defect, same fix: Spin ramps from the measured speed too, so 1.20 emits the
+    # identical sub-floor train. See max_angular_accel above.
+    rotational_acc_lim: 80.0
 
 # ============================================================================
 # THE LIFECYCLE MANAGER. Its absence is why this config had never started.
