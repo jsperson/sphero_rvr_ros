@@ -14,7 +14,9 @@ question and does not pretend to test collision behaviour.**
 
 WHAT IT CANNOT SHOW, stated so no green result over-claims:
   * arcs (ideal kinematics, unmeasured regime — `docs/run_card_arc_rate_FUTURE.md`)
-  * collision/inflation behaviour (no obstacles present at all here)
+  * collision/inflation behaviour (no obstacles present at all here -- the supervisor is
+    shown a permanently CLEAR scan so it will grant motion; its clamp is exercised, its
+    obstacle logic is not)
   * anything about the real floor
 
 `docs/velocity_adapter_design_note.md` holds the pre-registered acceptance criteria.
@@ -91,6 +93,19 @@ def generate_launch_description() -> LaunchDescription:
         remappings=[("cmd_vel", "/cmd_vel"), ("cmd_vel_motor", "/cmd_vel_motor")],
     )
 
+    # The supervisor refuses everything without a scan (SENSOR_STALE / missing_scan) --
+    # correctly, since moving blind is what it exists to prevent. With no lidar in this
+    # rig that refusal zeroes /cmd_vel_motor and the loop never closes. An all-clear scan
+    # keeps the supervisor's CLAMP in the path (the point) while its obstacle logic sees
+    # an empty world (out of scope, and stated as such).
+    clear_scan = Node(
+        package="sphero_rvr_driver",
+        executable="sim_clear_scan",
+        name="sim_clear_scan",
+        output="screen",
+        parameters=[{"i_understand_this_publishes_a_fake_clear_scan": True}],
+    )
+
     map_server = Node(
         package="nav2_map_server",
         executable="map_server",
@@ -153,5 +168,5 @@ def generate_launch_description() -> LaunchDescription:
     ]
 
     return LaunchDescription(
-        args + [static_map, static_laser, driver, supervisor, map_server] + nav2
+        args + [static_map, static_laser, clear_scan, driver, supervisor, map_server] + nav2
     )

@@ -82,6 +82,7 @@ setup(
     entry_points={
         "console_scripts": [
             "rvr_node = sphero_rvr_driver.rvr_node:main",
+            "sim_clear_scan = sphero_rvr_driver.sim_clear_scan:main",
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
             "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",

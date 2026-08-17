@@ -104,3 +104,45 @@ def test_exactly_one_launch_names_the_simulator_and_it_is_the_sim_rig():
     )
     source = (ROOT / "launch" / "sim_closed_loop.launch.py").read_text()
     assert "NOT A FLIGHT LAUNCH" in source
+
+
+# --- the fake scan is the most dangerous thing in this repo -------------------------
+
+def test_the_clear_scan_node_refuses_without_explicit_consent():
+    """A fake all-clear /scan would blind the collision supervisor into granting every
+    command. On a real robot that is worse than a bad controller: it removes the reflex
+    layer that has never failed. So it refuses to start unless asked explicitly."""
+    # Read at source level: importing the module needs rclpy, which is absent on the
+    # Mac, and this guard must run everywhere the suite runs.
+    source = (ROOT / "src" / "sphero_rvr_driver" / "sim_clear_scan.py").read_text()
+
+    assert "SimClearScanRefused" in source
+    assert "declare_parameter(CONSENT_PARAMETER, False)" in source, (
+        "the consent parameter must DEFAULT to false"
+    )
+    assert 'CONSENT_PARAMETER = "i_understand' in source, (
+        "the parameter name should make an operator read what they are agreeing to"
+    )
+    assert "raise SimClearScanRefused" in source, "it must actually refuse"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "launch/explore.launch.py",
+        "launch/supervised_rvr.launch.py",
+        "launch/rvr.launch.py",
+        "launch/mapping.launch.py",
+        "launch/bringup_stationary_test.launch.py",
+        "scripts/launch_and_arm.py",
+    ],
+)
+def test_no_flight_launch_publishes_a_fake_scan(relative):
+    path = ROOT / relative
+    if not path.exists():
+        pytest.skip(f"{relative} not present")
+    assert "sim_clear_scan" not in path.read_text(), (
+        f"{relative} starts the fake clear-scan publisher. That blinds the supervisor "
+        "into granting every command -- the reflex layer is the part of this stack that "
+        "has never failed, and this would switch it off."
+    )
