@@ -25,4 +25,8 @@ class RVRState:
     last_motor_transport_write_epoch_s: Optional[float] = None
     last_motion_transport_write_epoch_s: Optional[float] = None
     motor_stall_triggered: bool = False
+    #: Monotonic count of stall transitions. A LEVEL sampled at 1 Hz misses a stall that
+    #: starts and clears inside a second; a counter cannot miss one however brief (D48).
+    motor_stall_events: int = 0
+    last_motor_stall_epoch_s: Optional[float] = None
     motor_fault: bool = False

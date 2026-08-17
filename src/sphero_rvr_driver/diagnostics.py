@@ -67,6 +67,9 @@ def diagnostic_key_values(
         "emergency_stopped": str(state.emergency_stopped).lower(),
         "fail_safe_active": str(state.fail_safe_active).lower(),
         "motor_stall": str(state.motor_stall_triggered).lower(),
+        # D48: the COUNTER, not just the level. Diagnostics publish at 1 Hz, so a stall
+        # shorter than a second never appears in the flag -- but it always appears here.
+        "motor_stall_events": str(state.motor_stall_events),
         "motor_fault": str(state.motor_fault).lower(),
     }
     if state.fail_safe_reason:

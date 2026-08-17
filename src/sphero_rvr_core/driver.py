@@ -154,6 +154,10 @@ class RVRDriver:
         self._heading_max_speed = max(0, min(255, int(heading_max_speed)))
         self._target_heading_deg = 0.0
         self._motor_stall_triggered = False
+        # Monotonic count of false->true stall transitions, and when the last one was.
+        # See _handle_motor_stall for why the flag alone is not enough.
+        self._motor_stall_events = 0
+        self._last_motor_stall_epoch_s = None
         self._motor_fault = False
         # IMU sensor streaming (Stage B fusion). None disables it; the value is
         # the stream interval in ms (clamped to the firmware minimum of 33 ms).
@@ -251,7 +255,23 @@ class RVRDriver:
         self._measured_yaw_rate = float(yaw_rate_rad_s)
 
     def _handle_motor_stall(self, event: "responses.MotorStallEvent") -> None:
-        self._motor_stall_triggered = bool(getattr(event, "is_triggered", False))
+        """Record the stall FLAG and COUNT the transitions into it.
+
+        D48. The flag alone is a level, and levels are only as good as the rate they are
+        sampled at -- the driver's own diagnostics publish at 1 Hz, so a stall that starts
+        and clears inside a second is invisible to every consumer. On 2026-08-16 the one
+        recorded stall lasted 2 s and was caught by luck of duration, not by design.
+
+        A monotonic counter cannot miss an event no matter how briefly it lasts, so a
+        consumer comparing two samples learns "a stall happened between these" even when
+        both samples show the flag false. That is the difference between a touch sense and
+        a coincidence.
+        """
+        triggered = bool(getattr(event, "is_triggered", False))
+        if triggered and not self._motor_stall_triggered:
+            self._motor_stall_events += 1
+            self._last_motor_stall_epoch_s = now_seconds()
+        self._motor_stall_triggered = triggered
 
     def _handle_motor_fault(self, event: "responses.MotorFaultEvent") -> None:
         self._motor_fault = bool(getattr(event, "is_fault", False))
@@ -712,6 +732,8 @@ class RVRDriver:
             last_motor_transport_write_epoch_s=self._last_motor_transport_write_epoch_s,
             last_motion_transport_write_epoch_s=self._last_motion_transport_write_epoch_s,
             motor_stall_triggered=self._motor_stall_triggered,
+            motor_stall_events=self._motor_stall_events,
+            last_motor_stall_epoch_s=self._last_motor_stall_epoch_s,
             motor_fault=self._motor_fault,
         )
 
