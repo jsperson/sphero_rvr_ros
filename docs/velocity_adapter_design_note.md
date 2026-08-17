@@ -31,17 +31,53 @@ FIRST rotate command from rest = max_angular_accel * dt          = 0.060 rad/s
 **The measured first command in §3a was `cmd_wz = 0.06`.** Exact match — the mechanism is
 confirmed by a number, not by a story.
 
+### SECOND CORRECTION — the "59-cycle ramp" was my arithmetic, and the data refutes it
+
+I then computed `3.55 / 0.06 = 59 cycles = 2.96 s` of sub-floor commands. **That assumed
+the measured speed follows the commanded ramp. It does not** — the clamp is against
+`curr_speed` from **odom**, and the robot snaps to full rate on the very first command, so
+odom immediately reports a large rate and the window jumps with it. Measured from the bag:
+
 ```
-cycles to ramp from 0 to the 3.55 rad/s config value = 3.55 / 0.06 = 59 cycles
-                                                     = 59 * 0.05  = 2.96 SECONDS
+ t        cmd_wz    odom_wz just before    accel window
+179.76     0.060          0.000            [-0.06, 0.06]  CLAMPED   <- the onset ramp
+179.81     0.060          0.000            [-0.06, 0.06]  CLAMPED      ...is THREE
+179.86     0.060          0.000            [-0.06, 0.06]  CLAMPED      commands long
+181.75     3.550          0.111
+181.95     3.550          0.999
+182.15     3.550          3.320
+182.35     3.550          3.564            [3.50, 3.62]   CLAMPED
 ```
 
-**So RPP spends ~3 seconds walking up through the entire sub-floor band**, emitting ~59
-consecutive commands *below* what this drivetrain can execute. Every one of them is raised
-to floor duty and leaves at **3.55 rad/s**. RPP believes it is accelerating gently from
-rest; the robot is snapping at full rate from the first command. Observed `cmd_wz` values
-— 0.06, 0.11, 0.21, 0.54, 0.92, 1.03, 1.21, 1.34, 1.39, 1.46 — are that ramp, and **35 of
-64 pivot commands were below the floor.**
+**The up-ramp collapses in one to two cycles, exactly as predicted on review. Three
+sub-floor commands at onset, not 59.**
+
+### The mechanism the data actually shows: a REVERSAL limit cycle
+
+The sub-floor commands cluster **after overshoot and sign reversal**, not at onset:
+
+```
+182.49   -2.162    odom +3.187      182.74   -2.140    odom -2.502
+182.54   -2.293    odom +2.504      182.84   -1.937    odom -3.331
+182.64   -0.926    odom -0.866      ...
+```
+
+And the measured rotation rate is violent and alternating: **odom `|wz|` reaches 4.68 rad/s,
+p95 3.56** — above the floor itself. The loop is:
+
+> command → **floor snap to ±3.55** → odom reports a large, noisy, sign-alternating rate →
+> RPP's acceleration window is centred on *that* → the next command lands sub-floor or
+> reversed → floor snap the other way.
+
+**The controller and the drivetrain are in a limit cycle, and the acceleration clamp is
+the coupling.** Onset contributes three commands; the limit cycle contributes the rest of
+the 35 sub-floor commands out of 64.
+
+Aggravating factor, bounded: **odom publishes at ~10 Hz while the controller runs at
+20 Hz**, and at floor rate the robot sweeps ~20° between odom samples. The controller's
+notion of "current speed" is therefore stale and coarse by construction. This is a
+residual wobble source; it is bounded by the tolerance quantum (0.178 rad vs 0.30 rad
+tolerance) and is not the primary defect.
 
 The quantum that bounds convergence:
 
@@ -65,6 +101,20 @@ max_angular_accel       >=  3.55 / 0.05  =  71.0 rad/s^2
 
 Proposed `max_angular_accel: 80.0` (and `rotational_acc_lim: 80.0` for `behavior_server`,
 which has the identical 1.20 and therefore the identical defect in Spin).
+
+**The reversal mechanism makes this a STRONGER argument for 80, not a weaker one.** At
+80 rad/s² the clamp window is ±4.0 rad/s per cycle — wider than the full range odom ever
+reports (max 4.68, p95 3.56). **The clamp stops binding at all**, so RPP emits its intended
+±3.55 every cycle instead of whatever the noisy measured speed permits, and the coupling
+that closes the limit cycle is removed. A small limit does not damp this system; it *is*
+the feedback path.
+
+**What that does NOT settle, and the simulator must:** whether the hunt actually resolves
+once every command is ±3.55. The robot will still snap, still overshoot by up to one
+0.178 rad quantum, and odom will still be coarse. Removing sub-floor commands satisfies
+the fix's invariant; it does not by itself prove convergence. **That is the question the
+closed-loop proof exists to answer, and it is why the config change does not fly on
+argument alone.**
 
 **80 rad/s² looks absurd and is honest.** An acceleration limit expresses "do not change
 speed faster than this". **This drivetrain physically cannot change rotation speed more
