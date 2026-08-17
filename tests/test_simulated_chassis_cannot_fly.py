@@ -18,6 +18,16 @@ from sphero_rvr_driver.rvr_node import SIMULATED_CHASSIS_PORT, RVRNodeConfig, cr
 
 ROOT = Path(__file__).resolve().parents[1]
 
+#: A file "names the simulator" if it contains the literal value OR imports the symbol.
+#: Checking only the value was a blind spot: the sim launch imports the constant (which is
+#: the GOOD pattern -- no duplicated literal), so a value-only search saw nothing, and a
+#: flight launch could have done the same and slipped past the guard.
+SELECTOR_TOKENS = (SIMULATED_CHASSIS_PORT, "SIMULATED_CHASSIS_PORT")
+
+
+def _names_the_simulator(text: str) -> bool:
+    return any(token in text for token in SELECTOR_TOKENS)
+
 
 def test_the_selector_is_not_a_boolean_and_not_a_plausible_path():
     assert SIMULATED_CHASSIS_PORT == "SIMULATED_CHASSIS_NOT_A_REAL_ROBOT"
@@ -51,7 +61,7 @@ def test_nothing_that_flies_names_the_simulated_chassis(relative):
     path = ROOT / relative
     if not path.exists():
         pytest.skip(f"{relative} not present on this branch")
-    assert SIMULATED_CHASSIS_PORT not in path.read_text(), (
+    assert not _names_the_simulator(path.read_text()), (
         f"{relative} selects the simulated chassis. Everything above the transport is "
         "production code and cannot tell it is talking to a model -- the node would "
         "publish confident odometry for a rover that is not moving."
@@ -73,3 +83,24 @@ def test_a_normal_config_yields_a_serial_transport():
 
     driver = create_driver(RVRNodeConfig(serial_port="/dev/ttyAMA0"))
     assert isinstance(driver._dispatcher._transport, SerialTransport)
+
+
+def test_exactly_one_launch_names_the_simulator_and_it_is_the_sim_rig():
+    """Otherwise this file guards a list instead of a property.
+
+    The parametrized test above checks known flight launches by name; that cannot see a
+    NEW launch someone adds. This one asserts the global shape: exactly one launch file
+    in the tree selects the simulator, and it is the one whose docstring says it is not a
+    flight launch.
+    """
+    naming = [
+        path.name
+        for path in sorted((ROOT / "launch").glob("*.py"))
+        if _names_the_simulator(path.read_text())
+    ]
+    assert naming == ["sim_closed_loop.launch.py"], (
+        f"launches naming the simulated chassis: {naming}. Exactly one may, and it must "
+        "be the closed-loop rig."
+    )
+    source = (ROOT / "launch" / "sim_closed_loop.launch.py").read_text()
+    assert "NOT A FLIGHT LAUNCH" in source

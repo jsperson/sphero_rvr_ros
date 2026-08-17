@@ -20,6 +20,7 @@ setup(
                 "launch/explore.launch.py",
                 "launch/camera.launch.py",
                 "launch/bringup_stationary_test.launch.py",
+                "launch/sim_closed_loop.launch.py",
             ],
         ),
         (
