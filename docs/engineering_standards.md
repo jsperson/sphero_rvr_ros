@@ -331,6 +331,16 @@ test — it is only stronger when the data can tell the answers apart.**
 them diverge and check the fixtures actually vary it. If none does, construct the case
 and say in the test that it is constructed and why. Then mutate both ways.
 
+## Appendix A6: the fifth way a verification artifact lies
+
+The taxonomy was: (1) the cited mechanism does not exist, (2) the check is defeatable
+without doing the work, (3) the input is fabricated in a way reality never produces, and
+(4) the check never ran at all. **2026-08-17 added a fifth: THE CHECK DAMAGED THE THING IT
+CHECKED, AND LEFT NO TRACE.** A killed mutation run left its edit in an untracked source
+file; the tooling that normally reports such things (`git status`) is structurally unable
+to see untracked content, so the instrument that would have caught it was the instrument
+that reassured me. See rules 12 and 13.
+
 ## Appendix A5: a guard that greps prose fails on its own explanation
 
 **Three times in one night (2026-08-16), a guard written to forbid a defect went red on
@@ -365,6 +375,32 @@ separate helper with a name that admits it.
 
 **The tell:** if a guard would pass on an empty file, or would pass more easily after
 deleting a comment, it is measuring the wrong surface.
+
+## 12. A killed mutation run is a DIRTY-SOURCE event, and git will not tell you
+
+**Bought 2026-08-17.** A mutation harness edits source in place and restores it after each
+run. I killed one that had hung, and it left its mutation applied: a live `and False` in
+`chassis_sim.py` that disabled the simulator's encoder path. **The file was UNTRACKED, so
+`git status` showed nothing** — and I had run my usual tree check and *been reassured by
+it*. I found the corruption only by debugging a test failure that made no sense. Had I
+committed at that moment I would have shipped a silently crippled model, and every
+closed-loop result produced from it would have been confident garbage.
+
+**The rule:** a mutation harness must verify source integrity against its backup after
+**every** restore (`cmp`, not faith), and abort loudly on mismatch. **A tree check that
+consults only `git status` is blind to exactly the files mutation testing touches most —
+new ones.** Killing an in-place-mutation run is a dirty-source event and must be treated
+like one: verify before anything else, including before believing a test result.
+
+## 13. A test that CAN hang is a test that WILL hang
+
+**Same incident.** The mutation that stopped answering encoder polls made a test block
+forever on a bare `await queue.get()` rather than fail. **A hung mutation run wearing a
+perfect score is the worst artifact in this repo's taxonomy** — it reports `killed=N` while
+proving nothing, and the only tell is the clock.
+
+**The rule:** every `await` in test code gets a timeout. `asyncio.wait_for`, always. A
+test's job under mutation is to *fail*, and a test that cannot fail promptly cannot do it.
 
 ## Appendix B: operational traps that look like bugs
 

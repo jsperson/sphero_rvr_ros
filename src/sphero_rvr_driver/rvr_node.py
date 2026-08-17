@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import threading
+import time
 from dataclasses import dataclass, replace
 from typing import Optional
 
@@ -28,6 +30,13 @@ from .odometry import DifferentialOdomConfig, DifferentialOdomTracker, OdomSampl
 from .twist_mapper import TwistLike, map_twist_to_velocity
 
 DEFAULT_ODOM_COUNTS_PER_METER = 4337.768
+
+
+#: The only value of `serial_port` that selects the curve-faithful simulator instead of a
+#: real serial device. Deliberately not a boolean flag and deliberately not a plausible
+#: path -- a config file cannot enable a fake robot by accident, and a guard test asserts
+#: no flight launch or config names it.
+SIMULATED_CHASSIS_PORT = "SIMULATED_CHASSIS_NOT_A_REAL_ROBOT"
 
 
 @dataclass(frozen=True)
@@ -84,7 +93,23 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
     Kept importable/testable without ROS 2 so safety defaults do not regress.
     """
     if transport is None:
-        transport = SerialTransport(port=config.serial_port, baud_rate=config.baud_rate)
+        if config.serial_port == SIMULATED_CHASSIS_PORT:
+            # CHASSIS-OFF CLOSED-LOOP TESTING ONLY. Selected by an impossible "port"
+            # rather than a boolean, so it cannot be switched on by a stray `true` in a
+            # YAML file: a real deployment names a real device, and no real device is
+            # called this. Un-startable by accident, per the camera charter's pattern.
+            #
+            # Everything above this line is production code -- the driver, the velocity
+            # clamp, plan_pivot and the odom pipeline all run unchanged. Only the wire
+            # is simulated. See sphero_rvr_core.chassis_sim.
+            from sphero_rvr_core.chassis_sim import BANNER, SimTransport
+
+            logging.getLogger(__name__).warning(
+                "SIMULATED CHASSIS -- NOT A REAL ROBOT. %s", BANNER
+            )
+            transport = SimTransport(clock=time.monotonic)
+        else:
+            transport = SerialTransport(port=config.serial_port, baud_rate=config.baud_rate)
     return RVRDriver(
         transport=transport,
         control_period=config.control_period,
