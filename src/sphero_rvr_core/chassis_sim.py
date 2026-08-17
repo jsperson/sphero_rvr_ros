@@ -34,7 +34,7 @@ from typing import List, Optional
 
 from .commands import RVRCommands
 from .fake_transport import FakeTransport
-from .packet import Packet
+from .packet import FLAG_HAS_TARGET, FLAG_IS_ACTIVITY, FLAG_IS_RESPONSE, Packet
 from .pivot_curve import (
     CURVE_VALID_DUTY_MAX,
     CURVE_VALID_DUTY_MIN,
@@ -56,6 +56,7 @@ WHEEL_TRACK_M = 0.2507
 
 DID_DRIVE = 0x16
 DID_SENSOR = 0x18
+DID_POWER = 0x13
 
 
 class WalkBandViolation(AssertionError):
@@ -154,10 +155,14 @@ class SimTransport(FakeTransport):
     """
 
     def __init__(self, clock, chassis: Optional[CurveFaithfulChassis] = None):
-        super().__init__(auto_ack=True)
+        # auto_ack OFF: an ack without FLAG_IS_RESPONSE satisfies nothing, and motor
+        # packets are fire-and-forget. Real replies come from _respond().
+        super().__init__(auto_ack=False)
         self.clock = clock
         self.chassis = chassis or CurveFaithfulChassis()
         self._last_motor_t: Optional[float] = None
+        self.battery_percentage = 78
+        self.battery_voltage = 7.92
 
     async def write(self, data: bytes) -> None:
         packet = Packet.decode(data)
@@ -182,16 +187,45 @@ class SimTransport(FakeTransport):
 
         await super().write(data)
 
-        if (
-            packet.device_id == DID_SENSOR
-            and packet.command_id == RVRCommands.CID_GET_ENCODER_COUNTS
-        ):
+        payload = self._response_payload(packet)
+        if payload is not None:
+            await self._respond(packet, payload)
+
+    def _response_payload(self, packet: Packet) -> Optional[bytes]:
+        """The payload a real RVR would answer this query with, or None for no answer.
+
+        Only the queries `rvr_node` actually polls. Anything else simply times out, which
+        the node already tolerates with a warning -- the same as a real chassis that does
+        not answer.
+        """
+        cid = packet.command_id
+        if packet.device_id == DID_SENSOR and cid == RVRCommands.CID_GET_ENCODER_COUNTS:
             left, right = self.chassis.encoder_counts
-            await self.inject_read(
-                Packet(
-                    packet.device_id,
-                    packet.command_id,
-                    packet.sequence_id,
-                    struct.pack(">ii", left, right),
-                ).encode()
-            )
+            return struct.pack(">ii", left, right)
+        if packet.device_id == DID_POWER:
+            if cid == RVRCommands.CID_GET_BATTERY_PERCENTAGE:
+                return bytes([self.battery_percentage])
+            if cid == RVRCommands.CID_GET_BATTERY_VOLTAGE:
+                return struct.pack(">f", self.battery_voltage)
+            if cid == RVRCommands.CID_GET_BATTERY_VOLTAGE_STATE:
+                return bytes([1])  # "ok"
+        return None
+
+    async def _respond(self, request: Packet, payload: bytes) -> None:
+        """Inject a properly flagged RESPONSE.
+
+        FLAG_IS_RESPONSE is not decoration: the dispatcher matches pending requests only
+        on packets carrying it, so a reply without it is silently ignored and the caller
+        times out. That cost the first closed-loop bringup its odometry.
+        """
+        await self.inject_read(
+            Packet(
+                request.device_id,
+                request.command_id,
+                request.sequence_id,
+                payload,
+                target=None,
+                source=None,
+                flags=FLAG_IS_RESPONSE | FLAG_IS_ACTIVITY,
+            ).encode()
+        )

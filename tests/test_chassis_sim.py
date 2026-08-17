@@ -22,7 +22,7 @@ from sphero_rvr_core.chassis_sim import (
     WalkBandViolation,
 )
 from sphero_rvr_core.commands import RVRCommands
-from sphero_rvr_core.packet import Packet
+from sphero_rvr_core.packet import FLAG_IS_RESPONSE, Packet
 
 
 # ======================================================================================
@@ -162,18 +162,41 @@ async def test_the_transport_answers_an_encoder_poll_with_the_simulated_counts()
     commands = RVRCommands()
     await transport.write(commands.get_encoder_counts(7).encode())
 
-    # auto_ack queues an ack first; the encoder response follows.
-    #
     # WAIT_FOR, not a bare await: a mutation that stops answering encoder polls made this
     # test HANG rather than fail, and a hung mutation run looks like a passing one until
     # someone notices the clock. A test that can hang is a test that will hang in CI.
-    seen = []
-    for _ in range(2):
-        raw = await asyncio.wait_for(transport.read_packet(), timeout=1.0)
-        seen.append(Packet.decode(raw))
-    payloads = [p.payload for p in seen if len(p.payload) == 8]
-    assert payloads, "no 8-byte encoder response was injected"
-    assert struct.unpack(">ii", payloads[0]) == (-1234, 5678)
+    raw = await asyncio.wait_for(transport.read_packet(), timeout=1.0)
+    reply = Packet.decode(raw)
+
+    assert struct.unpack(">ii", reply.payload) == (-1234, 5678)
+    # FLAG_IS_RESPONSE is not decoration: the dispatcher matches pending requests ONLY on
+    # packets carrying it. A reply without it is silently ignored and the caller times
+    # out -- which is exactly what cost the first closed-loop bringup its odometry.
+    assert reply.flags & FLAG_IS_RESPONSE, "a reply without FLAG_IS_RESPONSE satisfies nothing"
+
+
+@pytest.mark.asyncio
+async def test_battery_queries_are_answered_so_the_node_does_not_warn_every_second():
+    clock = FakeClock()
+    transport = SimTransport(clock)
+    await transport.open()
+    commands = RVRCommands()
+
+    await transport.write(commands.get_battery_percentage(3).encode())
+    reply = Packet.decode(await asyncio.wait_for(transport.read_packet(), timeout=1.0))
+    assert reply.payload[0] == transport.battery_percentage
+    assert reply.flags & FLAG_IS_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_query_is_simply_unanswered_like_a_real_silent_chassis():
+    clock = FakeClock()
+    transport = SimTransport(clock)
+    await transport.open()
+
+    await transport.write(RVRCommands().get_ambient_light(4).encode())
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(transport.read_packet(), timeout=0.2)
 
 
 @pytest.mark.asyncio
