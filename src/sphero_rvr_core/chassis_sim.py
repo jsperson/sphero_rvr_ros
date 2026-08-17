@@ -57,6 +57,7 @@ WHEEL_TRACK_M = 0.2507
 DID_DRIVE = 0x16
 DID_SENSOR = 0x18
 DID_POWER = 0x13
+DID_SYSTEM_INFO = 0x11
 
 
 class WalkBandViolation(AssertionError):
@@ -194,9 +195,12 @@ class SimTransport(FakeTransport):
     def _response_payload(self, packet: Packet) -> Optional[bytes]:
         """The payload a real RVR would answer this query with, or None for no answer.
 
-        Only the queries `rvr_node` actually polls. Anything else simply times out, which
-        the node already tolerates with a warning -- the same as a real chassis that does
-        not answer.
+        EVERY query `rvr_node` polls must be answered. Leaving one unanswered is not the
+        harmless "silent chassis" I first assumed: each unanswered request blocks for its
+        full 1 s timeout while holding the command pipeline, and three such polls dragged
+        /odom from its configured 10 Hz down to 0.4 Hz -- destroying the very
+        odom-staleness fidelity this rig exists to reproduce. A real RVR answers these, so
+        the sim must too.
         """
         cid = packet.command_id
         if packet.device_id == DID_SENSOR and cid == RVRCommands.CID_GET_ENCODER_COUNTS:
@@ -209,6 +213,25 @@ class SimTransport(FakeTransport):
                 return struct.pack(">f", self.battery_voltage)
             if cid == RVRCommands.CID_GET_BATTERY_VOLTAGE_STATE:
                 return bytes([1])  # "ok"
+        if packet.device_id == DID_SENSOR and cid == RVRCommands.CID_GET_AMBIENT_LIGHT:
+            return struct.pack(">f", 120.0)
+        if packet.device_id == DID_SENSOR and cid == RVRCommands.CID_GET_TEMPERATURE:
+            # sensor 4 = left motor, sensor 5 = right motor; id byte then float32.
+            return (
+                bytes([4]) + struct.pack(">f", 30.0)
+                + bytes([5]) + struct.pack(">f", 30.0)
+            )
+        if packet.device_id == DID_DRIVE and cid == RVRCommands.CID_GET_MOTOR_FAULT:
+            return bytes([0])
+        if packet.device_id == DID_SYSTEM_INFO:
+            if cid == RVRCommands.CID_GET_MAIN_APP_VERSION:
+                return struct.pack(">HHH", 1, 0, 0)
+            if cid == RVRCommands.CID_GET_BOARD_REVISION:
+                return bytes([1])
+            if cid == RVRCommands.CID_GET_PROCESSOR_NAME:
+                return b"SIMULATED\x00"
+            if cid == RVRCommands.CID_GET_CORE_UPTIME:
+                return struct.pack(">Q", 1000)
         return None
 
     async def _respond(self, request: Packet, payload: bytes) -> None:

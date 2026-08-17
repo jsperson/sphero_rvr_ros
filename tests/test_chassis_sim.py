@@ -189,14 +189,34 @@ async def test_battery_queries_are_answered_so_the_node_does_not_warn_every_seco
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_query_is_simply_unanswered_like_a_real_silent_chassis():
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda c, s: c.get_encoder_counts(s),
+        lambda c, s: c.get_battery_percentage(s),
+        lambda c, s: c.get_battery_voltage(s),
+        lambda c, s: c.get_temperature(s),
+        lambda c, s: c.get_ambient_light(s),
+        lambda c, s: c.get_motor_fault_state(s),
+    ],
+)
+async def test_every_query_the_node_polls_is_answered(build):
+    """An unanswered poll is NOT a harmless silent chassis.
+
+    Each one blocks for its full 1 s timeout while holding the command pipeline. Three of
+    them dragged /odom from its configured 10 Hz to 0.4 Hz in the first closed-loop
+    bringup -- destroying the odom-staleness fidelity this rig exists to reproduce. A real
+    RVR answers these, so the sim must too, or the model is unfaithful on the exact axis
+    the proof depends on.
+    """
     clock = FakeClock()
     transport = SimTransport(clock)
     await transport.open()
 
-    await transport.write(RVRCommands().get_ambient_light(4).encode())
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(transport.read_packet(), timeout=0.2)
+    await transport.write(build(RVRCommands(), 9).encode())
+    reply = Packet.decode(await asyncio.wait_for(transport.read_packet(), timeout=1.0))
+    assert reply.flags & FLAG_IS_RESPONSE
+    assert reply.payload, "an empty payload is not an answer"
 
 
 @pytest.mark.asyncio
