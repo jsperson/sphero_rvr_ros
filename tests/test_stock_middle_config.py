@@ -247,3 +247,32 @@ def test_the_reverse_seam_is_documented_as_an_open_risk():
     doc = (ROOT / "docs" / "navigation_reckoning.md").read_text()
     assert "BackUp" in doc and "reverse_stop_distance_m" in doc, (
         "the reverse-seam risk must be written down before this prototype is flown")
+
+
+# --- the config must be able to START ------------------------------------------------
+
+def test_the_lifecycle_manager_section_exists_and_manages_the_controller():
+    """A config file is a claim about a system that runs.
+
+    2026-08-17, during 3a pre-flight: this config had no `lifecycle_manager_explore`
+    section, so `node_names` was uninitialized and nav2_lifecycle_manager THREW at
+    startup (ParameterUninitializedException, exit -6). The four servers then sat in
+    `unconfigured` forever -- present in `ros2 node list`, doing nothing. It had never
+    been flown, so nothing had ever needed the manager to exist.
+    """
+    import yaml
+
+    parsed = yaml.safe_load(raw())
+    assert "lifecycle_manager_explore" in parsed, (
+        "no lifecycle manager section: the servers will never leave `unconfigured`"
+    )
+    params = parsed["lifecycle_manager_explore"]["ros__parameters"]
+    assert params.get("autostart") is True
+    names = params.get("node_names")
+    assert names, "node_names must be set, or the manager throws and dies at startup"
+    assert "controller_server" in names, (
+        "controller_server MUST be managed here -- it is the whole point of the stock "
+        "middle, and the decisive path omits it precisely because it does not start it"
+    )
+    for required in ("planner_server", "behavior_server", "bt_navigator"):
+        assert required in names

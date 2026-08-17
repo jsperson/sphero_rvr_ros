@@ -288,3 +288,30 @@ behavior_server:
     max_rotational_vel: 5.83
     # UNMEASURED (acceleration), left provisional on purpose -- see max_angular_accel.
     rotational_acc_lim: 1.20
+
+# ============================================================================
+# THE LIFECYCLE MANAGER. Its absence is why this config had never started.
+# ============================================================================
+# Added 2026-08-17 during 3a pre-flight, BEFORE any wheels turned. Without this
+# section `node_names` is uninitialized, and nav2_lifecycle_manager does not
+# degrade -- it throws ParameterUninitializedException and dies at startup with
+# exit code -6. The four servers then sit in `unconfigured` forever, PRESENT in
+# `ros2 node list` and doing nothing, which is exactly the costume slam_toolbox
+# wears when launched without autostart.
+#
+# This config had never been flown, so nothing had ever needed the manager to
+# exist. A config file is a claim about a system that runs; this one was missing
+# the section that makes it run at all.
+#
+# controller_server is in the list ON PURPOSE and is the entire point of the
+# stock middle: explore.launch.py's decisive path manages only planner/behavior/bt,
+# because in that mode controller_server is never started.
+lifecycle_manager_explore:
+  ros__parameters:
+    use_sim_time: false
+    autostart: true
+    node_names:
+      - planner_server
+      - controller_server
+      - behavior_server
+      - bt_navigator
