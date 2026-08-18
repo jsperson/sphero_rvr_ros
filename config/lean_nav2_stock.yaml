@@ -523,6 +523,38 @@ local_costmap:
         # ONLY place the robot's size enters -- D42's double-booking fix is untouched.
         inflation_radius: 0.30
 
+# ============================================================================
+# BT NAVIGATOR. This section did not exist, and its absence drove a robot.
+# ============================================================================
+# No-section family, member THREE (planner_server and global_costmap were one and
+# two): with no `bt_navigator` section this node ran pure nav2 defaults, including
+# `default_server_timeout` = 20 ms -- the budget the BT gives an action server to
+# ACKNOWLEDGE a goal. On 2026-08-18 (run 3c, goal 3) a load spike sagged
+# controller_server's loop from 20 Hz to 8.2 Hz (~122 ms periods); the BT timed out
+# at 20 ms and ABORTED the mission -- but the controller had already accepted
+# follow_path server-side, and when its starved executor caught up it drove the
+# robot for 2.8 s (0.135 m, +82 deg) with NO OWNER: bt dead, operator told the goal
+# failed, wheels turning. RPP's own collision check happened to end it. Same flight,
+# goal 1: "Failed to get result for compute_path_to_pose in node halt!" -- the same
+# family, halt flavour.
+#
+# Every value below is EXPLICIT so that changing it is a decision with a diff, never
+# a default drifting underneath us -- defaults-by-decision, not defaults-by-omission
+# (tests/test_stock_middle_config.py holds every nav2 node the stock launch starts
+# to that rule).
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_link
+    # 1000 ms, DERIVED: the measured starvation class is a controller loop at 8.2 Hz
+    # (~122 ms per cycle, run 3c under load ~8), so ack delays run to several hundred
+    # ms exactly when the system is least healthy; 1000 ms covers ~8 starved cycles.
+    # The cost is honest and small: a genuinely dead server now stalls the BT 1 s
+    # instead of 20 ms -- nothing at mission scale. What the 20 ms default bought was
+    # an abort that DID NOT STOP THE ACTUATOR, which is no safety at all.
+    default_server_timeout: 1000
+    bt_loop_duration: 10
 behavior_server:
   ros__parameters:
     use_sim_time: false

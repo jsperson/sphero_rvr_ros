@@ -504,3 +504,73 @@ def test_the_angular_acceleration_limit_clears_the_floor_in_ONE_control_cycle():
         "can actually produce"
     )
     assert spin / freq >= floor, "behavior_server's Spin has the identical defect"
+
+
+# --- the no-section family, closed as a CLASS (2026-08-18 night shift) ---------------
+
+#: Run 3c under load ~8: controller_server's loop sagged from 20 Hz to 8.2 Hz, so one
+#: starved cycle is ~122 ms and goal-acknowledge delays run to several hundred ms
+#: exactly when the system is least healthy. The BT's ack budget must cover several
+#: such cycles, or an accepted-but-unacknowledged goal becomes an ownerless drive --
+#: which is not a hypothesis: goal 3's orphaned follow_path drove 0.135 m and pivoted
+#: 82 degrees AFTER bt_navigator aborted the mission.
+MEASURED_STARVED_CONTROLLER_PERIOD_S = 1.0 / 8.2
+
+
+def test_bt_navigators_ack_budget_covers_the_measured_starvation():
+    """No-section member three: bt_navigator ran nav2's default_server_timeout of
+    20 ms because it had no section at all. The guard asserts the DERIVATION, not
+    just presence: the budget must cover at least four starved controller cycles,
+    because the field's ack delay arrived in exactly that regime."""
+    import yaml
+
+    parsed = yaml.safe_load(raw())
+    assert "bt_navigator" in parsed, (
+        "bt_navigator has no config section -- nav2 defaults include the 20 ms ack "
+        "budget that manufactured the 2026-08-18 ownerless drive"
+    )
+    timeout_ms = parsed["bt_navigator"]["ros__parameters"]["default_server_timeout"]
+    floor_ms = 4 * MEASURED_STARVED_CONTROLLER_PERIOD_S * 1000.0
+    assert timeout_ms >= floor_ms, (
+        f"default_server_timeout {timeout_ms} ms is under {floor_ms:.0f} ms -- four "
+        f"starved controller cycles at the measured 8.2 Hz -- so a load spike can "
+        f"again abort a goal the controller then runs with no owner"
+    )
+
+
+def test_every_nav2_node_the_stock_launch_starts_has_an_explicit_section():
+    """The class guard, so member FOUR fails a test instead of a flight.
+
+    planner_server (blind planner), global_costmap (same hole), bt_navigator (the
+    ownerless drive) each shipped as a MISSING SECTION running silent nav2 defaults.
+    This walks the launch file's actual nav2 nodes and requires an explicit top-level
+    section for every one -- defaults-by-decision: a node that genuinely wants pure
+    defaults gets an empty section saying so, never an omission."""
+    import re
+
+    import yaml
+
+    launch_text = (ROOT / "launch" / "explore.launch.py").read_text()
+    launched = set()
+    for block in launch_text.split("Node(")[1:]:
+        pkg = re.search(r'package="([^"]+)"', block)
+        name = re.search(r'name="([^"]+)"', block)
+        if pkg and name and pkg.group(1).startswith("nav2_"):
+            launched.add(name.group(1))
+    # The costmaps ride inside planner/controller but configure as their own
+    # top-level sections; hold them to the same rule explicitly.
+    launched |= {"global_costmap", "local_costmap"}
+    assert launched >= {"planner_server", "controller_server", "bt_navigator",
+                        "behavior_server"}, (
+        f"launch parse broke -- found only {sorted(launched)}; fix the parser, do "
+        f"not weaken the guard"
+    )
+
+    parsed = yaml.safe_load(raw())
+    sections = set(parsed)
+    missing = sorted(launched - sections)
+    assert not missing, (
+        f"nav2 node(s) launched with NO config section: {missing}. Every silent "
+        f"default is a decision nobody made -- add a section, even an empty one "
+        f"with the reason, per the no-section family's three receipts"
+    )
