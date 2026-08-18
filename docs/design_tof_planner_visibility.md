@@ -112,3 +112,29 @@ for a benefit needed only in the livelock. C's latency lands at the worst possib
 moment and its filter defeats the boot's paint-under-approach signature. A remains
 acceptable for directed-goal campaigns where an operator reroutes — which is
 exactly this week — so nothing here is urgent enough to skip the rig.
+
+## 5b. PM's side (review round, same night) — both positions travel to Scott
+
+**D gains a third named cost: TRANSIENT-TRUE-OBSTACLE PROMOTION.** In a lived-in
+home, K consecutive refusals accumulate exactly when a PERSON or a just-moved chair
+blocks the path for a few seconds — and D would promote that moment into a
+mission-permanent mark. That is this paper's own quasi-permanence critique of B,
+gated narrower but not escaped: mission-permanent-until-revocation is
+expiry-less-ness all the same. Mitigation to carry into any D design: the livelock
+signature must require refusals SUSTAINED OVER TIME (≥T seconds, not count alone)
+so ambulatory obstacles pass — and the rig A/B adds a TRANSIENT-OBSTACLE scenario
+(stage, block, unblock: D must NOT promote it; measure K/T sensitivity). This does
+not demote D; it prices it honestly.
+
+**PM's ranking: D > A > B > C** (worker's, above: D > B > A > C — agreement on D
+first and C last; the argument is A-vs-B). PM's case for A over B: without expiry,
+B's quasi-permanence in a home where chairs move DAILY means the global map rots
+within a single mission — while A's honest aborts are exactly the failure the
+PRODUCT layer is designed to absorb: the NL/semantic top layer says "I can't reach
+that, it's blocked," and asks or reroutes, which is the architecture's whole
+thesis. **A is not just the floor; it is the option that degrades into a
+conversation instead of a wall.** B earns a slot only after the sun capture AND an
+expiry story exist — at which point it is C wearing fewer clothes.
+
+Both rankings stand as written. Scott decides, with the rig A/B's numbers when it
+runs.
