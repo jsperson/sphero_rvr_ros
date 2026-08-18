@@ -402,6 +402,39 @@ proving nothing, and the only tell is the clock.
 **The rule:** every `await` in test code gets a timeout. `asyncio.wait_for`, always. A
 test's job under mutation is to *fail*, and a test that cannot fail promptly cannot do it.
 
+## 14. Name the endings you REASONED, not only the ones you MEASURED
+
+**Bought 2026-08-18.** The §3a retest card pre-registered two possible endings, both drawn
+from measured behaviour: an approach-stall near clutter, and a hunt signature. The flight
+ended in neither — it ended in **repeated contact with a chair leg**, because the stock
+middle runs with **no touch response at all**: the freeze/touch classifier lives in the
+decisive controller, which that configuration does not start, and the D48 consumer had been
+deliberately banked.
+
+**That fact was written on the certification page itself.** It was known, reasoned, and
+documented — and still left off the card, because the endings named were the ones that had
+shown up in data.
+
+**The rule:** when a card names expected endings, include the ones derivable from **known
+structural facts**, not only those observed in a previous run. **A structural gap recorded
+in your own documentation is a named ending by definition.** The test: read the
+certification's "what is NOT certified" section and ask what each unproven clause looks
+like when it fails in the field — those are endings, and naming them costs one line each.
+
+## 15. Flights go through the guarded tool, not a hand-rolled command
+
+**Same day, same flight.** The bag topic list was hand-rolled at the shell and dropped
+`/tof/obstacles` — the one topic the contact analysis most needed. `scripts/launch_and_arm.py`
+records it, and has a **guard test** over that exact list, written the day before after
+`/diagnostics` went unrecorded and cost an autopsy its answer.
+
+**The lesson is not "remember the topic".** It is that a guarded tool exists precisely so
+the list is not retyped from memory, and bypassing it discards the guard silently. If the
+tool lacks a flag a flight needs, **add the flag as a reviewed change** — do not step around
+the tool. Third member of the manifest family (uninstalled config, unrecorded
+`/diagnostics`, unrecorded `/tof/obstacles`), and the first where the protection already
+existed and was walked past.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
