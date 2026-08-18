@@ -87,6 +87,7 @@ setup(
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
             "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",
+            "contact_marker = sphero_rvr_driver.contact_marker_node:main",
             "vlm_scene = sphero_rvr_driver.vlm_scene_node:main",
             "tof = sphero_rvr_driver.tof_node:main",
             "vlm_explorer = sphero_rvr_driver.vlm_explorer_node:main",

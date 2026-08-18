@@ -1,0 +1,278 @@
+"""Publishes /contact_marks: places on the map where the robot HIT something.
+
+D48's consumer, and the stock middle's entire touch response. The bespoke decisive
+controller had this behaviour welded into it; the stock middle does not run that
+controller, so on 2026-08-18 the robot drove into the same chair leg four times, each
+time recovering and retrying into an obstacle no live sensor path can see. This node
+is what makes the fourth attempt different from the first.
+
+TTL GOVERNS PUBLICATION AND THE REPORT; THE COSTMAP KEEPS THE MARK REGARDLESS --
+measured on the bench 2026-08-10, a free cell went cost 0 -> 100 on a mark and stayed
+100 after publication stopped. v1 therefore sets the TTL to INFINITY rather than 300 s.
+A finite TTL here would not expire anything; it would only make the mission report
+claim a mark expired while the costmap still enforces it. Mission-permanent everywhere
+or nowhere. The TTL parameter stays in `FreezeMarkSet` because it is the hook a real
+revocation mechanism (Jazzy's `clear_around_pose`) will hang from in v2.
+
+POSE AUTHORITY, stated because inferring it is how we lost three days: marks are placed
+from TF `map` -> `base_link`, looked up at the stamp of the diagnostics message that
+carried the contact. `map`, not `odom`, because these marks outlive odometry drift by
+design. Every mark logs its authority and its lookup time. WHEN TF CANNOT ANSWER, the
+contact is logged loudly and NO MARK IS PLANTED: a contact we cannot place is a fact
+for the report, not a guess for the costmap.
+
+WHAT THIS NODE DOES NOT DO: it does not brake, steer, or cancel anything. It publishes
+facts. The costmap consumes them and the planner routes around them on the NEXT plan --
+which is the whole mechanism, and also its latency. Stopping is the collision
+supervisor's job and it keeps it.
+"""
+
+from __future__ import annotations
+
+import math
+import struct
+import time
+
+import rclpy
+from diagnostic_msgs.msg import DiagnosticArray
+from geometry_msgs.msg import Twist
+from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from sensor_msgs.msg import PointCloud2, PointField
+from tf2_ros import Buffer, TransformListener
+
+from sphero_rvr_core.contact_marking import (
+    FOOTPRINT_FRONT_M,
+    FOOTPRINT_REAR_M,
+    ROBOT_RADIUS_M,
+    StallEventTracker,
+    contact_mark_centre,
+    default_margin_m,
+    disc_points,
+)
+from sphero_rvr_core.decisive_control import FreezeMarkSet
+
+#: The height marks are presented at. These stand for an obstacle the LIDAR cannot see,
+#: so they must arrive at a height the costmap's filter would have accepted from the
+#: lidar -- present them at their true height (the floor) and the layer discards them.
+MARK_Z_M = 0.15
+
+
+def marks_qos() -> QoSProfile:
+    """QoS for /contact_marks, and the honest provenance of the choice.
+
+    RELIABLE + VOLATILE + depth 10 -- byte-identical to what the bespoke controller
+    published freeze marks with. THE AUTHORITY IS THE FIELD, NOT A READING OF NAV2'S
+    SOURCE: nav2_costmap_2d ships no headers on this Pi to check against, but D43 is
+    proof of delivery in the strongest possible form -- a robot buried by its own marks
+    is a robot whose ObstacleLayer received every one of them through exactly this
+    profile.
+
+    The compatibility reasoning agrees with the evidence (a RELIABLE publisher satisfies
+    a BEST_EFFORT subscriber, so this is safe against either request), but the reasoning
+    is the corroboration and the field is the authority. Deliberately NOT upgraded to
+    TRANSIENT_LOCAL, tempting as late-joiner delivery is: that would be a change with no
+    evidence behind it, and the 2 Hz republish already feeds late subscribers.
+    """
+    return QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+        history=QoSHistoryPolicy.KEEP_LAST,
+        depth=10,
+    )
+
+
+class ContactMarkerNode(Node):
+    def __init__(self) -> None:
+        super().__init__("contact_marker")
+
+        self.declare_parameter("diagnostics_topic", "/diagnostics")
+        self.declare_parameter("cmd_vel_topic", "/cmd_vel")
+        self.declare_parameter("stall_counter_key", "motor_stall_events")
+        self.declare_parameter("global_frame", "map")
+        self.declare_parameter("robot_frame", "base_link")
+        self.declare_parameter("mark_radius_m", ROBOT_RADIUS_M)
+        self.declare_parameter("mark_ring_points", 12)
+        self.declare_parameter("footprint_front_m", FOOTPRINT_FRONT_M)
+        self.declare_parameter("footprint_rear_m", FOOTPRINT_REAR_M)
+        self.declare_parameter("mark_margin_m", default_margin_m())
+        self.declare_parameter("merge_radius_m", 0.15)
+        self.declare_parameter("republish_hz", 2.0)
+        #: Infinity by default -- see the module docstring. Overridable so v2 can turn
+        #: it into a real bound once something can actually revoke a mark.
+        self.declare_parameter("mark_ttl_s", float("inf"))
+
+        self._global_frame = str(self.get_parameter("global_frame").value)
+        self._robot_frame = str(self.get_parameter("robot_frame").value)
+        self._radius = float(self.get_parameter("mark_radius_m").value)
+        self._ring_points = int(self.get_parameter("mark_ring_points").value)
+        self._front = float(self.get_parameter("footprint_front_m").value)
+        self._rear = float(self.get_parameter("footprint_rear_m").value)
+        self._margin = float(self.get_parameter("mark_margin_m").value)
+        self._key = str(self.get_parameter("stall_counter_key").value)
+
+        self._tracker = StallEventTracker()
+        self._marks = FreezeMarkSet(
+            ttl_s=float(self.get_parameter("mark_ttl_s").value),
+            merge_radius_m=float(self.get_parameter("merge_radius_m").value),
+        )
+        #: Last COMMANDED linear sign. The command, never odometry -- D37's rule.
+        self._last_cmd_linear = 0.0
+        #: Counts for the mission report, including the failures. A node that silently
+        #: drops contacts it could not place would make the report agree with itself
+        #: and disagree with the world.
+        self.contacts_seen = 0
+        self.marks_placed = 0
+        self.contacts_unplaceable = 0
+        self.contacts_collapsed = 0
+
+        self._buffer = Buffer()
+        self._listener = TransformListener(self._buffer, self)
+        self._pub = self.create_publisher(PointCloud2, "/contact_marks", marks_qos())
+        self.create_subscription(
+            Twist, str(self.get_parameter("cmd_vel_topic").value), self._on_cmd, 10
+        )
+        self.create_subscription(
+            DiagnosticArray,
+            str(self.get_parameter("diagnostics_topic").value),
+            self._on_diagnostics,
+            10,
+        )
+        self.create_timer(
+            1.0 / float(self.get_parameter("republish_hz").value), self._publish
+        )
+        self.get_logger().info(
+            f"contact_marker up. Marks are MISSION-PERMANENT (ttl="
+            f"{self.get_parameter('mark_ttl_s').value}); pose authority "
+            f"{self._global_frame}->{self._robot_frame}; disc r={self._radius:.3f} m "
+            f"at footprint edge + {self._margin:.3f} m."
+        )
+
+    def _on_cmd(self, msg: Twist) -> None:
+        self._last_cmd_linear = float(msg.linear.x)
+
+    def _robot_pose(self, stamp):
+        """TF at the CONTACT's stamp, not at 'now'.
+
+        Returns (x, y, yaw, lookup_time_str) or raises. `rclpy.time.Time` from the
+        message stamp is the whole point: by the time this callback runs the robot has
+        moved, and looking up the latest transform would silently answer a different
+        question than the one asked.
+        """
+        transform = self._buffer.lookup_transform(
+            self._global_frame, self._robot_frame, rclpy.time.Time.from_msg(stamp)
+        )
+        t = transform.transform.translation
+        q = transform.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        )
+        return t.x, t.y, yaw
+
+    def _on_diagnostics(self, msg: DiagnosticArray) -> None:
+        count = None
+        for status in msg.status:
+            for kv in status.values:
+                if kv.key == self._key:
+                    count = int(kv.value)
+        if count is None:
+            return
+        batch = self._tracker.observe(count)
+        if batch is None:
+            return
+
+        self.contacts_seen += batch.contacts
+        if batch.collapsed:
+            self.contacts_collapsed += batch.contacts - 1
+            self.get_logger().warning(
+                f"{batch.contacts} contacts arrived in ONE diagnostics message and "
+                f"collapse to a single mark -- only one pose is available for them."
+            )
+
+        try:
+            x, y, yaw = self._robot_pose(msg.header.stamp)
+        except Exception as exc:
+            self.contacts_unplaceable += 1
+            self.get_logger().error(
+                f"CONTACT AT AN UNPLACEABLE POSE -- {batch.contacts} contact(s) "
+                f"detected, NO MARK PLANTED. TF {self._global_frame}->"
+                f"{self._robot_frame} at stamp {msg.header.stamp.sec}."
+                f"{msg.header.stamp.nanosec:09d} failed: {exc}. The contact is real "
+                f"and is in the report; its location is not, so nothing goes on the "
+                f"costmap. A permanent lethal disc at an invented pose is worse than "
+                f"no mark."
+            )
+            return
+
+        reversing = self._last_cmd_linear < 0.0
+        mx, my = contact_mark_centre(
+            x, y, yaw,
+            reversing=reversing,
+            front_m=self._front,
+            rear_m=self._rear,
+            margin_m=self._margin,
+        )
+        self._marks.add(mx, my, time.monotonic())
+        self.marks_placed += 1
+        self.get_logger().warning(
+            f"CONTACT MARKED at ({mx:.3f}, {my:.3f}) in {self._global_frame}. "
+            f"Pose authority: TF {self._global_frame}->{self._robot_frame} at "
+            f"{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d} "
+            f"-> ({x:.3f}, {y:.3f}, yaw {math.degrees(yaw):.1f} deg). "
+            f"Commanded linear {self._last_cmd_linear:+.3f} m/s so "
+            f"{'REAR' if reversing else 'FRONT'} edge. This mark is permanent."
+        )
+        self._publish()
+
+    def _publish(self) -> None:
+        live = self._marks.live(time.monotonic())
+        points: list[tuple[float, float]] = []
+        for mark in live:
+            points.extend(disc_points(mark.x, mark.y, self._radius, self._ring_points))
+
+        msg = PointCloud2()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self._global_frame
+        msg.height = 1
+        msg.width = len(points)
+        msg.fields = [
+            PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1)
+            for i, n in enumerate(("x", "y", "z"))
+        ]
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step = 12 * len(points)
+        msg.is_dense = True
+        msg.data = b"".join(
+            struct.pack("<fff", px, py, MARK_Z_M) for px, py in points
+        )
+        self._pub.publish(msg)
+
+    def report(self) -> dict:
+        """For the mission report. `contacts_seen` and `marks_placed` are reported
+        SEPARATELY and are meant to differ -- collapsed batches and unplaceable poses
+        both make marks fewer than contacts, and a report that showed only one number
+        would hide exactly the cases worth knowing about."""
+        return {
+            "contacts_seen": self.contacts_seen,
+            "marks_placed": self.marks_placed,
+            "contacts_unplaceable": self.contacts_unplaceable,
+            "contacts_collapsed": self.contacts_collapsed,
+            "marks": self._marks.as_report_list(time.monotonic()),
+        }
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = ContactMarkerNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()
