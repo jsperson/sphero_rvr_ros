@@ -268,8 +268,32 @@ def test_inflation_is_the_only_place_the_robot_radius_is_applied():
     the costmap inflate them AGAIN, sterilising ~0.56 m per touch. Marks are points
     now; the radius enters once."""
     text = cfg()
-    assert re.search(r"inflation_radius:\s*0\.16", text)
+    assert re.search(r"inflation_radius:\s*[0-9.]+", text)
     assert "robot_radius: 0.14" in text or "robot_radius: 0.145" in text
+
+
+def test_inflation_leaves_a_gradient_the_planner_can_use():
+    """THE 8 MM DEFECT, guarded as a relationship rather than as a literal.
+
+    This test used to pin `inflation_radius: 0.16`. Measured 2026-08-18, that value sat
+    ON the deployed circumscribed radius (0.1591), so the cost profile went 253 out to
+    the inscribed 0.1519 and reached zero 8 mm later. An inflation radius equal to the
+    circumscribed radius means NO GRADIENT EXISTS, and a planner with no gradient cannot
+    prefer clearance: SmacPlanner2D hugged the boundary at 0.161 m and RPP -- which
+    checks the FOOTPRINT, 0.1591 -- refused the path the planner had just produced.
+
+    So the invariant is not a number, it is a margin: inflation must reach meaningfully
+    beyond the circumscribed radius, or the planner and the controller disagree about
+    what is drivable. Pinning the literal is what let the defect sit here unnoticed while
+    a test claimed to be guarding it."""
+    from sphero_rvr_core.contact_marking import COSTMAP_CIRCUMSCRIBED_RADIUS_M
+    value = scalar(cfg(), "inflation_radius")
+    margin = value - COSTMAP_CIRCUMSCRIBED_RADIUS_M
+    assert margin >= 0.10, (
+        f"inflation_radius={value} leaves only {margin * 1000:.0f} mm beyond the "
+        f"circumscribed radius {COSTMAP_CIRCUMSCRIBED_RADIUS_M}. The planner needs a "
+        f"gradient to prefer clearance; without one it plans paths the controller "
+        f"refuses, which is exactly what 0.16 did.")
 
 
 # --- D36 / D40: the recoveries must actually be able to run -------------------------

@@ -343,10 +343,47 @@ local_costmap:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
         cost_scaling_factor: 4.0
-        # 0.16 kept from the flown config. With marks now painted as POINTS rather
-        # than robot-radius discs, this is the ONLY place the robot's size enters --
-        # which is D42's double-booking fix.
-        inflation_radius: 0.16
+        # 0.30, RAISED FROM 0.16 ON 2026-08-18 BECAUSE 0.16 LEFT NO GRADIENT AT ALL.
+        #
+        # 0.16 dates from the bespoke era, chosen before anyone measured the footprint it
+        # interacts with -- the same family as everything M1 touched. Measured (M1) the
+        # deployed circumscribed radius is 0.1591 and the inscribed radius is 0.1519. So
+        # at 0.16 the cost profile was:
+        #
+        #     distance from a lethal cell      cost
+        #     <= 0.1519 (inscribed)            253
+        #        0.1519 .. 0.160                253 -> 0   <-- the entire gradient: 8 mm
+        #     >  0.160                           0
+        #
+        # An inflation radius equal to the circumscribed radius means NO GRADIENT EXISTS,
+        # so the planner had no information with which to prefer clearance. SmacPlanner2D
+        # therefore planned the shortest path, hugging the boundary with its centre
+        # 0.161 m from a lethal cell -- and RPP, which projects the FOOTPRINT (0.1591)
+        # along that path, refused it: "detected collision ahead", repeatedly, until the
+        # goal aborted. The planner's "free" corridor cleared the controller's
+        # requirement by 0.9 mm and tracking error decided the outcome.
+        #
+        # A/B in the closed-loop rig, open map, mark at 0.60, goal at 1.10:
+        #     0.16 -> ABORTED,   max x 0.533, detour 0.240, closest approach 0.161
+        #     0.30 -> SUCCEEDED, max x 1.002, detour 0.327, closest approach 0.223
+        #
+        # THIS CANNOT CLOSE A GAP THE ROBOT COULD PREVIOUSLY PLAN THROUGH, which is the
+        # P1 "46 % inscribed window" worry and the reason to state the mechanism rather
+        # than assert safety. Read off `computeCost` in the deployed inflation_layer.hpp:
+        # cells within `inscribed_radius_` get 253, everything beyond DECAYS to 0 at
+        # `inflation_radius`. `inscribed_radius_` is derived from the footprint polygon,
+        # not from this value. Raising it therefore leaves the blocking region byte for
+        # byte unchanged and only widens the band of traversable-but-costly cells --
+        # tight gaps become expensive rather than forbidden, which is what P1 wanted.
+        #
+        # WATCH ON THE FLIGHT: RPP's regulated velocity scaling slows near obstacles, so
+        # a wider band means a slower rover near furniture, and in a 0.4 m corridor
+        # nearly every cell becomes costly, which shifts route preference in tight
+        # spaces. Expected, watched, not a mystery.
+        #
+        # With marks painted as POINTS rather than robot-radius discs, this remains the
+        # ONLY place the robot's size enters -- D42's double-booking fix is untouched.
+        inflation_radius: 0.30
 
 behavior_server:
   ros__parameters:
