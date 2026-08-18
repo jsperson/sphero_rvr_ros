@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 STOCK = ROOT / "config" / "lean_nav2_stock.yaml"
@@ -157,19 +158,67 @@ def test_constants_the_curve_does_not_cover_are_marked_UNMEASURED():
 
 # --- D42: marks must be points, and the lidar must not erase them -------------------
 
-def test_touch_marks_live_in_a_layer_the_lidar_cannot_clear():
-    """RAYTRACE CLEARING IS 2D PER LAYER. A lidar ray at the 0.19 m scan plane passes
-    over a chair leg; in a shared layer it would clear that leg's cell -- erasing the
-    one obstacle class this robot cannot see. Two instances, and the lidar has no
-    authority in the second."""
+def _layer(text, name):
+    """Slice one layer block out of the config text, whatever order the layers sit in."""
+    order = ["scan_layer:", "touch_layer:", "tof_layer:", "inflation_layer:"]
+    i = order.index(name + ":")
+    return text[text.index(order[i]):text.index(order[i + 1])]
+
+
+def test_touch_marks_are_cleared_by_no_sensor_at_all():
+    """RAYTRACE CLEARING IS 2D PER LAYER, and the touch layer grants that authority to
+    NOBODY.
+
+    The lidar is excluded because a ray at the 0.19 m scan plane passes straight over a
+    chair leg and would erase the one obstacle class this robot cannot see.
+
+    The ToF was excluded on 2026-08-18, reversing the earlier design: IT CANNOT BE
+    TRUSTED TO CLEAR WHAT IT CANNOT RELIABLY SEE. Measured ~15% fill on thin targets
+    (08-13 bench, 5 cm rail; 15.6% of frames on the leg that stopped the 08-18 retest)
+    means raytrace-through would erase a real mark within seconds of planting it.
+    Observation authority and clearing authority have different reliability
+    requirements, and the measured envelope meets only the first."""
     text = cfg()
-    assert "scan_layer" in text and "touch_layer" in text
-    touch = text[text.index("touch_layer:"):text.index("inflation_layer:")]
-    assert "clearing: false" in touch, "touch marks must not be lidar-clearable"
-    assert "/scan" not in touch, "the lidar must have no observation role in touch_layer"
-    assert "/tof/points" in touch, (
-        "the ToF must be the touch layer's clearing source -- it is the only sensor "
-        "that can actually observe the sub-lidar band it clears")
+    touch = _layer(text, "touch_layer")
+    assert "clearing: false" in touch, "touch marks must be cleared by no sensor"
+    assert "clearing: true" not in touch, "no source in this layer may clear"
+    assert "/scan" not in touch, "the lidar has no observation role here"
+    assert "/tof/points" not in touch, (
+        "the ToF lost clearing authority over touch marks on 2026-08-18 -- if it is "
+        "back in this layer, that reversal has been undone")
+
+
+def test_footprint_clearing_is_the_touch_layer_escape_hatch():
+    """D43 was a robot buried by its own marks. With no sensor clearing, footprint
+    clearing is the ONLY way a cell under the robot returns to free -- so the robot can
+    never be permanently trapped by its own planting.
+
+    It is a second, independent defence rather than the primary one: freeze_mark_pose
+    places marks at the LEADING EDGE (footprint_front + margin), so a mark is born
+    outside the footprint and this path should never be needed."""
+    touch = _layer(cfg(), "touch_layer")
+    assert re.search(r"footprint_clearing_enabled:\s*true", touch)
+
+
+def test_the_tof_has_its_own_layer_and_may_clear_its_own_returns():
+    """The split (2026-08-18) exists because one shared layer forced ONE clearing policy
+    onto two sources with different trust profiles. Removing ToF clearing to protect
+    touch marks would also have made every ToF mark -- including phantoms, since D27's
+    class is parked rather than extinct -- mission-permanent. Separated, each rationale
+    lives where it is true: the ToF is self-consistent, touch marks are erased by
+    nothing."""
+    text = cfg()
+    tof = _layer(text, "tof_layer")
+    assert "/tof/points" in tof
+    assert "clearing: true" in tof, "the ToF may erase its OWN returns"
+    assert "/scan" not in tof and "/contact_marks" not in tof, (
+        "the ToF layer clears only what the ToF itself marks")
+    # Parsed, not grepped: a text search for `plugins:` finds the PLANNER's
+    # ["GridBased"] first and passes an assertion about the costmap on the wrong list.
+    # (It did, on the first run of this very test.)
+    local = yaml.safe_load(text)["local_costmap"]["local_costmap"]["ros__parameters"]
+    assert "touch_layer" in local["plugins"] and "tof_layer" in local["plugins"], (
+        "a layer absent from the plugins list is configuration that never loads")
 
 
 def test_the_tof_clears_only_within_its_honest_envelope():
@@ -177,10 +226,9 @@ def test_the_tof_clears_only_within_its_honest_envelope():
     at 0.167 m (blind_band_outer_range_m) and rule B reaches ~0.60 m; clearing outside
     that would be clearing on evidence it cannot supply -- the D39 lesson applied to
     the costmap instead of the brake."""
-    text = cfg()
-    touch = text[text.index("touch_layer:"):text.index("inflation_layer:")]
-    assert re.search(r"raytrace_min_range:\s*0\.17", touch)
-    assert re.search(r"raytrace_max_range:\s*0\.6", touch)
+    tof = _layer(cfg(), "tof_layer")
+    assert re.search(r"raytrace_min_range:\s*0\.17", tof)
+    assert re.search(r"raytrace_max_range:\s*0\.6", tof)
 
 
 def test_no_denoise_layer():

@@ -205,7 +205,7 @@ local_costmap:
       # derivation.py. robot_radius is the circumscribed radius of that rectangle.
       robot_radius: 0.145
       always_send_full_costmap: false
-      plugins: ["scan_layer", "touch_layer", "inflation_layer"]
+      plugins: ["scan_layer", "touch_layer", "tof_layer", "inflation_layer"]
 
       # LIDAR: marks AND clears. Clearing is what makes a costmap forget, and the
       # absence of forgetting is D42.
@@ -236,13 +236,37 @@ local_costmap:
       # The mark cloud is OWNED and republished by the classifier (~1 Hz), so
       # expected_update_rate is 0.0: this source is never "stale", it is a belief the
       # owner maintains. Same pattern as kobuki_bumper2pc.
+      # TOUCH MARKS: marking only. NOTHING sensor-clears this layer.
+      #
+      # The lidar sees straight THROUGH the obstacle class this layer exists for --
+      # that is the premise of a contact mark. And as of 2026-08-18 the ToF is not a
+      # clearing source here either: it CANNOT BE TRUSTED TO CLEAR WHAT IT CANNOT
+      # RELIABLY SEE. Measured ~15% fill on thin targets (08-13 bench, 5 cm rail;
+      # 15.6% of frames on the chair leg that stopped the 08-18 retest), so
+      # raytrace-through would erase a real leg's mark within seconds of planting it.
+      # Observation authority and clearing authority have different reliability
+      # requirements, and the measured envelope meets only the first.
+      #
+      # CONSEQUENCE, STATED HONESTLY: marks here are MISSION-PERMANENT. TTL in the
+      # publishing node bounds what is PUBLISHED and what reaches the mission report --
+      # it does NOT un-mark the costmap. Measured on the bench 2026-08-10: a free cell
+      # went cost 0 -> 100 on a mark and stayed 100 after publication stopped. This is
+      # a deliberate v1 choice, not decay wearing a TTL's clothes. Revocation would
+      # need a different mechanism (Jazzy's clear_around_pose is the v2 candidate).
+      #
+      # footprint_clearing_enabled TRUE is the anti-D43 defence: the robot's own cell
+      # can never stay buried by its own planting. Combined with leading-edge mark
+      # placement (freeze_mark_pose puts the mark at footprint_front + margin, born
+      # OUTSIDE the footprint), self-burial is defended two independent ways -- and a
+      # later legitimate approach stops at the lethal boundary before the footprint
+      # could reach the mark, so the mark survives its planter.
       touch_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: touch tof
-        footprint_clearing_enabled: false
+        observation_sources: touch
+        footprint_clearing_enabled: true
         touch:
-          topic: /decisive_controller/freeze_marks
+          topic: /contact_marks
           data_type: "PointCloud2"
           marking: true
           clearing: false
@@ -250,15 +274,26 @@ local_costmap:
           min_obstacle_height: 0.0
           max_obstacle_height: 0.5
           obstacle_max_range: 2.0
+
+      # THE ToF, IN ITS OWN LAYER, where it may clear what it marks.
+      #
+      # Split from touch_layer on 2026-08-18. The old shared layer forced one clearing
+      # policy onto two sources with different trust profiles: removing ToF clearing to
+      # protect touch marks would have made ToF marks -- including any phantom, since
+      # D27's class is parked rather than extinct -- mission-permanent too. Separate
+      # layers let each rationale live where it is true: the ToF is self-consistent
+      # (it may erase its own returns), touch marks are erased by nothing.
+      tof_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: tof
+        footprint_clearing_enabled: true
         tof:
           topic: /tof/points
           data_type: "PointCloud2"
           marking: true
           clearing: true
           expected_update_rate: 0.0
-          # The ToF's honest envelope. Its structural blind band starts at 0.167 m
-          # (blind_band_outer_range_m) and rule B reaches ~0.60 m; clearing outside
-          # that would be clearing on evidence the sensor cannot supply.
           obstacle_min_range: 0.17
           obstacle_max_range: 0.60
           raytrace_min_range: 0.17
