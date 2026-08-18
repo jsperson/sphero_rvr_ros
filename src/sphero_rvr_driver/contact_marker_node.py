@@ -53,6 +53,7 @@ from sphero_rvr_core.contact_marking import (
     resolve_contact_pose,
 )
 from sphero_rvr_core.decisive_control import FreezeMarkSet
+from sphero_rvr_core.refusal_promotion import MAX_DISCS_PER_FIRING
 
 #: The height marks are presented at. These stand for an obstacle the LIDAR cannot see,
 #: so they must arrive at a height the costmap's filter would have accepted from the
@@ -149,6 +150,16 @@ class ContactMarkerNode(Node):
             str(self.get_parameter("diagnostics_topic").value),
             self._on_diagnostics,
             10,
+        )
+        # Option D's request lane (decision 2026-08-18): refusal_watcher asks, this
+        # node plants -- single authorship of /contact_marks is preserved, and the
+        # validation here is FRAME and CAP only. Deliberately NOT a delta re-check:
+        # the watcher's snapshot is the evidence, and two components re-deriving one
+        # fact is the seam class this project keeps paying for.
+        self.promotions_accepted = 0
+        self.promotions_rejected = 0
+        self.create_subscription(
+            PointCloud2, "/contact_marks/promote", self._on_promote, 10
         )
         self.create_timer(
             1.0 / float(self.get_parameter("republish_hz").value), self._publish
@@ -269,6 +280,50 @@ class ContactMarkerNode(Node):
         )
         self._publish()
 
+    def _on_promote(self, msg: PointCloud2) -> None:
+        """Plant refusal-promotion marks. GOAL-IN-DELTA is accepted behaviour: if
+        the goal itself sits on the promoted obstacle, the goal becomes unplannable
+        and aborts honestly -- which is correct (better an honest abort than the
+        livelock), and the goal tool's trinity gate makes it rare. An abort right
+        after a promotion is not a defect. These marks are MISSION-PERMANENT until
+        revocation, exactly like every other mark this node plants."""
+        if msg.header.frame_id != self._global_frame:
+            self.promotions_rejected += 1
+            self.get_logger().error(
+                f"promotion REJECTED: frame {msg.header.frame_id!r} is not "
+                f"{self._global_frame!r} -- a mark in the wrong frame is an "
+                f"invented pose"
+            )
+            return
+        n = msg.width * msg.height
+        if n == 0 or n > MAX_DISCS_PER_FIRING:
+            self.promotions_rejected += 1
+            self.get_logger().error(
+                f"promotion REJECTED: {n} centroid(s) against the "
+                f"{MAX_DISCS_PER_FIRING}-disc firing cap -- a request this size is "
+                f"a wall or a defect, not an obstacle"
+            )
+            return
+        for i in range(n):
+            px, py, _ = struct.unpack_from("<fff", msg.data, i * msg.point_step)
+            self._marks.add(px, py, time.monotonic())
+            self.marks_placed += 1
+            self.promotions_accepted += 1
+            self._mark_placements.append({
+                "x": round(px, 4),
+                "y": round(py, 4),
+                "stamp": f"{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d}",
+                "path": "refusal_promotion",
+                "staleness_ms": None,
+            })
+            self.get_logger().warning(
+                f"REFUSAL PROMOTION MARKED at ({px:.3f}, {py:.3f}) in "
+                f"{self._global_frame}. Authority: refusal_watcher's livelock "
+                f"snapshot (lethal-local/free-global on the refused corridor). "
+                f"This mark is permanent."
+            )
+        self._publish()
+
     def _publish(self) -> None:
         live = self._marks.live(time.monotonic())
         points: list[tuple[float, float]] = []
@@ -305,6 +360,8 @@ class ContactMarkerNode(Node):
             "contacts_collapsed": self.contacts_collapsed,
             "marks": self._marks.as_report_list(time.monotonic()),
             "mark_placements": list(self._mark_placements),
+            "promotions_accepted": self.promotions_accepted,
+            "promotions_rejected": self.promotions_rejected,
         }
 
 

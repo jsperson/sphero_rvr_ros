@@ -59,6 +59,15 @@ def generate_launch_description() -> LaunchDescription:
             default_value=str(share / "config" / "lean_rvr_tank_si.yaml"),
         ),
         DeclareLaunchArgument(
+            "start_refusal_watcher",
+            default_value="false",
+            description=(
+                "Option D's watcher (rig certification runs it; see "
+                "docs/design_tof_planner_visibility.md). Default false so the "
+                "FALSIFIER arm can prove the disease without the cure present."
+            ),
+        ),
+        DeclareLaunchArgument(
             "map_tf_mode",
             default_value="static",
             description=(
@@ -98,6 +107,21 @@ def generate_launch_description() -> LaunchDescription:
         name="sim_laggy_map_tf",
         output="screen",
         condition=IfCondition(PythonExpression(["'", map_tf_mode, "' == 'laggy'"])),
+    )
+    refusal_watcher = Node(
+        package="sphero_rvr_driver",
+        executable="refusal_watcher",
+        name="refusal_watcher",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("start_refusal_watcher")),
+    )
+    # The certifier scene needs marks; the falsifier must run without the watcher.
+    rig_contact_marker = Node(
+        package="sphero_rvr_driver",
+        executable="contact_marker",
+        name="contact_marker",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("start_refusal_watcher")),
     )
     static_laser = Node(
         package="tf2_ros",
@@ -217,6 +241,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         args
-        + [static_map, laggy_map, static_laser, scan, driver, supervisor, map_server]
+        + [static_map, laggy_map, refusal_watcher, rig_contact_marker,
+           static_laser, scan, driver, supervisor, map_server]
         + nav2
     )

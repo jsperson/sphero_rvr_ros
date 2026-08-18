@@ -290,6 +290,16 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(LaunchConfiguration("start_contact_marker")),
     )
+    # Option D's watcher. DEFAULT FALSE FOR FLIGHT until the rig certifies all four
+    # arms AND a flight ride-along clears it -- rig-first was the decision's own
+    # condition. Zero motion authority either way; it only requests marks.
+    refusal_watcher = Node(
+        package="sphero_rvr_driver",
+        executable="refusal_watcher",
+        name="refusal_watcher",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("start_refusal_watcher")),
+    )
 
     return LaunchDescription(
         [
@@ -394,6 +404,16 @@ def generate_launch_description():
                     "false (its controller carries its own freeze marks)."
                 ),
             ),
+            DeclareLaunchArgument(
+                "start_refusal_watcher",
+                default_value="false",
+                description=(
+                    "Option D (refusal-triggered mark promotion). FALSE until the "
+                    "rig certifies and a flight ride-along clears it. The watcher "
+                    "has no motion authority; it requests marks from "
+                    "contact_marker when the livelock signature sustains."
+                ),
+            ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
             DeclareLaunchArgument(
                 "lidar_serial_port", default_value="/dev/ttyUSB0"
@@ -432,6 +452,7 @@ def generate_launch_description():
             explore_lite,
             coverage_explorer,
             contact_marker,
+            refusal_watcher,
             # explore_lite quits permanently on ANY empty frontier search — the
             # cold-start race AND transient mid-run empties. Re-kick
             # /explore/resume periodically (every ~15 s) so it always restarts
