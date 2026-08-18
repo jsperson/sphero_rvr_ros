@@ -207,6 +207,43 @@ the falsifier, not a formality. It must be curve-faithful, not idealised: the de
 comes out at the floor rate), the measured `0.1344·duty − 0.213` inside the band, and the
 walk band treated as hostile.
 
+## The acceptance bar: a TWO-LEVEL INVARIANT HIERARCHY
+
+The original bar said "zero sub-floor rotation commands". That was a **proxy**, and it
+accidentally conflated two things with different guarantors. Replaced — not relaxed — by:
+
+**LEVEL 1 — ABSOLUTE, adapter-guaranteed, unconditional.**
+> **No sub-floor duty ever reaches the wheels.**
+
+`plan_pivot` returns either 0 or a duty at or above `pivot_min_duty`; there is no third
+outcome. This holds whatever any config says, whatever any controller asks for. It is
+proven by unit test and by the closed-loop walk-band tripwire, and it does not depend on
+tuning.
+
+**LEVEL 2 — BEHAVIOURAL, config-dependent, what the falsifier tests.**
+> **Zero sustained sub-floor trains.** Isolated reversal transients of **≤ 2 cycles** are
+> tolerated.
+
+Because the arithmetic makes them unavoidable: a sign reversal spans
+`+3.55 → −3.55 = 7.10 rad/s`, the acceleration window allows `80 × 0.05 = 4.00 rad/s` per
+cycle, and `7.10 / 4.00 = 1.78 → 2 cycles`. Observed in the fixed arm: exactly 2, at the
+run's exactly-one reversal, then full rate.
+
+**Eliminating them would require `accel ≥ 2·floor/dt = 142`, and we deliberately do not do
+that.** Commanding an instant reversal asks the drivetrain for something it cannot do —
+the fitted τ = 0.22 s says a reversal takes ~0.2 s. A constant chosen to make a metric read
+zero would be the 1.20 fiction with its sign flipped, and this project has just spent two
+days killing that class of number.
+
+Residual harm, bounded before the bar was accepted: the 2-cycle model-vs-execution
+mismatch is **~0.14 rad** of extra rotation, self-corrected by the next measured-speed
+window — bounded, inside the 0.30 rad goal tolerance, and non-compounding.
+
+**Scenario rule, permanent for this rig:** no goal is a test goal until
+`ComputePathToPose` has proven a path to it. Learned twice — once in the field (a goal sent
+at something 1.51 m away) and once in sim (a goal whose final approach stalled both arms
+and contaminated an A/B).
+
 ## Falsifier attempt 1 FAILED, and the re-registration for attempt 2
 
 **Attempt 1 (empty world, all-clear scan) could not reproduce the hunt**: on the BROKEN
