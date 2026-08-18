@@ -149,3 +149,54 @@ reproduces goal 4's livelock in sim and the certifier flips it to
 promoted-mark → replan → SUCCEEDED, including the transient-obstacle
 must-NOT-promote scenario from §5b. The both-rankings record above stays intact as
 the argument that was actually had.
+
+---
+
+## EMPIRICAL EPILOGUE — the rig's numbers, same night (all chassis-off, Pi rig, open map, virtual sub-lidar obstacle at 0.65 m, goal 1.30 m)
+
+**The falsifier**: with no watcher, the scene reproduces goal 4's disease on
+demand — ABORTED, 15–16 recoveries, last-20 s displacement 0.052–0.105 m, zero
+marks, zero stalls, twice.
+
+**D, certified (two-phase bar, PM ruling in the runner header)**: livelock
+sustains → ONE promotion, centroid 3 cm from the true obstacle, zero stalls,
+clearance held → goal 1 may abort (the mark's contract is NEXT-plan learning) →
+the immediate resend SUCCEEDS with the detour, ZERO further promotions.
+**The self-quench, observed and undesigned: the promoted mark makes the global
+cell lethal, which erases the very blindness delta the firing came from — the
+mechanism turns itself off by succeeding.** Nobody designed that; the rig found
+it, and it is the design's most elegant property.
+
+**The transient hole and its cure**: transient-short (6 s hold, then gone) FAILED
+first — an obstacle that leaves in silence STRANDS ITS PAINT (tof_layer clears
+only by successor-return raytrace), the pin sustains the window, and the ungated
+watcher promoted stale evidence at ~T. The EVIDENCE FRESHNESS GATE (F = 3.0 s,
+derived: the 15% thin-flicker class at the 6.5 Hz floor returns every ~1.03 s, so
+F admits the flickeriest measured real obstacle with ~3× margin) fixed it:
+post-gate, transient-short passes with ZERO marks ever, and certifier +
+transient-long re-passed unchanged. The robot may still sit pinned on the stale
+paint — tof_layer's own backlogged persistence defect, deliberately out of D's
+scope: D's duty is that a transient never becomes PERMANENT.
+
+**T sweep (data, not bars; one run each)**: T=8 fired inside the BT's patience —
+same-goal SUCCEEDED, certified in phase 1. T=12 (deployed default) certifies
+two-phase. T=16 ground longest before learning and its resend failed once.
+Default stays 12: shorter T buys same-goal wins with person-immunity margin,
+which 5b priced as the wrong currency.
+
+**Straight-B A/B, the record the round asked for**: with the tof source mirrored
+into the global costmap (config only, no watcher), the same scene STILL
+LIVELOCKED — pinned at timeout, 0.064 m displacement. B's paint arrives only when
+the robot is already inside the 0.60 m envelope, flickers with the cone, and
+never becomes the stable, inflated, both-costmaps disc a mark is. And after the
+obstacle was REMOVED: **11 lethal + 62 inscribed cells (~0.18 m² of poisoned
+floor) persisted, and the planner still detoured the ghost at 0.292 m — the
+quasi-permanence critique, quantified.** Fairness note: D's marks also outlive
+their obstacle (transient-long logs it as the named cost) — the difference is
+that D pays that price only for a SUSTAINED, freshness-backed, disciplined,
+provenance-tagged event with a revocation path on the roadmap, while B pays it
+for every sighting including one-frame transients.
+
+Scoreboard: D certified with the transient hole found-and-closed; B failed the
+livelock it was supposed to solve and left a ghost. The forced rankings above
+stand, with D's lead widened by measurement.
