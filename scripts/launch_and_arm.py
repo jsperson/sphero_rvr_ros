@@ -71,7 +71,7 @@ def say(stage, msg):
 
 # --- what each stack actually launches and records (pure; the tests hold these) ------
 
-def launch_command(stack, imu_fusion=True):
+def launch_command(stack, imu_fusion=True, ride_along_watcher=False):
     """The exact bringup command per stack. PURE so the tests can pin it.
 
     stock: the §3a middle -- no explorer, no decisive controller, RPP + bt_navigator
@@ -86,6 +86,11 @@ def launch_command(stack, imu_fusion=True):
     marks) and an idle marker still costs ~14% of a Pi core.
     """
     if stack == "stock":
+        # ride_along_watcher: the D RIDE-ALONG OVERRIDE. start_refusal_watcher
+        # defaults FALSE in the launch until a flight ride-along clears the
+        # mechanism; passing this flag IS that ride-along, and the deviation is
+        # logged at bringup so the run's record says so explicitly.
+        watcher = (" start_refusal_watcher:=true" if ride_along_watcher else "")
         return (
             "ros2 launch sphero_rvr_driver explore.launch.py "
             "start_motion_stack:=true start_explore:=false "
@@ -93,6 +98,7 @@ def launch_command(stack, imu_fusion=True):
             f"enable_imu_fusion:={'true' if imu_fusion else 'false'} "
             'nav2_params_file:="$(ros2 pkg prefix sphero_rvr_driver)'
             '/share/sphero_rvr_driver/config/lean_nav2_stock.yaml"'
+            + watcher
         )
     if stack == "bespoke":
         return (
@@ -121,6 +127,10 @@ def bag_topics(stack):
     if stack == "stock":
         base += [
             "/contact_marks", "/plan",
+            # D's own seam: the request lane records every firing the watcher
+            # made, including ones the marker rejects -- the promotion story is
+            # reconstructable from the bag alone.
+            "/contact_marks/promote",
             "/local_costmap/costmap_raw", "/local_costmap/costmap_raw_updates",
             "/global_costmap/costmap_raw", "/global_costmap/costmap_raw_updates",
         ]
@@ -347,6 +357,12 @@ def main():
     ap.add_argument("--no-imu-fusion", action="store_true",
                     help="stock only: reproduce a wheel-odom-only baseline (the "
                          "protocol's open decision defaults fusion ON)")
+    ap.add_argument("--ride-along-watcher", action="store_true",
+                    help="stock only: THE D RIDE-ALONG OVERRIDE -- start "
+                         "refusal_watcher despite its flight default of false. "
+                         "Logged at bringup as the deviation it is; use only for "
+                         "the ride-along flight the mechanism's clearance "
+                         "requires (docs/design_tof_planner_visibility.md).")
     ap.add_argument("--teardown", action="store_true",
                     help="stop what a previous run of this script started")
     ap.add_argument("--settle-s", type=float, default=30.0,
@@ -381,7 +397,12 @@ def main():
           f"{home}/recorder_{stamp}.log")
 
     say("bringup", f"{args.stack} stack (no camera, no monocular detector) ...")
-    spawn(launch_command(args.stack, imu_fusion=not args.no_imu_fusion), launch_log)
+    if args.ride_along_watcher:
+        say("DEVIATION", "start_refusal_watcher:=true -- the D ride-along "
+                         "override; the launch default is false until this very "
+                         "flight clears the mechanism")
+    spawn(launch_command(args.stack, imu_fusion=not args.no_imu_fusion,
+                         ride_along_watcher=args.ride_along_watcher), launch_log)
     say("bringup", f"settling {args.settle_s:.0f}s ...")
     time.sleep(args.settle_s)
 

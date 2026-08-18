@@ -318,3 +318,20 @@ def test_no_spawned_command_chains_with_a_shell_operator():
             assert operator not in command, (
                 f"spawn({command!r}...) uses {operator!r}; exec runs a single executable."
             )
+
+
+def test_the_ride_along_override_is_explicit_and_default_off():
+    """The D watcher flies default-OFF until its ride-along clears it; the
+    override must be an explicit flag that changes the command, never the
+    baseline. Both directions pinned."""
+    mod = _module()
+    assert "start_refusal_watcher" not in mod.launch_command("stock")
+    assert "start_refusal_watcher:=true" in mod.launch_command(
+        "stock", ride_along_watcher=True)
+    assert "start_refusal_watcher" not in mod.launch_command("bespoke")
+
+
+def test_the_stock_bag_records_the_promotion_request_lane():
+    """Every watcher firing -- including ones the marker rejects -- must be
+    reconstructable from the bag alone."""
+    assert "/contact_marks/promote" in _module().bag_topics("stock")
