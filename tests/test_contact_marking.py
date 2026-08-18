@@ -10,6 +10,8 @@ import pytest
 from sphero_rvr_core.contact_marking import (
     FOOTPRINT_FRONT_M,
     FOOTPRINT_REAR_M,
+    HALF_WIDTH_LEFT_M,
+    HALF_WIDTH_RIGHT_M,
     ROBOT_RADIUS_M,
     StallEventTracker,
     contact_mark_centre,
@@ -105,11 +107,26 @@ def test_the_disc_near_edge_clears_the_footprint_edge():
     assert abs(cx_rev) - ROBOT_RADIUS_M >= FOOTPRINT_REAR_M - 1e-9
 
 
-def test_the_footprint_is_the_measured_body_not_the_padded_brake_distance():
-    """`collision_stop.yaml` pads its front/rear numbers with braking and payload
-    margin -- correct for a brake, wrong for describing where the body is. The bespoke
-    controller's 0.11/0.16 were those padded values."""
-    assert FOOTPRINT_FRONT_M == 0.0965 and FOOTPRINT_REAR_M == 0.1145
+def test_the_footprint_is_the_measured_body_not_a_padded_number():
+    """Pinned against the TAPE, not against a config field whose name sounds right.
+
+    This test is here because the first version of this module took 0.1145 from
+    `collision_stop.yaml`'s `footprint_rear_m` and called it measured -- it is the
+    measured 0.0995 plus 0.015 m of margin. Padding is correct for a brake and wrong
+    for saying where the body is, and a field name is not a provenance."""
+    from tests.test_footprint_derivation import tape_in_base_link
+    front, rear, left, right = tape_in_base_link()
+    assert FOOTPRINT_FRONT_M == pytest.approx(front)
+    assert FOOTPRINT_REAR_M == pytest.approx(rear)
+    assert (HALF_WIDTH_LEFT_M, HALF_WIDTH_RIGHT_M) == pytest.approx((left, right))
+
+
+def test_the_lateral_half_extents_are_not_the_longitudinal_ones():
+    """The v2 strip spans laterally, and the number for that is 0.106 (right) -- not
+    0.1145, which is a padded half-LENGTH. Guarding the distinction because the strip
+    proposal reached for the longitudinal number first."""
+    assert HALF_WIDTH_RIGHT_M != FOOTPRINT_REAR_M
+    assert max(HALF_WIDTH_LEFT_M, HALF_WIDTH_RIGHT_M) == 0.106
 
 
 def test_a_shorter_margin_would_break_the_invariant():

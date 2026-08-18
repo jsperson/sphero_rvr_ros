@@ -34,12 +34,24 @@ from dataclasses import dataclass
 
 from sphero_rvr_core.decisive_control import freeze_mark_pose
 
-#: Deployed footprint, from `config/collision_stop.yaml` -- the MEASURED body, not the
-#: padded stopping distances that live beside it there and not the 0.11/0.16 the
-#: bespoke controller carried (those were padded ~2x for braking margin, which is the
-#: right thing for a brake and the wrong thing for describing where the body is).
+#: THE MEASURED BODY -- Scott's tape 2026-08-15, referenced to base_link, asserted in
+#: `tests/test_footprint_derivation.py`. NOT the padded numbers: `collision_stop.yaml`
+#: carries `footprint_rear_m: 0.1145`, which is this 0.0995 plus 0.015 m of margin, and
+#: the bespoke controller carried 0.11/0.16, padded ~2x for braking. Padding is right
+#: for a brake and wrong for saying where the body IS.
+#:
+#: (0.1145 shipped here for one commit, labelled "measured". Caught 2026-08-18 by
+#: reading the derivation test instead of trusting the config field's name.)
 FOOTPRINT_FRONT_M = 0.0965
-FOOTPRINT_REAR_M = 0.1145
+FOOTPRINT_REAR_M = 0.0995   # cable compressed when taped: a MINIMUM
+
+#: LATERAL half-extents, and they are ASYMMETRIC because base_link is not the body's
+#: centre. Recorded here because the v2 strip geometry needs them and the temptation is
+#: to reach for a longitudinal number instead -- a half-LENGTH standing in for a
+#: half-WIDTH is the same category error as measuring the right thing about the wrong
+#: population. Use max(left, right) for a symmetric strip.
+HALF_WIDTH_LEFT_M = 0.098
+HALF_WIDTH_RIGHT_M = 0.106
 
 #: Circumscribed radius of that footprint (`lean_nav2_stock.yaml: robot_radius`).
 ROBOT_RADIUS_M = 0.145
