@@ -19,6 +19,15 @@ the watcher's snapshot is the evidence, and two components re-deriving one fact
 is the seam class this project keeps paying for.
 
 Suppressed firings are LOGGED with their reason. Silence is not discipline.
+
+EVIDENCE FRESHNESS: every candidate centroid must be backed by a raw /tof/points
+return inside the last EVIDENCE_FRESHNESS_S, or it is refused as stale -- the rig's
+transient-short arm proved that an obstacle which leaves in silence strands its
+paint in the local costmap (tof_layer clears only by successor-return raytrace; see
+the tof-layer persistence item in the backlog and
+memory/touch-port-v1-field-defects: the run-3d dead-band is the same disease seen
+from the approach side), and an ungated watcher would promote that stale paint into
+a permanent mark. Trust returns, not paint.
 """
 
 from __future__ import annotations
@@ -33,13 +42,16 @@ from nav_msgs.msg import Path
 from nav2_msgs.msg import Costmap, CostmapUpdate
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import PointCloud2, PointField
+from tf2_ros import Buffer, TransformListener
 
 from sphero_rvr_core.refusal_promotion import (
     Grid,
     FiringDiscipline,
     LivelockWindow,
+    RecentReturns,
     blindness_delta_cells,
     cluster_and_cap,
+    freshness_verdict,
 )
 
 RAW_QOS = QoSProfile(
@@ -84,6 +96,9 @@ class RefusalWatcher(Node):
         self.local = CostmapTracker()
         self.global_ = CostmapTracker()
         self.plan_xy: list = []
+        self.returns = RecentReturns()
+        self._buffer = Buffer()
+        self._listener = TransformListener(self._buffer, self)
         self._last_suppression = ""
 
         self.create_subscription(
@@ -97,6 +112,7 @@ class RefusalWatcher(Node):
             CostmapUpdate, "/global_costmap/costmap_raw_updates",
             self.global_.on_update, RAW_QOS)
         self.create_subscription(Path, "/plan", self._on_plan, 10)
+        self.create_subscription(PointCloud2, "/tof/points", self._on_tof, 10)
         self.create_subscription(
             NavigateToPose.Impl.FeedbackMessage,
             "/navigate_to_pose/_action/feedback", self._on_feedback, 10)
@@ -110,6 +126,26 @@ class RefusalWatcher(Node):
     def _on_plan(self, msg: Path) -> None:
         self.plan_xy = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
         self.discipline.note_plan()
+
+    def _on_tof(self, msg: PointCloud2) -> None:
+        """Raw returns into the freshness ring, transformed to map. A return that
+        cannot be placed (no TF) vouches for nothing and is dropped."""
+        try:
+            tf = self._buffer.lookup_transform(
+                "map", msg.header.frame_id, rclpy.time.Time())
+        except Exception:
+            return
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y),
+                         1 - 2 * (q.y * q.y + q.z * q.z))
+        c, s = math.cos(yaw), math.sin(yaw)
+        now = self.get_clock().now().nanoseconds * 1e-9
+        n = msg.width * msg.height
+        for i in range(n):
+            px, py, _ = struct.unpack_from("<fff", msg.data, i * msg.point_step)
+            self.returns.add(now, t.x + c * px - s * py, t.y + s * px + c * py)
+        self.returns.prune(now)
 
     def _on_feedback(self, msg) -> None:
         fb = msg.feedback
@@ -128,6 +164,17 @@ class RefusalWatcher(Node):
         if firing.suppressed_reason:
             self._suppress(firing.suppressed_reason)
             return
+        fresh, stale = freshness_verdict(self.returns, t, firing.centroids)
+        if stale:
+            self.get_logger().info(
+                f"freshness gate dropped {len(stale)} stale centroid(s) "
+                f"{[(round(a, 2), round(b, 2)) for a, b in stale]} -- paint without "
+                f"recent returns is a departed obstacle (or a cone swept away; "
+                f"refusal self-corrects on the next sweep)")
+        if not fresh:
+            self._suppress("evidence stale: no recent ToF return backs any centroid")
+            return
+        firing.centroids[:] = fresh
         allowed, reason = self.discipline.allow(t, goal_id, firing.centroids)
         if not allowed:
             self._suppress(reason)

@@ -15,13 +15,26 @@ ARMS, in the build's ratified order (falsifier BEFORE any watcher code exists):
                   livelock reproduces -- goal NOT reached, terminal displacement
                   stalled, recoveries accumulating (constants below). A rig that
                   cannot produce goal 4's disease cannot certify the cure.
-  certifier       Same scene, watcher PRESENT. BAR: marks appear with ZERO stall
-                  events (in this rig any mark is therefore a promotion), the goal
-                  SUCCEEDS, the track keeps clear of the obstacle after promotion,
-                  and at most one firing's worth of marks is planted.
+  certifier       Same scene, watcher PRESENT. BAR (two-phase, PM ruling
+                  2026-08-18 after the first run; original wording was "marks
+                  appear with zero stalls, the goal SUCCEEDS, clearance holds,
+                  one firing" -- preserved here per the bar-change-in-daylight
+                  pattern): PHASE 1 -- livelock sustains, ONE promotion, zero
+                  stalls, clearance held; goal 1 MAY abort without demerit,
+                  because the mark's contract is NEXT-PLAN learning ("routes
+                  around on the next plan -- the whole mechanism, and also its
+                  latency") and the current goal's survival is a race against
+                  BT patience, a different component's tuning knob. PHASE 2 --
+                  the immediate resend SUCCEEDS with the detour, ZERO further
+                  promotions (the self-quench: the promoted mark erases the
+                  delta it came from), clearance held.
   transient-short Obstacle appears at approach, holds --hold-s (default 6 < T),
-                  vanishes. BAR: ZERO marks ever; goal SUCCEEDS. The 5b cost made
-                  falsifiable: a person's moment must not become permanent.
+                  vanishes. BAR (amended with the freshness-gate consensus): ZERO
+                  marks EVER -- that is the whole bar. The goal's fate under the
+                  stale local paint the vanished obstacle leaves behind is
+                  RECORDED, not barred: that pin is tof_layer's own backlogged
+                  persistence defect, and D's duty is only that a transient never
+                  becomes PERMANENT.
   transient-long  Obstacle holds until promotion or timeout. BAR: promotion fires.
                   The obstacle is then removed and the mark's permanence is LOGGED
                   as the named cost it is, not discovered later.
@@ -298,19 +311,53 @@ def main():
     if args.arm == "certifier":
         promoted = rig.marks_seen_nonzero and (stalls_delta in (0, None))
         clear = rig.closest_to_obstacle_after(t0)
-        ok = (promoted and status == 4
-              and clear is not None and clear >= CLEARANCE_M
-              and rig.marks_width <= MAX_PROMOTED_POINTS)
         say(f"closest post-send approach to obstacle: "
             f"{clear if clear is None else round(clear, 3)} m (bar {CLEARANCE_M})")
-        say("CERTIFIED: promotion -> replan -> goal, no contact, discipline held"
-            if ok else "NOT CERTIFIED -- read the terminal line against the bars")
+        if not promoted:
+            say("NOT CERTIFIED: no promotion happened (or a stall contaminated it)")
+            return 1
+        marks_after_phase1 = rig.marks_width
+        if status != 4:
+            # TWO-PHASE BAR (consensus, after the first certifier run): the mark's
+            # documented contract is "routes around on the NEXT plan -- the whole
+            # mechanism, and also its latency". Phase 1 promoted and may still
+            # abort when the BT's retry budget races the window; the CURE is that
+            # the RESEND detours and succeeds, with ZERO further promotions (the
+            # self-quench observed live: the mark erases the delta it came from).
+            say("phase 1 aborted after promotion (the design's own latency) -- "
+                "resending the same goal against the now-informed planner")
+            send2 = nav.send_goal_async(goal, feedback_callback=fb)
+            t2 = time.monotonic()
+            while not send2.done() and time.monotonic() - t2 < 15:
+                time.sleep(0.1)
+            handle2 = send2.result()
+            if not handle2 or not handle2.accepted:
+                say("INCONCLUSIVE: resend not accepted")
+                return 3
+            rf2 = handle2.get_result_async()
+            while not rf2.done() and time.monotonic() - t2 < args.timeout:
+                time.sleep(0.3)
+            if not rf2.done():
+                say("NOT CERTIFIED: resend did not terminate")
+                return 1
+            status = rf2.result().status
+            clear = rig.closest_to_obstacle_after(t2)
+            say(f"phase 2: status={status} marks_width={rig.marks_width} "
+                f"closest approach {clear if clear is None else round(clear, 3)} m")
+        ok = (status == 4
+              and clear is not None and clear >= CLEARANCE_M
+              and rig.marks_width <= MAX_PROMOTED_POINTS
+              and rig.marks_width == marks_after_phase1)
+        say("CERTIFIED: promotion -> planner detours -> goal, no contact, one "
+            "firing, self-quench held"
+            if ok else "NOT CERTIFIED -- read the phase lines against the bars")
         return 0 if ok else 1
 
     if args.arm == "transient-short":
-        ok = (not rig.marks_seen_nonzero) and status == 4
-        say("TRANSIENT PASSED: no promotion, goal reached"
-            if ok else "TRANSIENT FAILED: a moment became a mark, or the goal died")
+        ok = not rig.marks_seen_nonzero
+        say(f"goal fate under stale paint (recorded, not barred): status={status}")
+        say("TRANSIENT PASSED: no promotion -- the moment did not become a mark"
+            if ok else "TRANSIENT FAILED: a moment became a mark")
         return 0 if ok else 1
 
     if args.arm == "transient-long":

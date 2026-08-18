@@ -205,6 +205,74 @@ def cluster_and_cap(points: list, merge_radius_m: float = MERGE_RADIUS_M,
     return Firing([(c[3], c[4]) for c in clusters])
 
 
+#: The sensor's rate band floor and the WORST measured real-obstacle detection
+#: duty: the thin-target flicker class detects in ~15% of frames (the "15% class",
+#: run-3d era characterisation). At 6.5 Hz that is ~one return per second from the
+#: flickeriest obstacle we have ever measured as real.
+TOF_RATE_FLOOR_HZ = 6.5
+FLICKER_DETECTION_FRACTION = 0.15
+
+#: Evidence freshness (consensus round after transient-short FAILED on the rig):
+#: a promotion candidate must be backed by a raw ToF return seen within this many
+#: seconds, inside MERGE_RADIUS_M of the centroid.
+#:
+#: DERIVED, not chosen: the flickeriest measured real obstacle produces a return
+#: every 1 / (TOF_RATE_FLOOR_HZ x FLICKER_DETECTION_FRACTION) ~ 1.03 s, so
+#: F = 3.0 s admits it with ~3x margin while expiring a departed obstacle in three
+#: seconds. The guard test re-derives this; change the sensor's rate constants and
+#: F re-derives or fails a test, not a mission.
+#:
+#: WHY THE GATE EXISTS: tof_layer clearing needs successor returns to raytrace old
+#: cells, so an obstacle that leaves in silence STRANDS ITS PAINT -- the local
+#: costmap keeps refusing, the livelock window sustains on schedule, and an
+#: ungated watcher faithfully promotes STALE evidence into a permanent mark
+#: (transient-short, first rig run: marks at ~T after a 6 s obstacle had already
+#: gone). The gate makes the watcher trust RETURNS, not paint. The robot may still
+#: sit pinned on the stale paint -- that is tof_layer's own backlogged persistence
+#: defect (the run-3d dead-band/FOV-transition item), not D's to solve; D's duty
+#: is only that a transient never becomes PERMANENT.
+#:
+#: PIVOT-SWEEP DYNAMIC, accepted behaviour: during recovery spins the cone sweeps
+#: off the obstacle and freshness can lapse -- promotion is then REFUSED until the
+#: cone re-confirms on a later sweep. A temporary refusal that self-corrects is
+#: correct (promote only what was recently SEEN); it costs latency, not
+#: correctness, and pairs with the two-phase bar's next-plan latency contract.
+EVIDENCE_FRESHNESS_S = 3.0
+
+
+class RecentReturns:
+    """A small ring of recent raw ToF returns in map frame, for the freshness gate."""
+
+    def __init__(self, keep_s: float = 4.0 * EVIDENCE_FRESHNESS_S, cap: int = 2000):
+        self.keep_s = keep_s
+        self.cap = cap
+        self._pts: list = []         # (t, x, y)
+
+    def add(self, t: float, x: float, y: float) -> None:
+        self._pts.append((t, x, y))
+        if len(self._pts) > self.cap:
+            del self._pts[: len(self._pts) - self.cap]
+
+    def prune(self, now: float) -> None:
+        self._pts = [p for p in self._pts if p[0] >= now - self.keep_s]
+
+    def fresh_near(self, now: float, x: float, y: float,
+                   radius_m: float = MERGE_RADIUS_M,
+                   freshness_s: float = EVIDENCE_FRESHNESS_S) -> bool:
+        cutoff = now - freshness_s
+        return any(t >= cutoff and math.hypot(px - x, py - y) <= radius_m
+                   for t, px, py in self._pts)
+
+
+def freshness_verdict(returns: RecentReturns, now: float, centroids: list) -> tuple:
+    """(fresh_centroids, stale_centroids). EVERY centroid must be individually
+    backed -- one live cluster must not launder a stale one through the firing."""
+    fresh, stale = [], []
+    for cx, cy in centroids:
+        (fresh if returns.fresh_near(now, cx, cy) else stale).append((cx, cy))
+    return fresh, stale
+
+
 class FiringDiscipline:
     """Consensus amendment 1: promotions are EVENTS, and events are rationed.
 

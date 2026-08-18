@@ -208,3 +208,72 @@ def test_apply_update_patches_the_window_not_the_world():
     # never exact edges.
     assert g.at(0.125, 0.175) == LETHAL        # centre of patched cell (2,3)
     assert g.at(0.125, 0.325) == 0             # outside the patch, untouched
+
+
+# --- the evidence freshness gate (transient-short's finding) ---------------------------
+
+from sphero_rvr_core.refusal_promotion import (  # noqa: E402
+    EVIDENCE_FRESHNESS_S,
+    RecentReturns,
+    freshness_verdict,
+)
+
+
+def test_stale_paint_cannot_be_promoted():
+    """The rig's discovery, pinned: an obstacle that leaves in silence strands its
+    paint; the delta survives but the RETURNS stop. A centroid with no return
+    inside the freshness horizon is stale, whatever the costmap still says."""
+    rr = RecentReturns()
+    rr.add(0.0, 0.625, -0.025)                 # the obstacle, before it left
+    now = EVIDENCE_FRESHNESS_S + 3.0
+    fresh, stale = freshness_verdict(rr, now, [(0.625, -0.025)])
+    assert fresh == [] and stale == [(0.625, -0.025)]
+
+
+def test_a_live_obstacle_keeps_its_evidence_fresh():
+    rr = RecentReturns()
+    for i in range(40):
+        rr.add(i * 0.15, 0.62 + 0.01 * (i % 3), -0.02)
+    fresh, stale = freshness_verdict(rr, 6.0, [(0.625, -0.025)])
+    assert stale == [] and fresh
+
+
+def test_one_live_cluster_cannot_launder_a_stale_one():
+    """Per-centroid gating: a firing with one fresh and one stale cluster promotes
+    ONLY the fresh one -- a live obstacle nearby must not resurrect a departed
+    one's paint."""
+    rr = RecentReturns()
+    rr.add(9.5, 0.6, 0.0)                       # fresh cluster A
+    rr.add(0.0, 2.0, 2.0)                       # cluster B's returns long gone
+    fresh, stale = freshness_verdict(rr, 10.0, [(0.6, 0.0), (2.0, 2.0)])
+    assert fresh == [(0.6, 0.0)]
+    assert stale == [(2.0, 2.0)]
+
+
+def test_freshness_radius_is_the_merge_radius():
+    """A return 20 cm away vouches for nothing at this centroid."""
+    rr = RecentReturns()
+    rr.add(9.9, 0.85, 0.0)
+    fresh, stale = freshness_verdict(rr, 10.0, [(0.625, 0.0)])
+    assert fresh == []
+
+
+def test_the_freshness_horizon_re_derives_from_the_sensor():
+    """F admits the flickeriest MEASURED real obstacle (the 15% thin-target class
+    at the rate-band floor: one return per ~1.03 s) with ~3x margin, and expires a
+    departed obstacle in seconds. Change the sensor constants and this re-derives
+    or fails here, not in a field mission."""
+    from sphero_rvr_core.refusal_promotion import (
+        EVIDENCE_FRESHNESS_S,
+        FLICKER_DETECTION_FRACTION,
+        TOF_RATE_FLOOR_HZ,
+    )
+
+    flicker_period_s = 1.0 / (TOF_RATE_FLOOR_HZ * FLICKER_DETECTION_FRACTION)
+    assert EVIDENCE_FRESHNESS_S >= 2.5 * flicker_period_s, (
+        "F no longer covers the flickeriest measured real obstacle"
+    )
+    assert EVIDENCE_FRESHNESS_S <= 6.0, (
+        "F this long keeps departed obstacles promotable for longer than any "
+        "measured evidence supports"
+    )
