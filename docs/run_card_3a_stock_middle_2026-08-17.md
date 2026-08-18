@@ -4,7 +4,10 @@
 whole architecture argument has been waiting on since `docs/navigation_reckoning.md` was
 written, and Option A was ruled on 2026-08-16.
 
-**Status: NOT FLOWN. Needs Scott, a staged rover, and a chassis.**
+**Status: READY TO FLY as of 2026-08-18 (`3334be5`). Needs Scott, a staged rover, and a
+chassis.** Everything below the wheels is measured; the four-clause acceptance is green in
+the closed-loop rig; the Pi is on the branch and built. What is NOT proven is anything
+that needs a real floor — see the 08-18 section below for what changed and what to watch.
 
 ---
 
@@ -82,6 +85,49 @@ rather than assuming a file in git is a file on the robot.
   write, did the firmware stall" without inference.
 * **It drives but wanders / overshoots** → RPP tuning, which is ordinary work on a
   component thousands of robots use, not an architecture problem.
+
+## WHAT CHANGED SINCE THIS CARD WAS WRITTEN (2026-08-18) — READ BEFORE FLYING
+
+Three things that alter what you will see, all measured and all in the branch at
+`3334be5`.
+
+**1. The planner can see.** `lean_nav2_stock.yaml` had no `global_costmap` section, so
+planner_server ran on nav2 defaults with an obstacle layer subscribed to nothing. In this
+project's entire history the planner has planned against the SLAM map alone, blind to
+every change since the map was drawn. It now has live `/scan` and `/contact_marks`. **This
+changes planning everywhere, not just near marks** — it is the largest behavioural change
+in this flight and the most likely source of surprise.
+
+**2. Inflation went 0.16 → 0.30, and the rover will look different for it.** At 0.16 the
+cost gradient was 8 mm wide (the deployed circumscribed radius is 0.1591), so the planner
+had nothing to prefer clearance with. **WATCH:** RPP's regulated velocity scaling slows
+near obstacles, so expect a slower rover near furniture, and in a tight corridor nearly
+every cell is now costly, which shifts route preference. Expected, watched, not a mystery.
+It cannot close a gap the rover could previously plan through — the blocking region comes
+from the footprint, not from this value.
+
+**3. Contact marking is live.** The rover now learns where it has been hit and the planner
+routes around it. Rig-measured on an open map: mark planted, 0.321 m detour, goal reached,
+0.075 m of clearance, no re-contact.
+
+### The mat, and why "it routes around" is not the whole truth
+
+Scott's mat is 9.5 mm against his ~19 mm crossable spec, and the rover met its edge on
+2026-08-18. A stall there is a *true* contact — the detector requires stall plus
+packets-written plus no-motion — but "stalled here" is not "impassable", and until
+try-harder and revocation land the mark is permanent.
+
+**In a 0.4–0.6 m corridor there is no elsewhere: one mark ends the route.** Measured in
+the recorded room — the free span containing the rover's own path is 0.40–0.60 m through
+that stretch and 1.05 m at its widest anywhere on it, against ~0.51 m sterilised by a
+single mark. The planner does not route around; it reports `no valid path found` from the
+start pose and the goal fails. It fails *honestly and immediately*, and the rover never
+approaches the mark (closest approach 0.456 m, versus driving to 0.151 m from it before
+this change) — which is the improvement. It is still a stalled mission.
+
+**Expected is not acceptable: this ending is the field receipt that pulls try-harder
+forward, per Scott's own rule.** Pre-naming an outcome must not anaesthetise us to it. If
+the flight ends at the mat edge, that is the evidence, not a shrug.
 
 ## KILL CRITERIA — physical, not aesthetic
 
