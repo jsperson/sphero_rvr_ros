@@ -8,6 +8,8 @@ import math
 import pytest
 
 from sphero_rvr_core.contact_marking import (
+    COSTMAP_CIRCUMSCRIBED_RADIUS_M,
+    COSTMAP_INSCRIBED_RADIUS_M,
     FOOTPRINT_FRONT_M,
     FOOTPRINT_REAR_M,
     HALF_WIDTH_LEFT_M,
@@ -119,6 +121,38 @@ def test_the_footprint_is_the_measured_body_not_a_padded_number():
     assert FOOTPRINT_FRONT_M == pytest.approx(front)
     assert FOOTPRINT_REAR_M == pytest.approx(rear)
     assert (HALF_WIDTH_LEFT_M, HALF_WIDTH_RIGHT_M) == pytest.approx((left, right))
+
+
+def test_the_costmap_radii_are_not_the_configured_robot_radius():
+    """M1/M2, 2026-08-18. `robot_radius: 0.145` is a REQUEST; nav2 pads it by
+    `footprint_padding` and derives the inscribed radius -- and the polygon footprint
+    clearing erases from -- out of the padded shape. Measured on the deployed binary:
+    apothem 0.1519, vertex radii to 0.1591.
+
+    This test exists because BOTH mark-geometry derivations this project produced were
+    computed from 0.145, a number the costmap never sees. If someone 'tidies' these back
+    to robot_radius, that whole class of error comes back."""
+    assert COSTMAP_INSCRIBED_RADIUS_M != ROBOT_RADIUS_M
+    assert COSTMAP_INSCRIBED_RADIUS_M > ROBOT_RADIUS_M, (
+        "padding makes the deployed body BIGGER than configured, never smaller")
+    assert COSTMAP_CIRCUMSCRIBED_RADIUS_M > COSTMAP_INSCRIBED_RADIUS_M
+
+
+def test_the_declared_padding_explains_the_measured_radii():
+    """Guard the DERIVATION, not just the numbers: the config now declares
+    `footprint_padding`, and it must remain the value that accounts for the measured
+    footprint. A padding edited without re-measuring would leave these constants
+    describing a robot the costmap no longer builds."""
+    import re
+    from pathlib import Path
+    cfg = (Path(__file__).resolve().parents[1] / "config" / "lean_nav2_stock.yaml").read_text()
+    m = re.search(r"^\s*footprint_padding:\s*([0-9.]+)", cfg, re.M)
+    assert m, "footprint_padding must stay DECLARED -- an invisible default is the defect"
+    padding = float(m.group(1))
+    # nav2 pads sign-wise per vertex, so the on-axis vertex moves out by exactly padding.
+    assert ROBOT_RADIUS_M + padding == pytest.approx(0.1550, abs=5e-4), (
+        "the smallest measured vertex radius (0.1550) is robot_radius + padding; if this "
+        "no longer holds, re-run M1 rather than editing the constants")
 
 
 def test_the_lateral_half_extents_are_not_the_longitudinal_ones():

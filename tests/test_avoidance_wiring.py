@@ -6,7 +6,8 @@ can only be made at the node, with a real TF and real messages:
   1. lidar bearings reach the steering law in the BASE frame (the N1 trap: the laser
      is mounted at ~179 deg, so an unrotated bearing leans the rover TOWARD the
      obstacle);
-  2. a stale camera cloud stops steering the robot, exactly as it stops braking it;
+  2. no camera geometry steers the robot at all -- the charter state (9ab4b88), asserted
+     as a capability and always beside a lidar control so it cannot pass vacuously;
   3. a running ladder rung owns cmd_vel outright -- the steering offset cannot reach
      the wire while an escape is in progress.
 
@@ -103,58 +104,82 @@ def test_a_blocked_scan_still_yields_a_blocker():
         rclpy.shutdown()
 
 
-def test_a_stale_camera_cloud_stops_steering_the_robot():
-    """The camera BRAKE degrades to lidar-only on a stale cloud. Steering must use
-    the same freshness bound, or the rover would keep curving around an obstacle
-    reported by a camera that stopped talking -- and the two layers would disagree
-    about whether the camera is speaking at all."""
-    import time as _time
+def test_the_camera_cannot_steer_the_robot_at_the_deployed_default():
+    """THE CHARTER STATE, asserted as a capability rather than as wording (9ab4b88).
+
+    This replaced a freshness test -- "a stale camera cloud stops steering the robot" --
+    which asserted that a FRESH camera cloud steers it. That stopped being true when the
+    camera charter of 2026-08-16 removed the monocular pipeline from navigation:
+    `avoid_camera_enable` defaults False and `_nearest_blocker` returns before any camera
+    geometry is consulted. The old test failed on the Pi from that day, and only on the
+    Pi, because rclpy is absent on the workstation -- the tests that run nowhere but the
+    robot were encoding a world that had been deliberately ended.
+
+    THE LIDAR CONTROL IS THE POINT. Asserting "the camera does not steer" alone would
+    pass just as happily if `_nearest_blocker` were broken outright, or if the cloud never
+    reached the callback -- a green that means nothing. So the same node, in the same
+    breath, must still steer for a LIDAR return: what is proven is that the camera
+    specifically is inert, not that steering is."""
     rclpy.init(args=["--ros-args"])
     try:
         node = _node()
         try:
+            assert node._avoid_camera_enable is False, (
+                "the charter's default has changed; this test guards the disabled state")
+
             header = Header()
             header.frame_id = "base_link"
-            cloud = pc2.create_cloud_xyz32(header, [(0.60, 0.05, 0.0)])
-            node._on_camera_cloud(cloud)
-            assert node._nearest_blocker(max_relevant_m=5.0) is not None
+            # A point that WOULD steer if the camera had authority: comfortably inside
+            # the engagement radius and outside the near band the old filter excluded.
+            node._on_camera_cloud(pc2.create_cloud_xyz32(header, [(0.60, 0.05, 0.0)]))
+            assert node._nearest_blocker(max_relevant_m=5.0) is None, (
+                "a camera cloud reached the steering law -- the charter is breached")
 
-            node._camera_blocker_at = (_time.monotonic()
-                                       - node._avoid_camera_max_age_s - 0.1)
-            assert node._nearest_blocker(max_relevant_m=5.0) is None
+            # ...and the node is not simply deaf.
+            node._on_scan(_scan_with_obstacle_at(0.0, 0.55, clear_range=0.55))
+            assert node._nearest_blocker(max_relevant_m=5.0) is not None, (
+                "the lidar control failed, so the camera assertion above proves nothing")
         finally:
             node.destroy_node()
     finally:
         rclpy.shutdown()
 
 
-def test_the_cameras_unreliable_near_band_does_not_steer_the_robot():
-    """A real PointCloud2 through the real callback, carrying a point at 0.30 m --
-    inside `camera_min_range_m`, where the monocular detector is not trusted and the
-    deployed brake ignores it. It must not steer the rover.
+def test_no_camera_geometry_at_any_range_reaches_the_steering_law():
+    """The charter is a statement about the SOURCE, not about a range window.
 
-    This replaced a clear-ray-at-1.8 m test that PASSED FOR THE WRONG REASON: the
-    engagement radius (0.90) excludes 1.8 m on its own, so the assertion held even
-    with the range filter deleted. A mutation run caught it. The near band is the
-    half of the filter that is load-bearing at the deployed config, and it is the
-    worse failure of the two -- a 0.30 m blocker leans the heading at maximum
-    urgency on the least trustworthy reading this sensor produces.
-    """
+    What stood here tested the near-band filter: a point at 0.30 m, inside
+    `camera_min_range_m`, must not steer, while a 0.65 m point in the same cloud still
+    must. That test earned its place -- it replaced a clear-ray-at-1.8 m version that
+    passed for the wrong reason (the 0.90 engagement radius excluded 1.8 m on its own, so
+    the assertion held with the range filter deleted, and a mutation run caught it).
+
+    But the filter it guarded is unreachable at the deployed config: `_nearest_blocker`
+    returns on `avoid_camera_enable` before any range comparison happens. Keeping the old
+    assertions would have meant re-enabling the camera to test a path the charter removed
+    from navigation -- testing a world that was deliberately ended, which is the defect
+    being fixed here rather than a way to fix it.
+
+    So the claim is widened to the one that is actually true and actually load-bearing:
+    NO camera geometry steers, at any range, near band or not. The lidar control is kept
+    for the same reason as above -- without it this passes on a node that cannot steer at
+    all."""
     rclpy.init(args=["--ros-args"])
     try:
         node = _node()
         try:
             header = Header()
             header.frame_id = "base_link"
-            node._on_camera_cloud(pc2.create_cloud_xyz32(header, [(0.30, 0.02, 0.0)]))
-            assert node._nearest_blocker(max_relevant_m=5.0) is None
-
-            # ...and the same cloud with a legitimate mark in it still steers, so
-            # the filter is not simply swallowing the topic.
+            # Both halves of the old test's cloud: the distrusted near band AND the point
+            # that used to be legitimate. Neither may reach the steering law now.
             node._on_camera_cloud(pc2.create_cloud_xyz32(
                 header, [(0.30, 0.02, 0.0), (0.65, -0.05, 0.0)]))
-            blocker = node._nearest_blocker(max_relevant_m=5.0)
-            assert blocker is not None and blocker[0] == pytest.approx(0.65, abs=0.02)
+            assert node._nearest_blocker(max_relevant_m=5.0) is None, (
+                "camera geometry reached the steering law at some range")
+
+            node._on_scan(_scan_with_obstacle_at(0.0, 0.55, clear_range=0.55))
+            assert node._nearest_blocker(max_relevant_m=5.0) is not None, (
+                "the lidar control failed, so the camera assertion above proves nothing")
         finally:
             node.destroy_node()
     finally:

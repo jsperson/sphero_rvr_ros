@@ -200,6 +200,32 @@ def test_footprint_clearing_is_the_touch_layer_escape_hatch():
     assert re.search(r"footprint_clearing_enabled:\s*true", touch)
 
 
+def test_the_touch_range_gate_is_not_a_sensor_range():
+    """MEASURED 2026-08-18, and it was silently discarding marks in the field.
+
+    `obstacle_max_range` is measured from the OBSERVATION ORIGIN -- the origin of the
+    cloud's own frame in the global frame. Every other source here publishes in a sensor
+    frame, so that origin is the sensor and the gate means what its name says.
+    `/contact_marks` is not a sensor: contact_marker publishes absolute-frame beliefs
+    stamped in `map`, so the origin is the MAP ORIGIN and the gate reads "within N metres
+    of wherever the rover started".
+
+    Held robot-relative geometry constant and varied only distance from the map origin:
+    0.5/1.0/1.5/1.9 m all marked at 253; 2.1/2.5/3.0 m did not mark at all. A clean
+    cutoff at the configured 2.0.
+
+    The guard is deliberately loose about the exact value and strict about the CLASS: any
+    sensor-scale number here reintroduces a touch port that works in the first room and
+    nowhere else."""
+    touch = _layer(cfg(), "touch_layer")
+    m = re.search(r"obstacle_max_range:\s*([0-9.]+)", touch)
+    assert m, "the touch source must state its range gate rather than inherit a default"
+    assert float(m.group(1)) >= 10.0, (
+        f"obstacle_max_range={m.group(1)} on /contact_marks is a SENSOR range applied to "
+        "a map-frame belief -- it gates on distance from the START POSE, not from the "
+        "robot, and silently drops every mark planted beyond it")
+
+
 def test_the_tof_has_its_own_layer_and_may_clear_its_own_returns():
     """The split (2026-08-18) exists because one shared layer forced ONE clearing policy
     onto two sources with different trust profiles. Removing ToF clearing to protect

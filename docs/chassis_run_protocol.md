@@ -57,6 +57,20 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
    explicit PID** — see the teardown section on why `pkill -f` is not safe here —
    then `ros2 daemon stop` so the listing is not a stale cache.
 
+   Two corollaries, both bought on 2026-08-18 by an agent that hit every hazard in this
+   paragraph without having read it:
+
+   * **Gate on the SUMMARY LINE, never on process exit.** `python3 -m pytest` printed
+     `10 failed, 1298 passed, 2 skipped ... in 79.71s` and was still resident twenty
+     minutes later. A waiter watching the process reports a 13-minute hang for an
+     80-second suite, and three stacked waiters then ran three concurrent suites against
+     one ROS graph. Wait for the summary text; kill the pid afterwards.
+   * **Match teardown patterns on the EXECUTABLE, not the language.** A sweep over
+     `python3` processes misses `tf2_ros static_transform_publisher`, which is C++ — two
+     of them were left publishing `map->odom` after a teardown that reported itself
+     clean. A stray global-frame TF publisher is two answers to "where is the robot",
+     which is the seam class this project keeps paying for.
+
 ## Bringup order (separate terminals / tmux panes on the Pi)
 
 ```bash

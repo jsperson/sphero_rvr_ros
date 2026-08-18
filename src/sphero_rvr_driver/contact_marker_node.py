@@ -62,11 +62,17 @@ def marks_qos() -> QoSProfile:
     """QoS for /contact_marks, and the honest provenance of the choice.
 
     RELIABLE + VOLATILE + depth 10 -- byte-identical to what the bespoke controller
-    published freeze marks with. THE AUTHORITY IS THE FIELD, NOT A READING OF NAV2'S
-    SOURCE: nav2_costmap_2d ships no headers on this Pi to check against, but D43 is
-    proof of delivery in the strongest possible form -- a robot buried by its own marks
-    is a robot whose ObstacleLayer received every one of them through exactly this
-    profile.
+    published freeze marks with. THE AUTHORITY IS THE FIELD: D43 is proof of delivery in
+    the strongest possible form -- a robot buried by its own marks is a robot whose
+    ObstacleLayer received every one of them through exactly this profile.
+
+    (An earlier version of this docstring claimed nav2_costmap_2d ships no headers on
+    this Pi to check against. That was false and never verified:
+    `/opt/ros/jazzy/include/nav2_costmap_2d/` is fully populated, and
+    `inflation_layer.hpp` carries `computeCost` inline. Two sessions reasoned from
+    recollection about source that was readable the whole time. CHECK THE INCLUDE PATH
+    BEFORE DECLARING A SOURCE UNREADABLE -- "we cannot check" is itself a claim, and it
+    is the cheapest of all of them to test.)
 
     The compatibility reasoning agrees with the evidence (a RELIABLE publisher satisfies
     a BEST_EFFORT subscriber, so this is safe against either request), but the reasoning

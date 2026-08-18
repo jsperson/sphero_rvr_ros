@@ -204,6 +204,23 @@ local_costmap:
       # Measured extents (Scott's tape, 2026-08-15) -- see tests/test_footprint_
       # derivation.py. robot_radius is the circumscribed radius of that rectangle.
       robot_radius: 0.145
+      # DECLARED, not defaulted, because the default was silently inflating every
+      # geometric derivation in this project (M1, 2026-08-18). nav2 pads the footprint
+      # by `footprint_padding` (default 0.01) and then derives BOTH the inscribed radius
+      # inflation uses AND the polygon footprint-clearing erases from the PADDED shape.
+      # So `robot_radius: 0.145` is not the radius the costmap uses.
+      #
+      # MEASURED off /local_costmap/published_footprint on the deployed binary:
+      #     16 vertices, vertex radii 0.1550-0.1591 m, apothem (inscribed) 0.1519 m
+      # Confirmed independently by cost (M2): a cell at diagonal distance
+      # hypot(0.15,0.05)=0.1581 from a lethal cell reads 245, and
+      # 252*exp(-4*(0.1581-0.1519)) = 245.8. Two readings, three decimals, agreeing.
+      #
+      # Kept at the default VALUE so nothing changes behaviourally -- this line exists to
+      # make the number visible, because a default that participates in safety geometry
+      # is a claim the config was not making out loud. Anyone deriving mark or standoff
+      # geometry must use 0.1519 / 0.1591, NOT 0.145.
+      footprint_padding: 0.01
       always_send_full_costmap: false
       plugins: ["scan_layer", "touch_layer", "tof_layer", "inflation_layer"]
 
@@ -273,7 +290,28 @@ local_costmap:
           expected_update_rate: 0.0
           min_obstacle_height: 0.0
           max_obstacle_height: 0.5
-          obstacle_max_range: 2.0
+          # WAS 2.0, AND THAT WAS A LATENT MISSION-KILLER. `obstacle_max_range` is a
+          # SENSOR range: nav2 measures it from the OBSERVATION ORIGIN, which is the
+          # origin of the cloud's own frame expressed in the global frame. Every other
+          # source here publishes in a sensor frame, so that origin is the sensor and the
+          # gate means what it says. `/contact_marks` is NOT a sensor -- contact_marker
+          # publishes absolute-frame BELIEFS stamped in `map` -- so the origin is the MAP
+          # ORIGIN, and a 2.0 m gate meant "within 2 m of wherever the rover started".
+          #
+          # MEASURED 2026-08-18, robot-relative geometry held constant (mark always 0.5 m
+          # ahead of the robot, so clearing/inflation/window are identical at every
+          # sample) while only the distance from the map origin varied:
+          #     0.5 m -> 253    1.0 m -> 253    1.5 m -> 253    1.9 m -> 253
+          #     2.1 m -> 0      2.5 m -> 0      3.0 m -> 0
+          # A clean cutoff at exactly the configured 2.0. Contact marks planted more than
+          # 2 m from the start pose were being silently discarded by the one layer that
+          # exists to hold them -- so the touch port worked in the first room and nowhere
+          # else. The worst kind of defect: it passes every near-field test.
+          #
+          # 100.0 is "no gate": points outside the rolling window are dropped by the
+          # window anyway, so this bounds nothing real. It must be mirrored on any global
+          # costmap touch layer, where the distances are larger and the bug is worse.
+          obstacle_max_range: 100.0
 
       # THE ToF, IN ITS OWN LAYER, where it may clear what it marks.
       #

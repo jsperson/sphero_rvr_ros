@@ -53,8 +53,29 @@ FOOTPRINT_REAR_M = 0.0995   # cable compressed when taped: a MINIMUM
 HALF_WIDTH_LEFT_M = 0.098
 HALF_WIDTH_RIGHT_M = 0.106
 
-#: Circumscribed radius of that footprint (`lean_nav2_stock.yaml: robot_radius`).
+#: Circumscribed radius of that footprint AS CONFIGURED (`lean_nav2_stock.yaml:
+#: robot_radius`). This is what we ASK for. It is not what the costmap uses -- see below,
+#: and do not derive mark geometry from it.
 ROBOT_RADIUS_M = 0.145
+
+#: WHAT THE COSTMAP ACTUALLY USES, measured 2026-08-18 on the deployed binary (M1/M2).
+#:
+#: nav2 pads the footprint by `footprint_padding` (default 0.01, now DECLARED in the YAML
+#: so it stops being invisible) and then derives BOTH the inscribed radius the inflation
+#: layer uses AND the polygon that footprint clearing erases from, out of the PADDED
+#: shape. So `robot_radius: 0.145` never reaches the geometry.
+#:
+#: M1, off `/local_costmap/published_footprint`: 16 vertices, vertex radii 0.1550-0.1591,
+#: apothem 0.1519. M2, independently, off a radial cost profile: a cell at diagonal
+#: distance hypot(0.15,0.05)=0.1581 from a lethal cell reads 245, and
+#: `computeCost` (read from the deployed `inflation_layer.hpp`) gives
+#: 252*exp(-4*(0.1581-0.1519)) = 245.8. Two methods, three decimals, agreeing.
+#:
+#: THE LESSON, because it cost this project both of its mark-geometry derivations: a
+#: config field's value is not the deployed value once a framework default transforms it.
+#: `robot_radius` is a request; the published footprint is the answer.
+COSTMAP_INSCRIBED_RADIUS_M = 0.1519
+COSTMAP_CIRCUMSCRIBED_RADIUS_M = 0.1591
 
 
 class ContactPoseUnavailable(RuntimeError):
@@ -123,6 +144,16 @@ def default_margin_m(mark_radius_m: float = ROBOT_RADIUS_M) -> float:
     ahead, so a contact over-marks roughly 0.29 m of floor beyond the thing it hit.
     That is the conservative direction for an obstacle no sensor can see, and it is the
     cheap error -- the expensive one was measured twice.
+
+    SUPERSEDED IN ITS ARITHMETIC, 2026-08-18, and left standing only because the geometry
+    that replaces it has not been agreed yet. Two things above are now known to be false.
+    (1) The derivation uses `ROBOT_RADIUS_M` = 0.145, which the costmap does not use --
+    the real inscribed radius is `COSTMAP_INSCRIBED_RADIUS_M` = 0.1519 (M1/M2). (2) The
+    claim that the disc's near edge "sits exactly on the footprint's front edge" describes
+    a cell that footprint clearing deletes: the near cap of every disc is erased, and what
+    actually survives is a crescent starting ~0.169 m out that nobody designed. The disc
+    is not dangerous -- the closed-loop A/B shows RPP refuses the approach well before any
+    of this matters -- it is simply not the shape this docstring claims.
     """
     return float(mark_radius_m)
 
