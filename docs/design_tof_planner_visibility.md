@@ -138,3 +138,14 @@ expiry story exist — at which point it is C wearing fewer clothes.
 
 Both rankings stand as written. Scott decides, with the rig A/B's numbers when it
 runs.
+
+---
+
+## DECISION — 2026-08-18, same night
+
+Scott, verbatim: **"go with D"** — refusal-triggered promotion through the touch
+pipeline is the ratified direction. RIG-FIRST: nothing flies until the falsifier
+reproduces goal 4's livelock in sim and the certifier flips it to
+promoted-mark → replan → SUCCEEDED, including the transient-obstacle
+must-NOT-promote scenario from §5b. The both-rankings record above stays intact as
+the argument that was actually had.
