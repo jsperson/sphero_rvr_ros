@@ -12,6 +12,10 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping, Optional, Sequence
 
+from sphero_rvr_core.pivot_curve import PIVOT_LINEAR_EPSILON_MPS, maximum_clean_rate
+from sphero_rvr_core.safety import clamp_velocity_for_path, is_pivot_command
+from sphero_rvr_core.state import VelocityCommand
+
 
 class CollisionState(str, Enum):
     STARTUP = "STARTUP"
@@ -111,6 +115,15 @@ class CollisionStopConfig:
     min_forward_scale: float = 0.0
     max_forward_mps: float = 0.10
     max_angular_rad_s: float = 0.4
+    #: The pivot path's own ceiling: the fastest CLEAN pivot the deployed duty band
+    #: produces -- maximum_clean_rate(pivot_max_duty), where pivot_max_duty lives in
+    #: the DRIVER's config (lean_rvr_tank_si.yaml: 45 -> 5.834 rad/s, run-4 measured
+    #: 5.852 rad/s with <=2.5 cm translation). This default mirrors the driver's
+    #: default band; the deployed value comes from collision_stop.yaml, and the
+    #: literal there is allowed to exist only while a test proves it equals the
+    #: curve's answer for the deployed duty (the cross-config guard in
+    #: tests/test_collision_stop.py).
+    max_pivot_rate_rad_s: float = maximum_clean_rate(45)
     reset_policy: ResetPolicy = ResetPolicy.MANUAL
     zero_publish_period_s: float = 0.10
     allow_disable: bool = False
@@ -909,6 +922,11 @@ class CollisionStopSupervisor:
             # condition exists to prevent, just entered from a different door.
             # Reproduced directly against the previous commit before fixing.
             # A request is a pivot when its linear component is EXACTLY zero.
+            # DELIBERATELY STRICTER than _bound()'s epsilon-based path test: this
+            # rule decides what to GRANT from a stop (fail closed, D25); _bound
+            # decides which CEILING a granted command gets (path-matched to the
+            # driver's epsilon, D45). Each names the other so neither gets
+            # "unified" into a regression.
             if bounded.angular_z != 0.0 and bounded.linear_x == 0.0:
                 # A pivot sweeps a CIRCLE of the footprint's corner radius, in every
                 # direction. Both halves of that sentence were got wrong first time:
@@ -1044,9 +1062,41 @@ class CollisionStopSupervisor:
         return abs(float(speed)) * self.config.measured_stop_time_s + self.config.braking_distance_margin_m
 
     def _bound(self, command: TwistCommand) -> TwistCommand:
-        linear = max(-self.config.max_forward_mps, min(self.config.max_forward_mps, float(command.linear_x)))
-        angular = max(-self.config.max_angular_rad_s, min(self.config.max_angular_rad_s, float(command.angular_z)))
-        return TwistCommand(linear, angular)
+        """Clamp against the authority for the path this command will ACTUALLY take.
+
+        Until 2026-08-18 this clamped every command's angular to `max_angular_rad_s`
+        (0.4), path-blind -- D45 wearing supervisor clothes: a clamp governing a path
+        the command never takes. In the field (run 3c, goals 3/4) RPP's pivots
+        arrived at 3.55 rad/s, left here as 0.40, and the driver's plan_pivot raised
+        them straight back to the 3.55 floor -- so the wire said 0.40 while the
+        wheels did 3.55 (a day's analysis chased that ghost), and every commanded
+        rate in (0.4, 5.83] collapsed to the floor: the measured band above it was
+        unreachable through this seam.
+
+        The split mirrors the driver's own D45 fix and imports the SAME authorities:
+        pivots (decided by `is_pivot_command` with the driver's epsilon, because
+        _bound's job is matching the path THE DRIVER will take) are clamped by the
+        curve-derived `max_pivot_rate_rad_s`; arcs keep `max_angular_rad_s`, which
+        remains UNMEASURED and stays put (see safety.clamp_velocity_for_path for why
+        the two must never be one number).
+
+        DELIBERATELY A DIFFERENT RULE from the STOPPED-state rotation grant below,
+        which requires `linear_x == 0.0` EXACTLY: that rule is D25's fail-closed
+        guard against synthesizing motion from an amputated arc, and it decides what
+        to GRANT, not what a granted command's ceiling is. Each rule names the other
+        so neither gets "unified" into a regression.
+        """
+        is_pivot = is_pivot_command(
+            command.linear_x, command.angular_z, PIVOT_LINEAR_EPSILON_MPS
+        )
+        bounded = clamp_velocity_for_path(
+            VelocityCommand(float(command.linear_x), float(command.angular_z)),
+            max_linear_mps=self.config.max_forward_mps,
+            max_angular_rad_s=self.config.max_angular_rad_s,
+            max_pivot_rate_rad_s=self.config.max_pivot_rate_rad_s,
+            is_pivot=is_pivot,
+        )
+        return TwistCommand(bounded.linear_mps, bounded.angular_rad_s)
 
     def _decision(
         self,

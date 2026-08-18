@@ -153,7 +153,21 @@ lidar_collision_stop_supervisor:
     # runs at 0.20. Braking at 0.20 is ~0.07 m -> effective stop ~0.20 m (~9 cm off
     # the nose), still safe.
     max_forward_mps: 0.20
+    # ARC authority only, as of 2026-08-18 -- UNMEASURED and deliberately untouched
+    # (the arc-rate run card is its close path). Pivots are clamped by
+    # max_pivot_rate_rad_s below, not by this. Before the split, this value clamped
+    # EVERY command: RPP's 3.55 rad/s pivots left the supervisor as 0.40 and the
+    # driver raised them straight back to the 3.55 floor -- the wire lied, and every
+    # commanded pivot rate above 0.4 collapsed to the floor.
     max_angular_rad_s: 0.4
+    # maximum_clean_rate(pivot_max_duty=45) = 5.83439 rad/s -- the fastest CLEAN
+    # pivot the DRIVER's deployed duty band produces (lean_rvr_tank_si.yaml owns the
+    # 45; run 4 measured 5.852 rad/s, <=2.5 cm translation). THIS LITERAL IS ALLOWED
+    # TO EXIST ONLY WHILE A TEST PROVES IT EQUALS THE CURVE'S ANSWER for the deployed
+    # duty: tests/test_collision_stop.py's cross-config guard recomputes it from the
+    # rvr yaml every run. Change pivot_max_duty there and this fails a test, not a
+    # flight.
+    max_pivot_rate_rad_s: 5.83439
     allow_disable: false
     fail_on_missing_tf: true
     # --- Low-obstacle brake (additive to the lidar core) ---

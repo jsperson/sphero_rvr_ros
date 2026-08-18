@@ -399,7 +399,10 @@ def test_projected_turn_allows_rear_left_point_outside_actual_swept_path():
     decision = supervisor.apply_command(TwistCommand(0.0, math.radians(30.0)), now=0.0)
 
     assert decision.state is CollisionState.CLEAR
-    assert decision.output == TwistCommand(0.0, cfg.max_angular_rad_s)
+    # 2026-08-18 clamp split: a pure pivot under the curve ceiling now passes AT ITS
+    # COMMANDED RATE (the old `== max_angular_rad_s` here was the blind clamp this
+    # test never meant to assert -- its subject is the trajectory projection below).
+    assert decision.output == TwistCommand(0.0, math.radians(30.0))
     assert decision.trajectory is not None
     assert decision.trajectory.blocked is False
     assert decision.trajectory.horizon_s == pytest.approx(
@@ -798,3 +801,111 @@ def test_pure_pivot_under_a_non_front_stop_latch_is_still_granted():
     sup = _latched_by(TwistCommand(float("nan"), 0.0))
     decision = sup.apply_command(TwistCommand(0.0, 0.4), now=0.2)
     assert decision.output.angular_z != 0.0
+
+
+# --- the clamp seam, split by path (D45 wearing supervisor clothes, 2026-08-18) ------
+#
+# Field receipt (run 3c, goals 3/4): RPP commanded pivots at 3.55 rad/s, _bound
+# squashed them to 0.40 on /cmd_vel_motor, and the driver's plan_pivot raised them
+# straight back to the 3.55 floor -- the wire lied while the wheels did the right
+# thing, and every commanded pivot rate in (0.4, 5.83] collapsed to the floor. The
+# clamp governed a path the command never took; these tests hold the split.
+
+def _clear_supervisor(**kwargs):
+    cfg = CollisionStopConfig(max_forward_mps=0.10, max_angular_rad_s=0.4, **kwargs)
+    supervisor = CollisionStopSupervisor(cfg, now=0.0)
+    supervisor.update_scan(scan_with(stamp=0.0), now=0.0)
+    return supervisor
+
+
+def test_a_pure_pivot_passes_at_its_commanded_rate_not_the_arc_cap():
+    """The goal-3 field receipt as a test: (0, 3.55) must leave the supervisor at
+    3.55 -- the rate RPP asked for and the drivetrain measurably produces -- not
+    0.40, which the driver would silently raise back to the floor anyway."""
+    supervisor = _clear_supervisor()
+    decision = supervisor.apply_command(TwistCommand(0.0, 3.55), now=0.1)
+    assert decision.state is CollisionState.CLEAR
+    assert decision.output.angular_z == pytest.approx(3.55)
+
+
+def test_a_pivot_above_the_curves_ceiling_gets_the_curves_cap_not_the_arcs():
+    """(0, 9.0) clamps to maximum_clean_rate(pivot_max_duty) ~ 5.834 -- the fastest
+    CLEAN pivot the deployed band produces (run 4: 5.852 rad/s measured) -- and
+    emphatically not to 0.4."""
+    from sphero_rvr_core.pivot_curve import maximum_clean_rate
+
+    supervisor = _clear_supervisor()
+    decision = supervisor.apply_command(TwistCommand(0.0, 9.0), now=0.1)
+    assert decision.output.angular_z == pytest.approx(maximum_clean_rate(45))
+    assert decision.output.angular_z > 0.4
+
+
+def test_an_arc_keeps_the_unmeasured_arc_authority():
+    """(0.1, 3.55) is an ARC: its angular clamps to max_angular_rad_s = 0.4 exactly
+    as before the split. The arc regime is UNMEASURED (curve was measured on
+    in-place pivots only; see safety.clamp_velocity_for_path) and its limit does not
+    move until the arc-rate run card closes the gap."""
+    supervisor = _clear_supervisor()
+    decision = supervisor.apply_command(TwistCommand(0.1, 3.55), now=0.1)
+    assert decision.output.angular_z == pytest.approx(0.4)
+    assert decision.output.linear_x == pytest.approx(0.1)
+
+
+def test_a_sub_epsilon_linear_is_bounded_as_the_pivot_the_driver_will_run():
+    """(0.0005, 3.55): the driver's own path test (is_pivot_command with
+    PIVOT_LINEAR_EPSILON_MPS = 0.005) sends this down the pivot branch, so _bound
+    must clamp it as a pivot. Clamping it as an arc would govern a path the command
+    never takes -- D45's sentence, the supervisor edition."""
+    supervisor = _clear_supervisor()
+    decision = supervisor.apply_command(TwistCommand(0.0005, 3.55), now=0.1)
+    assert decision.output.angular_z == pytest.approx(3.55)
+
+
+def test_the_stopped_state_grant_rule_is_untouched_by_the_bound_split():
+    """_bound's epsilon is for CEILINGS; the STOPPED-state rotation GRANT keeps
+    D25's exact-zero rule. A sub-epsilon linear command under a stop must NOT have
+    its rotation granted as if it were a pure pivot -- that is the amputated-arc
+    synthesis the grant rule exists to refuse."""
+    supervisor = _clear_supervisor()
+    supervisor.update_scan(scan_with(front=0.2, stamp=0.2), now=0.2)
+    decision = supervisor.apply_command(TwistCommand(0.0005, 3.55), now=0.3)
+    assert decision.state is CollisionState.STOPPED
+    assert decision.output == TwistCommand(0.0, 0.0)
+
+
+def test_the_cross_config_guard_the_literal_exists_only_while_this_proves_it():
+    """THE HOUSE SOLUTION TO THE TWO-AUTHORITIES TRAP: collision_stop.yaml carries
+    max_pivot_rate_rad_s as a literal because the supervisor cannot read the
+    driver's config at runtime -- and that literal is allowed to exist ONLY while
+    this test proves it equals the curve's answer for the duty band the DRIVER
+    actually deploys (lean_rvr_tank_si.yaml's pivot_max_duty). Change the band and
+    this fails a test, not a flight."""
+    from pathlib import Path
+
+    import yaml
+
+    from sphero_rvr_core.pivot_curve import maximum_clean_rate
+
+    root = Path(__file__).resolve().parents[1]
+    sup = yaml.safe_load((root / "config" / "collision_stop.yaml").read_text())
+    rvr = yaml.safe_load((root / "config" / "lean_rvr_tank_si.yaml").read_text())
+
+    def find(tree, key):
+        if isinstance(tree, dict):
+            if key in tree:
+                return tree[key]
+            for v in tree.values():
+                got = find(v, key)
+                if got is not None:
+                    return got
+        return None
+
+    declared = find(sup, "max_pivot_rate_rad_s")
+    duty = find(rvr, "pivot_max_duty")
+    assert declared is not None, "supervisor yaml lost its pivot ceiling"
+    assert duty is not None, "driver yaml lost pivot_max_duty"
+    assert declared == pytest.approx(maximum_clean_rate(int(duty)), abs=1e-4), (
+        f"collision_stop.yaml says {declared} but the curve says "
+        f"{maximum_clean_rate(int(duty)):.5f} for the deployed duty {duty} -- the "
+        f"literal has come loose from its author"
+    )
