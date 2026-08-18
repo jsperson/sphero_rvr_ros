@@ -52,6 +52,38 @@ class Transform2D:
         )
 
 
+class StaticTransformCache:
+    """One lookup per frame, forever — for transforms that are BOLTED.
+
+    The scan transform (base_link <- laser) is a static mount published once at
+    launch; it has never changed since bringup and the mount-rotation question was
+    decided closed on 2026-08-09 (camera-mount-is-fixed family). Yet the node paid
+    a BLOCKING tf lookup with a 50 ms timeout for it, per scan, at 10 Hz, inside
+    the state lock — and on 2026-08-18 that standing cost helped congest the
+    executor slot into the ~4 Hz SENSOR_STALE flap that chopped every fast pivot
+    and created the stop race. Cache lifetime = node lifetime, said out loud:
+    if the lidar is ever re-mounted, the node restarts with the new static TF.
+
+    `get(frame_id, lookup)` returns (transform, error, first_capture). A FAILED
+    lookup is never cached — the retry path stays live until the first success —
+    and `first_capture` is True exactly once per frame so the caller can log the
+    captured values as its authority (D46: state what you measured, not what you
+    assume).
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict = {}
+
+    def get(self, frame_id: str, lookup):
+        if frame_id in self._cache:
+            return self._cache[frame_id], None, False
+        transform, error = lookup()
+        if transform is None:
+            return None, error, False
+        self._cache[frame_id] = transform
+        return transform, None, True
+
+
 @dataclass(frozen=True)
 class TwistCommand:
     linear_x: float = 0.0

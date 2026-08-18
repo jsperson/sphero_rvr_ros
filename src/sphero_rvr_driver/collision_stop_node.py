@@ -13,7 +13,14 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from .collision_stop import CollisionStopConfig, CollisionStopSupervisor, ScanInput, Transform2D, TwistCommand
+from .collision_stop import (
+    CollisionStopConfig,
+    CollisionStopSupervisor,
+    ScanInput,
+    StaticTransformCache,
+    Transform2D,
+    TwistCommand,
+)
 from sphero_rvr_core.low_obstacle_brake import (
     BlindBandHold,
     forward_speed_scale,
@@ -207,6 +214,29 @@ def main(args=None):
             # This callback takes no state lock, so it is safe to run in parallel
             # with the arbitration path.
             self._low_obstacle_group = ReentrantCallbackGroup()
+            # THE STOP RACE'S FIX (2026-08-18 night; the ride-along's discovery).
+            # /cmd_vel used to share the DEFAULT mutually-exclusive group with
+            # /scan and the tick timer -- the same disease the D22 comment above
+            # names for the camera cloud, on 'the two highest-rate topics in the
+            # stack'. Under spin load the shared slot congested, and a STOP
+            # command waited in the subscription queue for up to 1.218 s while
+            # the tick path replayed the last pivot from _latest_command: the
+            # abort did not stop the actuator, in this safety node. Its own
+            # group means the zero is TAKEN promptly; the pure layer's
+            # latch-everything property does the rest (once taken,
+            # _latest_command IS the zero, and every later tick replays zero).
+            # The RLock below still serializes actual state mutation, so this
+            # group move adds concurrency only at the take, never in the
+            # arbitration.
+            self._cmd_group = ReentrantCallbackGroup()
+            #: Congestion counters (counters-not-levels): slot health must be
+            #: readable from every future bag instead of reconstructed from a
+            #: state-transition forensic like tonight's.
+            self._tick_overruns = 0
+            self._scan_gaps = 0
+            self._last_tick_at = None
+            self._last_scan_apply_at = None
+            self._scan_tf_cache = StaticTransformCache()
             now = self._now_seconds()
             self._supervisor = CollisionStopSupervisor(self._config, now=now)
             self._tf_buffer = Buffer()
@@ -268,7 +298,10 @@ def main(args=None):
             self._state_pub = self.create_publisher(String, state_topic, 10)
             self._events_pub = self.create_publisher(String, events_topic, 10)
             self._diagnostics_pub = self.create_publisher(DiagnosticArray, diagnostics_topic, 10)
-            self.create_subscription(Twist, requested_cmd_topic, self._on_cmd_vel, 10)
+            self.create_subscription(
+                Twist, requested_cmd_topic, self._on_cmd_vel, 10,
+                callback_group=self._cmd_group,
+            )
             self.create_subscription(
                 LaserScan,
                 scan_topic,
@@ -442,6 +475,13 @@ def main(args=None):
 
         def _on_scan(self, msg):
             with self._state_lock:
+                # slot-health counter: scans arrive at ~10 Hz; an APPLY gap over
+                # 0.25 s means this pipeline fell behind the sensor -- the exact
+                # condition that read as SENSOR_STALE flapping on 2026-08-18.
+                _now = self._now_seconds()
+                if self._last_scan_apply_at is not None and _now - self._last_scan_apply_at > 0.25:
+                    self._scan_gaps += 1
+                self._last_scan_apply_at = _now
                 header = getattr(msg, "header", None)
                 stamp_msg = getattr(header, "stamp", None)
                 stamp = _stamp_seconds(stamp_msg)
@@ -467,6 +507,26 @@ def main(args=None):
         def _lookup_scan_transform(self, frame_id: str, stamp_msg) -> tuple[Optional[Transform2D], Optional[str]]:
             if frame_id == self._config.base_frame:
                 return Transform2D(), None
+            # CACHED FOREVER after first success: base <- laser is a BOLTED static
+            # mount, yet this method used to pay a blocking lookup (tf_timeout_s
+            # = 50 ms worst case) per scan, at 10 Hz, inside the state lock --
+            # standing slot pressure that fed the 2026-08-18 SENSOR_STALE flap.
+            # The retry path stays live until the first success (a failed lookup
+            # is never cached), and the captured values are logged once as this
+            # node's authority for the rest of its life.
+            transform, error, first = self._scan_tf_cache.get(
+                frame_id, lambda: self._lookup_scan_transform_uncached(frame_id, stamp_msg)
+            )
+            if first and self._context_ok():
+                self.get_logger().info(
+                    f"scan transform CAPTURED and cached for node lifetime: "
+                    f"{self._config.base_frame} <- {frame_id}: x={transform.x:.4f} "
+                    f"y={transform.y:.4f} yaw={math.degrees(transform.yaw):.2f} deg. "
+                    f"Static mount (bolted; re-mounting requires a node restart)."
+                )
+            return transform, error
+
+        def _lookup_scan_transform_uncached(self, frame_id: str, stamp_msg) -> tuple[Optional[Transform2D], Optional[str]]:
             try:
                 time = Time.from_msg(stamp_msg) if stamp_msg is not None else Time()
                 stamped = self._tf_buffer.lookup_transform(
@@ -637,7 +697,14 @@ def main(args=None):
 
         def _on_timer(self):
             with self._state_lock:
-                decision = self._supervisor.tick(now=self._now_seconds())
+                _now = self._now_seconds()
+                if (
+                    self._last_tick_at is not None
+                    and _now - self._last_tick_at > 1.5 * self._config.zero_publish_period_s
+                ):
+                    self._tick_overruns += 1
+                self._last_tick_at = _now
+                decision = self._supervisor.tick(now=_now)
                 self._publish_decision(decision)
 
         def _on_stop(self, request, response):
@@ -739,6 +806,8 @@ def main(args=None):
                 f"trajectory_moving_away_point_count={0 if decision.trajectory is None else decision.trajectory.moving_away_point_count} "
                 f"requested=({decision.requested.linear_x:.3f},{decision.requested.angular_z:.3f}) "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f}) "
+                f"slot_tick_overruns={self._tick_overruns} "
+                f"slot_scan_gaps={self._scan_gaps} "
                 f"cam_nearest={_fmt_optional(cam_nearest)} cam_scale={cam_scale:.2f} "
                 # HOW MANY POINTS THE BRAKE ACTUALLY CONSIDERED, after its range
                 # window and swept-path filter. Absent until 2026-08-15, and its

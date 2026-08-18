@@ -257,7 +257,13 @@ def test_explore_graph_keeps_supervisor_as_sole_motor_command_publisher() -> Non
     assert "self._cmd_pub = self.create_publisher(Twist, motor_cmd_topic, 10)" in (
         collision_source
     )
-    assert "self.create_subscription(Twist, requested_cmd_topic" in collision_source
+    # Whitespace-tolerant since 2026-08-18: the subscription call went multi-line
+    # when /cmd_vel gained its own callback group (the stop-race fix). Same
+    # assertion, same intent -- the supervisor consumes the requested commands.
+    import re as _re
+    assert _re.search(
+        r"self\.create_subscription\(\s*Twist,\s*requested_cmd_topic", collision_source
+    )
     assert '"motor_cmd_topic": "/cmd_vel_motor"' in collision_source
 
 
