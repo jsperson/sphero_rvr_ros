@@ -84,6 +84,50 @@ class StaticTransformCache:
         return transform, None, True
 
 
+class PublishOrderGuard:
+    """Order-preserving gate for publishing decisions OUTSIDE the state lock.
+
+    Item 2(a) of the 2026-08-18 night ladder moved decision publishing (string
+    building + three topic publishes) out of the arbitration lock, so the
+    scan/tick/cmd pipelines stop paying I/O time under the state lock. The one
+    way that move could go wrong is ORDERING: with /cmd_vel in its own callback
+    group, two threads can leave the lock with two decisions and race to the
+    wire -- and a stale pivot output landing AFTER a zero is the stop race
+    reborn one seam later.
+
+    So: `allocate()` is called UNDER the state lock (sequence order == state
+    mutation order, by construction), and `run_ordered(seq, fn)` runs fn under
+    the guard's own lock ONLY if no newer sequence has already published --
+    an older decision that lost the race to the wire is DROPPED (counted, and
+    the drop is correct: the newer decision already superseded its state).
+    Publishes stay serialized and monotonic; arbitration stays concurrent.
+    """
+
+    def __init__(self) -> None:
+        import threading as _threading
+
+        self._lock = _threading.Lock()
+        self._next_seq = 0
+        self._newest_published = -1
+        self.drops = 0
+
+    def allocate(self) -> int:
+        """Caller MUST hold the state lock; that is what makes seq order match
+        state order."""
+        seq = self._next_seq
+        self._next_seq += 1
+        return seq
+
+    def run_ordered(self, seq: int, fn) -> bool:
+        with self._lock:
+            if seq < self._newest_published:
+                self.drops += 1
+                return False
+            self._newest_published = seq
+            fn()
+            return True
+
+
 @dataclass(frozen=True)
 class TwistCommand:
     linear_x: float = 0.0

@@ -100,3 +100,56 @@ def test_slot_health_is_counted_not_narrated():
         assert token in NODE_SRC, f"state line lost {token}"
     assert "self._tick_overruns += 1" in NODE_SRC
     assert "self._scan_gaps += 1" in NODE_SRC
+
+
+# --- item 2(a): publishes leave the lock; order and atomicity get guards --------------
+
+from sphero_rvr_driver.collision_stop import PublishOrderGuard
+
+
+def test_an_older_decision_that_lost_the_race_is_dropped_not_published():
+    """The one way moving publishes off the lock could go wrong: a stale pivot
+    output landing AFTER a zero is the stop race reborn one seam later. Sequence
+    order is allocated under the state lock; the wire only ever moves forward."""
+    g = PublishOrderGuard()
+    s1, s2 = g.allocate(), g.allocate()
+    out = []
+    assert g.run_ordered(s2, lambda: out.append("zero")) is True
+    assert g.run_ordered(s1, lambda: out.append("stale_pivot")) is False
+    assert out == ["zero"]
+    assert g.drops == 1
+
+
+def test_in_order_publishes_all_run():
+    g = PublishOrderGuard()
+    out = []
+    for _ in range(5):
+        s = g.allocate()
+        assert g.run_ordered(s, lambda s=s: out.append(s))
+    assert out == sorted(out) and len(out) == 5 and g.drops == 0
+
+
+def test_publishing_happens_outside_the_state_lock_and_snapshots_inside_it():
+    """Source shape: the ONLY direct caller of _publish_decision is the guard's
+    run_ordered inside _decide_and_publish; every callback goes through the
+    helper; and the slot snapshot is taken while the lock is still held (the
+    atomic-snapshot consensus requirement -- a published line must never mix
+    fields from two states)."""
+    calls = [m.start() for m in re.finditer(r"self\._publish_decision\(", NODE_SRC)]
+    helper = NODE_SRC.index("def _decide_and_publish")
+    helper_end = NODE_SRC.index("def _publish_decision")
+    for pos in calls:
+        assert helper <= pos < helper_end, (
+            "a call site publishes directly instead of via _decide_and_publish -- "
+            "either under the lock (the congestion returns) or unordered (the "
+            "race returns)")
+    body = NODE_SRC[helper:helper_end]
+    lock_at = body.index("with self._state_lock")
+    snap_at = body.index("slot_snapshot = (")
+    publish_at = body.index("run_ordered")
+    assert lock_at < snap_at < publish_at, (
+        "the slot snapshot must be captured under the lock and published after it")
+
+
+def test_the_state_line_reports_publish_drops():
+    assert "slot_publish_drops=" in NODE_SRC

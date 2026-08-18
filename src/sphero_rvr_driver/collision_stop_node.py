@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional
 from .collision_stop import (
     CollisionStopConfig,
     CollisionStopSupervisor,
+    PublishOrderGuard,
     ScanInput,
     StaticTransformCache,
     Transform2D,
@@ -237,6 +238,7 @@ def main(args=None):
             self._last_tick_at = None
             self._last_scan_apply_at = None
             self._scan_tf_cache = StaticTransformCache()
+            self._publish_guard = PublishOrderGuard()
             now = self._now_seconds()
             self._supervisor = CollisionStopSupervisor(self._config, now=now)
             self._tf_buffer = Buffer()
@@ -474,7 +476,7 @@ def main(args=None):
             )
 
         def _on_scan(self, msg):
-            with self._state_lock:
+            def produce():
                 # slot-health counter: scans arrive at ~10 Hz; an APPLY gap over
                 # 0.25 s means this pipeline fell behind the sensor -- the exact
                 # condition that read as SENSOR_STALE flapping on 2026-08-18.
@@ -487,7 +489,7 @@ def main(args=None):
                 stamp = _stamp_seconds(stamp_msg)
                 frame_id = str(getattr(header, "frame_id", "")) or self._config.laser_frame
                 transform_to_base, transform_error = self._lookup_scan_transform(frame_id, stamp_msg)
-                decision = self._supervisor.update_scan(
+                return self._supervisor.update_scan(
                     ScanInput(
                         ranges=tuple(getattr(msg, "ranges", []) or []),
                         angle_min=float(msg.angle_min),
@@ -502,7 +504,8 @@ def main(args=None):
                     ),
                     now=self._now_seconds(),
                 )
-                self._publish_decision(decision)
+
+            self._decide_and_publish(produce)
 
         def _lookup_scan_transform(self, frame_id: str, stamp_msg) -> tuple[Optional[Transform2D], Optional[str]]:
             if frame_id == self._config.base_frame:
@@ -543,11 +546,10 @@ def main(args=None):
                 return None, reason
 
         def _on_cmd_vel(self, msg):
-            with self._state_lock:
-                decision = self._supervisor.apply_command(
-                    TwistCommand(float(msg.linear.x), float(msg.angular.z)), now=self._now_seconds()
-                )
-                self._publish_decision(decision)
+            self._decide_and_publish(lambda: self._supervisor.apply_command(
+                TwistCommand(float(msg.linear.x), float(msg.angular.z)),
+                now=self._now_seconds(),
+            ))
 
         def _on_low_obstacle_cloud(self, msg):
             try:
@@ -696,7 +698,7 @@ def main(args=None):
             return (cos_y * wx + sin_y * wy, -sin_y * wx + cos_y * wy, dyaw)
 
         def _on_timer(self):
-            with self._state_lock:
+            def produce():
                 _now = self._now_seconds()
                 if (
                     self._last_tick_at is not None
@@ -704,40 +706,46 @@ def main(args=None):
                 ):
                     self._tick_overruns += 1
                 self._last_tick_at = _now
-                decision = self._supervisor.tick(now=_now)
-                self._publish_decision(decision)
+                return self._supervisor.tick(now=_now)
+
+            self._decide_and_publish(produce)
 
         def _on_stop(self, request, response):
-            with self._state_lock:
-                decision = self._supervisor.stop(now=self._now_seconds())
-                self._publish_decision(decision)
+            self._decide_and_publish(
+                lambda: self._supervisor.stop(now=self._now_seconds())
+            )
             ok, message = self._call_driver(self._driver_stop_client, "driver stop")
             response.success = ok
             response.message = message
             return response
 
         def _on_estop(self, request, response):
-            with self._state_lock:
-                decision = self._supervisor.estop(now=self._now_seconds())
-                self._publish_decision(decision)
+            self._decide_and_publish(
+                lambda: self._supervisor.estop(now=self._now_seconds())
+            )
             ok, message = self._call_driver(self._driver_estop_client, "driver estop")
             response.success = ok
             response.message = message
             return response
 
         def _on_clear_estop(self, request, response):
-            with self._state_lock:
-                decision = self._supervisor.clear_estop(now=self._now_seconds())
-                self._publish_decision(decision)
+            self._decide_and_publish(
+                lambda: self._supervisor.clear_estop(now=self._now_seconds())
+            )
             ok, message = self._call_driver(self._driver_clear_estop_client, "driver clear_estop")
             response.success = ok
             response.message = message
             return response
 
         def _on_reset(self, request, response):
-            with self._state_lock:
-                result = self._supervisor.reset(now=self._now_seconds())
-                self._publish_decision(result.decision)
+            box = {}
+
+            def produce():
+                box["result"] = self._supervisor.reset(now=self._now_seconds())
+                return box["result"].decision
+
+            self._decide_and_publish(produce)
+            result = box["result"]
             response.success = result.accepted
             response.message = result.reason
             return response
@@ -746,7 +754,30 @@ def main(args=None):
             result = self._driver_forwarder.call(client, label, Trigger.Request)
             return result.success, result.message
 
-        def _publish_decision(self, decision):
+        def _decide_and_publish(self, produce):
+            """Arbitrate UNDER the state lock; build and publish OUTSIDE it.
+
+            Item 2(a): the state string and three publishes used to run inside
+            _state_lock, so every scan/tick/cmd paid I/O time under the lock the
+            whole stack contends for. The snapshot rule (consensus): everything
+            the publish reads is captured under the lock -- the DECISION is a
+            frozen dataclass (atomic by construction) and the slot counters are
+            copied beside it -- so a published line can never mix two states.
+            Ordering across the now-concurrent callback groups is the
+            PublishOrderGuard's job; a decision that lost the race to a newer
+            one is dropped, not published stale.
+            """
+            with self._state_lock:
+                decision = produce()
+                seq = self._publish_guard.allocate()
+                slot_snapshot = (self._tick_overruns, self._scan_gaps,
+                                 self._publish_guard.drops)
+            self._publish_guard.run_ordered(
+                seq, lambda: self._publish_decision(decision, slot_snapshot)
+            )
+            return decision
+
+        def _publish_decision(self, decision, slot_snapshot=(0, 0, 0)):
             if not self._context_ok():
                 return
             msg = Twist()
@@ -806,8 +837,9 @@ def main(args=None):
                 f"trajectory_moving_away_point_count={0 if decision.trajectory is None else decision.trajectory.moving_away_point_count} "
                 f"requested=({decision.requested.linear_x:.3f},{decision.requested.angular_z:.3f}) "
                 f"output=({decision.output.linear_x:.3f},{decision.output.angular_z:.3f}) "
-                f"slot_tick_overruns={self._tick_overruns} "
-                f"slot_scan_gaps={self._scan_gaps} "
+                f"slot_tick_overruns={slot_snapshot[0]} "
+                f"slot_scan_gaps={slot_snapshot[1]} "
+                f"slot_publish_drops={slot_snapshot[2]} "
                 f"cam_nearest={_fmt_optional(cam_nearest)} cam_scale={cam_scale:.2f} "
                 # HOW MANY POINTS THE BRAKE ACTUALLY CONSIDERED, after its range
                 # window and swept-path filter. Absent until 2026-08-15, and its
