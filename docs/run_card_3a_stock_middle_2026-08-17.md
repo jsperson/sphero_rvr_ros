@@ -69,6 +69,13 @@ rather than assuming a file in git is a file on the robot.
 ## The experiment
 
 1. Stage the rover on open floor, ≥ 0.5 m clear, chassis on, battery ≥ 25 %.
+   **THE GOAL MUST BE VERIFIED IN MAPPED FREE SPACE BEFORE SEND** — flown 2026-08-18:
+   "1.5 m dead ahead" placed goal 1 physically inside the couch, in SLAM-unknown
+   space, and the planner's correct refusal read as a navigation failure until the
+   operator looked at the room. The operator's mental map and the furniture are the
+   same thing the planner is asked about, so the map is consulted, not the mind's
+   eye. `scripts/fly_stock_goal.py` enforces it (mapped free + cost 0 + dry-run
+   plans, plus a lifecycle liveness precheck) — send goals through it, not by hand.
 2. Bring up the stock middle with the driver and the reflex supervisor beneath it
    (the floor we keep — it has never failed).
 3. Send **one** `navigate_to_pose` goal to open floor 1–2 m ahead.

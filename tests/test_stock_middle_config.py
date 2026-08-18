@@ -574,3 +574,16 @@ def test_every_nav2_node_the_stock_launch_starts_has_an_explicit_section():
         f"default is a decision nobody made -- add a section, even an empty one "
         f"with the reason, per the no-section family's three receipts"
     )
+
+
+def test_the_touch_ports_producer_is_launched_not_remembered():
+    """The never-launched-node family's tripwire: both costmaps above subscribe
+    /contact_marks, and on 2026-08-18 the node that publishes it appeared in NO
+    launch file -- it flew twice as an operator memory item. The launch must
+    reference the contact_marker executable AND declare its start argument."""
+    launch_text = (ROOT / "launch" / "explore.launch.py").read_text()
+    assert 'executable="contact_marker"' in launch_text, (
+        "explore.launch.py no longer starts contact_marker -- a flight without it "
+        "has no touch response at all (contacts plant no marks)"
+    )
+    assert "start_contact_marker" in launch_text

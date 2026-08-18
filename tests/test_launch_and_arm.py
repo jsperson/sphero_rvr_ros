@@ -171,21 +171,101 @@ REQUIRED_BAG_TOPICS = [
 ]
 
 
-def test_the_bag_records_both_sides_of_the_driver_seam():
-    record = [
-        line for line in SRC.splitlines() if "ros2 bag record" in line
-    ]
-    assert record, "launch_and_arm.py no longer records a bag"
-    # The command is split across adjacent f-string literals; take the whole statement.
-    start = SRC.index("ros2 bag record")
-    command = SRC[start:SRC.index("\n\n", start)]
+def _module():
+    """Import the script as a module (it has no side effects at import)."""
+    import sys
 
-    for topic in REQUIRED_BAG_TOPICS:
-        assert f"{topic} " in command or command.rstrip().endswith(topic), (
-            f"{topic} is not in the bag record list. "
-            "A mission recording that cannot answer a question about a seam is the "
-            "reason an autopsy convicts the wrong component."
-        )
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        import launch_and_arm
+        return launch_and_arm
+    finally:
+        sys.path.pop(0)
+
+
+def test_the_bag_records_both_sides_of_the_driver_seam():
+    """Formerly a source grep around the record command; the topics now live in the
+    pure bag_topics(), so the assertion moved to the actual list -- strictly
+    stronger, and it holds for BOTH stacks."""
+    mod = _module()
+    for stack in ("stock", "bespoke"):
+        topics = mod.bag_topics(stack)
+        for topic in REQUIRED_BAG_TOPICS:
+            assert topic in topics, (
+                f"{topic} is not in the {stack} bag list. A mission recording that "
+                "cannot answer a question about a seam is the reason an autopsy "
+                "convicts the wrong component."
+            )
+
+
+def test_the_stock_bag_observes_the_layers_and_the_touch_port():
+    """Run 3d's horizontal-leg analysis had to INFER tof_layer paint/clear because
+    the costmaps were not in the bag, and the touch port's receipt is /contact_marks
+    going 0 -> nonzero. The stock list must carry all of it."""
+    topics = _module().bag_topics("stock")
+    for topic in (
+        "/contact_marks", "/plan",
+        "/local_costmap/costmap_raw", "/local_costmap/costmap_raw_updates",
+        "/global_costmap/costmap_raw", "/global_costmap/costmap_raw_updates",
+    ):
+        assert topic in topics, f"{topic} missing from the stock bag list"
+
+
+# --- the two stacks' launch commands are pinned --------------------------------------
+
+def test_the_stock_command_is_the_flown_3c_shape():
+    """The stock middle's proven invocation: no explorer, no decisive controller,
+    lean_nav2_stock resolved from the DEPLOYED share (ros2 pkg prefix, not a source
+    path), fusion per the protocol's standing default."""
+    cmd = _module().launch_command("stock")
+    for token in ("start_explore:=false", "use_decisive_controller:=false",
+                  "use_coverage_explorer:=false", "enable_imu_fusion:=true",
+                  "lean_nav2_stock.yaml", "ros2 pkg prefix"):
+        assert token in cmd, f"stock command lost {token}"
+    assert "mission_autostart" not in cmd
+    assert _module().launch_command("stock", imu_fusion=False).count(
+        "enable_imu_fusion:=false") == 1
+
+
+def test_the_bespoke_command_is_unchanged_plus_an_explicit_marker_off():
+    """bespoke stays byte-compatible with what this script always launched, and it
+    turns the touch-port marker OFF explicitly (the launch default is true for the
+    stock middle; an idle marker costs ~14% of a Pi core)."""
+    cmd = _module().launch_command("bespoke")
+    for token in ("start_explore:=true", "use_coverage_explorer:=true",
+                  "use_decisive_controller:=true", "start_contact_marker:=false"):
+        assert token in cmd, f"bespoke command lost {token}"
+
+
+def test_an_unknown_stack_refuses_rather_than_guessing():
+    with pytest.raises(ValueError):
+        _module().launch_command("both")
+
+
+# --- the stock gate roster and the never-arms rule -----------------------------------
+
+STOCK_GATES = ["gate_lifecycles_active", "gate_marks_publisher", "gate_battery"]
+
+
+@pytest.mark.parametrize("gate", STOCK_GATES)
+def test_main_calls_every_stock_gate(gate):
+    assert gate in calls_in(function("main")), f"main() no longer calls {gate}()"
+
+
+@pytest.mark.parametrize("gate", STOCK_GATES)
+def test_every_stock_gate_can_stop_the_run(gate):
+    assert "die" in calls_in(function(gate)), (
+        f"{gate}() has no failure path -- decoration on the bringup path")
+
+
+def test_stock_mode_never_reaches_the_arm_call():
+    """For the stock middle, arming IS the goal and the goal tool owns it. The
+    stock branch must return before the mission/start call in source order --
+    a stock bringup that can arm the bespoke explorer is a category error."""
+    assert SRC.index("STOCK STACK UP") < SRC.index('say("ARM"'), (
+        "the stock early-return no longer precedes the arm call")
+    assert "fly_stock_goal.py" in SRC, (
+        "stock mode no longer points the operator at the goal tool")
 
 
 # --- every spawned command must survive `exec` ---------------------------------------

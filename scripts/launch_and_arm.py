@@ -69,6 +69,64 @@ def say(stage, msg):
     print(f"[{time.strftime('%H:%M:%S')}] {stage:<9} {msg}", flush=True)
 
 
+# --- what each stack actually launches and records (pure; the tests hold these) ------
+
+def launch_command(stack, imu_fusion=True):
+    """The exact bringup command per stack. PURE so the tests can pin it.
+
+    stock: the §3a middle -- no explorer, no decisive controller, RPP + bt_navigator
+    on lean_nav2_stock.yaml (resolved from the DEPLOYED share, not the source tree),
+    contact_marker via the launch's own default (it is part of the stock middle).
+    enable_imu_fusion defaults TRUE per the protocol's standing open-decision
+    ("include it unless the run reproduces a wheel-odom-only baseline").
+
+    bespoke: the pre-§3a coverage stack, byte-for-byte the command this script has
+    always run -- plus an explicit start_contact_marker:=false, because the marker
+    is the STOCK middle's touch port (the bespoke controller has its own freeze
+    marks) and an idle marker still costs ~14% of a Pi core.
+    """
+    if stack == "stock":
+        return (
+            "ros2 launch sphero_rvr_driver explore.launch.py "
+            "start_motion_stack:=true start_explore:=false "
+            "use_coverage_explorer:=false use_decisive_controller:=false "
+            f"enable_imu_fusion:={'true' if imu_fusion else 'false'} "
+            'nav2_params_file:="$(ros2 pkg prefix sphero_rvr_driver)'
+            '/share/sphero_rvr_driver/config/lean_nav2_stock.yaml"'
+        )
+    if stack == "bespoke":
+        return (
+            "ros2 launch sphero_rvr_driver explore.launch.py "
+            "start_motion_stack:=true start_explore:=true "
+            "use_coverage_explorer:=true use_decisive_controller:=true "
+            "start_contact_marker:=false"
+        )
+    raise ValueError(f"unknown stack {stack!r}")
+
+
+def bag_topics(stack):
+    """The record list per stack. PURE so the tests can pin it.
+
+    Both sides of the driver seam always (/cmd_vel + /cmd_vel_motor + /diagnostics
+    -- the 2026-08-16 autopsy's lesson). Stock adds the touch port's evidence chain
+    (/contact_marks, /plan) and BOTH costmaps' raw+updates streams, so paint/clear
+    at the layers is OBSERVED, not inferred -- run 3d's horizontal-leg analysis had
+    to reconstruct tof_layer behaviour because these were not in the bag.
+    """
+    base = [
+        "/cmd_vel", "/cmd_vel_motor", "/diagnostics", "/collision_stop/state",
+        "/odom", "/scan", "/tf", "/tf_static",
+        "/tof/obstacles", "/tof/points", "/tof/state",
+    ]
+    if stack == "stock":
+        base += [
+            "/contact_marks", "/plan",
+            "/local_costmap/costmap_raw", "/local_costmap/costmap_raw_updates",
+            "/global_costmap/costmap_raw", "/global_costmap/costmap_raw_updates",
+        ]
+    return base
+
+
 def die(msg, remedy=""):
     print(f"\n*** STOPPED: {msg}", flush=True)
     if remedy:
@@ -183,6 +241,63 @@ def gate_recording(csv_path, bag_dir):
     say("gate", "recorder header carries the cam_hold columns")
 
 
+def gate_lifecycles_active():
+    """STOCK: every lifecycle node the goal path depends on must say ACTIVE itself.
+
+    slam_toolbox is the card's P2 MUST -- launched without autostart it sits
+    unconfigured looking exactly like a healthy node (tools-that-lie family). The
+    nav2 four are the goal path. Asking each node is the gate; a launch log that
+    scrolled past "Activating" is narration.
+    """
+    for node in ("slam_toolbox", "planner_server", "controller_server",
+                 "bt_navigator", "behavior_server"):
+        rc, out = sh(f"timeout 15 ros2 lifecycle get /{node}", timeout=30)
+        state = out.strip().splitlines()[-1] if out.strip() else ""
+        if rc != 0 or not state.startswith("active"):
+            die(f"/{node} lifecycle is {state or 'unreadable'}, not active",
+                "a node that is up but not active publishes nothing and refuses "
+                "nothing -- do not send a goal into it")
+        say("gate", f"/{node} active")
+
+
+def gate_marks_publisher():
+    """STOCK: the touch port's producer must be ON THE WIRE before wheels.
+
+    contact_marker shipped subscribed-to-by-both-costmaps and launched by NOTHING
+    (caught in pre-flight 2026-08-18, the never-launched-node family). The launch
+    now starts it; this gate is the tripwire if that ever regresses -- a flight
+    without it silently has no touch response at all.
+    """
+    rc, out = sh("timeout 10 ros2 topic info /contact_marks", timeout=20)
+    m = re.search(r"Publisher count:\s*(\d+)", out)
+    if not m or int(m.group(1)) < 1:
+        die("/contact_marks has no publisher -- the touch port's producer is not up",
+            "is start_contact_marker true? without it a contact plants no mark and "
+            "the planner never learns")
+    say("gate", f"/contact_marks publishers={m.group(1)}")
+
+
+def gate_battery(floor_fraction=0.25):
+    """STOCK: read the battery ALOUD at connect, and hold the 25% floor.
+
+    The floor is chassis-run protocol; reading it aloud is the operator contract
+    (the PM relays it to Scott before liftoff). rvr_node publishes battery_state
+    every 5 s once the driver is connected, so no message inside 20 s is its own
+    finding -- a driver that is not talking, not a quiet battery.
+    """
+    rc, out = sh("timeout 20 ros2 topic echo /battery_state --once", timeout=40)
+    m = re.search(r"percentage:\s*([0-9.]+)", out)
+    if not m:
+        die("no /battery_state within 20 s -- the driver is not reporting",
+            "chassis off, or rvr_node down; do not fly blind on power")
+    pct = float(m.group(1))
+    say("gate", f"BATTERY {pct * 100.0:.0f}%")
+    if pct < floor_fraction:
+        die(f"battery {pct * 100.0:.0f}% is under the {floor_fraction * 100.0:.0f}% "
+            f"floor", "charge before flying; an idle stack drained a battery flat "
+            "on 2026-08-03")
+
+
 # --- teardown ------------------------------------------------------------------------
 
 def teardown():
@@ -219,8 +334,19 @@ def teardown():
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--stack", choices=("stock", "bespoke"),
+                    help="REQUIRED (except --teardown). Which stack flies: 'stock' "
+                         "= the §3a middle (RPP + bt_navigator on lean_nav2_stock, "
+                         "contact_marker up, NEVER arms -- liftoff belongs to "
+                         "scripts/fly_stock_goal.py); 'bespoke' = the coverage "
+                         "stack, armed via mission/start as always. No default: a "
+                         "wrong-stack launch costs a flight, so the operator says "
+                         "which.")
     ap.add_argument("--no-arm", action="store_true",
-                    help="run every gate and stop before mission/start")
+                    help="bespoke only: run every gate and stop before mission/start")
+    ap.add_argument("--no-imu-fusion", action="store_true",
+                    help="stock only: reproduce a wheel-odom-only baseline (the "
+                         "protocol's open decision defaults fusion ON)")
     ap.add_argument("--teardown", action="store_true",
                     help="stop what a previous run of this script started")
     ap.add_argument("--settle-s", type=float, default=30.0,
@@ -230,6 +356,8 @@ def main():
     if args.teardown:
         teardown()
         return
+    if not args.stack:
+        ap.error("--stack {stock,bespoke} is required to bring anything up")
 
     if os.path.exists(PIDFILE):
         die("a previous run's pidfile exists", f"run --teardown first, or rm {PIDFILE}")
@@ -252,10 +380,8 @@ def main():
     spawn(f"python3 {REPO}/diagnostics/run_recorder.py 1800 {csv_path}",
           f"{home}/recorder_{stamp}.log")
 
-    say("bringup", "explore.launch.py (no camera, no monocular detector) ...")
-    spawn("ros2 launch sphero_rvr_driver explore.launch.py start_motion_stack:=true "
-          "start_explore:=true use_coverage_explorer:=true "
-          "use_decisive_controller:=true", launch_log)
+    say("bringup", f"{args.stack} stack (no camera, no monocular detector) ...")
+    spawn(launch_command(args.stack, imu_fusion=not args.no_imu_fusion), launch_log)
     say("bringup", f"settling {args.settle_s:.0f}s ...")
     time.sleep(args.settle_s)
 
@@ -269,16 +395,33 @@ def main():
     # motor_stall, motor_fault -- on /diagnostics, unrecorded. The owner published the
     # fact; the recording dropped it, so the analysis had to infer across the seam and
     # convicted the wrong component.
-    spawn(f"ros2 bag record -s mcap -o {bag_dir} /cmd_vel /cmd_vel_motor "
-          f"/diagnostics /collision_stop/state /odom /scan /tf /tf_static "
-          f"/tof/obstacles /tof/points /tof/state", f"{home}/bag_{stamp}.log")
+    spawn("ros2 bag record -s mcap -o " + bag_dir + " "
+          + " ".join(bag_topics(args.stack)), f"{home}/bag_{stamp}.log")
     time.sleep(8)
 
     gate_params()
     gate_tof()
     gate_brake_state()
-    gate_disarmed()
+    if args.stack == "bespoke":
+        gate_disarmed()
+    else:
+        # Stock has no explorer to be disarmed; its liftoff IS the goal, and the
+        # gates that replace gate_disarmed are the ones a goal depends on.
+        gate_lifecycles_active()
+        gate_marks_publisher()
+        gate_battery()
     gate_recording(csv_path, bag_dir)
+
+    if args.stack == "stock":
+        # NEVER ARMS. For the stock middle, arming means sending a goal, and the
+        # goal tool owns that -- one goal per invocation, verified before send.
+        say("done", "all gates PASSED. STOCK STACK UP, DISARMED by construction.")
+        say("done", "liftoff: python3 scripts/fly_stock_goal.py --x <X> --y <Y> "
+                    "(verifies mapped-free + cost-0 + dry-run plan before sending)")
+        print(f"\n  artifacts: {csv_path}\n             {bag_dir}\n"
+              f"             {launch_log}")
+        print(f"  teardown : python3 scripts/launch_and_arm.py --teardown\n")
+        return
 
     if args.no_arm:
         say("done", "all gates PASSED. Not arming (--no-arm).")

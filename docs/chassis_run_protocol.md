@@ -62,7 +62,9 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
 
    * **Gate on the SUMMARY LINE, never on process exit.** `python3 -m pytest` printed
      `10 failed, 1298 passed, 2 skipped ... in 79.71s` and was still resident twenty
-     minutes later. A waiter watching the process reports a 13-minute hang for an
+     minutes later. (2026-08-18: first MAC sighting of the same hang — a 12 s suite,
+     nothing through the pipe, SIGTERM'd at 10 min. `scripts/run_pytest_bounded.py`
+     is the norm on BOTH machines now.) A waiter watching the process reports a 13-minute hang for an
      80-second suite, and three stacked waiters then ran three concurrent suites against
      one ROS graph. Wait for the summary text; kill the pid afterwards.
    * **Match teardown patterns on the EXECUTABLE, not the language.** A sweep over

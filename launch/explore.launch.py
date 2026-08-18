@@ -275,6 +275,21 @@ def generate_launch_description():
         remappings=[("navigate_to_pose", "/navigate_to_pose")],
         condition=IfCondition(coverage_active),
     )
+    # THE TOUCH PORT'S PRODUCER, in the launch at last. Both costmaps in
+    # lean_nav2_stock.yaml subscribe /contact_marks, the node shipped as an entry
+    # point -- and until 2026-08-18 NOTHING LAUNCHED IT (the never-launched-node
+    # family; caught in pre-flight, flown by hand twice). Default TRUE because the
+    # stock middle without it has no touch response at all: a contact plants no
+    # mark and the planner never learns. The bespoke bringup passes false -- its
+    # decisive controller carries its own freeze marks, and an idle marker still
+    # costs ~14% of a Pi core.
+    contact_marker = Node(
+        package="sphero_rvr_driver",
+        executable="contact_marker",
+        name="contact_marker",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("start_contact_marker")),
+    )
 
     return LaunchDescription(
         [
@@ -369,6 +384,16 @@ def generate_launch_description():
                     "called; one cloud VLM call per invocation."
                 ),
             ),
+            DeclareLaunchArgument(
+                "start_contact_marker",
+                default_value="true",
+                description=(
+                    "The touch port's producer (marks contacts into both costmaps "
+                    "via /contact_marks). TRUE by default: the stock middle "
+                    "without it has no touch response. The bespoke bringup sets "
+                    "false (its controller carries its own freeze marks)."
+                ),
+            ),
             DeclareLaunchArgument("serial_port", default_value="/dev/ttyAMA0"),
             DeclareLaunchArgument(
                 "lidar_serial_port", default_value="/dev/ttyUSB0"
@@ -406,6 +431,7 @@ def generate_launch_description():
             # quits at ~t+1s.)
             explore_lite,
             coverage_explorer,
+            contact_marker,
             # explore_lite quits permanently on ANY empty frontier search — the
             # cold-start race AND transient mid-run empties. Re-kick
             # /explore/resume periodically (every ~15 s) so it always restarts
