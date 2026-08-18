@@ -158,11 +158,40 @@ def test_constants_the_curve_does_not_cover_are_marked_UNMEASURED():
 
 # --- D42: marks must be points, and the lidar must not erase them -------------------
 
-def _layer(text, name):
-    """Slice one layer block out of the config text, whatever order the layers sit in."""
+def _costmap(text, which):
+    """Slice one costmap's whole block out of the config text.
+
+    ADDED when the global costmap arrived, because `_layer` below silently assumed there
+    was only ever one costmap: with `touch_layer:` appearing in both, its first-index
+    slicing spanned from the GLOBAL touch layer all the way into the LOCAL one, and three
+    guard tests failed against a config that was correct. A helper that finds "the" layer
+    is fine until there are two of everything -- and the whole point of these tests is to
+    guard the layer whose rationale is being asserted, so the scope has to be explicit.
+    """
+    starts = {"global": "\nglobal_costmap:", "local": "\nlocal_costmap:"}
+    begin = text.index(starts[which])
+    rest = text[begin + 1:]
+    # The next top-level key ends the block: a line starting in column zero.
+    for marker in ("\nplanner_server:", "\ncontroller_server:", "\nbehavior_server:",
+                   "\nbt_navigator:", "\nlifecycle_manager_explore:", "\nlocal_costmap:",
+                   "\nglobal_costmap:"):
+        if marker[1:] == starts[which][1:]:
+            continue
+        idx = rest.find(marker)
+        if idx > 0:
+            rest = rest[:idx]
+    return rest
+
+
+def _layer(text, name, which="local"):
+    """Slice one layer block out of ONE costmap, whatever order the layers sit in."""
+    block = _costmap(text, which)
     order = ["scan_layer:", "touch_layer:", "tof_layer:", "inflation_layer:"]
-    i = order.index(name + ":")
-    return text[text.index(order[i]):text.index(order[i + 1])]
+    present = [o for o in order if o in block]
+    i = present.index(name + ":")
+    start = block.index(present[i])
+    end = block.index(present[i + 1]) if i + 1 < len(present) else len(block)
+    return block[start:end]
 
 
 def test_touch_marks_are_cleared_by_no_sensor_at_all():
@@ -255,6 +284,71 @@ def test_the_tof_clears_only_within_its_honest_envelope():
     tof = _layer(cfg(), "tof_layer")
     assert re.search(r"raytrace_min_range:\s*0\.17", tof)
     assert re.search(r"raytrace_max_range:\s*0\.6", tof)
+
+
+def test_the_planner_can_see_live_lidar():
+    """THE BIGGER HALF OF THE GLOBAL COSTMAP CHANGE, and the one most likely to be
+    silently undone.
+
+    Before 2026-08-18 this config had no `global_costmap` section, so planner_server came
+    up on nav2's defaults: an obstacle layer subscribed to NOTHING, logged as
+    `Subscribed to Topics:` with an empty list. The flown `lean_nav2.yaml` has the same
+    shape. So the planner has never in this project's history seen live lidar -- it
+    planned against the SLAM map and was blind to every change since the map was drawn.
+
+    Deleting this section does not fail loudly; nav2 just quietly reverts to defaults and
+    plans blind again. Hence a test."""
+    scan = _layer(cfg(), "scan_layer", "global")
+    assert "/scan" in scan, "the planner is blind to live lidar again"
+    assert re.search(r"marking:\s*true", scan)
+    assert re.search(r"clearing:\s*true", scan), (
+        "a global costmap that only accumulates is D42 at map scale -- the planner must "
+        "be able to forget an obstacle that moved")
+
+
+def test_the_planner_can_see_contact_marks():
+    """Measured 2026-08-18: with marks in the LOCAL costmap only, a contact mark 0.204 m
+    wide with open floor on both sides stopped the robot 0.151 m short and then ABORTED
+    the goal -- RPP refused the approach while the planner, blind to the mark, replanned
+    the identical straight path every cycle. Protection without progress."""
+    touch = _layer(cfg(), "touch_layer", "global")
+    assert "/contact_marks" in touch
+    assert re.search(r"clearing:\s*false", touch), (
+        "the lidar sees straight THROUGH the obstacle class this layer exists for")
+
+
+def test_the_global_touch_range_gate_is_not_a_sensor_range():
+    """Same defect as the local layer and STRICTLY WORSE here: `obstacle_max_range` is
+    measured from the observation origin, which for a `map`-frame belief cloud is the map
+    origin -- so a sensor-scale value gates on distance from the rover's START POSE. A
+    global costmap exists precisely to hold marks far from the start pose."""
+    touch = _layer(cfg(), "touch_layer", "global")
+    m = re.search(r"obstacle_max_range:\s*([0-9.]+)", touch)
+    assert m and float(m.group(1)) >= 10.0, (
+        "a sensor-scale range gate on a map-frame belief silently drops every mark "
+        "planted beyond it from the start pose")
+
+
+def test_the_least_trusted_source_stays_out_of_the_global_costmap():
+    """The 2026-08-08 camera precedent, applied consistently: the global costmap is where
+    a bad mark does the most damage (it can close a doorway to the planner outright), so
+    the ToF -- short range, and D27's phantom class parked rather than extinct -- is not
+    given a vote on global geometry. It keeps its local layer."""
+    glob = _costmap(cfg(), "global")
+    assert "tof_layer" not in glob and "/tof/points" not in glob
+    assert "tof_layer" in _costmap(cfg(), "local"), (
+        "the ToF must keep its LOCAL layer -- this test guards its scope, not its life")
+
+
+def test_both_costmaps_declare_the_footprint_padding():
+    """M1: nav2 pads the footprint by `footprint_padding` and derives the inscribed
+    radius -- and the polygon footprint clearing erases from -- out of the PADDED shape.
+    An undeclared default participating in safety geometry is the defect; it has to be
+    visible in BOTH costmaps or the next derivation reads 0.145 again."""
+    for which in ("local", "global"):
+        block = _costmap(cfg(), which)
+        assert re.search(r"footprint_padding:\s*0\.01", block), (
+            f"{which}_costmap does not declare footprint_padding")
 
 
 def test_no_denoise_layer():
