@@ -39,16 +39,18 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, ExtrapolationException, TransformListener
 
 from sphero_rvr_core.contact_marking import (
     FOOTPRINT_FRONT_M,
     FOOTPRINT_REAR_M,
     ROBOT_RADIUS_M,
+    PoseDataLagsStamp,
     StallEventTracker,
     contact_mark_centre,
     default_margin_m,
     disc_points,
+    resolve_contact_pose,
 )
 from sphero_rvr_core.decisive_control import FreezeMarkSet
 
@@ -131,6 +133,10 @@ class ContactMarkerNode(Node):
         self.marks_placed = 0
         self.contacts_unplaceable = 0
         self.contacts_collapsed = 0
+        #: One record per PLANTED mark, carrying placement provenance (path
+        #: exact/fallback + signed staleness). In the report so an autopsy never has
+        #: to reconstruct "was this mark exactly-placed?" from timestamps.
+        self._mark_placements: list[dict] = []
 
         self._buffer = Buffer()
         self._listener = TransformListener(self._buffer, self)
@@ -157,23 +163,47 @@ class ContactMarkerNode(Node):
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd_linear = float(msg.linear.x)
 
-    def _robot_pose(self, stamp):
-        """TF at the CONTACT's stamp, not at 'now'.
-
-        Returns (x, y, yaw, lookup_time_str) or raises. `rclpy.time.Time` from the
-        message stamp is the whole point: by the time this callback runs the robot has
-        moved, and looking up the latest transform would silently answer a different
-        question than the one asked.
-        """
-        transform = self._buffer.lookup_transform(
-            self._global_frame, self._robot_frame, rclpy.time.Time.from_msg(stamp)
-        )
+    @staticmethod
+    def _pose_of(transform):
         t = transform.transform.translation
         q = transform.transform.rotation
         yaw = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         )
         return t.x, t.y, yaw
+
+    def _robot_pose(self, stamp):
+        """The pose for a contact: exact stamp preferred, bounded-latest fallback.
+
+        v1 stopped at the exact-stamp lookup and lost 3 of 3 field contacts on
+        2026-08-18 -- SLAM's map->odom ran 69-87 ms behind the diagnostics stamp, tf2
+        refused to extrapolate, and no mark was ever planted from a moving robot. The
+        policy (and the measured bound) lives in
+        `sphero_rvr_core.contact_marking.resolve_contact_pose`; this method only
+        adapts tf2 to it. ONLY ExtrapolationException is translated into the fallback
+        signal -- a missing frame or a disconnected tree still refuses outright,
+        because those poses are not late, they are untrustworthy.
+        """
+        stamp_s = stamp.sec + stamp.nanosec * 1e-9
+
+        def exact():
+            try:
+                transform = self._buffer.lookup_transform(
+                    self._global_frame, self._robot_frame,
+                    rclpy.time.Time.from_msg(stamp),
+                )
+            except ExtrapolationException as exc:
+                raise PoseDataLagsStamp(str(exc)) from exc
+            return self._pose_of(transform)
+
+        def latest():
+            transform = self._buffer.lookup_transform(
+                self._global_frame, self._robot_frame, rclpy.time.Time()
+            )
+            h = transform.header.stamp
+            return self._pose_of(transform), h.sec + h.nanosec * 1e-9
+
+        return resolve_contact_pose(exact, latest, stamp_s)
 
     def _on_diagnostics(self, msg: DiagnosticArray) -> None:
         count = None
@@ -196,7 +226,7 @@ class ContactMarkerNode(Node):
             )
 
         try:
-            x, y, yaw = self._robot_pose(msg.header.stamp)
+            resolved = self._robot_pose(msg.header.stamp)
         except Exception as exc:
             self.contacts_unplaceable += 1
             self.get_logger().error(
@@ -212,7 +242,7 @@ class ContactMarkerNode(Node):
 
         reversing = self._last_cmd_linear < 0.0
         mx, my = contact_mark_centre(
-            x, y, yaw,
+            resolved.x, resolved.y, resolved.yaw,
             reversing=reversing,
             front_m=self._front,
             rear_m=self._rear,
@@ -220,11 +250,20 @@ class ContactMarkerNode(Node):
         )
         self._marks.add(mx, my, time.monotonic())
         self.marks_placed += 1
+        self._mark_placements.append({
+            "x": round(mx, 4),
+            "y": round(my, 4),
+            "stamp": f"{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d}",
+            "path": resolved.path,
+            "staleness_ms": round(resolved.staleness_s * 1000.0, 1),
+        })
         self.get_logger().warning(
             f"CONTACT MARKED at ({mx:.3f}, {my:.3f}) in {self._global_frame}. "
             f"Pose authority: TF {self._global_frame}->{self._robot_frame} at "
             f"{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d} "
-            f"-> ({x:.3f}, {y:.3f}, yaw {math.degrees(yaw):.1f} deg). "
+            f"path={resolved.path} staleness={resolved.staleness_s * 1000.0:+.0f} ms "
+            f"-> ({resolved.x:.3f}, {resolved.y:.3f}, yaw "
+            f"{math.degrees(resolved.yaw):.1f} deg). "
             f"Commanded linear {self._last_cmd_linear:+.3f} m/s so "
             f"{'REAR' if reversing else 'FRONT'} edge. This mark is permanent."
         )
@@ -265,6 +304,7 @@ class ContactMarkerNode(Node):
             "contacts_unplaceable": self.contacts_unplaceable,
             "contacts_collapsed": self.contacts_collapsed,
             "marks": self._marks.as_report_list(time.monotonic()),
+            "mark_placements": list(self._mark_placements),
         }
 
 

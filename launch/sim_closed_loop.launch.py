@@ -27,7 +27,8 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 from sphero_rvr_driver.rvr_node import SIMULATED_CHASSIS_PORT
@@ -57,16 +58,46 @@ def generate_launch_description() -> LaunchDescription:
             "rvr_params_file",
             default_value=str(share / "config" / "lean_rvr_tank_si.yaml"),
         ),
+        DeclareLaunchArgument(
+            "map_tf_mode",
+            default_value="static",
+            description=(
+                "static: timeless map->odom (exact-stamp TF lookups cannot fail -- "
+                "vacuous for TF-timing code). laggy: sim_laggy_map_tf with SLAM's "
+                "measured lag; REQUIRED for falsifying/certifying TF-timing code."
+            ),
+        ),
     ]
 
-    # map -> odom pinned: no SLAM here, and odom itself comes from the REAL rvr_node
-    # odometry pipeline fed by the simulator's encoders.
+    # map -> odom: identity either way (no SLAM here; odom comes from the REAL
+    # rvr_node odometry pipeline fed by the simulator's encoders). The MODE matters:
+    #
+    #   static (default)  tf2 treats a static transform as TIMELESS -- valid at every
+    #                     stamp ever asked for -- so exact-stamp TF lookups are
+    #                     UNFALSIFIABLE under it. Fine for rotation/costmap work;
+    #                     VACUOUS for certifying any TF-timing code. contact_marker
+    #                     v1's lookup-at-stamp shipped rig-green exactly this way and
+    #                     lost 3/3 field contacts on 2026-08-18.
+    #   laggy             sim_laggy_map_tf publishes the same identity with SLAM's
+    #                     measured lag and stamp gaps. TF-timing code MUST be
+    #                     falsified and certified in this mode.
+    map_tf_mode = LaunchConfiguration("map_tf_mode")
     static_map = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
         name="sim_static_map_to_odom",
         output="screen",
         arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
+        condition=UnlessCondition(
+            PythonExpression(["'", map_tf_mode, "' == 'laggy'"])
+        ),
+    )
+    laggy_map = Node(
+        package="sphero_rvr_driver",
+        executable="sim_laggy_map_tf",
+        name="sim_laggy_map_tf",
+        output="screen",
+        condition=IfCondition(PythonExpression(["'", map_tf_mode, "' == 'laggy'"])),
     )
     static_laser = Node(
         package="tf2_ros",
@@ -185,5 +216,7 @@ def generate_launch_description() -> LaunchDescription:
     ]
 
     return LaunchDescription(
-        args + [static_map, static_laser, scan, driver, supervisor, map_server] + nav2
+        args
+        + [static_map, laggy_map, static_laser, scan, driver, supervisor, map_server]
+        + nav2
     )

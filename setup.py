@@ -84,6 +84,7 @@ setup(
             "rvr_node = sphero_rvr_driver.rvr_node:main",
             "sim_clear_scan = sphero_rvr_driver.sim_clear_scan:main",
             "sim_raycast_scan = sphero_rvr_driver.sim_raycast_scan:main",
+            "sim_laggy_map_tf = sphero_rvr_driver.sim_laggy_map_tf:main",
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
             "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",

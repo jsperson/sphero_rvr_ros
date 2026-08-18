@@ -88,6 +88,103 @@ class ContactPoseUnavailable(RuntimeError):
     """
 
 
+class PoseDataLagsStamp(RuntimeError):
+    """The exact-stamp lookup failed ONLY because the transform feed has not caught up.
+
+    The caller's adapter raises this for tf2's ExtrapolationException and for nothing
+    else. Lookup failures that mean the transform is genuinely absent (frame unknown,
+    tree disconnected) must NOT be mapped here -- they keep refusing, because a
+    fallback over a dead transform is an invented pose with extra steps.
+    """
+
+
+#: How stale a latest-available pose may be and still place a mark, in seconds.
+#:
+#: DERIVED, not chosen, from the 2026-08-18 run-3d bag (the three field contacts this
+#: policy exists for; full anatomy in the 3d vault README): SLAM's map->odom ran
+#: 69/73/87 ms behind the contact stamps, and across the whole flight its inter-stamp
+#: gap was p99 = 103 ms with a worst single gap of 396 ms. The bound must cover the
+#: worst gap with margin, or the fallback re-fails exactly when SLAM hiccups --
+#: 0.396 x ~1.25 rounds to 0.5 s.
+#:
+#: WHY HALF A SECOND OF POSE AGE IS SAFE FOR A *CONTACT*: the detector's own definition
+#: (stall + packets written + no motion) means the robot is stationary while the mark
+#: is being placed, so a slightly-old pose differs by stall creep (2.9 mm/cycle,
+#: mission 1), not by driving speed. Even the pathological moving case bounds at
+#: ~0.2 m/s x 0.5 s = 0.10 m -- inside the forgiveness of the SHIPPED disc geometry
+#: (radius `ROBOT_RADIUS_M` 0.145 placed `default_margin_m` beyond the footprint
+#: edge). IF THE MARK GEOMETRY CHANGES -- the strip debate is dormant, not dead --
+#: this bound re-derives against the new shape; the guard test names that coupling.
+STALENESS_BOUND_S = 0.5
+
+#: The measurements the bound derives from, kept next to it so a future SLAM-cadence
+#: change breaks a test instead of a mission (`tests/test_contact_placement_tf_lag.py`
+#: asserts the bound clears both with margin).
+MEASURED_MAP_TF_GAP_P99_S = 0.103
+MEASURED_MAP_TF_GAP_MAX_S = 0.396
+
+
+@dataclass(frozen=True)
+class ResolvedContactPose:
+    """A pose the policy is willing to put a permanent lethal disc at.
+
+    `path` says how it was obtained -- "exact" (transform at the contact's own stamp)
+    or "fallback" (latest available, within `STALENESS_BOUND_S`) -- and `staleness_s`
+    is the signed stamp gap (contact stamp minus transform stamp; 0.0 on the exact
+    path). Both are carried into the mark log AND the mission report, so an autopsy
+    can always ask "was this mark exactly-placed or bounded-fallback" without
+    reconstructing it from timestamps.
+    """
+
+    x: float
+    y: float
+    yaw: float
+    staleness_s: float
+    path: str
+
+
+def resolve_contact_pose(exact, latest, stamp_s, bound_s=STALENESS_BOUND_S):
+    """The placement policy that run 3d showed v1 needed. Pure; adapters do the TF.
+
+    v1 looked up the transform AT the contact's stamp, full stop -- and in the field
+    that lookup lost 3 of 3 real contacts, because SLAM's map->odom runs tens of
+    milliseconds behind wall clock and tf2 refuses to extrapolate into the future. The
+    closed-loop rig never saw it: the rig pinned map->odom with a STATIC transform,
+    which tf2 treats as timeless, so the exact-stamp lookup was unfalsifiable there.
+
+    The policy, in order:
+
+    1. `exact()` -- the transform at the contact's stamp. When the feed is caught up
+       this is the strictly-correct pose and it is kept, staleness 0, path "exact".
+    2. Only when `exact()` raises `PoseDataLagsStamp` (the adapter's translation of
+       tf2's ExtrapolationException, and of nothing else): `latest()` returns the
+       newest available pose and its stamp. Accept iff |stamp gap| <= `bound_s`,
+       path "fallback". A gap beyond the bound is a genuine transform outage and
+       raises `ContactPoseUnavailable` -- the honest refusal is preserved, it just no
+       longer fires on the ordinary lag every moving contact has.
+
+    Any other exception from `exact()` (frame missing, tree disconnected) propagates:
+    those mean the pose is not merely late but untrustworthy, and no fallback answers
+    that.
+
+    `exact`: () -> (x, y, yaw). `latest`: () -> ((x, y, yaw), transform_stamp_s).
+    """
+    try:
+        x, y, yaw = exact()
+        return ResolvedContactPose(x, y, yaw, staleness_s=0.0, path="exact")
+    except PoseDataLagsStamp:
+        pass
+    (x, y, yaw), tf_stamp_s = latest()
+    staleness_s = float(stamp_s) - float(tf_stamp_s)
+    if abs(staleness_s) > float(bound_s):
+        raise ContactPoseUnavailable(
+            f"latest transform is {staleness_s * 1000.0:+.0f} ms from the contact "
+            f"stamp, beyond the {bound_s * 1000.0:.0f} ms bound -- that is an outage, "
+            f"not lag"
+        )
+    return ResolvedContactPose(x, y, yaw, staleness_s=staleness_s, path="fallback")
+
+
 @dataclass(frozen=True)
 class ContactBatch:
     """What one diagnostics message says happened since the last one."""
