@@ -296,16 +296,35 @@ def teardown():
     # SECOND PASS, BY DIRECT PID: `ros2 bag record` survived the pgid SIGINT in
     # three separate teardowns on 2026-08-18/19 (rig arms F1, cert 1, cert 3) and
     # each time needed its own PID hit -- operator lore until now, the tool's job
-    # since. Any recorded pid still alive gets INT then TERM, directly.
+    # since. Any recorded pid still alive gets INT, then a POLLED grace: a
+    # surviving recorder is usually FINALIZING its mcap, not stuck, and a SIGTERM
+    # mid-finalize truncates the exact evidence this teardown exists to preserve.
+    # Grace DERIVED: worst observed finalize after a direct SIGINT was ~8-10 s on
+    # an ~80 MB mcap (cert-4 teardown, 2026-08-19); 30 s is ~3x that. Escalating
+    # past it is announced as the anomaly it is.
+    BAG_FINALIZE_GRACE_S = 30.0
     for pid in reversed(pids):
         try:
             os.kill(pid, signal.SIGINT)
-            say("teardown", f"still alive after pgid pass: SIGINT -> {pid}")
-            time.sleep(2)
-            os.kill(pid, signal.SIGTERM)
-            say("teardown", f"SIGTERM -> {pid}")
         except (ProcessLookupError, PermissionError):
-            pass                                  # already gone: the good outcome
+            continue                              # already gone: the good outcome
+        say("teardown", f"still alive after pgid pass: SIGINT -> {pid}, "
+                        f"polling up to {BAG_FINALIZE_GRACE_S:.0f}s for finalize")
+        deadline = time.monotonic() + BAG_FINALIZE_GRACE_S
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break                             # finalized and exited cleanly
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                say("teardown", f"ANOMALY: {pid} outlived the derived finalize "
+                                f"grace -- SIGTERM sent; inspect its bag before "
+                                f"trusting it")
+            except (ProcessLookupError, PermissionError):
+                pass
     os.remove(PIDFILE)
     rc, out = sh("timeout 20 ros2 node list", timeout=40)
     remaining = [n for n in out.splitlines() if n.startswith("/")]
