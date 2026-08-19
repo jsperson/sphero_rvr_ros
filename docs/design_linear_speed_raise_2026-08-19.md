@@ -56,10 +56,18 @@ pinning their equality or their deliberate inequality.
 - **Lidar reaction distance**: supervisor tick + scan age bounds × v.
 - **Progress bars, BOTH of them**: the explorer's `goal_progress_timeout_s`
   6 s / `goal_progress_epsilon_m` 0.10, and the controller's
-  PoseProgressChecker `required_movement_radius` 0.05 / 12 s. Re-derived as a
-  FRACTION of commanded cruise over the window (e.g. "net displacement ≥ k ×
-  v_cruise × window" with k stated and justified), so the bar tightens/loosens
-  WITH the speed decision instead of drifting into false-stall territory again.
+  PoseProgressChecker `required_movement_radius` 0.05 / 12 s. **PIN (consensus
+  2026-08-19): the bars key on the REGULATED MINIMUM, never on cruise.** A
+  cruise-keyed bar reopens the exact hole being fixed: cruise rises ~75%
+  (0.20→0.35) while careful-maneuvering speed rises only ~50% (min 0.10→0.15),
+  so a "k × v_cruise × window" bar tightens FASTER than crawl speeds up and
+  the false stalls return at the new numbers. Honest base = the slowest
+  LEGITIMATE sustained speed: "net displacement ≥ k × v_regulated_min ×
+  window", k < 1 stated and justified against the re-fly's MEASURED crawl
+  distribution — which ran 0.053–0.066 m/s, BELOW today's configured 0.10
+  minimum, and the derivation must account for WHY (RPP regulates below its
+  own floor in tight curvature and approach phases) before trusting the
+  proportional raise of the minimum at all.
 - **Lookahead**: RPP `lookahead_time` 1.3 s is velocity-scaled already
   (`use_velocity_scaled_lookahead_dist: true`, max 0.36 m) — verify the max
   doesn't clip at the new cruise (0.35 × 1.3 = 0.455 > 0.36 → the max WOULD

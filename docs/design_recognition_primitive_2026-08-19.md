@@ -26,8 +26,15 @@ mission logic inside the verb.
    snapshot-then-down, unconditionally, error paths included.
 5. **VLM query**: the known-good config VERBATIM — `syn:large:vision`,
    `json_mode: true`, `max_tokens ~1500` (small returns null; short caps
-   truncate JSON), key from the 1Password Hermes vault route. Prompt asks one
-   question about one target.
+   truncate JSON). Prompt asks one question about one target.
+   **KEY HANDLING (consensus pin, 2026-08-19)**: the key loads at RUNTIME from
+   the operational route (environment fed from the 1Password Hermes vault),
+   is never committed, never logged (not in events, not in provenance, not in
+   error text), and **ABSENCE IS A LOUD REFUSAL at invocation** — the verb
+   returns a refusal naming the missing prerequisite, because a verb that
+   silently no-ops without its key is a searcher that finds nothing and says
+   nothing. One test pins the refusal; one test pins that no log line or
+   result field can carry the key.
 6. **Structured answer**, schema test-pinned:
    `{seen: bool, where_in_frame: left|center|right|null, confidence: 0-1,
    description: str}` — parse failures are LOUD refusals, never empty results.

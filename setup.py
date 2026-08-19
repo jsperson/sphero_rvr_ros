@@ -97,6 +97,7 @@ setup(
             "semantic_map = sphero_rvr_driver.semantic_map_node:main",
             "task_node = sphero_rvr_driver.task_node:main",
             "task_client = sphero_rvr_driver.task_client:main",
+            "recognition = sphero_rvr_driver.recognition_node:main",
         ],
     },
 )
