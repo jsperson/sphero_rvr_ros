@@ -215,7 +215,12 @@ def gate_verify():
             ("src/sphero_rvr_driver", "*.py", import_roots),
             ("src/sphero_rvr_core", "*.py", import_roots),
             ("config", "*.yaml", [share]),
-            ("launch", "*.py", [share])):
+            ("launch", "*.py", [share]),
+            # Found missing 2026-08-19 while landing the Spin retarget: the BT
+            # XMLs are shipped files bt_navigator loads at bringup, and a stale
+            # one would fly under a passing verify. "Every shipped file" means
+            # every one.
+            ("behavior_trees", "*.xml", [share])):
         anchor = os.path.basename(reldir)
         for src_path in sorted(glob.glob(os.path.join(REPO, reldir, pattern))):
             name = os.path.basename(src_path)
