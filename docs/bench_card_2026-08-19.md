@@ -105,3 +105,58 @@ REMAINING: if (viii)–(ix) pass, one reviewed commit flips
 remaining lock (the admission gate behind it is already open). If (viii) or
 (ix) fails, the routing arg stays false: flights continue on behavior_server's
 spin exactly as before the batch, and the failure goes to the register.
+
+---
+
+## RESULTS — the (viii)–(ix) sitting, 2026-08-19 afternoon (bench_20260819_124518)
+
+Floor staging by the door (Scott's call — the morning's stall scrub, which made
+(viii) the family-separation experiment for free). Roster FULL GREEN first
+attempt, including the NEW counter gate: **tof 6.88 Hz by frames counter over
+≥10 s, i2c_errors=0** — D59's close criterion, fired live.
+
+**(viii): PASS.** bt_navigator loaded the retargeted tree (param receipt); its
+Spin goal reached the gateway and nowhere else; behavior_server's spin never
+activated (its Running lines all sitting: wait, backup). The turn itself, the
+supervisor's line verbatim: **"precise turn SETTLED: target 150.4 deg, heading
+151.7 deg, err -1.3 deg, 1.0 s"** — a firmware 90° from rest ON THE SCRUB.
+**Family-separation answered live: H-family.** The heading loop powered through
+the exact floor that protect-trips the velocity family; the velocity lane's
+authority ceiling is a controller-family property, not a command-scaling one
+(docs/bench_item_family_separation_FUTURE.md is ANSWERED; D58 rests on it).
+
+**(ix): SATISFIED BY LIVE EVENT** (PM ruling; the scripted :=false version
+deliberately not run — the cathedral clause). During the first trigger attempt
+the gateway REFUSED at admission — "supervisor state is STOPPED, not CLEAR",
+the rover mid-brake-hold 0.3015 m from a wall (the composed safety working) —
+and the round fell through LOUDLY to Wait → BackUp, zero motion from the spin
+slot, behavior_server silent. Caveat named: refusal cause was the supervisor
+STATE clause, not the bench flag; the machinery under test ran end to end in
+reality, which outranks a staged copy.
+
+**BONUS, the day's whole program in one goal:** after the settled turn the
+rover was still pinned; the refusal watcher's spatial-keyed window sustained,
+fired its SECOND-EVER field promotion (one centroid, (0.151, 0.432),
+lethal-local/free-global, freshness-vouched), contact_marker granted,
+self-quench on the next window ("no delta cells"), the replan routed around,
+and the goal SUCCEEDED. Scott's ground truth, verbatim: **"There is an object
+straight ahead and one to the left (lower legs/supports for my work table)."**
+— TRUE PROMOTION, the exact sub-lidar class the mechanism exists for. The
+watcher default STANDS on its second receipt. Eyewitness reconciliation as
+promised: Scott's "145 degree pivot right would work great" vs the executed
+compound turn (90° firmware spin + RPP finishing rotation) — his estimate of
+the total turn-to-goal, within a few degrees of what the maneuver delivered.
+D57 note: zero contact marks and zero withheld paint all sitting — the shim
+pivots never firmware-stalled; the promotion is the sitting's only mark.
+
+**TRIGGER-DESIGN CORRECTION (so no future bench reinvents it):** the
+"blocked-goal" recovery trigger is wrong in BOTH directions — a tolerance-
+walked goal DRIVES (the planner walks a lethal goal to the nearest free cell;
+this drove the rover 0.5 m into a corner, outside the announced envelope,
+though the supervisor braked at exactly its 0.30 m line), and a genuinely
+unreachable goal STARVES cmd_vel so the supervisor idles STOPPED and admission
+refuses even mid-floor. The trigger that works is the failure shape itself: a
+goal requiring a large from-rest rotation on the surface under test, sent while
+commands flow. Also recorded for a future design round (register): the recovery
+chain has no turn-around-and-leave concept — spin is a fixed 90° and
+inadmissible exactly where escaping matters most (nose-in-a-corner).

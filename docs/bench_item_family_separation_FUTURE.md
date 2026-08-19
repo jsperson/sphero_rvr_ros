@@ -1,5 +1,14 @@
 # FUTURE bench item — the family-separation experiment
 
+> **ANSWERED LIVE, 2026-08-19 afternoon, before this item ever ran — verdict
+> H-FAMILY.** The (viii) sitting's firmware Spin executed a 90° from-rest turn
+> on the exact scrub that protect-trips the velocity family ("precise turn
+> SETTLED: target 150.4 deg, heading 151.7 deg, err -1.3 deg, 1.0 s"). The
+> heading controller has the authority; the velocity lane's ceiling is a
+> controller-family property. The measurement below stays unrun (cathedral
+> clause) and this doc stays as the record of the question; D58's parked route
+> now rests on this answer.
+
 *Approved for a FUTURE sitting's card (consensus 2026-08-19); deliberately NOT
 on the 2026-08-19 card, whose scope Scott fixed. Filed following the
 `run_card_arc_rate_FUTURE.md` precedent so the wording survives until a sitting
