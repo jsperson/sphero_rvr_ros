@@ -80,7 +80,8 @@ def launch_command(stack, imu_fusion=True, ride_along_watcher=False):
     bespoke: the pre-§3a coverage stack, byte-for-byte the command this script has
     always run -- plus an explicit start_contact_marker:=false, because the marker
     is the STOCK middle's touch port (the bespoke controller has its own freeze
-    marks) and an idle marker still costs ~14% of a Pi core.
+    marks); the marker is simply not that stack's port. (Its idle cost measured
+    0.2% of a core over 60 s on 2026-08-19 -- the old ~14% folk number is dead.)
     """
     if stack in ("stock", "stock-explore"):
         # ride_along_watcher: the D RIDE-ALONG OVERRIDE. start_refusal_watcher
@@ -292,6 +293,19 @@ def teardown():
         except (ProcessLookupError, PermissionError):
             pass
     time.sleep(8)
+    # SECOND PASS, BY DIRECT PID: `ros2 bag record` survived the pgid SIGINT in
+    # three separate teardowns on 2026-08-18/19 (rig arms F1, cert 1, cert 3) and
+    # each time needed its own PID hit -- operator lore until now, the tool's job
+    # since. Any recorded pid still alive gets INT then TERM, directly.
+    for pid in reversed(pids):
+        try:
+            os.kill(pid, signal.SIGINT)
+            say("teardown", f"still alive after pgid pass: SIGINT -> {pid}")
+            time.sleep(2)
+            os.kill(pid, signal.SIGTERM)
+            say("teardown", f"SIGTERM -> {pid}")
+        except (ProcessLookupError, PermissionError):
+            pass                                  # already gone: the good outcome
     os.remove(PIDFILE)
     rc, out = sh("timeout 20 ros2 node list", timeout=40)
     remaining = [n for n in out.splitlines() if n.startswith("/")]

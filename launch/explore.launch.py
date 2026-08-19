@@ -281,8 +281,11 @@ def generate_launch_description():
     # family; caught in pre-flight, flown by hand twice). Default TRUE because the
     # stock middle without it has no touch response at all: a contact plants no
     # mark and the planner never learns. The bespoke bringup passes false -- its
-    # decisive controller carries its own freeze marks, and an idle marker still
-    # costs ~14% of a Pi core.
+    # decisive controller carries its own freeze marks. (The old "~14% of a Pi
+    # core when idle" claim here did not survive measurement: 0.2% over 60 s,
+    # identity-verified PID, 2026-08-19 -- and the two bogus samples before that
+    # measured the `ros2 run` wrapper and an ssh carrier, the
+    # measure-the-right-population lesson in miniature.)
     contact_marker = Node(
         package="sphero_rvr_driver",
         executable="contact_marker",

@@ -37,7 +37,12 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
    stack (lidar spinning, nodes up) drained the battery flat on 2026-08-03.
 5. **Scott attended, within reach of the power switch** for the entire run.
 6. **Clock sync.** `ssh sphero-pi-2 timedatectl status` must report *System clock
-   synchronized: yes* BEFORE the stack goes up. A freshly booted Pi has been seen 72
+   synchronized: yes* BEFORE the stack goes up. Read `vcgencmd get_throttled` in the
+   same breath: the LOW nibble is what matters live (nonzero = throttling NOW);
+   the sticky 0x50000 bits (under-voltage-occurred + throttling-occurred) get set
+   by the mains plug-in transient on nearly every boot and are not by themselves
+   a finding (measured 2026-08-19: sticky bits present all night, active nibble
+   clear throughout). A freshly booted Pi has been seen 72
    minutes behind the workstation until NTP caught up (2026-08-10), and every
    attribution in this protocol depends on pairing Scott's wall-clock notes against
    log timestamps. Starting inside that window silently invalidates the whole

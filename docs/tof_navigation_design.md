@@ -1288,3 +1288,32 @@ Cut on the DATA's own step change instead and the tail vanishes entirely. Same l
 the 53 s recorder misalignment: **align against the signature, never against the
 narration.** A relayed human mark carries human latency, and the one number that decided
 whether rule B could hold brake authority was the number that latency corrupted.
+
+## 13. Field addendum 2026-08-19: mat-lip chatter is the sensor being RIGHT (known behavior, no fix)
+
+Run 3c goal 2 crossed a floor mat and cost 8 recoveries over a successful 22 s
+drive — "scanned back and forth then continued" (Scott). The pre-registered
+discriminator (bag windows 13:44:40–42 / 13:44:47–54) settled the mechanism:
+every abort was RPP `collision ahead` (zero brake/rule-B activity), against 76
+non-empty `/tof/obstacles` clouds painting a real low band — window-2's cluster
+held rock-stable through a 5 s stationary wait and one cell repeated across
+both windows, so these are real features, freshly painted under approach
+(goal 3's marks-under-approach shape). The cycle: ToF paints the mat lip →
+tof_layer marks the local costmap → RPP correctly refuses → recovery → replan
+wiggles through → fresh paint on next approach.
+
+**Ruled 2026-08-19 (PM consensus): ACCEPT AND DOCUMENT.** Rule A's floor margin
+(§11.1's derivation) is doing the exact job that caught the boot; every RPP
+refusal was correct against the costs it saw; the cost is seconds, not
+missions; and under watcher-ON a *sustained* version self-resolves by
+promotion. Do not reach for cost_scaling / RPP regulation / inflation here —
+the cost field the controller refused was live paint, and tuning the
+controller would tune the innocent component (the pivot-curve exoneration's
+mistake, one layer up).
+
+Parked with named triggers, not forgotten: a climbable-height gate on rule A
+(paint only what the drivetrain cannot climb) needs a tread climb-height bench
+datum that does not exist yet — chassis-gated menu item, and any gate raise
+trades against boot-class detection, the trade the ToF program exists to
+refuse. Recovery-chain lightening (replan-first BT) only if the field shows
+this class costing missions rather than seconds.
