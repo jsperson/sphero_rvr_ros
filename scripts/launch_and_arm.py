@@ -68,27 +68,30 @@ def say(stage, msg):
 
 # --- what each stack actually launches and records (pure; the tests hold these) ------
 
-def launch_command(stack, imu_fusion=True, ride_along_watcher=False):
+def launch_command(stack, imu_fusion=True, no_watcher=False):
     """The exact bringup command per stack. PURE so the tests can pin it.
 
     stock: the §3a middle -- no explorer, no decisive controller, RPP + bt_navigator
     on lean_nav2_stock.yaml (resolved from the DEPLOYED share, not the source tree),
-    contact_marker via the launch's own default (it is part of the stock middle).
+    contact_marker and refusal_watcher via the launch's own defaults (both are part
+    of the stock middle; the watcher default is TRUE per 2026-08-19 ratification).
     enable_imu_fusion defaults TRUE per the protocol's standing open-decision
     ("include it unless the run reproduces a wheel-odom-only baseline").
 
     bespoke: the pre-§3a coverage stack, byte-for-byte the command this script has
-    always run -- plus an explicit start_contact_marker:=false, because the marker
-    is the STOCK middle's touch port (the bespoke controller has its own freeze
-    marks); the marker is simply not that stack's port. (Its idle cost measured
+    always run -- plus explicit start_contact_marker:=false and
+    start_refusal_watcher:=false, because the marker and the watcher are the STOCK
+    middle's touch port (the bespoke controller has its own freeze marks); neither
+    is that stack's port, and the watcher ratification covered stock only. (Its idle cost measured
     0.2% of a core over 60 s on 2026-08-19 -- the old ~14% folk number is dead.)
     """
     if stack in ("stock", "stock-explore"):
-        # ride_along_watcher: the D RIDE-ALONG OVERRIDE. start_refusal_watcher
-        # defaults FALSE in the launch until a flight ride-along clears the
-        # mechanism; passing this flag IS that ride-along, and the deviation is
-        # logged at bringup so the run's record says so explicitly.
-        watcher = (" start_refusal_watcher:=true" if ride_along_watcher else "")
+        # no_watcher: the explicit OFF override. start_refusal_watcher defaults
+        # TRUE in the launch since Scott's 2026-08-19 ratification (the old
+        # --ride-along-watcher ON override died with the flip); stock rides the
+        # launch default like it does for contact_marker, and flying WITHOUT the
+        # watcher is now the deviation, logged at bringup.
+        watcher = (" start_refusal_watcher:=false" if no_watcher else "")
         # stock-explore: the SAME stock middle with coverage_explorer riding on
         # top (2026-08-18 consensus: the explorer speaks NavigateToPose, which is
         # exactly the interface the stock middle exposes -- v1 changes nothing in
@@ -108,11 +111,16 @@ def launch_command(stack, imu_fusion=True, ride_along_watcher=False):
             + watcher
         )
     if stack == "bespoke":
+        # start_refusal_watcher:=false for the same reason as the marker: the
+        # watcher is the STOCK middle's mechanism, and Scott's 2026-08-19
+        # ratification covered stock only. Without contact_marker there is no
+        # grantor for its requests anyway -- riding the flipped launch default
+        # here would be scope creep, not a decision anyone made.
         return (
             "ros2 launch sphero_rvr_driver explore.launch.py "
             "start_motion_stack:=true start_explore:=true "
             "use_coverage_explorer:=true use_decisive_controller:=true "
-            "start_contact_marker:=false"
+            "start_contact_marker:=false start_refusal_watcher:=false"
         )
     raise ValueError(f"unknown stack {stack!r}")
 
@@ -354,12 +362,13 @@ def main():
     ap.add_argument("--no-imu-fusion", action="store_true",
                     help="stock only: reproduce a wheel-odom-only baseline (the "
                          "protocol's open decision defaults fusion ON)")
-    ap.add_argument("--ride-along-watcher", action="store_true",
-                    help="stock only: THE D RIDE-ALONG OVERRIDE -- start "
-                         "refusal_watcher despite its flight default of false. "
-                         "Logged at bringup as the deviation it is; use only for "
-                         "the ride-along flight the mechanism's clearance "
-                         "requires (docs/design_tof_planner_visibility.md).")
+    ap.add_argument("--no-watcher", action="store_true",
+                    help="stock only: fly WITHOUT refusal_watcher despite its "
+                         "default of true (Scott's ratification, 2026-08-19 -- "
+                         "docs/watcher_default_decision_2026-08-19.md). Logged "
+                         "at bringup as the deviation it now is. This flag "
+                         "replaced --ride-along-watcher, the ON override the "
+                         "d45bd24 clearance flight retired.")
     ap.add_argument("--teardown", action="store_true",
                     help="stop what a previous run of this script started")
     args = ap.parse_args()
@@ -394,12 +403,12 @@ def main():
           f"{home}/recorder_{stamp}.log")
 
     say("bringup", f"{args.stack} stack (no camera, no monocular detector) ...")
-    if args.ride_along_watcher:
-        say("DEVIATION", "start_refusal_watcher:=true -- the D ride-along "
-                         "override; the launch default is false until this very "
-                         "flight clears the mechanism")
+    if args.no_watcher:
+        say("DEVIATION", "start_refusal_watcher:=false -- flying without the "
+                         "ratified watcher (default true since 2026-08-19); the "
+                         "run's record must say why")
     spawn(launch_command(args.stack, imu_fusion=not args.no_imu_fusion,
-                         ride_along_watcher=args.ride_along_watcher), launch_log)
+                         no_watcher=args.no_watcher), launch_log)
 
     say("record", f"bag -> {bag_dir}")
     # Spawned IMMEDIATELY after the launch -- no settle sleep before it, no sleep

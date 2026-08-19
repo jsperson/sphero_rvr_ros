@@ -1,5 +1,9 @@
 # Decision memo: refusal_watcher launch default — OFF → ON for stock flights
 
+**STATUS: DECIDED — Scott ratified the flip (his word, after a full walkthrough),
+morning of 2026-08-19. Default is now `true` in `explore.launch.py`, condition
+attached below in force. The sections that follow are the memo as it went to him.**
+
 **Asks Scott for one word on one line:** flip `start_refusal_watcher`'s launch
 default from `false` to `true` for the stock middle. Nothing here moves without
 that word; the flag itself stays (OFF remains one launch arg away).

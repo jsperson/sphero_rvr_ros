@@ -28,6 +28,11 @@ PROBE = Path(__file__).resolve().parents[1] / "scripts" / "bringup_gates.py"
 PROBE_SRC = PROBE.read_text()
 PROBE_TREE = ast.parse(PROBE_SRC)
 
+# The flight launch itself, because the watcher default is now a RATIFIED value
+# (Scott, 2026-08-19): a silent revert must fail a test, not a flight.
+LAUNCH = Path(__file__).resolve().parents[1] / "launch" / "explore.launch.py"
+LAUNCH_SRC = " ".join(LAUNCH.read_text().split())
+
 
 def function(name, tree=None):
     for node in ast.walk(tree or TREE):
@@ -312,13 +317,16 @@ def test_the_stock_command_is_the_flown_3c_shape():
         "enable_imu_fusion:=false") == 1
 
 
-def test_the_bespoke_command_is_unchanged_plus_an_explicit_marker_off():
+def test_the_bespoke_command_is_unchanged_plus_the_explicit_stock_ports_off():
     """bespoke stays byte-compatible with what this script always launched, and it
-    turns the touch-port marker OFF explicitly (the launch default is true for the
-    stock middle; an idle marker costs ~14% of a Pi core)."""
+    turns the stock middle's ports OFF explicitly: the touch-port marker, and --
+    since the 2026-08-19 ratification flipped the launch default to true -- the
+    refusal watcher (ratified for stock only, and bespoke has no contact_marker
+    to grant its requests anyway)."""
     cmd = _module().launch_command("bespoke")
     for token in ("start_explore:=true", "use_coverage_explorer:=true",
-                  "use_decisive_controller:=true", "start_contact_marker:=false"):
+                  "use_decisive_controller:=true", "start_contact_marker:=false",
+                  "start_refusal_watcher:=false"):
         assert token in cmd, f"bespoke command lost {token}"
 
 
@@ -343,9 +351,10 @@ def test_stock_explore_is_the_stock_middle_plus_the_explorer():
         "explicit last act, never a launch default")
     # and plain stock did not silently grow the explorer
     assert "use_coverage_explorer:=false" in mod.launch_command("stock")
-    # the ride-along override composes with the mode like it does with stock
-    assert "start_refusal_watcher:=true" in mod.launch_command(
-        "stock-explore", ride_along_watcher=True)
+    # the OFF override composes with the mode like it does with stock; the
+    # baseline says nothing and rides the launch's ratified default (true)
+    assert "start_refusal_watcher:=false" in mod.launch_command(
+        "stock-explore", no_watcher=True)
     assert "start_refusal_watcher" not in mod.launch_command("stock-explore")
 
 
@@ -459,15 +468,23 @@ def test_no_spawned_command_chains_with_a_shell_operator():
             )
 
 
-def test_the_ride_along_override_is_explicit_and_default_off():
-    """The D watcher flies default-OFF until its ride-along clears it; the
-    override must be an explicit flag that changes the command, never the
-    baseline. Both directions pinned."""
+def test_the_watcher_default_is_the_ratified_on_with_an_explicit_off_override():
+    """Scott ratified the flip on 2026-08-19 (docs/watcher_default_decision_
+    2026-08-19.md): the D watcher flies default-ON for the stock middle. This
+    test held the OLD default (the D-era ride-along pin) and flips WITH the
+    ratification. Three pins: the launch default itself is true (a silent
+    revert must fail here, not in a flight); stock rides that default (the
+    command says nothing, like contact_marker); and OFF is one explicit,
+    deviation-logged flag away -- the memo's own rollback promise."""
     mod = _module()
+    assert '"start_refusal_watcher", default_value="true"' in LAUNCH_SRC, (
+        "the launch default reverted from the ratified true -- if that was the "
+        "watch-item rollback (one false promotion), flip this pin with it and "
+        "cite the flight; if not, it is a silent revert")
     assert "start_refusal_watcher" not in mod.launch_command("stock")
-    assert "start_refusal_watcher:=true" in mod.launch_command(
-        "stock", ride_along_watcher=True)
-    assert "start_refusal_watcher" not in mod.launch_command("bespoke")
+    assert "start_refusal_watcher:=false" in mod.launch_command(
+        "stock", no_watcher=True)
+    assert "start_refusal_watcher:=false" in mod.launch_command("bespoke")
 
 
 def test_the_stock_bag_records_the_promotion_request_lane():

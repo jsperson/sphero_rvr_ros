@@ -293,9 +293,11 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(LaunchConfiguration("start_contact_marker")),
     )
-    # Option D's watcher. DEFAULT FALSE FOR FLIGHT until the rig certifies all four
-    # arms AND a flight ride-along clears it -- rig-first was the decision's own
-    # condition. Zero motion authority either way; it only requests marks.
+    # Option D's watcher. DEFAULT TRUE: rig certified all four arms (2026-08-18),
+    # the flight ride-along cleared it (d45bd24, same evening), and Scott ratified
+    # the flip on the morning of 2026-08-19 after a full walkthrough of
+    # docs/watcher_default_decision_2026-08-19.md. Zero motion authority either
+    # way; it only requests marks, and only contact_marker grants.
     refusal_watcher = Node(
         package="sphero_rvr_driver",
         executable="refusal_watcher",
@@ -409,10 +411,16 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "start_refusal_watcher",
-                default_value="false",
+                default_value="true",
                 description=(
-                    "Option D (refusal-triggered mark promotion). FALSE until the "
-                    "rig certifies and a flight ride-along clears it. The watcher "
+                    "Option D (refusal-triggered mark promotion). TRUE per "
+                    "Scott's ratification, morning of 2026-08-19, after the rig "
+                    "campaign, the d45bd24 ride-along, and the certified-mission "
+                    "negative test (docs/watcher_default_decision_2026-08-19.md). "
+                    "Condition attached, verbatim: 'first default-ON flight is a "
+                    "watch item -- every promotion inspected post-flight against "
+                    "the room's ground truth; one false promotion reverts the "
+                    "default the same day (one launch arg, no code).' The watcher "
                     "has no motion authority; it requests marks from "
                     "contact_marker when the livelock signature sustains."
                 ),
