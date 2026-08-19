@@ -27,6 +27,20 @@ band. That is why this module exists and why nothing may extrapolate the fit dow
 WHAT THIS MODULE IS NOT: it describes IN-PLACE PIVOTS driven through
 ``drive_tank_normalized``. It says nothing about arcs while driving, which are a different
 regime on a different command path and remain UNMEASURED.
+
+SEMANTICS CORRECTED 2026-08-19 (vendor SDK read; consensus round after the combined
+ride-along): "duty" here is a MISNOMER carried from the raw-motor era. The vendor
+defines ``drive_tank_normalized`` as *"linear velocity TARGETS normalized to +/-127"*
+-- the firmware closes a velocity loop on them internally; only ``raw_motors`` is
+open-loop duty. So this curve is a **target -> achieved-rate map through the firmware's
+velocity controller, on one floor** (rubber gym flooring, 80-83% battery), and the force
+authority was never this module's -- it is the firmware's, bounded by its own stall
+protection, which is exactly what tripped three times on the 2026-08-19 flight at the
+top of this band. STANDING DIRECTION (Scott, same day): this curve demotes over time
+from AUTHORITY to FEED-FORWARD HINT -- feedback owns correctness, calibration seeds the
+first guess, and surface-specific constants are conveniences, never load-bearing walls.
+The numbers stay: they are a real measurement of this floor, and the sub-band cliff
+warnings remain load-bearing for as long as anything chooses targets from here.
 """
 
 from __future__ import annotations

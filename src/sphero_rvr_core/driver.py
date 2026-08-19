@@ -926,6 +926,17 @@ class RVRDriver:
                 # So: map the REQUESTED rate through the measured curve to the duty that
                 # produces it. See sphero_rvr_core.pivot_curve for the data and the
                 # sub-minimum policy.
+                #
+                # SEMANTICS NOTE (2026-08-19, vendor SDK read): "duty" is the
+                # raw-motor era's word. drive_tank_normalized carries VELOCITY
+                # TARGETS (+/-127) that the FIRMWARE closes a loop on -- so this
+                # branch was never open-loop force, and the 2026-08-19 flight's
+                # pivot stalls were the firmware's own stall protection tripping
+                # at the top of the curve's band. The curve is a feed-forward
+                # target map for this floor (Scott's standing direction: feedback
+                # owns correctness), and the pivot-authority fix runs through the
+                # firmware HEADING controller (the gateway), not through bigger
+                # numbers here.
                 plan = plan_pivot(
                     velocity.angular_rad_s,
                     min_duty=self._pivot_min_duty,

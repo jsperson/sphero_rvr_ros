@@ -22,6 +22,22 @@ marks planted in the gap from rotation stalls; Spin recovery ran at 5.83 rad/s
 > time to a feed-forward hint. See the run card's dated correction for the
 > full wording.
 
+> **SECOND CORRECTION 2026-08-19 (git fact, found via the deployed yaml):**
+> this note was written believing bench items (i)–(iii) were pending. They
+> PASSED on 2026-08-18 night — `f4c840a` flipped `precise_turn_bench_verified`
+> to true in both yamls with the measured receipts (estop preempt; stop kills
+> hold; 21/21 turns, mean |err| ≤ 2.2°) — and the flag was open the whole day
+> this note was reviewed in. Both sessions missed it against their own
+> records; the deployed config outranks both of us, and probing the yaml en
+> route to an unrelated batch is what caught it. The "two locks flip together"
+> rationale was sound engineering written against wrong facts: in the real
+> state there is ONE remaining lock (`use_precise_turn_spin`), and it alone is
+> sufficient — no Spin goal flows to the gateway while it is false. (i)–(iii)
+> stand as passed on a verified basis, not vibes: since f4c840a the turn verb,
+> gateway, admission, collision_stop*, and rvr_node have ZERO diff — the only
+> driver.py delta is D31's disconnect/teardown fix, which never touches the
+> turn path. The remaining sitting is (viii)–(ix) only.
+
 ---
 
 ## Part 1 — batch (a): Spin recovery through the precise-turn gateway

@@ -431,13 +431,15 @@ def generate_launch_description():
                     "precise-turn gateway (/collision_stop/precise_turn, the "
                     "firmware heading loop that manages torque as resistance "
                     "demands) instead of behavior_server's open-loop duty-45 "
-                    "spin -- the path that stalled three times against floor "
-                    "grip on 2026-08-19. Default FALSE until the bench card's "
-                    "items (i)-(iii) and (viii)-(ix) pass; this arg and "
-                    "precise_turn_bench_verified flip together in one reviewed "
-                    "batch, so Spin never routes to a gateway that must refuse "
-                    "it. While false, flight behavior is byte-identical to "
-                    "before this arg existed."
+                    "spin -- the path that stalled three times on 2026-08-19. "
+                    "Default FALSE until bench items (viii)-(ix) pass. "
+                    "CORRECTED 2026-08-19: items (i)-(iii) passed on "
+                    "2026-08-18 night (f4c840a -- estop preempt, stop-kills-"
+                    "hold, 21/21 turns at <=2.2 deg mean error) and "
+                    "precise_turn_bench_verified is already TRUE in both "
+                    "yamls, so THIS ARG is the one remaining lock; the "
+                    "admission gate behind it is open. While false, flight "
+                    "behavior is byte-identical to before this arg existed."
                 ),
             ),
             DeclareLaunchArgument(

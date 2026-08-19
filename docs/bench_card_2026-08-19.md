@@ -76,8 +76,11 @@ actually went before anything flips.
 
 ## (ix) ADMISSION REFUSAL FALLS THROUGH LOUDLY — blocks *(batch (a))*
 
-Same staging, but with `precise_turn_bench_verified:=false` (the shipping
-value). Force the same recovery round.
+Same staging, but with a `precise_turn_bench_verified:=false` param override.
+*(CORRECTED 2026-08-19: the shipping value is TRUE — f4c840a flipped it after
+items (i)–(iii) passed on 2026-08-18 night. This item deliberately stages the
+REFUSAL state to prove it is safe-and-loud, since it can no longer occur by
+default.)* Force the same recovery round.
 **PASS: the refusal reason appears on the event lane, NO motion happens in the
 spin slot, and the BT proceeds to BackUp within one recovery round.** This is
 the exact state the stack would be in if the routing arg ever flipped without
@@ -85,15 +88,20 @@ the bench flag — the bench proves that state is safe-and-loud, not silent.
 
 ## After the card
 
-If (i)–(iii) pass: flip `precise_turn_bench_verified: true` in BOTH yamls in one
-reviewed commit that cites this card's measured numbers, and record the sign
-measurement at `PRECISE_TURN_HEADING_SIGN`. If anything fails, the flag stays
-false and the failure goes to the register — the primitive stays un-runnable,
-which is the design working, not the design failing.
+**STATUS CORRECTION 2026-08-19 (git fact, found via the deployed yaml):**
+items (i)–(iii) PASSED on 2026-08-18 night and `f4c840a` already flipped
+`precise_turn_bench_verified: true` in BOTH yamls, with the measured numbers
+and Scott's verbatim passes recorded in the yaml comment (estop preempt;
+stop-kills-hold; 21/21 turns, mean |err| ≤ 2.2°). The paragraph below is
+retained as the rule that WAS followed, not a pending action.
 
-If (viii)–(ix) ALSO pass: the same reviewed commit flips
-`use_precise_turn_spin` default true in `explore.launch.py` — the two locks
-move together (design round 2026-08-19), so Spin never routes to a gateway that
-must refuse it. If (viii) or (ix) fails, the routing arg stays false: flights
-continue on behavior_server's spin exactly as before the batch, and the failure
-goes to the register.
+~~If (i)–(iii) pass: flip `precise_turn_bench_verified: true` in BOTH yamls in
+one reviewed commit that cites this card's measured numbers, and record the
+sign measurement at `PRECISE_TURN_HEADING_SIGN`.~~ Done (f4c840a). If a later
+sitting ever fails a re-run, the flag flips BACK with the failure cited.
+
+REMAINING: if (viii)–(ix) pass, one reviewed commit flips
+`use_precise_turn_spin` default true in `explore.launch.py` — now the ONE
+remaining lock (the admission gate behind it is already open). If (viii) or
+(ix) fails, the routing arg stays false: flights continue on behavior_server's
+spin exactly as before the batch, and the failure goes to the register.
