@@ -37,11 +37,18 @@ def generate_launch_description():
     # so the stock BT's local-costmap clears break bt_navigator bringup. Use a
     # variant whose costmap clears target the global costmap instead.
     decisive_nav_to_pose_bt = share / "behavior_trees" / "navigate_to_pose_decisive.xml"
+    # Batch (a): the standard tree with ONE attribute changed -- Spin retargeted at
+    # the supervisor's precise-turn gateway (firmware heading loop). Selected only
+    # by use_precise_turn_spin; see the XML's own header for the provenance.
+    precise_turn_nav_to_pose_bt = (
+        share / "behavior_trees" / "navigate_to_pose_stock_precise_turn.xml"
+    )
 
     start_motion_stack = LaunchConfiguration("start_motion_stack")
     start_explore = LaunchConfiguration("start_explore")
     enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
     use_decisive_controller = LaunchConfiguration("use_decisive_controller")
+    use_precise_turn_spin = LaunchConfiguration("use_precise_turn_spin")
     use_coverage_explorer = LaunchConfiguration("use_coverage_explorer")
     start_tof = LaunchConfiguration("start_tof")
     start_semantic_map = LaunchConfiguration("start_semantic_map")
@@ -168,7 +175,10 @@ def generate_launch_description():
     )
 
     # Pick the navigate-to-pose BT by mode: decisive mode uses the global-costmap
-    # variant (no local costmap exists), RPP mode uses the stock tree.
+    # variant (no local costmap exists); RPP mode uses the stock tree, or -- when
+    # use_precise_turn_spin is true -- the stock tree with Spin retargeted at the
+    # supervisor's precise-turn gateway. Decisive wins if both are set: that mode
+    # has no RPP and its escape already bypasses nav2_behaviors (D36).
     nav_to_pose_bt_xml = ParameterValue(
         PythonExpression(
             [
@@ -176,9 +186,13 @@ def generate_launch_description():
                 str(decisive_nav_to_pose_bt),
                 "' if '",
                 use_decisive_controller,
+                "' == 'true' else ('",
+                str(precise_turn_nav_to_pose_bt),
+                "' if '",
+                use_precise_turn_spin,
                 "' == 'true' else '",
                 str(standard_nav_to_pose_bt),
-                "'",
+                "')",
             ]
         ),
         value_type=str,
@@ -407,6 +421,23 @@ def generate_launch_description():
                     "via /contact_marks). TRUE by default: the stock middle "
                     "without it has no touch response. The bespoke bringup sets "
                     "false (its controller carries its own freeze marks)."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "use_precise_turn_spin",
+                default_value="false",
+                description=(
+                    "Route the BT's Spin recovery through the supervisor's "
+                    "precise-turn gateway (/collision_stop/precise_turn, the "
+                    "firmware heading loop that manages torque as resistance "
+                    "demands) instead of behavior_server's open-loop duty-45 "
+                    "spin -- the path that stalled three times against floor "
+                    "grip on 2026-08-19. Default FALSE until the bench card's "
+                    "items (i)-(iii) and (viii)-(ix) pass; this arg and "
+                    "precise_turn_bench_verified flip together in one reviewed "
+                    "batch, so Spin never routes to a gateway that must refuse "
+                    "it. While false, flight behavior is byte-identical to "
+                    "before this arg existed."
                 ),
             ),
             DeclareLaunchArgument(

@@ -43,6 +43,7 @@ setup(
             "share/sphero_rvr_driver/behavior_trees",
             [
                 "behavior_trees/navigate_to_pose_decisive.xml",
+                "behavior_trees/navigate_to_pose_stock_precise_turn.xml",
             ],
         ),
         (

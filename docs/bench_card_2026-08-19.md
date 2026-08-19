@@ -63,6 +63,26 @@ The placement fix (d2f96e9) field-confirms on any contact that plants a mark
 with `path=fallback` + staleness in the log. No dedicated staging: it rides
 whatever happens.
 
+## (viii) BT-ROUTED SPIN REACHES THE GATEWAY — blocks *(batch (a), design PASS 2026-08-19)*
+
+Stack up with `use_precise_turn_spin:=true` plus the sitting-only bench param
+override from item (i). Send a NavigateToPose goal the rover on blocks cannot
+progress (any goal — treads spin free, no displacement), and let the BT escalate
+to its recovery round.
+**PASS: the gateway's event lane shows the STARTED → settled/stopped sequence
+for a Spin goal originating from bt_navigator, and behavior_server's log shows
+NO spin activation.** FAIL = the retarget is cosmetic; find where the goal
+actually went before anything flips.
+
+## (ix) ADMISSION REFUSAL FALLS THROUGH LOUDLY — blocks *(batch (a))*
+
+Same staging, but with `precise_turn_bench_verified:=false` (the shipping
+value). Force the same recovery round.
+**PASS: the refusal reason appears on the event lane, NO motion happens in the
+spin slot, and the BT proceeds to BackUp within one recovery round.** This is
+the exact state the stack would be in if the routing arg ever flipped without
+the bench flag — the bench proves that state is safe-and-loud, not silent.
+
 ## After the card
 
 If (i)–(iii) pass: flip `precise_turn_bench_verified: true` in BOTH yamls in one
@@ -70,3 +90,10 @@ reviewed commit that cites this card's measured numbers, and record the sign
 measurement at `PRECISE_TURN_HEADING_SIGN`. If anything fails, the flag stays
 false and the failure goes to the register — the primitive stays un-runnable,
 which is the design working, not the design failing.
+
+If (viii)–(ix) ALSO pass: the same reviewed commit flips
+`use_precise_turn_spin` default true in `explore.launch.py` — the two locks
+move together (design round 2026-08-19), so Spin never routes to a gateway that
+must refuse it. If (viii) or (ix) fails, the routing arg stays false: flights
+continue on behavior_server's spin exactly as before the batch, and the failure
+goes to the register.
