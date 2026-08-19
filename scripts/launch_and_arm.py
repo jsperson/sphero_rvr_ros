@@ -27,9 +27,10 @@ this only gets the wheels turning identically every time.
 """
 
 import argparse
+import filecmp
+import glob
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -39,11 +40,7 @@ WS = os.path.expanduser("~/ros2_ws")
 REPO = os.path.join(WS, "src", "sphero_rvr_ros")
 PIDFILE = "/tmp/launch_and_arm.pids"
 SETUP = f"source /opt/ros/jazzy/setup.bash && source {WS}/install/setup.bash"
-
-#: The rate band the ToF's staleness bound is derived from: low_obstacle_max_age_s
-#: (0.30 s) is "about two frames" at 6.5-7.6 Hz. Below 6.5 Hz two frames exceed the
-#: bound, so one dropped frame ages the cloud out and the brake stops looking.
-TOF_RATE_MIN_HZ = 6.5
+BRANCH = "prototype/stock-middle"
 
 
 def sh(cmd, timeout=30):
@@ -148,6 +145,91 @@ def die(msg, remedy=""):
 
 # --- gates ---------------------------------------------------------------------------
 
+def gate_verify():
+    """PHASE 0: the code about to fly is the code that was reviewed. Three claims,
+    each checked against a different authority: HEAD == origin/BRANCH (the review
+    lives at origin -- deploy verification is against ORIGIN, not the local clone's
+    idea of itself), the tree is clean (an uncommitted edit flies unreviewed), and
+    the INSTALLED tree byte-matches the source tree (a clean repo above a stale
+    `colcon build` runs last week's code while every SHA check smiles -- the
+    pycache-same-length family's big sibling). Refuses loudly on all three."""
+    rc, out = sh(f"cd {REPO} && timeout 25 git fetch origin {BRANCH}", timeout=40)
+    if rc != 0:
+        die("git fetch failed -- cannot verify HEAD against origin",
+            "no network? verify is fail-closed: fix connectivity, don't skip it")
+    rc, out = sh(f"cd {REPO} && git rev-parse HEAD origin/{BRANCH}")
+    hashes = [l.strip() for l in out.splitlines() if len(l.strip()) == 40]
+    if rc != 0 or len(hashes) != 2:
+        die(f"could not read HEAD/origin SHAs: {out.strip()[:120]}")
+    head, origin = hashes
+    if head != origin:
+        die(f"HEAD {head[:7]} != origin/{BRANCH} {origin[:7]}",
+            "pull (or push) until they agree; the reviewed code is the one at origin")
+    rc, out = sh(f"cd {REPO} && git status --porcelain")
+    if out.strip():
+        die(f"working tree is dirty:\n{out.strip()[:300]}",
+            "commit or stash; an uncommitted edit flies unreviewed")
+    say("verify", f"HEAD == origin/{BRANCH} == {head[:7]}, tree clean")
+
+    # installed tree: index install/ once by basename, then demand every shipped
+    # source file has a byte-identical installed twin under its own parent dir.
+    index = {}
+    for root, _dirs, files in os.walk(os.path.join(WS, "install")):
+        for f in files:
+            index.setdefault(f, []).append(os.path.join(root, f))
+    checked, missing, stale = 0, [], []
+    for reldir, pattern in (("src/sphero_rvr_driver", "*.py"),
+                            ("src/sphero_rvr_core", "*.py"),
+                            ("config", "*.yaml"), ("launch", "*.py")):
+        parent = os.path.basename(reldir)
+        for src_path in sorted(glob.glob(os.path.join(REPO, reldir, pattern))):
+            name = os.path.basename(src_path)
+            twins = [p for p in index.get(name, [])
+                     if os.path.basename(os.path.dirname(p)) == parent]
+            if not twins:
+                missing.append(f"{parent}/{name}")
+                continue
+            for twin in twins:
+                if not filecmp.cmp(src_path, twin, shallow=False):
+                    stale.append(f"{parent}/{name}")
+            checked += 1
+    if missing or stale:
+        die(f"installed tree does not match source -- missing: {missing[:5]} "
+            f"stale: {stale[:5]}",
+            f"cd {WS} && colcon build --packages-select sphero_rvr_driver, "
+            f"then rerun; a stale install runs last week's code under this week's SHA")
+    say("verify", f"installed tree matches source ({checked} files byte-compared)")
+    return head[:7]
+
+
+def run_gate_probe(stack, csv_path, bag_dir):
+    """ONE resident rclpy process (scripts/bringup_gates.py) replaces the fixed
+    settle sleep and every per-gate `ros2` CLI spawn -- same gates, same receipts,
+    measured 2026-08-18 at ~82 s of ceremony for checks that cost single-digit
+    seconds asked directly. FAIL-CLOSED BY EXIT CODE: any exit but 0-with-a-READY-
+    line -- a failed gate, a timeout, the probe crashing -- refuses the bringup.
+    The probe dying is a refusal, never a shrug."""
+    cmd = (f"python3 {REPO}/scripts/bringup_gates.py --stack {stack} "
+           f"--csv {csv_path} --bag {bag_dir}")
+    p = subprocess.Popen(["bash", "-lc", f"{SETUP} && {cmd}"],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, text=True)
+    ready = None
+    for line in p.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        say("gate", line)
+        if line.startswith("READY "):
+            ready = line[len("READY "):]
+    rc = p.wait()
+    if rc != 0 or ready is None:
+        die(f"the gate probe did not clear the bringup (exit {rc}, "
+            f"READY {'seen' if ready else 'never printed'})",
+            "read the GATE FAIL line above; every probe death is a refusal")
+    return json.loads(ready)
+
+
 def gate_preflight():
     say("preflight", "running scripts/preflight_pi.py ...")
     rc, out = sh(f"cd {REPO} && python3 scripts/preflight_pi.py", timeout=180)
@@ -157,155 +239,6 @@ def gate_preflight():
     if rc != 0 or "NOT CLEARED" in out:
         die("preflight did not clear",
             "read its remedy above; a dead chassis is the usual answer")
-
-
-def gate_params():
-    """The safety constants, read FROM THE ROBOT rather than from the file. A config
-    file is a claim; the running node is the robot."""
-    checks = {
-        "low_obstacle_hold_on_vanish_enable": ("true", "D39 hold must be enabled"),
-        "footprint_front_m": ("0.0965", "measured footprint (2026-08-15 tape)"),
-        "footprint_rear_m": ("0.1145", "measured footprint + cable allowance"),
-    }
-    for name, (want, why) in checks.items():
-        rc, out = sh(f"ros2 param get /lidar_collision_stop_supervisor {name}")
-        m = re.search(r"value is:\s*(\S+)", out)
-        if not m:
-            die(f"could not read parameter {name} ({why})",
-                "is lidar_collision_stop_supervisor up?")
-        got = m.group(1).lower()
-        if got != want.lower():
-            die(f"{name} is {got}, expected {want} ({why})")
-        say("gate", f"{name} = {got}")
-
-
-def gate_tof():
-    rc, out = sh("timeout 20 ros2 topic echo /tof/state --once --full-length", timeout=40)
-    if "rate_hz" not in out:
-        die("no /tof/state", "the ToF is the collision brake's only producer")
-    rate = float(re.search(r"rate_hz=([\d.]+)", out).group(1))
-    consumers = int(re.search(r"obstacle_consumers=(\d+)", out).group(1))
-    errors = int(re.search(r"i2c_errors=(\d+)", out).group(1))
-    say("gate", f"tof rate_hz={rate} consumers={consumers} i2c_errors={errors}")
-    if consumers < 1:
-        die("obstacle_consumers=0 -- the supervisor is NOT subscribed to the ToF",
-            "the brake fails OPEN with no producer, whatever its config says")
-    if rate < TOF_RATE_MIN_HZ:
-        die(f"ToF at {rate} Hz, below the {TOF_RATE_MIN_HZ} Hz its staleness bound "
-            f"assumes -- one dropped frame ages the cloud out",
-            "shed CPU load (nothing but the motion stack should be running) and retry")
-
-
-def gate_brake_state():
-    rc, out = sh("timeout 20 ros2 topic echo /collision_stop/state --once --full-length",
-                 timeout=40)
-    if "cam_hold_active" not in out:
-        die("no /collision_stop/state, or it lacks cam_hold fields",
-            "is the supervisor running the current binary?")
-    hold = re.search(r"cam_hold_active=(\w+)", out).group(1)
-    reason = re.search(r"cam_hold_reason=(\S+)", out).group(1)
-    say("gate", f"cam_hold_active={hold} cam_hold_reason={reason}")
-    if hold != "false":
-        die(f"the D39 hold is already engaged before arming (reason={reason})",
-            "a hold stuck at startup means arming into a permanent forward clamp; "
-            "if reason=held_no_pose, TF is not flowing yet")
-
-
-def gate_disarmed():
-    rc, out = sh("timeout 20 ros2 topic echo /coverage_explorer/status --once "
-                 "--full-length", timeout=40)
-    m = re.search(r"(\{.*\})", out, re.S)
-    if not m:
-        die("no /coverage_explorer/status")
-    st = json.loads(m.group(1).replace("'", ""))
-    say("gate", f"explorer armed={st['armed']} done={st['done']}")
-    if st["armed"]:
-        die("the explorer is ALREADY ARMED before this script armed it",
-            "D29 makes bringup disarmed; an armed explorer here means a mission is "
-            "running and you are about to lose the start of it")
-
-
-def gate_recording(csv_path, bag_dir):
-    """Growth, not existence. A recorder that opened a file and then died leaves a
-    header behind, and 'the file is there' has been mistaken for 'it is recording'."""
-    def size(p):
-        try:
-            if os.path.isdir(p):
-                return sum(os.path.getsize(os.path.join(p, f)) for f in os.listdir(p))
-            return os.path.getsize(p)
-        except OSError:
-            return 0
-    a_csv, a_bag = size(csv_path), size(bag_dir)
-    time.sleep(6)
-    b_csv, b_bag = size(csv_path), size(bag_dir)
-    say("gate", f"recorder {a_csv}->{b_csv} B, bag {a_bag}->{b_bag} B")
-    if b_csv <= a_csv:
-        die("the recorder CSV is not growing", "an unrecorded run has to be repeated")
-    if b_bag <= a_bag:
-        die("the bag is not growing", "an unrecorded run has to be repeated")
-    header = open(csv_path).readline()
-    for col in ("cam_hold_active", "cam_hold_reason"):
-        if col not in header:
-            die(f"the recorder CSV has no {col} column",
-                "the D39 hold's episodes cannot be reconstructed without it")
-    say("gate", "recorder header carries the cam_hold columns")
-
-
-def gate_lifecycles_active():
-    """STOCK: every lifecycle node the goal path depends on must say ACTIVE itself.
-
-    slam_toolbox is the card's P2 MUST -- launched without autostart it sits
-    unconfigured looking exactly like a healthy node (tools-that-lie family). The
-    nav2 four are the goal path. Asking each node is the gate; a launch log that
-    scrolled past "Activating" is narration.
-    """
-    for node in ("slam_toolbox", "planner_server", "controller_server",
-                 "bt_navigator", "behavior_server"):
-        rc, out = sh(f"timeout 15 ros2 lifecycle get /{node}", timeout=30)
-        state = out.strip().splitlines()[-1] if out.strip() else ""
-        if rc != 0 or not state.startswith("active"):
-            die(f"/{node} lifecycle is {state or 'unreadable'}, not active",
-                "a node that is up but not active publishes nothing and refuses "
-                "nothing -- do not send a goal into it")
-        say("gate", f"/{node} active")
-
-
-def gate_marks_publisher():
-    """STOCK: the touch port's producer must be ON THE WIRE before wheels.
-
-    contact_marker shipped subscribed-to-by-both-costmaps and launched by NOTHING
-    (caught in pre-flight 2026-08-18, the never-launched-node family). The launch
-    now starts it; this gate is the tripwire if that ever regresses -- a flight
-    without it silently has no touch response at all.
-    """
-    rc, out = sh("timeout 10 ros2 topic info /contact_marks", timeout=20)
-    m = re.search(r"Publisher count:\s*(\d+)", out)
-    if not m or int(m.group(1)) < 1:
-        die("/contact_marks has no publisher -- the touch port's producer is not up",
-            "is start_contact_marker true? without it a contact plants no mark and "
-            "the planner never learns")
-    say("gate", f"/contact_marks publishers={m.group(1)}")
-
-
-def gate_battery(floor_fraction=0.25):
-    """STOCK: read the battery ALOUD at connect, and hold the 25% floor.
-
-    The floor is chassis-run protocol; reading it aloud is the operator contract
-    (the PM relays it to Scott before liftoff). rvr_node publishes battery_state
-    every 5 s once the driver is connected, so no message inside 20 s is its own
-    finding -- a driver that is not talking, not a quiet battery.
-    """
-    rc, out = sh("timeout 20 ros2 topic echo /battery_state --once", timeout=40)
-    m = re.search(r"percentage:\s*([0-9.]+)", out)
-    if not m:
-        die("no /battery_state within 20 s -- the driver is not reporting",
-            "chassis off, or rvr_node down; do not fly blind on power")
-    pct = float(m.group(1))
-    say("gate", f"BATTERY {pct * 100.0:.0f}%")
-    if pct < floor_fraction:
-        die(f"battery {pct * 100.0:.0f}% is under the {floor_fraction * 100.0:.0f}% "
-            f"floor", "charge before flying; an idle stack drained a battery flat "
-            "on 2026-08-03")
 
 
 # --- teardown ------------------------------------------------------------------------
@@ -365,8 +298,6 @@ def main():
                          "requires (docs/design_tof_planner_visibility.md).")
     ap.add_argument("--teardown", action="store_true",
                     help="stop what a previous run of this script started")
-    ap.add_argument("--settle-s", type=float, default=30.0,
-                    help="seconds to let the stack come up before reading gates")
     args = ap.parse_args()
 
     if args.teardown:
@@ -384,6 +315,8 @@ def main():
     bag_dir = f"{home}/bag_{stamp}"
     launch_log = f"{home}/launch_{stamp}.log"
 
+    t_staged = time.monotonic()
+    sha = gate_verify()
     gate_preflight()
 
     say("record", f"recorder -> {csv_path}")
@@ -403,10 +336,15 @@ def main():
                          "flight clears the mechanism")
     spawn(launch_command(args.stack, imu_fusion=not args.no_imu_fusion,
                          ride_along_watcher=args.ride_along_watcher), launch_log)
-    say("bringup", f"settling {args.settle_s:.0f}s ...")
-    time.sleep(args.settle_s)
 
     say("record", f"bag -> {bag_dir}")
+    # Spawned IMMEDIATELY after the launch -- no settle sleep before it, no sleep
+    # after it. `ros2 bag record` subscribes to topics as their publishers appear,
+    # so nothing is gained by waiting, and the probe's recording gate still demands
+    # growth before anything clears. (The old fixed 30 s settle + 8 s bag pause were
+    # measured 2026-08-18 as pure dead time on a stack whose lifecycles activate in
+    # about half the settle.)
+    #
     # /diagnostics is NOT optional, and its absence cost the 2026-08-16 autopsy its
     # answer. Mission 1 recorded 41 commands at 0.4 rad/s on /cmd_vel_motor against an
     # /odom that never moved, and nothing in the bag could say whether the driver turned
@@ -418,20 +356,15 @@ def main():
     # convicted the wrong component.
     spawn("ros2 bag record -s mcap -o " + bag_dir + " "
           + " ".join(bag_topics(args.stack)), f"{home}/bag_{stamp}.log")
-    time.sleep(8)
 
-    gate_params()
-    gate_tof()
-    gate_brake_state()
-    if args.stack == "bespoke":
-        gate_disarmed()
-    else:
-        # Stock has no explorer to be disarmed; its liftoff IS the goal, and the
-        # gates that replace gate_disarmed are the ones a goal depends on.
-        gate_lifecycles_active()
-        gate_marks_publisher()
-        gate_battery()
-    gate_recording(csv_path, bag_dir)
+    receipts = run_gate_probe(args.stack, csv_path, bag_dir)
+    receipts["sha"] = sha
+    receipts["stack"] = args.stack
+    receipts["staged_to_ready_s"] = round(time.monotonic() - t_staged, 1)
+    # THE machine-parseable liftoff receipt: one line, sha + battery + every gate,
+    # for whatever mission layer sits above this verb (the NL front door reads this,
+    # not the narration above it).
+    print("READY " + json.dumps(receipts, sort_keys=True), flush=True)
 
     if args.stack == "stock":
         # NEVER ARMS. For the stock middle, arming means sending a goal, and the

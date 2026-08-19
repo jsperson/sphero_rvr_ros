@@ -19,12 +19,21 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "launch_and_arm.py"
 SRC = SCRIPT.read_text()
 TREE = ast.parse(SRC)
 
+# The 2026-08-18 spin-up batch moved every post-launch gate into ONE resident
+# rclpy probe (bringup_gates.py) -- same gates, no per-gate CLI spawn, no fixed
+# settle sleep. The gates did not get weaker; they got a faster vehicle. These
+# tests hold BOTH files' shapes: the caller must refuse when the probe dies, and
+# the probe must still carry every gate concept the old roster carried.
+PROBE = Path(__file__).resolve().parents[1] / "scripts" / "bringup_gates.py"
+PROBE_SRC = PROBE.read_text()
+PROBE_TREE = ast.parse(PROBE_SRC)
 
-def function(name):
-    for node in ast.walk(TREE):
+
+def function(name, tree=None):
+    for node in ast.walk(tree or TREE):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
-    raise AssertionError(f"{name}() is missing from launch_and_arm.py")
+    raise AssertionError(f"{name}() is missing")
 
 
 def calls_in(node):
@@ -35,12 +44,23 @@ def calls_in(node):
 # --- the gates must all be on the arming path ---------------------------------------
 
 REQUIRED_GATES = [
+    "gate_verify",        # HEAD==origin, tree clean, installed tree byte-matches
     "gate_preflight",     # chassis, clock, graph, installed tree
-    "gate_params",        # the safety constants, read from the ROBOT
-    "gate_tof",           # the brake's only producer, and its rate band
-    "gate_brake_state",   # the D39 hold must not already be engaged
-    "gate_disarmed",      # D29: bringup is disarmed, and we must be the one to arm
-    "gate_recording",     # growth, not existence
+    "run_gate_probe",     # EVERY post-launch gate, in one resident process
+]
+
+#: Every gate concept the pre-probe roster carried, by the probe's own fail() tag.
+#: A concept missing here is a check that silently stopped existing -- the exact
+#: drift this file exists to catch.
+PROBE_GATE_CONCEPTS = [
+    "lifecycles",   # slam + the nav2 four say ACTIVE themselves (stock)
+    "params",       # the safety constants, read from the ROBOT
+    "tof",          # the brake's only producer, and its rate band
+    "brake",        # the D39 hold must not already be engaged
+    "disarmed",     # D29: bringup is disarmed (bespoke)
+    "marks",        # the touch port's producer is on the wire (stock)
+    "battery",      # read aloud at connect, 25% floor (stock)
+    "recording",    # growth, not existence
 ]
 
 
@@ -57,6 +77,62 @@ def test_every_gate_can_stop_the_run():
         assert "die" in calls_in(function(gate)), (
             f"{gate}() has no failure path -- it can only pass, which makes it "
             f"decoration on the arming path")
+
+
+def test_every_probe_gate_concept_survived_the_move():
+    """The probe replaced the CLI gate roster; each old gate concept must appear as
+    a fail() tag in the probe -- a gate with no failure path did not move, it died."""
+    fail_tags = set()
+    for node in ast.walk(PROBE_TREE):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "fail"
+                and node.args and isinstance(node.args[0], ast.Constant)):
+            fail_tags.add(node.args[0].value)
+    for concept in PROBE_GATE_CONCEPTS:
+        assert concept in fail_tags, (
+            f"the probe has no failure path tagged {concept!r} -- that gate "
+            f"concept silently stopped existing in the move off the CLI roster")
+
+
+def test_the_probe_dying_refuses_the_bringup():
+    """Fail-closed by exit code: run_gate_probe must die() on a nonzero exit OR a
+    missing READY line, and the probe itself must exit through main()'s status."""
+    src = ast.get_source_segment(SRC, function("run_gate_probe"))
+    assert "rc != 0" in src and "ready is None" in src, (
+        "run_gate_probe no longer checks both the exit code and the READY line")
+    assert "sys.exit(main())" in PROBE_SRC, (
+        "bringup_gates.py no longer exits through main()'s status -- a failed "
+        "gate would exit 0 and the caller would arm on it")
+
+
+def test_the_ready_line_is_machine_parseable_with_the_sha():
+    """The READY line is the contract with whatever mission layer sits above this
+    verb: one line, json payload, carrying the sha the verify phase pinned."""
+    assert 'print("READY " + json.dumps' in PROBE_SRC
+    main_src = ast.get_source_segment(SRC, function("main"))
+    assert 'print("READY " + json.dumps' in main_src
+    assert '"sha"' in main_src, "the caller's READY payload lost the sha"
+
+
+def test_the_verify_phase_checks_all_three_authorities():
+    """SHA against ORIGIN (not the clone's idea of itself), a clean tree, and a
+    byte-compared installed tree -- each catches a different way of flying
+    unreviewed code."""
+    src = ast.get_source_segment(SRC, function("gate_verify"))
+    assert "fetch origin" in src, "gate_verify no longer fetches -- it would " \
+        "compare HEAD against a stale ref and call it verified"
+    assert "rev-parse HEAD origin/" in src
+    assert "status --porcelain" in src
+    assert "filecmp" in src, "the installed-tree byte comparison is gone; a " \
+        "clean repo above a stale colcon build runs last week's code"
+
+
+def test_bringup_never_sleeps():
+    """The whole point of the batch: main() polls (via the probe) and never
+    sleeps. A time.sleep reappearing in main() is the dead time creeping back."""
+    assert "sleep" not in calls_in(function("main")), (
+        "main() sleeps again -- the 133 s bringup was 38 s of fixed sleeps that "
+        "polling replaced; put waits in the probe as polls with ceilings")
 
 
 def test_arming_happens_after_the_gates_in_main():
@@ -97,16 +173,25 @@ def test_the_tof_rate_gate_uses_the_derived_band():
     """The staleness bound low_obstacle_max_age_s (0.30 s) is derived as ~two frames at
     6.5-7.6 Hz. Below 6.5 Hz two frames exceed the bound, so a single dropped frame ages
     the cloud out and the brake stops looking -- which is what shedding the camera fixed
-    on gauntlet mission 1 (5.4 -> 6.9 Hz)."""
-    assert "TOF_RATE_MIN_HZ = 6.5" in SRC
-    assert "TOF_RATE_MIN_HZ" in ast.get_source_segment(SRC, function("gate_tof"))
+    on gauntlet mission 1 (5.4 -> 6.9 Hz). The band moved to the probe with the gate."""
+    assert "TOF_RATE_MIN_HZ = 6.5" in PROBE_SRC
+    assert "TOF_RATE_MIN_HZ" in ast.get_source_segment(PROBE_SRC,
+                                                       function("main", PROBE_TREE))
+
+
+def test_the_battery_floor_moved_with_its_gate():
+    """25% is chassis-run protocol; the probe reads it aloud in its receipt."""
+    assert "BATTERY_FLOOR = 0.25" in PROBE_SRC
+    assert "BATTERY_FLOOR" in ast.get_source_segment(PROBE_SRC,
+                                                     function("main", PROBE_TREE))
 
 
 def test_the_recording_gate_measures_growth_not_existence():
     """A recorder that opened a file and died leaves a header behind, and 'the file is
-    there' has been read as 'it is recording'."""
-    src = ast.get_source_segment(SRC, function("gate_recording"))
-    assert "sleep" in src and "size" in src
+    there' has been read as 'it is recording'. Now a poll-with-timeout in the probe:
+    same growth semantics, no fixed sleep."""
+    src = ast.get_source_segment(PROBE_SRC, function("main", PROBE_TREE))
+    assert "size(args.csv) > a_csv" in src and "size(args.bag) > a_bag" in src
     assert "cam_hold_active" in src, (
         "the header check must confirm the D39 hold's columns exist -- an episode "
         "without them cannot be reconstructed")
@@ -244,18 +329,15 @@ def test_an_unknown_stack_refuses_rather_than_guessing():
 
 # --- the stock gate roster and the never-arms rule -----------------------------------
 
-STOCK_GATES = ["gate_lifecycles_active", "gate_marks_publisher", "gate_battery"]
-
-
-@pytest.mark.parametrize("gate", STOCK_GATES)
-def test_main_calls_every_stock_gate(gate):
-    assert gate in calls_in(function("main")), f"main() no longer calls {gate}()"
-
-
-@pytest.mark.parametrize("gate", STOCK_GATES)
-def test_every_stock_gate_can_stop_the_run(gate):
-    assert "die" in calls_in(function(gate)), (
-        f"{gate}() has no failure path -- decoration on the bringup path")
+def test_the_stock_lifecycle_roster_is_the_goal_path():
+    """slam_toolbox is the card's P2 MUST (launched without autostart it sits
+    unconfigured looking exactly like a healthy node); the nav2 four are the goal
+    path. The probe must poll ALL of them to ACTIVE -- this roster IS the settle."""
+    for node in ("slam_toolbox", "planner_server", "controller_server",
+                 "bt_navigator", "behavior_server"):
+        assert f'"{node}"' in PROBE_SRC, (
+            f"the probe's stock lifecycle roster lost {node} -- a goal sent into "
+            f"an inactive node is refused by nothing")
 
 
 def test_stock_mode_never_reaches_the_arm_call():
