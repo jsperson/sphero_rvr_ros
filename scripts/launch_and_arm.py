@@ -82,16 +82,25 @@ def launch_command(stack, imu_fusion=True, ride_along_watcher=False):
     is the STOCK middle's touch port (the bespoke controller has its own freeze
     marks) and an idle marker still costs ~14% of a Pi core.
     """
-    if stack == "stock":
+    if stack in ("stock", "stock-explore"):
         # ride_along_watcher: the D RIDE-ALONG OVERRIDE. start_refusal_watcher
         # defaults FALSE in the launch until a flight ride-along clears the
         # mechanism; passing this flag IS that ride-along, and the deviation is
         # logged at bringup so the run's record says so explicitly.
         watcher = (" start_refusal_watcher:=true" if ride_along_watcher else "")
+        # stock-explore: the SAME stock middle with coverage_explorer riding on
+        # top (2026-08-18 consensus: the explorer speaks NavigateToPose, which is
+        # exactly the interface the stock middle exposes -- v1 changes nothing in
+        # the explorer). A first-class mode string rather than a flag, so the
+        # tests pin one exact command per mode. The explorer comes up DISARMED
+        # (D29); arming stays this script's explicit last act, like bespoke.
+        explore = ("start_explore:=true use_coverage_explorer:=true "
+                   if stack == "stock-explore" else
+                   "start_explore:=false use_coverage_explorer:=false ")
         return (
             "ros2 launch sphero_rvr_driver explore.launch.py "
-            "start_motion_stack:=true start_explore:=false "
-            "use_coverage_explorer:=false use_decisive_controller:=false "
+            "start_motion_stack:=true " + explore +
+            "use_decisive_controller:=false "
             f"enable_imu_fusion:={'true' if imu_fusion else 'false'} "
             'nav2_params_file:="$(ros2 pkg prefix sphero_rvr_driver)'
             '/share/sphero_rvr_driver/config/lean_nav2_stock.yaml"'
@@ -121,7 +130,7 @@ def bag_topics(stack):
         "/odom", "/scan", "/tf", "/tf_static",
         "/tof/obstacles", "/tof/points", "/tof/state",
     ]
-    if stack == "stock":
+    if stack in ("stock", "stock-explore"):
         base += [
             "/contact_marks", "/plan",
             # D's own seam: the request lane records every firing the watcher
@@ -131,6 +140,12 @@ def bag_topics(stack):
             "/local_costmap/costmap_raw", "/local_costmap/costmap_raw_updates",
             "/global_costmap/costmap_raw", "/global_costmap/costmap_raw_updates",
         ]
+    if stack == "stock-explore":
+        # The mission's own narration: status is the armed/done/counters lane the
+        # gates read, report is the mission's final answer (TRANSIENT_LOCAL, so a
+        # late-joining bag still catches it). D44's lesson: a report the recording
+        # cannot corroborate turns the autopsy back into inference.
+        base += ["/coverage_explorer/status", "/coverage_explorer/report"]
     return base
 
 
@@ -289,16 +304,20 @@ def teardown():
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stack", choices=("stock", "bespoke"),
+    ap.add_argument("--stack", choices=("stock", "bespoke", "stock-explore"),
                     help="REQUIRED (except --teardown). Which stack flies: 'stock' "
                          "= the §3a middle (RPP + bt_navigator on lean_nav2_stock, "
                          "contact_marker up, NEVER arms -- liftoff belongs to "
                          "scripts/fly_stock_goal.py); 'bespoke' = the coverage "
-                         "stack, armed via mission/start as always. No default: a "
-                         "wrong-stack launch costs a flight, so the operator says "
-                         "which.")
+                         "stack, armed via mission/start as always; 'stock-explore' "
+                         "= the stock middle with coverage_explorer riding on top "
+                         "(2026-08-18 consensus), armed via mission/start after "
+                         "every gate incl. the explorer's own disarmed gate. No "
+                         "default: a wrong-stack launch costs a flight, so the "
+                         "operator says which.")
     ap.add_argument("--no-arm", action="store_true",
-                    help="bespoke only: run every gate and stop before mission/start")
+                    help="bespoke/stock-explore: run every gate and stop before "
+                         "mission/start")
     ap.add_argument("--no-imu-fusion", action="store_true",
                     help="stock only: reproduce a wheel-odom-only baseline (the "
                          "protocol's open decision defaults fusion ON)")

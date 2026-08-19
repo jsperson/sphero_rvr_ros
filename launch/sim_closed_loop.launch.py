@@ -68,6 +68,16 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "start_coverage_explorer",
+            default_value="false",
+            description=(
+                "Run coverage_explorer against the rig's stock middle for the "
+                "explore-on-stock mission proof (2026-08-18 consensus). Comes up "
+                "DISARMED per D29 -- the mission runner arms via mission/start "
+                "after the pre-registered gates, exactly like a flight."
+            ),
+        ),
+        DeclareLaunchArgument(
             "map_tf_mode",
             default_value="static",
             description=(
@@ -122,6 +132,20 @@ def generate_launch_description() -> LaunchDescription:
         name="contact_marker",
         output="screen",
         condition=IfCondition(LaunchConfiguration("start_refusal_watcher")),
+    )
+    # The explore-on-stock mission rider: PRODUCTION coverage_explorer, production
+    # config, disarmed at start (autostart false is the node's own default and is
+    # pinned here anyway -- D29 is not a default to inherit silently). Same
+    # remapping as explore.launch.py, so the goals land on the rig's bt_navigator.
+    rig_coverage_explorer = Node(
+        package="sphero_rvr_driver",
+        executable="coverage_explorer",
+        name="coverage_explorer",
+        output="screen",
+        parameters=[str(share / "config" / "coverage_explorer.yaml"),
+                    {"autostart": False}],
+        remappings=[("navigate_to_pose", "/navigate_to_pose")],
+        condition=IfCondition(LaunchConfiguration("start_coverage_explorer")),
     )
     static_laser = Node(
         package="tf2_ros",
@@ -242,6 +266,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         args
         + [static_map, laggy_map, refusal_watcher, rig_contact_marker,
-           static_laser, scan, driver, supervisor, map_server]
+           rig_coverage_explorer, static_laser, scan, driver, supervisor,
+           map_server]
         + nav2
     )

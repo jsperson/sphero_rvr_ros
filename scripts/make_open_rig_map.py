@@ -40,20 +40,33 @@ FREE = 254        # PGM value read as free at the default free_thresh
 OCCUPIED = 0      # read as occupied
 
 
-def build_pgm(size_m: float, resolution_m: float, wall_cells: int) -> tuple[bytes, int]:
+def build_pgm(size_m: float, resolution_m: float, wall_cells: int,
+              boxes: list[tuple[float, float, float, float]] = ()) -> tuple[bytes, int]:
+    """boxes: (x0, y0, width, height) rectangles in MAP METRES (room centred on 0,0),
+    carved OCCUPIED -- the furniture of a mission room. PGM row 0 is the TOP of the
+    image, which map_server reads as the LARGEST y; the y-flip below is that fact,
+    and a box drawn without it lands mirrored about the x-axis."""
     n = int(round(size_m / resolution_m))
-    rows = []
+    half = size_m / 2.0
+    grid = [bytearray([FREE] * n) for _ in range(n)]
     for j in range(n):
         if j < wall_cells or j >= n - wall_cells:
-            rows.append(bytes([OCCUPIED] * n))
+            grid[j][:] = bytes([OCCUPIED] * n)
         else:
-            row = bytearray([FREE] * n)
             for k in range(wall_cells):
-                row[k] = OCCUPIED
-                row[n - 1 - k] = OCCUPIED
-            rows.append(bytes(row))
+                grid[j][k] = OCCUPIED
+                grid[j][n - 1 - k] = OCCUPIED
+    for (bx, by, bw, bh) in boxes:
+        i0 = max(0, int((bx + half) / resolution_m))
+        i1 = min(n, int((bx + bw + half) / resolution_m) + 1)
+        j0 = max(0, int((by + half) / resolution_m))
+        j1 = min(n, int((by + bh + half) / resolution_m) + 1)
+        for j in range(j0, j1):
+            row = n - 1 - j                      # the y-flip
+            for i in range(i0, i1):
+                grid[row][i] = OCCUPIED
     header = f"P5\n{n} {n}\n255\n".encode()
-    return header + b"".join(rows), n
+    return header + b"".join(bytes(r) for r in grid), n
 
 
 def main() -> int:
@@ -62,10 +75,21 @@ def main() -> int:
     ap.add_argument("--name", default="open_rig_room")
     ap.add_argument("--size-m", type=float, default=SIZE_M)
     ap.add_argument("--resolution", type=float, default=RESOLUTION_M)
+    ap.add_argument("--box", action="append", default=[],
+                    help="furniture: 'x0,y0,width,height' in map metres, repeatable. "
+                         "An explore-mission room needs something to route around; "
+                         "an empty room certifies only the open-floor path. Use the "
+                         "--box=-1.5,0.9,0.6,0.6 form -- a leading minus after a "
+                         "space reads as a flag to argparse.")
     a = ap.parse_args()
 
+    boxes = [tuple(float(v) for v in spec.split(",")) for spec in a.box]
+    for b in boxes:
+        if len(b) != 4:
+            ap.error(f"--box needs x0,y0,width,height (got {b})")
+
     out = Path(a.out_dir)
-    pgm, n = build_pgm(a.size_m, a.resolution, WALL_CELLS)
+    pgm, n = build_pgm(a.size_m, a.resolution, WALL_CELLS, boxes)
     (out / f"{a.name}.pgm").write_bytes(pgm)
 
     # Origin centres the room on (0,0): the sim pins map->odom to identity and the robot
@@ -86,6 +110,8 @@ def main() -> int:
           f"{a.resolution} m/cell) and {out / (a.name + '.yaml')}")
     print(f"clear floor from {-half + WALL_CELLS * a.resolution:+.2f} to "
           f"{half - WALL_CELLS * a.resolution:+.2f} m on both axes")
+    for bx, by, bw, bh in boxes:
+        print(f"box: x [{bx:+.2f},{bx + bw:+.2f}] y [{by:+.2f},{by + bh:+.2f}] m")
     return 0
 
 

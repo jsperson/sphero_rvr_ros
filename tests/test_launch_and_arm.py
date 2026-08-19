@@ -327,6 +327,63 @@ def test_an_unknown_stack_refuses_rather_than_guessing():
         _module().launch_command("both")
 
 
+# --- stock-explore: the third mode (explore-on-stock, consensus 2026-08-18) ----------
+
+def test_stock_explore_is_the_stock_middle_plus_the_explorer():
+    """The ratified v1: coverage_explorer UNCHANGED, riding the exact stock middle.
+    One mode string, one exact command -- never a flag cross-product on stock."""
+    mod = _module()
+    cmd = mod.launch_command("stock-explore")
+    for token in ("start_explore:=true", "use_coverage_explorer:=true",
+                  "use_decisive_controller:=false", "enable_imu_fusion:=true",
+                  "lean_nav2_stock.yaml", "ros2 pkg prefix"):
+        assert token in cmd, f"stock-explore command lost {token}"
+    assert "mission_autostart" not in cmd, (
+        "the explorer must come up DISARMED (D29); arming is this script's "
+        "explicit last act, never a launch default")
+    # and plain stock did not silently grow the explorer
+    assert "use_coverage_explorer:=false" in mod.launch_command("stock")
+    # the ride-along override composes with the mode like it does with stock
+    assert "start_refusal_watcher:=true" in mod.launch_command(
+        "stock-explore", ride_along_watcher=True)
+    assert "start_refusal_watcher" not in mod.launch_command("stock-explore")
+
+
+def test_the_stock_explore_bag_is_the_stock_bag_plus_the_mission_lanes():
+    """Everything the stock bag records still applies (same middle, same seams),
+    plus the mission's own narration -- D44's lesson: a report the recording
+    cannot corroborate turns the autopsy back into inference."""
+    mod = _module()
+    stock, explore = mod.bag_topics("stock"), mod.bag_topics("stock-explore")
+    for topic in stock:
+        assert topic in explore, f"stock-explore bag lost the stock topic {topic}"
+    for topic in ("/coverage_explorer/status", "/coverage_explorer/report"):
+        assert topic in explore, f"stock-explore bag lacks {topic}"
+        assert topic not in stock, f"plain stock has no explorer; drop {topic}"
+
+
+def test_the_probe_gates_stock_explore_as_stock_plus_disarmed():
+    """The mode's gate roster is the UNION: the stock middle's goal-path
+    lifecycles AND the explorer's D29 disarmed gate."""
+    assert '"stock-explore": ["slam_toolbox", "planner_server", "controller_server"' \
+        in PROBE_SRC.replace("\n                      ", " "), (
+            "the probe's stock-explore lifecycle roster is not the stock five")
+    assert '("bespoke", "stock-explore")' in PROBE_SRC, (
+        "the probe no longer runs the disarmed gate for stock-explore")
+    assert '("stock", "stock-explore")' in PROBE_SRC, (
+        "the probe no longer runs marks/battery for stock-explore")
+
+
+def test_only_plain_stock_takes_the_never_arms_early_return():
+    """stock NEVER arms (liftoff belongs to the goal tool); stock-explore MUST
+    fall through to the mission/start arm. The guard has to be exact equality --
+    a membership test that catches 'stock-explore' would silently make the new
+    mode unarmable, which reads as a hang at the end of a clean bringup."""
+    main_src = ast.get_source_segment(SRC, function("main"))
+    assert 'args.stack == "stock":' in main_src, (
+        "the stock early-return guard is no longer exact equality on 'stock'")
+
+
 # --- the stock gate roster and the never-arms rule -----------------------------------
 
 def test_the_stock_lifecycle_roster_is_the_goal_path():
