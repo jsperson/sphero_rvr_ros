@@ -168,6 +168,12 @@ lidar_collision_stop_supervisor:
     # rvr yaml every run. Change pivot_max_duty there and this fails a test, not a
     # flight.
     max_pivot_rate_rad_s: 5.83439
+    # The precise-turn GATEWAY's own copies of the bench gate and the hard
+    # bound. Both ships-false/derived: the flag flips only when the bench
+    # card passes; the timeout bounds a firmware hold that never completes
+    # (expected 90-deg turn ~1-2 s; 5 s = expected x margin).
+    precise_turn_bench_verified: false
+    precise_turn_timeout_s: 5.0
     allow_disable: false
     fail_on_missing_tf: true
     # --- Low-obstacle brake (additive to the lidar core) ---

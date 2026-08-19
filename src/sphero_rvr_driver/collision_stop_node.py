@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .collision_stop import (
+    CollisionState,
     CollisionStopConfig,
+    precise_turn_admission,
     CollisionStopSupervisor,
     PublishOrderGuard,
     ScanInput,
@@ -178,13 +181,16 @@ def main(args=None):
     import rclpy
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from geometry_msgs.msg import Twist
+    from rclpy.action import ActionServer, CancelResponse, GoalResponse
     from rclpy.callback_groups import ReentrantCallbackGroup
     from rclpy.duration import Duration
     from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
     from rclpy.time import Time
-    from sensor_msgs.msg import LaserScan, PointCloud2
+    from sensor_msgs.msg import Imu, LaserScan, PointCloud2
+    from std_msgs.msg import Float32
+    from nav2_msgs.action import Spin
     import sensor_msgs_py.point_cloud2 as pc2
     from std_msgs.msg import String
     from std_srvs.srv import Trigger
@@ -336,6 +342,37 @@ def main(args=None):
             self.create_service(Trigger, "stop", self._on_stop, callback_group=self._service_group)
             self.create_service(Trigger, "estop", self._on_estop, callback_group=self._service_group)
             self.create_service(Trigger, "clear_estop", self._on_clear_estop, callback_group=self._service_group)
+            # PRECISE-TURN GATEWAY (2026-08-18 night; the hybrid's safety half).
+            # The firmware heading loop bypasses /cmd_vel arbitration by design,
+            # so THIS is the only door to it: admission by the same corner-circle
+            # sweep the stopped-state grant trusts (fail-closed), the bench-card
+            # flag un-runnable-by-construction, a hard timeout (a firmware hold
+            # that never completes is bounded -- the unreachable-recovery lesson
+            # applied forward), cancel == driver STOP, and any STOPPED/ESTOPPED
+            # transition mid-turn stops the wheels through the driver's own
+            # motor-capable stop path (bench item ii verifies that path kills
+            # the hold; nothing here assumes it).
+            self._precise_turn_imu = None            # (heading_deg, wz, monotonic)
+            self._precise_turn_imu_lock = threading.Lock()
+            self._precise_turn_event = None          # (text, monotonic)
+            self._precise_turn_cmd_pub = self.create_publisher(
+                Float32, "/rvr_driver/precise_turn_cmd", 10
+            )
+            self.create_subscription(
+                String, "/rvr_driver/precise_turn_event",
+                self._on_precise_turn_event, 10,
+                callback_group=self._low_obstacle_group,
+            )
+            self.create_subscription(
+                Imu, "/imu", self._on_imu_for_turn, qos_profile_sensor_data,
+                callback_group=self._low_obstacle_group,
+            )
+            self._precise_turn_server = ActionServer(
+                self, Spin, "precise_turn",
+                execute_callback=self._execute_precise_turn,
+                cancel_callback=lambda req: CancelResponse.ACCEPT,
+                callback_group=self._service_group,
+            )
             self.create_service(Trigger, "collision_stop/reset", self._on_reset)
             self.create_timer(self._config.zero_publish_period_s, self._on_timer)
 
@@ -396,6 +433,8 @@ def main(args=None):
                 "max_forward_mps": defaults.max_forward_mps,
                 "max_angular_rad_s": defaults.max_angular_rad_s,
                 "max_pivot_rate_rad_s": defaults.max_pivot_rate_rad_s,
+                "precise_turn_bench_verified": False,
+                "precise_turn_timeout_s": 5.0,
                 "reset_policy": defaults.reset_policy.value,
                 "zero_publish_period_s": defaults.zero_publish_period_s,
                 "allow_disable": defaults.allow_disable,
@@ -753,6 +792,115 @@ def main(args=None):
         def _call_driver(self, client, label: str) -> tuple[bool, str]:
             result = self._driver_forwarder.call(client, label, Trigger.Request)
             return result.success, result.message
+
+        # ---- precise-turn gateway ------------------------------------------------
+
+        def _on_precise_turn_event(self, msg):
+            self._precise_turn_event = (msg.data, time.monotonic())
+
+        def _on_imu_for_turn(self, msg):
+            q = msg.orientation
+            heading = math.degrees(
+                math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                           1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            ) % 360.0
+            with self._precise_turn_imu_lock:
+                self._precise_turn_imu = (
+                    heading, float(msg.angular_velocity.z), time.monotonic()
+                )
+
+        def _corner_radius_m(self) -> float:
+            return math.hypot(
+                max(self._config.footprint_front_m, self._config.footprint_rear_m),
+                max(self._config.footprint_left_m, self._config.footprint_right_m),
+            ) + self._config.payload_margin_m
+
+        def _execute_precise_turn(self, goal_handle):
+            """Admission -> fire -> monitor -> settle/stop. Runs in the reentrant
+            service group under the MultiThreadedExecutor, so the polling below
+            never blocks arbitration. Every exit that is not clean success STOPS
+            THE DRIVER first (cancel == stop, timeout == stop, safety transition
+            == stop); bench item (ii) is what makes that stop mean something."""
+            result = Spin.Result()
+            t_start = time.monotonic()
+
+            def finish_stopped(reason, *, canceled=False):
+                self._call_driver(self._driver_stop_client, "driver stop")
+                self.get_logger().warning(f"precise turn ended by STOP: {reason}")
+                if canceled:
+                    goal_handle.canceled()
+                else:
+                    goal_handle.abort()
+                return result
+
+            bench = bool(self.get_parameter("precise_turn_bench_verified").value)
+            timeout_s = float(self.get_parameter("precise_turn_timeout_s").value)
+            with self._state_lock:
+                decision = self._supervisor.tick(now=self._now_seconds())
+            ok, reason = precise_turn_admission(
+                bench, decision.state, decision.nearest.get("any"),
+                self._corner_radius_m(),
+            )
+            if not ok:
+                self.get_logger().warning(f"precise turn REFUSED at admission: {reason}")
+                goal_handle.abort()
+                return result
+
+            delta_deg = math.degrees(float(goal_handle.request.target_yaw))
+            self._precise_turn_event = None
+            self._precise_turn_cmd_pub.publish(Float32(data=delta_deg))
+
+            started = None
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                event = self._precise_turn_event
+                if event is not None:
+                    started = event[0]
+                    break
+                time.sleep(0.05)
+            if started is None or started.startswith("REFUSED"):
+                self.get_logger().warning(
+                    f"precise turn driver-side refusal: {started}")
+                goal_handle.abort()
+                return result
+            try:
+                target_deg = float(started.rsplit("target_deg=", 1)[1])
+            except (IndexError, ValueError):
+                return finish_stopped(f"unparseable STARTED event: {started!r}")
+
+            with self._precise_turn_imu_lock:
+                start_imu = self._precise_turn_imu
+            start_heading = start_imu[0] if start_imu else None
+
+            while time.monotonic() - t_start < timeout_s:
+                if goal_handle.is_cancel_requested:
+                    return finish_stopped("cancel requested", canceled=True)
+                state = self._supervisor.state
+                if state in (CollisionState.STOPPED, CollisionState.ESTOPPED):
+                    return finish_stopped(f"supervisor went {state.value} mid-turn")
+                with self._precise_turn_imu_lock:
+                    imu = self._precise_turn_imu
+                if imu is not None and time.monotonic() - imu[2] < 0.5:
+                    heading, wz, _ = imu
+                    error = (target_deg - heading + 180.0) % 360.0 - 180.0
+                    if start_heading is not None:
+                        feedback = Spin.Feedback()
+                        feedback.angular_distance_traveled = math.radians(
+                            abs((heading - start_heading + 180.0) % 360.0 - 180.0)
+                        )
+                        goal_handle.publish_feedback(feedback)
+                    if abs(error) <= 5.0 and abs(wz) <= 0.15:
+                        goal_handle.succeed()
+                        self.get_logger().info(
+                            f"precise turn SETTLED: target {target_deg:.1f} deg, "
+                            f"heading {heading:.1f} deg, err {error:+.1f} deg, "
+                            f"{time.monotonic() - t_start:.1f} s")
+                        return result
+                time.sleep(0.1)
+            return finish_stopped(
+                f"timeout after {timeout_s:.1f} s -- a firmware hold that never "
+                f"completes is bounded by design")
+
 
         def _decide_and_publish(self, produce):
             """Arbitrate UNDER the state lock; build and publish OUTSIDE it.

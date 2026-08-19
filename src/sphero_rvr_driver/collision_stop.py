@@ -579,6 +579,40 @@ def _normalize_degrees(angle_deg: float) -> float:
     return ((angle_deg + 180.0) % 360.0) - 180.0
 
 
+def precise_turn_admission(
+    bench_verified: bool,
+    state: "CollisionState",
+    nearest_any: Optional[float],
+    corner_radius_m: float,
+) -> tuple:
+    """May a precision firmware turn START? (ok, reason). The gateway's gate.
+
+    The precise-turn primitive bypasses the /cmd_vel arbitration by design (the
+    firmware closes the loop), so THIS admission is the safety layer's only look
+    at it before wheels move -- which is why the gateway on this node is the only
+    door to the driver primitive. Rules, all fail-closed:
+
+    * bench flag: un-runnable until docs/bench_card_2026-08-19.md items (i)-(iv)
+      are measured (estop preemption above all).
+    * state CLEAR only: a turn is a new motion request, not an escape; the
+      STOPPED-state rotation grant remains its own, stricter door.
+    * the pivot sweep circle must be clear by the SAME corner-radius geometry
+      the stopped-state grant trusts -- and no reading means NO (D18: fails
+      closed, never open).
+    """
+    if not bench_verified:
+        return False, ("bench card not verified (precise_turn_bench_verified is "
+                       "false); the turn stays un-runnable by construction")
+    if state is not CollisionState.CLEAR:
+        return False, f"supervisor state is {state.value}, not CLEAR"
+    if nearest_any is None:
+        return False, "no omnidirectional range reading -- the sweep check fails closed"
+    if nearest_any <= corner_radius_m:
+        return False, (f"pivot sweep blocked: nearest return {nearest_any:.3f} m "
+                       f"inside the {corner_radius_m:.3f} m corner circle")
+    return True, "admitted"
+
+
 def evaluate_projected_trajectory(
     scan: ScanInput,
     config: CollisionStopConfig,

@@ -280,3 +280,20 @@ def imu_sample_from_packet(packet: StreamingPacket) -> Optional[ImuSample]:
         linear_acceleration=linear_acceleration,
         is_valid=packet.is_valid,
     )
+
+
+def firmware_heading_deg(sample: "ImuSample") -> float:
+    """The firmware's own yaw angle, in degrees [0, 360), from a streamed sample.
+
+    This is the number `drive_with_heading` steers to -- the firmware's internal
+    reference, NOT ROS yaw. The known convention caveat, stated rather than
+    resolved here: the fused yaw ANGLE "runs backwards" relative to REP-103 (the
+    EKF fuses only the yaw RATE for exactly that reason), so the sign relation
+    between this heading and a ROS-frame turn direction is an ASSUMPTION until
+    the bench card measures it (docs/bench_card_2026-08-19.md, item iii). The
+    precise-turn primitive is un-runnable until that card passes, so the
+    assumption cannot reach a motor before it is measured.
+    """
+    x, y, z, w = sample.orientation
+    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    return math.degrees(yaw) % 360.0

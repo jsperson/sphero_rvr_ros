@@ -98,6 +98,7 @@ class RVRDriver:
         # Set it only to hold pivots below what the drivetrain can do, never above.
         max_pivot_rate_rad_s: Optional[float] = None,
         heading_max_speed: int = 60,
+        precise_turn_verified: bool = False,
         imu_stream_interval_ms: Optional[int] = None,
     ):
         self.commands = RVRCommands()
@@ -165,6 +166,8 @@ class RVRDriver:
             None if imu_stream_interval_ms is None else max(33, int(imu_stream_interval_ms))
         )
         self._imu_sample: Optional[sensor_streaming.ImuSample] = None
+        self._imu_sample_at: Optional[float] = None
+        self._precise_turn_verified = bool(precise_turn_verified)
         self._imu_callback: Optional[Callable[[sensor_streaming.ImuSample], Any]] = None
         self._imu_streaming_active = False
         normalized_control_mode = str(velocity_control_mode).strip().lower()
@@ -289,6 +292,7 @@ class RVRDriver:
         if sample is None:
             return
         self._imu_sample = sample
+        self._imu_sample_at = now_seconds()
         callback = self._imu_callback
         if callback is not None:
             try:
@@ -408,6 +412,57 @@ class RVRDriver:
 
     async def set_led_group(self, group_name: str, r: int, g: int, b: int) -> None:
         await self._send(lambda seq: self.commands.set_led_group(seq, group_name, r, g, b), CommandPriority.LOW)
+
+    #: How a LEFT (ROS +yaw) turn maps onto the firmware heading frame. ASSUMED
+    #: -1 (firmware heading is compass-like, CW-positive: turning left decreases
+    #: it) from the fused-yaw-runs-backwards evidence; the bench card MEASURES it
+    #: (item iii) before the flag below ever lets a turn run. If the bench says
+    #: +1, this constant flips and the card re-runs -- one constant, one author.
+    PRECISE_TURN_HEADING_SIGN = -1.0
+    #: A turn computed from a stale yaw is a turn to a made-up heading. The
+    #: freshness bound is generous against dropouts (IMU streams at ~10 Hz) and
+    #: tight against a dead stream (instrument-death must be LOUD, never silent).
+    PRECISE_TURN_IMU_FRESHNESS_S = 0.5
+
+    async def turn_by_degrees(self, delta_deg: float) -> tuple:
+        """Precision relative turn via the firmware's own heading loop.
+
+        Option D-era hybrid (decision 2026-08-18, docs/design_tof_planner_visibility
+        sibling memo: Turning Precision Options): precision turns go through
+        `drive_with_heading(0, target)` -- the loop that made 90 mean 90 in the
+        straight-API era closes entirely inside the robot. This method is the
+        DRIVER primitive only; operator tooling reaches it exclusively through
+        the supervisor's gateway (the safety layer is the only door).
+
+        UN-RUNNABLE-BY-CONSTRUCTION until the bench card passes: refuses unless
+        `precise_turn_verified` was configured true, which ships false and flips
+        only when docs/bench_card_2026-08-19.md items (i)-(iv) are MEASURED --
+        estop preemption of an in-flight firmware turn above all. Mission-
+        permanence lessons apply to safety flags too: this one is a statement
+        that a measurement happened, never a convenience switch.
+
+        Returns (current_heading_deg, target_heading_deg) for the caller's log.
+        """
+        if not self._precise_turn_verified:
+            raise RuntimeError(
+                "precise turn REFUSED: bench card not verified "
+                "(precise_turn_verified is false; see docs/bench_card_2026-08-19.md)"
+            )
+        sample = self._imu_sample
+        sample_at = self._imu_sample_at
+        if sample is None or sample_at is None or (
+            now_seconds() - sample_at > self.PRECISE_TURN_IMU_FRESHNESS_S
+        ):
+            age = None if sample_at is None else now_seconds() - sample_at
+            raise RuntimeError(
+                f"precise turn REFUSED: no fresh IMU yaw (age={age}); a turn "
+                f"computed from a stale heading is a turn to a made-up place -- "
+                f"is IMU streaming enabled in this flight shape?"
+            )
+        current = sensor_streaming.firmware_heading_deg(sample)
+        target = (current + self.PRECISE_TURN_HEADING_SIGN * float(delta_deg)) % 360.0
+        await self.drive_with_heading(0, int(round(target)) % 360)
+        return current, target
 
     async def drive_with_heading(self, speed: int, heading: int, reverse: bool = False) -> None:
         flags = 1 if reverse else 0

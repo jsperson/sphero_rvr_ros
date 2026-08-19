@@ -57,6 +57,11 @@ class RVRNodeConfig:
     pivot_duty_gain: float = 0.6
     closed_loop_pivot: bool = True
     heading_max_speed: int = 60
+    #: Ships FALSE. Flips only when docs/bench_card_2026-08-19.md items (i)-(iv)
+    #: are MEASURED (estop preempts an in-flight firmware heading turn above
+    #: all). The precise-turn primitive is un-runnable-by-construction until
+    #: then -- the camera-charter pattern applied to a motor verb.
+    precise_turn_bench_verified: bool = False
     velocity_control_mode: str = RVRDriver.VELOCITY_CONTROL_RAW_MOTOR
     battery_publish_period: float = 5.0
     temperature_publish_period: float = 2.0
@@ -126,6 +131,7 @@ def create_driver(config: RVRNodeConfig, transport: Optional[Transport] = None) 
         pivot_duty_gain=config.pivot_duty_gain,
         closed_loop_pivot=config.closed_loop_pivot,
         heading_max_speed=config.heading_max_speed,
+        precise_turn_verified=config.precise_turn_bench_verified,
         velocity_control_mode=config.velocity_control_mode,
         wheel_track_m=config.odom_wheel_track_m,
         imu_stream_interval_ms=(
@@ -169,7 +175,7 @@ def main(args=None):
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from sensor_msgs.msg import BatteryState, Illuminance, Imu, Temperature
-    from std_msgs.msg import ColorRGBA, String
+    from std_msgs.msg import ColorRGBA, Float32, String
     from std_srvs.srv import Trigger
     from tf2_ros import TransformBroadcaster
 
@@ -234,6 +240,20 @@ def main(args=None):
             self.create_service(Trigger, "clear_estop", self._on_clear_estop)
             self.create_service(Trigger, "clear_fail_safe", self._on_clear_fail_safe)
             self.create_service(Trigger, "reset_yaw", self._on_reset_yaw)
+            # PRECISE-TURN LANE (option-D-era hybrid, 2026-08-18 night). A thin
+            # cmd/event pair, NOT an action: this node runs a single-threaded
+            # executor and a blocking action here would stall cmd_vel. The
+            # SUPERVISOR GATEWAY is the only intended caller (the safety layer
+            # is the only door) -- it owns admission, settle monitoring, the
+            # timeout, and cancel->stop; this side only fires the firmware loop
+            # and reports STARTED/REFUSED on the event topic. The driver method
+            # itself refuses until the bench card flips the flag.
+            self._precise_turn_event_pub = self.create_publisher(
+                String, "/rvr_driver/precise_turn_event", 10
+            )
+            self.create_subscription(
+                Float32, "/rvr_driver/precise_turn_cmd", self._on_precise_turn_cmd, 10
+            )
             self.create_service(Trigger, "reset_locator", self._on_reset_locator)
             self.create_service(Trigger, "release_led_requests", self._on_release_led_requests)
             self.create_timer(self._config.battery_publish_period, self._poll_battery)
@@ -270,6 +290,7 @@ def main(args=None):
             self.declare_parameter("pivot_duty_gain", defaults.pivot_duty_gain)
             self.declare_parameter("closed_loop_pivot", defaults.closed_loop_pivot)
             self.declare_parameter("heading_max_speed", defaults.heading_max_speed)
+            self.declare_parameter("precise_turn_bench_verified", defaults.precise_turn_bench_verified)
             self.declare_parameter("velocity_control_mode", defaults.velocity_control_mode)
             self.declare_parameter("battery_publish_period", defaults.battery_publish_period)
             self.declare_parameter("temperature_publish_period", defaults.temperature_publish_period)
@@ -322,6 +343,7 @@ def main(args=None):
                 pivot_duty_gain=float(self.get_parameter("pivot_duty_gain").value),
                 closed_loop_pivot=bool(self.get_parameter("closed_loop_pivot").value),
                 heading_max_speed=int(self.get_parameter("heading_max_speed").value),
+                precise_turn_bench_verified=bool(self.get_parameter("precise_turn_bench_verified").value),
                 velocity_control_mode=str(self.get_parameter("velocity_control_mode").value),
                 battery_publish_period=float(self.get_parameter("battery_publish_period").value),
                 temperature_publish_period=float(self.get_parameter("temperature_publish_period").value),
@@ -392,6 +414,26 @@ def main(args=None):
             response.success = True
             response.message = "RVR fail-safe fault cleared"
             return response
+
+        def _on_precise_turn_cmd(self, msg):
+            delta_deg = float(msg.data)
+
+            def report(fut):
+                try:
+                    current, target = fut.result()
+                    self._precise_turn_event_pub.publish(String(data=(
+                        f"STARTED delta_deg={delta_deg:.1f} "
+                        f"current_deg={current:.1f} target_deg={target:.1f}"
+                    )))
+                except Exception as exc:               # noqa: BLE001
+                    self._precise_turn_event_pub.publish(
+                        String(data=f"REFUSED {exc}")
+                    )
+
+            future = self._driver_thread.run(
+                self._driver_thread.driver.turn_by_degrees(delta_deg)
+            )
+            future.add_done_callback(report)
 
         def _on_reset_yaw(self, request, response):
             self._driver_thread.run(self._driver_thread.driver.reset_yaw()).result(timeout=5)

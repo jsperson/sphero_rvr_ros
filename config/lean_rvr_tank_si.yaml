@@ -17,6 +17,10 @@ sphero_rvr_driver:
     # short turns have force; gentle gain to avoid closed-loop oscillation.
     pivot_min_duty: 28
     pivot_max_duty: 45
+    # Ships FALSE: the precise-turn primitive (firmware heading loop) is
+    # un-runnable until docs/bench_card_2026-08-19.md items (i)-(iv) are
+    # MEASURED -- estop preemption of an in-flight firmware turn above all.
+    precise_turn_bench_verified: false
     pivot_duty_gain: 1.0
 
     # These raw-duty settings remain inert in native_tank_si mode and preserve
