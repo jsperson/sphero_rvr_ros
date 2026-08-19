@@ -124,6 +124,11 @@ def build_report(
     # fabricated-zero this function's own docstring forbids, produced by the default
     # rather than by a caller, which is the one route the docstring did not cover.
     remaining_candidates=None,
+    # Same discipline as remaining_candidates: UNKNOWN by default, never a
+    # fabricated zero. Clusters no safety-permitted pose can cover (the
+    # viewpoint standoff, cert attempt 2's ratified pin 2) -- counted so a
+    # COMPLETE that dropped ground says so in its own artifact.
+    cells_excluded_no_viewpoint=None,
     map_files=None,
     freeze_events=None,
     freeze_mark_merge_radius_m=DEFAULT_FREEZE_MARK_MERGE_RADIUS_M,
@@ -194,6 +199,10 @@ def build_report(
         },
         "remaining_candidates": (
             None if remaining_candidates is None else int(remaining_candidates)
+        ),
+        "cells_excluded_no_viewpoint": (
+            None if cells_excluded_no_viewpoint is None
+            else int(cells_excluded_no_viewpoint)
         ),
         # Places the robot PROVED it could not pass. In the report, never in the
         # saved map: the map is the room as SLAM measured it, these are the robot's

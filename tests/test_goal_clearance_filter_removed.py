@@ -133,9 +133,19 @@ def test_the_approach_loop_has_EXACTLY_ONE_gate_and_it_is_the_planner():
       * `continue` (or `break`) past the planner call, or
       * make reaching the planner conditional on something else.
 
-    Both are visible in the AST regardless of naming. The loop must contain exactly
-    one `if`, that `if` must test a bare call to `_planner_can_reach`, and the loop
-    body must contain no `continue` at all.
+    Both are visible in the AST regardless of naming.
+
+    AMENDED IN DAYLIGHT, 2026-08-19 (cert attempt 2's ruling, PM pins 1-4): the
+    loop now carries exactly TWO gates, and this test names both so nothing else
+    can hide beside them. Gate one is the RATIFIED viewpoint-standoff filter --
+    a `continue` on a bare negated call to `point_clears_standoff` that must
+    cite VIEWPOINT_STANDOFF_M by name (the constant derived from the deployed
+    supervisor envelope, never a folk number). It skips individual APPROACH
+    POINTS the safety stack provably refuses to occupy; the target keeps its
+    other approach points, so it has none of the anti-frontier property that
+    got the original filter removed -- cert attempt 2 measured what happens
+    without it (five stall-killed wall goals, mission dead at 90% coverage).
+    Gate two is the planner, unchanged. No other `if`, no other `continue`.
     """
     import ast
 
@@ -151,25 +161,46 @@ def test_the_approach_loop_has_EXACTLY_ONE_gate_and_it_is_the_planner():
     assert len(loops) == 1, f"expected one approach-point loop, found {len(loops)}"
     loop = loops[0]
 
-    continues = [n for n in ast.walk(loop) if isinstance(n, ast.Continue)]
-    assert not continues, (
-        "the approach-point loop skips candidates before reaching the planner -- "
-        "something is filtering goals again, whatever it is called"
-    )
-
     ifs = [n for n in loop.body if isinstance(n, ast.If)]
-    assert len(ifs) == 1, (
-        f"the approach-point loop has {len(ifs)} branches; exactly one gate is "
-        "allowed and it must be the planner"
+    assert len(ifs) == 2, (
+        f"the approach-point loop has {len(ifs)} branches; exactly two gates are "
+        "allowed -- the ratified standoff filter and the planner"
     )
 
-    test = ifs[0].test
+    # gate one: `if not point_clears_standoff(...): continue`, citing the
+    # derived constant BY NAME
+    standoff_if = ifs[0]
+    test = standoff_if.test
+    assert (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)
+            and isinstance(test.operand, ast.Call)
+            and getattr(test.operand.func, "id", None) == "point_clears_standoff"), (
+        "the loop's first gate is not the bare negated point_clears_standoff "
+        "call the 2026-08-19 ruling ratified"
+    )
+    arg_names = {getattr(a, "id", None) for a in test.operand.args}
+    assert "VIEWPOINT_STANDOFF_M" in arg_names, (
+        "the standoff gate does not cite VIEWPOINT_STANDOFF_M by name -- a folk "
+        "number can drift; the derived constant cannot"
+    )
+    assert all(isinstance(n, ast.Continue) for n in standoff_if.body), (
+        "the standoff gate does more than skip the approach point"
+    )
+
+    continues = [n for n in ast.walk(loop) if isinstance(n, ast.Continue)]
+    assert len(continues) == 1, (
+        "a continue beyond the ratified standoff gate is filtering something "
+        "else, whatever it is called"
+    )
+
+    # gate two: the planner, exactly as always
+    planner_if = ifs[1]
+    test = planner_if.test
     assert isinstance(test, ast.Call) and isinstance(test.func, ast.Attribute), (
-        "the loop's only gate is no longer a bare call -- a condition has been "
-        "added alongside the planner query"
+        "the loop's planner gate is no longer a bare call -- a condition has "
+        "been added alongside the planner query"
     )
     assert test.func.attr == "_planner_can_reach", (
-        f"the loop's gate is {test.func.attr!r}, not the planner"
+        f"the loop's second gate is {test.func.attr!r}, not the planner"
     )
     # RESIDUAL GAP, measured and left open on purpose. A filter buried INSIDE
     # `_planner_can_reach` itself -- an early `return False` on a clearance probe --

@@ -10,9 +10,16 @@ from sphero_rvr_core.coverage_exploration import (
 )
 
 
+def candidate_goals_list(*args, **kwargs):
+    """Return-shape shim (2026-08-19 viewpoint-standoff batch): candidate_goals
+    now returns CandidateSelection(candidates, excluded_no_viewpoint); these
+    tests assert on the candidate list."""
+    return candidate_goals(*args, **kwargs).candidates
+
+
 def first(*args, **kwargs):
     """The goal the node would try first — candidate_goals is nearest-first."""
-    cells = candidate_goals(*args, **kwargs)
+    cells = candidate_goals(*args, **kwargs).candidates
     return cells[0] if cells else None
 
 
@@ -191,7 +198,7 @@ def test_candidates_are_nearest_first_and_one_per_cluster():
     occ, w, h = build(["............"])
     covered = cover_all(w, h) - {(3, 0), (4, 0), (8, 0), (9, 0)}
     cfg = CoverageConfig(min_cluster_cells=2, include_frontiers=False)
-    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 5, 0, covered, set(), cfg)
+    cells = candidate_goals_list(occ, w, h, 0.0, 0.0, 1.0, 5, 0, covered, set(), cfg)
     assert len(cells) == 2
     assert cells[0] == (4, 0)  # nearest cell of the near cluster
     assert cells[1] == (8, 0)  # nearest cell of the far cluster
@@ -207,7 +214,7 @@ def test_cluster_too_close_offers_a_farther_cell_instead():
     # res=1.0, robot at (0,0): cluster spans distances 1..5.
     cfg = CoverageConfig(min_cluster_cells=2, include_frontiers=False,
                          min_offer_distance_m=1.5)
-    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
+    cells = candidate_goals_list(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
     # min distance 1.5 m + one cell of live-pose margin = 2.5 cells -> (3,0).
     assert cells == [(3, 0)]
 
@@ -220,7 +227,7 @@ def test_cluster_entirely_too_close_is_skipped_for_this_pose():
     covered = cover_all(w, h) - {(1, 0), (2, 0)}
     cfg = CoverageConfig(min_cluster_cells=2, include_frontiers=False,
                          min_offer_distance_m=3.0)
-    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
+    cells = candidate_goals_list(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
     assert cells == []
 
 
@@ -230,7 +237,7 @@ def test_min_offer_distance_zero_keeps_the_nearest_cell():
     occ, w, h = build(["......"])
     covered = cover_all(w, h) - {(2, 0), (3, 0)}
     cfg = CoverageConfig(min_cluster_cells=2, include_frontiers=False)
-    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
+    cells = candidate_goals_list(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
     assert cells == [(2, 0)]
 
 
@@ -240,7 +247,7 @@ def test_max_candidates_bounds_the_planner_queries():
     occ, w, h = build(["." * 40])
     covered = cover_all(w, h) - {(i, 0) for i in range(0, 40, 2)}
     cfg = CoverageConfig(min_cluster_cells=1, include_frontiers=False, max_candidates=3)
-    cells = candidate_goals(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
+    cells = candidate_goals_list(occ, w, h, 0.0, 0.0, 1.0, 0, 0, covered, set(), cfg)
     assert len(cells) == 3
 
 

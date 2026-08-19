@@ -84,11 +84,13 @@ from sphero_rvr_core.mission_report import (
 )
 from sphero_rvr_core.costmap_window import extract_window, format_window
 from sphero_rvr_core.coverage_exploration import (
+    VIEWPOINT_STANDOFF_M,
     CoverageConfig,
     candidate_goals,
     cell_center_world,
     cell_world_grid,
     is_frontier,
+    point_clears_standoff,
     robot_start_blocked,
     stamp_coverage,
     world_grid,
@@ -358,6 +360,9 @@ class CoverageExplorerNode(Node):
         self._armed = False
         self._consecutive_empty = 0
         self._ever_had_target = False
+        # UNKNOWN until the first selection cycle counts it -- same
+        # no-fabricated-zero discipline as build_report's remaining_candidates.
+        self._excluded_no_viewpoint = None
         # None means NOT YET COUNTED. See _publish_status: a fabricated 0 here would
         # read as "nothing left to explore".
         self._last_candidate_count = None
@@ -732,6 +737,7 @@ class CoverageExplorerNode(Node):
                     # that gets read when a run stops here, so it has to carry what
                     # happened.
                     remaining_candidates=self._remaining_candidates(),
+                    cells_excluded_no_viewpoint=self._excluded_no_viewpoint,
                     freeze_events=list(self._freeze_events),
                     freeze_mark_merge_radius_m=float(
                         self.get_parameter("freeze_mark_merge_radius_m").value),
@@ -788,9 +794,14 @@ class CoverageExplorerNode(Node):
         if inflight:
             return
 
-        candidates = candidate_goals(
-            m.data, w, h, ox, oy, res, rcx, rcy, self._covered, set(self._stalled), self._config
+        selection = candidate_goals(
+            m.data, w, h, ox, oy, res, rcx, rcy, self._covered, set(self._stalled),
+            self._config, viewpoint_standoff_m=VIEWPOINT_STANDOFF_M,
         )
+        candidates = selection.candidates
+        # Latest cycle's honest residue: clusters no safety-permitted pose can
+        # cover. Rides into the report so COMPLETE never silently absorbs them.
+        self._excluded_no_viewpoint = selection.excluded_no_viewpoint
         # Selection blocks on planner queries and can outlast the tick period. It
         # cannot re-enter -- the whole tick is serialized by _tick_busy -- which is
         # what keeps two selection loops from racing to send two goals: concurrent
@@ -823,12 +834,23 @@ class CoverageExplorerNode(Node):
             # only needs proximity. So ask for the nearest point that both plans
             # AND still counts as covering the target.
             for awx, awy in self._approach_points(gwx, gwy, wx, wy):
-                # THE PLANNER IS THE ONLY GATE ON A CANDIDATE, and that is deliberate.
-                # A goal-pose clearance filter used to run here first; it is gone,
-                # because it rejected frontier goals as a matter of geometry rather
-                # than of clutter. The measurement and the reasoning are in this
-                # module's docstring, and the revert-proof is
-                # tests/test_goal_clearance_filter_removed.py.
+                # THE REFLEX ENVELOPE GATES FIRST (cert attempt 2, 2026-08-19):
+                # an approach point the planner approves can still sit inside the
+                # supervisor's frontal standoff, where the rover parks at its own
+                # brake and the stall kill burns the goal -- five in a row ended
+                # the mission on the south wall. This is NOT the old goal-pose
+                # clearance filter coming back: that one rejected TARGETS on
+                # geometry and starved frontier exploration; this one only skips
+                # APPROACH POINTS the safety stack provably refuses to occupy,
+                # and the target keeps its other approach points.
+                acx = int((awx - ox) / res)
+                acy = int((awy - oy) / res)
+                if not point_clears_standoff(m.data, w, h, acx, acy, res,
+                                             VIEWPOINT_STANDOFF_M):
+                    continue
+                # THE PLANNER remains the gate on reachability -- the measurement
+                # and reasoning are in this module's docstring, and the
+                # revert-proof is tests/test_goal_clearance_filter_removed.py.
                 if self._planner_can_reach(awx, awy, frame):
                     goal_cell, goal_point = cell, (awx, awy)
                     break
@@ -946,6 +968,7 @@ class CoverageExplorerNode(Node):
             goals_aborted_without_recovery=self._goals_aborted_without_recovery,
             planner_rejections=self._planner_rejections,
             remaining_candidates=remaining,
+            cells_excluded_no_viewpoint=self._excluded_no_viewpoint,
             map_files=files,
             freeze_events=list(self._freeze_events),
             freeze_mark_merge_radius_m=float(
