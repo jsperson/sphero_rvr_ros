@@ -126,3 +126,4 @@ def test_case_b_the_fixed_policy_places_under_the_same_lag(laggy_buffer):
     assert resolved.path == "fallback"
     assert resolved.staleness_s == pytest.approx(LAG_S, abs=0.02)
     assert resolved.x == pytest.approx(0.5, abs=1e-6)
+

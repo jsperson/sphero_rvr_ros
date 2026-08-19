@@ -35,6 +35,17 @@ class SimLaggyMapTf(Node):
         self.declare_parameter("period_ms", 50.0)       # ~SLAM transform_publish_period
         self.declare_parameter("gap_every_n", 40)       # one long gap every ~2 s
         self.declare_parameter("gap_extra_ms", 300.0)   # → worst stamp gap ~350 ms
+        # slam_toolbox FUTURE-DATES map->odom by its transform_timeout (deployed:
+        # 0.2 s) so consumers looking up "now" normally find a stamp that LEADS
+        # wall clock. This node originally omitted that, which is the right shape
+        # for falsifying PAST-stamp lookups (contact_marker) but a world reality
+        # does not present for now-lookups: cert attempt 1 (2026-08-18) had RPP
+        # abort 5/5 goals in 13 s on 2 ms extrapolation-into-the-future errors
+        # that field SLAM never produces. DEFAULT 0 keeps every existing
+        # falsifier use byte-identical; the mission arms pass 200.0 to mirror
+        # the deployed slam transform_timeout.
+        self.declare_parameter("future_date_ms", 0.0)
+        self._future_s = float(self.get_parameter("future_date_ms").value) / 1000.0
         self._lag_s = float(self.get_parameter("lag_ms").value) / 1000.0
         self._gap_every_n = int(self.get_parameter("gap_every_n").value)
         self._gap_extra = float(self.get_parameter("gap_extra_ms").value) / 1000.0
@@ -61,7 +72,8 @@ class SimLaggyMapTf(Node):
         if self._gap_every_n > 0 and self._cycle % self._gap_every_n == 0:
             self._skip_until = now_s + self._gap_extra
         msg = TransformStamped()
-        stamped = now - rclpy.duration.Duration(seconds=self._lag_s)
+        stamped = now - rclpy.duration.Duration(seconds=self._lag_s) \
+            + rclpy.duration.Duration(seconds=self._future_s)
         msg.header.stamp = stamped.to_msg()
         msg.header.frame_id = "map"
         msg.child_frame_id = "odom"

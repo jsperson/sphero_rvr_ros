@@ -78,6 +78,17 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "laggy_future_date_ms",
+            default_value="0.0",
+            description=(
+                "laggy mode only: future-date the map->odom stamps by this many "
+                "ms. The mission arms pass 200.0, DERIVED from "
+                "config/slam_toolbox.yaml transform_timeout: 0.2 -- if that "
+                "config changes, this arm value tracks it, never a folk number. "
+                "Default 0 preserves the original falsifier shape byte-identical."
+            ),
+        ),
+        DeclareLaunchArgument(
             "map_tf_mode",
             default_value="static",
             description=(
@@ -116,6 +127,12 @@ def generate_launch_description() -> LaunchDescription:
         executable="sim_laggy_map_tf",
         name="sim_laggy_map_tf",
         output="screen",
+        # future_date_ms 0 = the original falsifier shape (stamps trail now).
+        # Mission arms pass 200.0 to mirror deployed slam_toolbox
+        # transform_timeout -- without it RPP aborts every goal on the holes
+        # (cert attempt 1, 2026-08-18: 5/5 aborts in 13 s).
+        parameters=[{"future_date_ms":
+                     LaunchConfiguration("laggy_future_date_ms")}],
         condition=IfCondition(PythonExpression(["'", map_tf_mode, "' == 'laggy'"])),
     )
     refusal_watcher = Node(
