@@ -98,8 +98,32 @@ class Firing:
 
 class LivelockWindow:
     """The signature: an active goal whose robot has stopped MOVING but not
-    RECOVERING. Time-based (sustained over WINDOW_S), progress-gated, reset on
-    every goal change."""
+    RECOVERING. Time-based (sustained over WINDOW_S), progress-gated, keyed on
+    SPATIAL STATIONARITY -- not goal identity.
+
+    It used to reset on every goal change (D55). That key composed the watcher
+    into arithmetic impossibility on stock-explore: the explorer's progress
+    watchdog kills a stalled goal at 6 s, so no sample could ever be WINDOW_S
+    (12 s) old within one goal, and the 2026-08-19 flight's rover -- stationary
+    within 0.03 m across FIVE consecutive goals, recoveries running, the exact
+    signature this class exists to catch -- produced zero promotions BY
+    CONSTRUCTION. Stationarity is a fact about the rover, not about which goal
+    was asking; samples now survive goal churn and the displacement gate is what
+    answers "is this a new question": a rover that MOVED cannot fire.
+
+    Recoveries are counted per goal because that is how Nav2 hands them over --
+    `number_of_recoveries` in NavigateToPose feedback RESETS on every goal, so a
+    raw delta across churn goes negative and the >= min_recoveries gate would be
+    exactly as un-meetable as the old time key (D55's second jaw). The window
+    delta is derived from the samples themselves, per goal id (max-in-window
+    minus value-at-window-start), which also keeps a straggling feedback from an
+    already-replaced goal from inflating anything: its counts live under its own
+    key. Zero new tunables; WINDOW_S, the stall bar, and min_recoveries carry
+    unchanged from the certified constants above.
+
+    Liveness is unchanged: feeds only arrive while a goal is active, `goal_id
+    None` still drops everything, and the 2*WINDOW_S prune means a long idle gap
+    self-heals -- stale samples cannot vouch for a fresh stall."""
 
     def __init__(self, window_s: float = WINDOW_S,
                  stall_m: float = STALL_DISPLACEMENT_M,
@@ -107,25 +131,40 @@ class LivelockWindow:
         self.window_s = window_s
         self.stall_m = stall_m
         self.min_recoveries = min_recoveries
-        self._goal_id: Optional[str] = None
-        self._samples: list = []     # (t, x, y, recoveries)
+        self._samples: list = []     # (t, x, y, goal_id, recoveries)
+
+    def _window_recoveries(self, t0: float) -> int:
+        """Recoveries that happened AFTER t0, summed per goal id.
+
+        For a goal already running at t0 the contribution is its in-window rise
+        (max after t0 minus its last value at-or-before t0); a goal born inside
+        the window contributes its max outright. Per-goal keys mean a stale
+        feedback from a replaced goal can never bank onto another goal's count.
+        """
+        before: dict = {}
+        after: dict = {}
+        for ts, _x, _y, g, r in self._samples:
+            if ts <= t0:
+                before[g] = r                      # chronological: last one wins
+            else:
+                after[g] = max(after.get(g, 0), r)
+        return sum(mx - before.get(g, 0) for g, mx in after.items())
 
     def feed(self, t: float, x: float, y: float, recoveries: int,
              goal_id: Optional[str]) -> bool:
         """True when the signature holds NOW. No goal, no signature."""
         if goal_id is None:
-            self._goal_id, self._samples = None, []
+            self._samples = []
             return False
-        if goal_id != self._goal_id:
-            self._goal_id, self._samples = goal_id, []
-        self._samples.append((t, x, y, recoveries))
+        self._samples.append((t, x, y, goal_id, int(recoveries)))
         self._samples = [s for s in self._samples if s[0] >= t - 2 * self.window_s]
         past = [s for s in self._samples if s[0] <= t - self.window_s]
         if not past:
             return False
-        t0, x0, y0, r0 = past[-1]
+        _t0, x0, y0, _g0, _r0 = past[-1]
         displacement = math.hypot(x - x0, y - y0)
-        return displacement < self.stall_m and (recoveries - r0) >= self.min_recoveries
+        return (displacement < self.stall_m
+                and self._window_recoveries(t - self.window_s) >= self.min_recoveries)
 
 
 def corridor_points(plan_xy: list, robot_xy: tuple,

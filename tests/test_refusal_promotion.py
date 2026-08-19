@@ -7,8 +7,10 @@ the two consensus amendments: firing discipline and the wall cap.
 """
 
 import math
+from pathlib import Path
 
 import pytest
+import yaml
 
 from sphero_rvr_core.refusal_promotion import (
     COOLDOWN_S,
@@ -67,14 +69,84 @@ def test_goal_1s_short_life_dies_before_the_window():
     assert fired is None
 
 
-def test_a_goal_change_resets_the_window():
-    """A new goal is a new question -- run 3c sent four; stall history must not
-    leak across them."""
+def feed_goal_churn(window, n_goals, goal_life_s, speed_mps,
+                    recoveries_per_goal=2, hz=5.0):
+    """The 2026-08-19 flight's shape: consecutive short goals over one rover
+    pose, each goal's feedback recovery counter STARTING OVER (that is how Nav2
+    hands it across goals). Returns the first firing time or None."""
+    fired_at = None
+    t = 0.0
+    for n in range(n_goals):
+        steps = int(goal_life_s * hz)
+        for i in range(steps):
+            # recoveries mount within the goal's own life, then reset with it
+            r = min(recoveries_per_goal, int(i / (steps / (recoveries_per_goal + 1))))
+            if window.feed(t, speed_mps * t, 0.0, r, f"goal_{n}") and fired_at is None:
+                fired_at = t
+            t += 1.0 / hz
+    return fired_at
+
+
+def test_d55_stationary_livelock_survives_goal_churn():
+    """THE FLIGHT REPLAY, and D55's must-flip. Five ~6.9 s goals over one pose
+    (displacement < 0.03 m across all of them), recoveries running and resetting
+    per goal -- the exact signature the watcher exists to catch, which the old
+    goal-keyed window could not fire on BY CONSTRUCTION (12 s of history could
+    never accumulate inside a 6.9 s goal). The spatial key must fire once the
+    stall has sustained a full window, and never before WINDOW_S has elapsed."""
+    fired = feed_goal_churn(LivelockWindow(), n_goals=5, goal_life_s=6.9,
+                            speed_mps=0.001)
+    assert fired is not None, (
+        "the window still cannot fire under goal churn -- D55's arithmetic "
+        "impossibility is back")
+    assert WINDOW_S <= fired <= WINDOW_S + 2 * 6.9
+
+
+def test_d55_the_deployed_watchdog_cannot_starve_the_window():
+    """The composed-stack inequality pin, satisfied by construction: goal
+    lifetimes equal to the DEPLOYED explorer watchdog (read from the yaml the
+    robot actually flies, not a dataclass default) must still let the signature
+    fire. If someone tunes goal_progress_timeout_s, this test re-runs the
+    composition question automatically -- the next tune cannot silently recreate
+    the un-fireable watcher."""
+    cfg = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "config" /
+         "coverage_explorer.yaml").read_text())
+    timeout_s = float(
+        cfg["coverage_explorer"]["ros__parameters"]["goal_progress_timeout_s"])
+    fired = feed_goal_churn(LivelockWindow(), n_goals=6,
+                            goal_life_s=timeout_s + 0.9, speed_mps=0.001)
+    assert fired is not None, (
+        f"goals living goal_progress_timeout_s ({timeout_s:.1f}s, deployed "
+        "value) starve the livelock window -- the D55 composition defect")
+
+
+def test_a_goal_change_at_a_new_place_is_a_new_question():
+    """What survives of the old goal-reset pin: 'a new goal is a new question'
+    is now answered by the ROVER, not the goal id. A full stationary window
+    under goal_a, then the rover MOVES and goal_b feeds from the new pose: the
+    displacement gate must hold it silent -- history from the old place cannot
+    vouch for a stall at a new one."""
     w = LivelockWindow()
     for i in range(int(WINDOW_S * 5) + 10):
         w.feed(i / 5.0, 0.0, 0.0, i // 10, "goal_a")
     t = (int(WINDOW_S * 5) + 10) / 5.0
-    assert w.feed(t, 0.0, 0.0, 99, "goal_b") is False
+    assert w.feed(t, 1.0, 0.0, 99, "goal_b") is False
+
+
+def test_a_straggling_feedback_cannot_inflate_the_recovery_count():
+    """Action feedback can straggle: one late message from a replaced goal
+    arrives after its successor started. Per-goal counting must keep its counts
+    under its own key -- a stationary-but-quiet rover (no recoveries anywhere)
+    must not fire because two goals' counters were conflated."""
+    w = LivelockWindow()
+    t = 0.0
+    for i in range(int(WINDOW_S * 5) + 20):
+        goal = "goal_b" if i % 7 == 3 else "goal_a"   # stragglers interleaved
+        assert w.feed(t, 0.0, 0.0, 1, goal) is False, (
+            "recoveries never exceeded 1 on any goal, yet the window fired -- "
+            "goal interleaving is inflating the count")
+        t += 0.2
 
 
 def test_no_goal_means_no_signature():
