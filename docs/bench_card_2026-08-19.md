@@ -105,6 +105,9 @@ REMAINING: if (viii)–(ix) pass, one reviewed commit flips
 remaining lock (the admission gate behind it is already open). If (viii) or
 (ix) fails, the routing arg stays false: flights continue on behavior_server's
 spin exactly as before the batch, and the failure goes to the register.
+**DONE — the flip landed the same afternoon on the RESULTS below, with the
+watch-item condition in the arg's own description (one wrong turn reverts the
+default same-day). The composed program is flight-default complete.**
 
 ---
 

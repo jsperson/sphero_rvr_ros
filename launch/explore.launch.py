@@ -425,21 +425,27 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "use_precise_turn_spin",
-                default_value="false",
+                default_value="true",
                 description=(
                     "Route the BT's Spin recovery through the supervisor's "
                     "precise-turn gateway (/collision_stop/precise_turn, the "
                     "firmware heading loop that manages torque as resistance "
-                    "demands) instead of behavior_server's open-loop duty-45 "
-                    "spin -- the path that stalled three times on 2026-08-19. "
-                    "Default FALSE until bench items (viii)-(ix) pass. "
-                    "CORRECTED 2026-08-19: items (i)-(iii) passed on "
-                    "2026-08-18 night (f4c840a -- estop preempt, stop-kills-"
-                    "hold, 21/21 turns at <=2.2 deg mean error) and "
-                    "precise_turn_bench_verified is already TRUE in both "
-                    "yamls, so THIS ARG is the one remaining lock; the "
-                    "admission gate behind it is open. While false, flight "
-                    "behavior is byte-identical to before this arg existed."
+                    "demands) instead of behavior_server's open-loop spin -- "
+                    "the path that stalled three times on 2026-08-19. TRUE "
+                    "per the (viii)-(ix) sitting, 2026-08-19 afternoon "
+                    "(docs/bench_card_2026-08-19.md RESULTS): (viii) PASS -- "
+                    "'precise turn SETTLED: target 150.4 deg, heading 151.7 "
+                    "deg, err -1.3 deg, 1.0 s', a firmware 90 from rest on "
+                    "the scrub that protect-trips the velocity family, with "
+                    "behavior_server's spin silent; (ix) satisfied by live "
+                    "event (admission refusal fell through loudly to "
+                    "Wait/BackUp, PM-ruled); items (i)-(iii) passed "
+                    "2026-08-18 night (f4c840a). Condition attached, "
+                    "verbatim: 'first default-ON mission is a watch item -- "
+                    "every gateway turn inspected post-flight against the "
+                    "event lane and the bag; one wrong turn (fired when "
+                    "inadmissible, or settled falsely) reverts the default "
+                    "same-day (one launch arg, no code).'"
                 ),
             ),
             DeclareLaunchArgument(

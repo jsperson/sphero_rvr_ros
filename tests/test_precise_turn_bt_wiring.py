@@ -46,13 +46,20 @@ def test_the_retargeted_tree_keeps_the_standard_recovery_shape():
     assert 'spin_dist="1.57"' in BT, "the spin distance drifted from standard"
 
 
-def test_the_launch_arg_defaults_false_and_selects_the_tree():
-    """Inert until flipped: the arg exists, defaults false, and the selection
-    expression can reach all three trees -- decisive first (that mode has no
-    RPP), then the retarget only on the arg, else standard."""
-    assert '"use_precise_turn_spin", default_value="false"' in LAUNCH, (
-        "the routing arg's default moved -- that flip is the post-bench batch's "
-        "one diff and it must arrive with the bench card's receipts")
+def test_the_launch_arg_defaults_true_and_selects_the_tree():
+    """The lock is FLIPPED: default true since the 2026-08-19 (viii)-(ix)
+    sitting, exactly as this pin's earlier form demanded ('must arrive with the
+    bench card's receipts' -- it did: (viii) PASS with 'precise turn SETTLED:
+    target 150.4 deg, heading 151.7 deg, err -1.3 deg, 1.0 s' on the stall
+    scrub, (ix) satisfied by live event, PM-reviewed; see the card's RESULTS).
+    A revert to false is the watch-item rollback and must cite its wrong turn,
+    or it is a silent revert. The selection expression still reaches all three
+    trees -- decisive first (that mode has no RPP), the retarget on the arg,
+    standard as fallthrough."""
+    assert '"use_precise_turn_spin", default_value="true"' in LAUNCH, (
+        "the routing arg's default reverted -- if that was the watch-item "
+        "rollback (one wrong turn), flip this pin with it and cite the turn; "
+        "if not, it is a silent revert")
     assert "navigate_to_pose_stock_precise_turn.xml" in LAUNCH
     # Precedence is read from the SELECTION EXPRESSION, not the file head (the
     # Path definitions up top appear in a different order).
