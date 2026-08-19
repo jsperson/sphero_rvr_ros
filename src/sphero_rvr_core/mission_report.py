@@ -50,6 +50,16 @@ OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES = "INCOMPLETE_BLOCKED_BY_UNSEEN_OBSTACLES"
 #: mission 2 was stopped by service and produced NO report by any route (D50).
 OUTCOME_STOPPED_BY_OPERATOR = "STOPPED_BY_OPERATOR"
 
+#: D38's missing ending: the mission armed and never found a single target -- no
+#: candidate ever survived selection, no goal was ever sent. Until 2026-08-18 this
+#: mission NEVER ENDED: the completion latch was gated on ever-having-had-a-target,
+#: so an armed rover in a blocked start sat silent forever (reproduced in the sim
+#: rig, 687 status messages of armed=true goals_sent=0 across a 600 s window, F2
+#: falsifier arm). Its own name, not an overload of an existing one: START_BLOCKED
+#: means "my own cell is at/above inscribed cost", which demonstrably does NOT
+#: cover an enclosure whose walls sit past the inscribed radius.
+OUTCOME_NO_TARGETS_FROM_START = "INCOMPLETE_NO_TARGETS_FROM_START"
+
 ALL_OUTCOMES = (
     OUTCOME_COMPLETE,
     OUTCOME_NO_PLANNABLE_TARGETS,
@@ -57,7 +67,37 @@ ALL_OUTCOMES = (
     OUTCOME_GOALS_KEEP_FAILING,
     OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES,
     OUTCOME_STOPPED_BY_OPERATOR,
+    OUTCOME_NO_TARGETS_FROM_START,
 )
+
+
+def empty_cycle_outcome(ever_had_target, consecutive_empty, complete_after_empty,
+                        remaining_candidates):
+    """The terminal outcome (or None) of an all-empty goal-selection cycle.
+
+    PURE, because the D38 fix needs a test that FAILS on the code that predated
+    it, and the decision was buried in a node branch no Mac test can reach. One
+    debounce for every ending -- ``complete_after_empty`` is the node's existing
+    constant, not a new tunable.
+
+    The lattice:
+      * still inside the debounce               -> None (keep waiting)
+      * had targets once, none remain wanted    -> COMPLETE
+      * had targets once, wanted but unroutable -> NO_PLANNABLE_TARGETS
+      * NEVER had a target, none wanted either  -> NO_TARGETS_FROM_START (D38:
+        this row used to be None forever -- an armed rover sitting silent)
+      * never had a target but some are wanted  -> None: the unstick lane owns
+        motion problems, and this function must not end a mission the unstick
+        might still rescue (documented residual on D38's register row)
+    """
+    if consecutive_empty < complete_after_empty:
+        return None
+    if ever_had_target:
+        return (OUTCOME_NO_PLANNABLE_TARGETS if remaining_candidates
+                else OUTCOME_COMPLETE)
+    if not remaining_candidates:
+        return OUTCOME_NO_TARGETS_FROM_START
+    return None
 
 # map_server's PGM convention.
 PGM_FREE = 254

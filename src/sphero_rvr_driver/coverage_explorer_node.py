@@ -75,8 +75,10 @@ from sphero_rvr_core.mission_report import (
     OUTCOME_GOALS_KEEP_FAILING,
     OUTCOME_STOPPED_BY_OPERATOR,
     OUTCOME_NO_PLANNABLE_TARGETS,
+    OUTCOME_NO_TARGETS_FROM_START,
     OUTCOME_START_BLOCKED,
     build_report,
+    empty_cycle_outcome,
     map_yaml_text,
     occupancy_grid_to_pgm,
 )
@@ -861,10 +863,27 @@ class CoverageExplorerNode(Node):
             return
 
         if goal_cell is None:
-            # Debounce: don't latch "complete" on a transient/startup empty. Only
-            # finish after N consecutive empties AND once it has actually explored.
+            # Debounce: don't latch a terminal outcome on a transient/startup
+            # empty. The decision itself is the PURE empty_cycle_outcome (the
+            # D38 fix): a mission that never had a single target now ends
+            # honestly instead of sitting armed and silent forever -- the gate
+            # here used to be `ever_had_target and ...`, which made "never had
+            # one" un-endable by construction.
             self._consecutive_empty += 1
-            if self._ever_had_target and self._consecutive_empty >= self._complete_after_empty:
+            outcome = empty_cycle_outcome(
+                self._ever_had_target, self._consecutive_empty,
+                self._complete_after_empty, len(candidates))
+            if outcome == OUTCOME_NO_TARGETS_FROM_START:
+                self._mission_done = True
+                self.get_logger().warn(
+                    f"mission ENDED without ever finding a target: no candidate "
+                    f"survived selection in {self._consecutive_empty} consecutive "
+                    f"cycles and no goal was ever sent ({len(self._covered)} cells "
+                    "stamped from the start pose alone). D38's silent-forever "
+                    "mission, now an honest end with its own name."
+                )
+                self._finish(OUTCOME_NO_TARGETS_FROM_START, res, 0)
+            elif outcome is not None:
                 self._mission_done = True
                 if candidates:
                     # There IS uncovered ground the rover wants; the planner just
