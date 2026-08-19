@@ -613,6 +613,66 @@ def evaluate_projected_trajectory(
     rear = config.footprint_rear_m + margin
     left = config.footprint_left_m + margin
     right = config.footprint_right_m + margin
+
+    # EXACT RADIUS PRUNING (2026-08-18 night, item 2 -- REVISED IN DAYLIGHT from
+    # the ratified full-sweep circle branch: the deployed horizon is 0.5 s
+    # (requested_cmd_timeout 0.25 + measured_stop 0.25), so deployed pivots sweep
+    # only 102-167 degrees and a full-turn precondition would never fire; the
+    # 407-degree arithmetic in the consensus round used a misremembered timeout.
+    # The correction is STRONGER, not weaker:
+    #
+    # A scan point farther from base_link than corner_radius + |v|*horizon can
+    # NEVER be struck -- the footprint's maximum reach from the base origin is its
+    # circumscribed corner radius (the same corner-circle constant the
+    # STOPPED-state pivot grant trusts), and the origin itself travels at most
+    # |v|*horizon. For a PURE PIVOT the travel term is zero and the bound is a
+    # THEOREM: rotation preserves every point's radius. So pruning those points
+    # is EXACT for blocked/clear at ANY sweep angle and ANY command -- pivots,
+    # arcs, and straights alike -- and the expensive stepped sweep runs only on
+    # the survivors. At the curve floor this collapses ~30-49 ms per scan
+    # (measured on the Pi, deployed yaml) to one hypot per point: walls at
+    # 1.5-3 m are all beyond a 0.25 m reach.
+    #
+    # minimum_clearance_m keeps a value for pruned points as the LOWER BOUND
+    # (distance - max_reach); the true stepped clearance is >= that bound, so
+    # the telemetry errs conservative while blocked/clear stays exact.
+    corner_radius = math.hypot(max(front, rear), max(left, right))
+    max_reach = corner_radius + abs(linear_x) * horizon_s
+    pruned_clearance = math.inf
+    surviving = []
+    for point_x, point_y in points:
+        distance = math.hypot(point_x, point_y)
+        if distance <= max_reach:
+            surviving.append((point_x, point_y))
+        else:
+            pruned_clearance = min(pruned_clearance, distance - max_reach)
+    pruned_count = len(points) - len(surviving)
+    points = surviving
+    if not points:
+        return TrajectoryCheck(
+            False,
+            horizon_s,
+            None if math.isinf(pruned_clearance) else pruned_clearance,
+        )
+    result = _projected_trajectory_stepped(
+        points, command, linear_x, angular_z, horizon_s, step_count,
+        front=front, rear=rear, left=left, right=right,
+        pruned_clear_points=pruned_count,
+    )
+    if not result.blocked and math.isfinite(pruned_clearance):
+        merged = (pruned_clearance if result.minimum_clearance_m is None
+                  else min(result.minimum_clearance_m, pruned_clearance))
+        result = replace(result, minimum_clearance_m=merged)
+    return result
+
+
+def _projected_trajectory_stepped(
+    points, command, linear_x, angular_z, horizon_s, step_count,
+    *, front, rear, left, right, pruned_clear_points=0,
+) -> TrajectoryCheck:
+    """The stepped sweep, extracted MOVE-ONLY (2026-08-18 night) so the
+    full-sweep circle reduction's equivalence property can call both paths on
+    identical inputs. Body byte-identical to its inlined form."""
     poses = tuple(
         _constant_twist_pose(
             linear_x,
@@ -674,7 +734,11 @@ def evaluate_projected_trajectory(
                     moving_away_point_count=moving_away_point_count,
                 )
 
-    if moving_away_point_count == len(points):
+    # The all-overlapped-and-receding fail-closed branch fires only when EVERY
+    # visible point is in that state. Radius-pruned points are PROVABLY CLEAR
+    # (their whole trajectory keeps them outside the footprint's reach), so their
+    # existence vetoes this branch exactly as their presence in the loop used to.
+    if moving_away_point_count == len(points) and pruned_clear_points == 0:
         return TrajectoryCheck(
             True,
             horizon_s,
