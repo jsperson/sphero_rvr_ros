@@ -36,12 +36,14 @@ import json
 import math
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 rclpy = pytest.importorskip("rclpy")
 
 from action_msgs.msg import GoalStatus  # noqa: E402
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue  # noqa: E402
 from geometry_msgs.msg import PoseStamped, TransformStamped  # noqa: E402
 from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose  # noqa: E402
 from nav_msgs.msg import OccupancyGrid  # noqa: E402
@@ -236,6 +238,17 @@ class FakeWorld(Node):
 
         self._freeze_pub = self.create_publisher(
             String, "/decisive_controller/freeze_event", 10)
+        # D56: the driver's diagnostics lane -- the freeze feed that actually has
+        # a publisher on the stock middle. The harness fakes the DRIVER here, so
+        # the explorer's stock-side touch sense is exercised, not simulated.
+        self._diag_pub = self.create_publisher(
+            DiagnosticArray, "/diagnostics", 10)
+        self.statuses = []                     # decoded JSON status lines
+        self.create_subscription(
+            String, "/coverage_explorer/status",
+            lambda msg: self.statuses.append(json.loads(msg.data)),
+            10, callback_group=cbg,
+        )
         self._tf = TransformBroadcaster(self)
         self.create_timer(0.02, self._broadcast_tf, callback_group=cbg)
 
@@ -250,6 +263,16 @@ class FakeWorld(Node):
         """Stand in for the controller reporting a freeze: the supervisor permitted
         motion and the rover did not move, i.e. an obstacle no sensor can see."""
         self._freeze_pub.publish(String(data='{"x": %f, "y": %f, "stamp": 0.0}' % (x, y)))
+
+    def publish_stall_count(self, count, key="motor_stall_events"):
+        """Stand in for rvr_node's diagnostics: the firmware stall counter, as the
+        monotonic COUNT the driver publishes (counters-not-levels). The explorer
+        must read deltas; the absolute value is the driver's business."""
+        status = DiagnosticStatus(name="sphero_rvr_driver")
+        status.values.append(KeyValue(key=key, value=str(count)))
+        msg = DiagnosticArray()
+        msg.status.append(status)
+        self._diag_pub.publish(msg)
 
     def _broadcast_tf(self):
         t = TransformStamped()
@@ -638,6 +661,106 @@ def test_one_freeze_excuses_only_one_abort(stack):
     assert wait_until(lambda: bool(stack.world.reports), 30.0), "mission never ended"
     assert stack.world.reports[-1]["outcome"] == "ABORTED_GOALS_KEEP_FAILING", (
         "a single freeze excused more than one abort"
+    )
+
+
+# --- D53 + D56: the 2026-08-19 combined ride-along, replayed as tests ----------------
+#
+# The flight: five watchdog stall-kills at ONE rover pose ended the mission
+# ABORTED_GOALS_KEEP_FAILING with aborted=0 in every bucket (D53's blind class),
+# while the driver's firmware stall counter -- the touch sense -- climbed 0->3 on
+# a topic the explorer did not read (D56). These tests hold both fixes against
+# that exact shape.
+
+
+def test_d53_stall_kills_are_a_named_counter_in_the_report(stack):
+    """MUST FAIL against the blind version (no stall_killed field): the report's
+    goal arithmetic must not leave an unexplained gap. On 2026-08-19 the artifact
+    said sent=7, succeeded=2, aborted=0 -- five goals with no recorded ending."""
+    stack.world.nav_mode = "hold"          # accepted, never progresses -> watchdog
+    stack.world.publish_map(make_map())
+    assert wait_until(
+        lambda: any(r.get("outcome") == "ABORTED_GOALS_KEEP_FAILING"
+                    for r in stack.world.reports), 30.0
+    ), "the stalled mission never gave up"
+    goals = [r for r in stack.world.reports
+             if r.get("outcome") == "ABORTED_GOALS_KEEP_FAILING"][-1]["goals"]
+    assert goals["stall_killed"] is not None, (
+        "stall_killed is UNKNOWN in a report written by the node itself -- the "
+        "counter is not wired through")
+    assert goals["stall_killed"] >= 3
+    assert goals["aborted"] == 0, "hold-mode goals cannot ABORT; harness drifted"
+    assert goals["sent"] - goals["succeeded"] == goals["stall_killed"], (
+        "the goal ledger still has endings no counter names: "
+        f"sent={goals['sent']} succeeded={goals['succeeded']} "
+        f"stall_killed={goals['stall_killed']}"
+    )
+
+
+def test_d53_breaker_epitaph_counts_and_never_diagnoses():
+    """The flight's breaker said '5 goals in a row failed, at different places --
+    this is the stack, not the room' over five failures at ONE rover pose whose
+    cause was the FLOOR: 'different places' described the goals, and the
+    diagnosis was inverted. The epitaph must count kinds and measure the ROVER's
+    pose spread, asserting no cause. Source-level, like the launch pins."""
+    src = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver" /
+           "coverage_explorer_node.py").read_text()
+    assert 'f"{n} goals in a row failed' not in src, (
+        "the diagnosing epitaph is back")
+    assert "consecutive goals ended without success" in src
+    assert "pose spread across the streak" in src
+
+
+def test_d56_driver_stall_deltas_are_freeze_discoveries(stack):
+    """THE FLIGHT'S COUNTERFACTUAL, and the must-flip for D56: goals hold (the
+    watchdog kills them, exactly like 2026-08-19) while the DRIVER's stall
+    counter climbs on /diagnostics. Pre-D56 the explorer cannot hear it and ends
+    ABORTED_GOALS_KEEP_FAILING, blaming the stack for a fact about the floor.
+    With the feed, every kill pairs with a discovery and the mission ends with
+    the honest unseen-obstacle outcome instead."""
+    stack.world.nav_mode = "hold"
+    stack.world.publish_map(make_map())
+
+    def keep_stalling():
+        for n in range(1, 200):                    # n=1 is the BASELINE, no event
+            stack.world.publish_stall_count(n)
+            time.sleep(0.05)
+    threading.Thread(target=keep_stalling, daemon=True).start()
+
+    assert wait_until(lambda: bool(stack.world.reports), 30.0), "mission never ended"
+    outcome = stack.world.reports[-1]["outcome"]
+    assert outcome == "INCOMPLETE_BLOCKED_BY_UNSEEN_OBSTACLES", (
+        f"driver stall deltas were not heard as discoveries (got {outcome}) -- "
+        "the stock stack's touch sense is still not feeding the mission ledger"
+    )
+    assert stack.world.reports[-1]["freeze_mark_counts"]["events"] >= 1
+
+
+@pytest.mark.parametrize(
+    # A long watchdog keeps the controller's pending freeze UNCLAIMED while the
+    # duplicate arrives; the base 0.6 s timeout could claim it first and the
+    # dedupe would pass vacuously.
+    "stack", [{"goal_progress_timeout_s": 10.0}], indirect=True,
+)
+def test_d56_synthetic_freeze_dedupes_against_the_controllers(stack):
+    """Bespoke runs this node WITH the decisive controller, so one physical stall
+    can arrive on both lanes. The synthetic entry must be skipped when the
+    controller's positioned event already sits within the merge radius --
+    otherwise every bespoke freeze double-counts the discovery ledger."""
+    stack.world.nav_mode = "hold"
+    stack.world.publish_map(make_map())
+    assert wait_until(lambda: any(s.get("goal_in_flight") for s in stack.world.statuses),
+                      20.0), "no goal ever flew"
+    stack.world.publish_stall_count(1)                  # baseline
+    stack.world.publish_freeze(0.0, 0.0)                # the controller's event
+    assert wait_until(lambda: stack.world.statuses and
+                      stack.world.statuses[-1].get("freezes", 0) == 1, 10.0), \
+        "the controller's freeze never reached the ledger"
+    stack.world.publish_stall_count(2)                  # same stall, driver lane
+    time.sleep(1.0)                                     # give a duplicate every chance
+    assert stack.world.statuses[-1].get("freezes") == 1, (
+        "one physical stall was counted twice -- the bespoke dual-lane dedupe "
+        "is not holding"
     )
 
 

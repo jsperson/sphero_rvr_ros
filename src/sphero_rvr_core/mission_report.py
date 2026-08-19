@@ -115,6 +115,12 @@ def build_report(
     goals_aborted=0,
     goals_aborted_after_recovery=None,
     goals_aborted_without_recovery=None,
+    # D53: the watchdog stall-kill class, invisible to every abort counter until
+    # 2026-08-19 -- five of them ended the combined ride-along with aborted=0 in
+    # every bucket. UNKNOWN by default like its siblings, never a fabricated 0:
+    # a zero from a caller that predates the field reads as "nothing was
+    # stall-killed", which is exactly the lie the field exists to remove.
+    goals_stall_killed=None,
     planner_rejections=0,
     # Distinct from planner_rejections BY RULING (cert attempt 3's conflation,
     # 2026-08-19): approach poses the safety envelope filtered before any
@@ -198,6 +204,13 @@ def build_report(
             "aborted_without_recovery": (
                 None if goals_aborted_without_recovery is None
                 else int(goals_aborted_without_recovery)
+            ),
+            # Goals the explorer's own progress watchdog cancelled (result status
+            # CANCELED -- neither ABORTED nor SUCCEEDED, so no abort bucket ever
+            # sees them). Named so sent - succeeded - aborted - stall_killed
+            # stops leaving an unexplained gap in the artifact the run is judged by.
+            "stall_killed": (
+                None if goals_stall_killed is None else int(goals_stall_killed)
             ),
             "planner_rejections": int(planner_rejections),
             "standoff_skips": (

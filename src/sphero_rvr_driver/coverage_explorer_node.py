@@ -59,6 +59,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from action_msgs.msg import GoalStatus
+from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose
@@ -142,6 +143,16 @@ class CoverageExplorerNode(Node):
         # Without a separate ceiling the exemption would be unbounded and a rover
         # wedged in a corner would freeze forever, which is why this exists.
         self.declare_parameter("max_consecutive_freezes", 5)
+        # D56: the freeze feed that exists on the STOCK stack. The decisive
+        # controller's freeze_event topic has no publisher there, so freezes were
+        # structurally invisible and three real discoveries were booked as stack
+        # failures on 2026-08-19. The DRIVER owns the physical fact (its firmware
+        # stall counter, already on /diagnostics at 10 Hz) -- consume the counter's
+        # DELTAS, same key contact_marker reads, and classify a mid-mission stall
+        # as the discovery it is. Counters, not levels: sampling rate stays out of
+        # the correctness argument.
+        self.declare_parameter("diagnostics_topic", "/diagnostics")
+        self.declare_parameter("stall_counter_key", "motor_stall_events")
         # Only for REPORTING: at what separation two freeze events are one place.
         # CHANGE BOTH OR NEITHER -- it must equal decisive_controller_node's
         # `freeze_mark_merge_radius_m`, because the controller has already merged at
@@ -327,6 +338,13 @@ class CoverageExplorerNode(Node):
         self._goals_aborted_after_recovery = 0
         self._goals_aborted_without_recovery = 0
         self._goals_aborted = 0
+        # D53: the watchdog stall-kill is a terminal path like any other and gets
+        # its own named counter. Its result status is CANCELED, which the result
+        # callback counts as neither ABORTED nor SUCCEEDED -- so until 2026-08-19
+        # this class was invisible to every public counter, and the combined
+        # ride-along ended "ABORTED_GOALS_KEEP_FAILING" with aborted=0 in every
+        # bucket: a report an autopsy would read as "nothing failed".
+        self._goals_stall_killed = 0
         self._planner_rejections = 0
         # the planner_rejections counter's honest siblings (cert attempt 3's
         # conflation): queries = times the planner was actually ASKED;
@@ -337,6 +355,16 @@ class CoverageExplorerNode(Node):
         self._reported = False
         self._consecutive_failures = 0
         self._consecutive_freezes = 0
+        # The current failure STREAK, one (kind, (wx, wy)) per failure, cleared on
+        # success. The breaker's epitaph is keyed on THESE poses -- the 2026-08-19
+        # flight's breaker said "failed at different places -- this is the stack"
+        # while the rover sat at ONE place failing the same physical way five
+        # times: the goals were different places, the rover was not. Count kinds,
+        # measure the pose spread, diagnose nothing.
+        self._failure_streak = []
+        # D56 freeze feed state: last driver stall count seen (None = no baseline
+        # yet -- the first sample is a baseline, never an event).
+        self._last_stall_count = None
         # Unconsumed freeze events, newest last. An event pairs with AT MOST ONE
         # abort: two aborts inside the correlation window of a single freeze must
         # not both be excused, or one discovery would silently forgive an unrelated
@@ -394,6 +422,14 @@ class CoverageExplorerNode(Node):
         self.create_subscription(
             String, "/decisive_controller/freeze_event", self._on_freeze, 10,
             callback_group=cbg,
+        )
+        # D56: the freeze feed that has a live publisher on the STOCK middle. Both
+        # lanes stay subscribed -- bespoke runs this node WITH the decisive
+        # controller, so one physical stall can arrive on both; _on_diagnostics
+        # dedupes against pending events within the merge radius.
+        self.create_subscription(
+            DiagnosticArray, str(self.get_parameter("diagnostics_topic").value),
+            self._on_diagnostics, 10, callback_group=cbg,
         )
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -626,6 +662,7 @@ class CoverageExplorerNode(Node):
                 "goals_aborted": self._goals_aborted,
                 "goals_aborted_after_recovery": self._goals_aborted_after_recovery,
                 "goals_aborted_without_recovery": self._goals_aborted_without_recovery,
+                "goals_stall_killed": self._goals_stall_killed,
                 "planner_rejections": self._planner_rejections,
                 "standoff_skips": self._standoff_skips,
                 "covered_cells": len(self._covered),
@@ -731,6 +768,7 @@ class CoverageExplorerNode(Node):
                     goals_aborted=self._goals_aborted,
                     goals_aborted_after_recovery=self._goals_aborted_after_recovery,
                     goals_aborted_without_recovery=self._goals_aborted_without_recovery,
+                    goals_stall_killed=self._goals_stall_killed,
                     planner_rejections=self._planner_rejections,
                     standoff_skips=self._standoff_skips,
                     # THE FORENSIC FIELDS, which this call site omitted until
@@ -794,7 +832,13 @@ class CoverageExplorerNode(Node):
                 # counter resets on every send, and the give-up counter that exists
                 # precisely to stop this thrash never moves. The rover sits nearly
                 # still logging "made no progress" every few seconds indefinitely.
-                self._note_failure(active_cell, self._active_goal_generation)
+                #
+                # D53: counted PUBLICLY too. Five of these ended the 2026-08-19
+                # ride-along while status and report said aborted=0 everywhere.
+                with self._lock:
+                    self._goals_stall_killed += 1
+                self._note_failure(active_cell, self._active_goal_generation,
+                                   kind="stall_killed")
                 if self._mission_done:
                     return  # that was the last straw; _finish already ran
             else:
@@ -1002,6 +1046,7 @@ class CoverageExplorerNode(Node):
             goals_aborted=self._goals_aborted,
             goals_aborted_after_recovery=self._goals_aborted_after_recovery,
             goals_aborted_without_recovery=self._goals_aborted_without_recovery,
+            goals_stall_killed=self._goals_stall_killed,
             planner_rejections=self._planner_rejections,
             standoff_skips=self._standoff_skips,
             remaining_candidates=remaining,
@@ -1303,7 +1348,7 @@ class CoverageExplorerNode(Node):
                 generation = self._active_goal_generation
                 self._active_goal_cell = None
             self.get_logger().warn(f"coverage goal {cell} REJECTED — suppressing it")
-            self._note_failure(cell, generation)
+            self._note_failure(cell, generation, kind="rejected")
             return
         with self._lock:
             self._active_goal_handle = handle
@@ -1348,12 +1393,13 @@ class CoverageExplorerNode(Node):
                 f"suppressing it for "
                 f"{self._stall_ttl_s:.0f}s so we do not drive at it again"
             )
-            self._note_failure(cell, generation)
+            self._note_failure(cell, generation, kind="aborted")
         elif status == GoalStatus.STATUS_SUCCEEDED:
             with self._lock:
                 self._goals_succeeded += 1
                 self._consecutive_failures = 0
                 self._consecutive_freezes = 0
+                self._failure_streak = []
                 # THE ESCAPE BUDGET IS NOT REFILLED HERE. It used to be, and under the
                 # old Nav2 escape that was harmless because the escape never did
                 # anything. Now that the escape MOVES the rover, refilling on a
@@ -1472,6 +1518,62 @@ class CoverageExplorerNode(Node):
             self._pending_freezes.append((self._goals_sent, x, y))
             self._freeze_events.append({"x": round(x, 3), "y": round(y, 3)})
 
+    def _on_diagnostics(self, msg):
+        """D56: freezes from the DRIVER's own stall counter -- the feed with a live
+        publisher on the STOCK middle, where /decisive_controller/freeze_event has
+        none and three real discoveries were booked as stack failures (2026-08-19
+        combined ride-along). Deltas only, per counters-not-levels: the first
+        sample is a baseline, never an event, and the baseline advances even while
+        disarmed so an arming later does not replay old increments. A stall with
+        no mission armed is somebody carrying the rover, not a discovery.
+
+        The freeze position is this node's own robot pose at delta time -- the
+        driver owns the fact, not the location, and a stalled rover IS at the
+        discovery. On bespoke one physical stall can also arrive via _on_freeze;
+        the synthetic entry is skipped when a claimable pending freeze already
+        sits within the merge radius (dedupe is one-directional by consensus:
+        the controller's positioned event is the better record when both exist).
+        """
+        key = str(self.get_parameter("stall_counter_key").value)
+        count = None
+        for status in msg.status:
+            for kv in status.values:
+                if kv.key == key:
+                    try:
+                        count = int(kv.value)
+                    except (TypeError, ValueError):
+                        return
+                    break
+            if count is not None:
+                break
+        if count is None:
+            return
+        with self._lock:
+            last = self._last_stall_count
+            self._last_stall_count = count
+            armed = self._armed and not self._mission_done
+        if last is None or count <= last or not armed:
+            return
+        here = self._robot_world(self._map.header.frame_id or "map") if self._map else None
+        if here is None:
+            self.get_logger().warn(
+                f"driver stall counter +{count - last} during the mission, but no "
+                "map/pose to place it -- discovery NOT recorded")
+            return
+        x, y = here
+        merge = float(self.get_parameter("freeze_mark_merge_radius_m").value)
+        with self._lock:
+            goal = self._goals_sent
+            if any(g >= goal - 1 and math.hypot(x - fx, y - fy) <= merge
+                   for g, fx, fy in self._pending_freezes):
+                return
+            self._pending_freezes.append((goal, x, y))
+            self._freeze_events.append({"x": round(x, 3), "y": round(y, 3)})
+        self.get_logger().warn(
+            f"driver stall counter +{count - last} during goal {goal} — counted "
+            f"as a FREEZE discovery at ({x:.2f},{y:.2f}), not a stack failure "
+            "(D56: the touch sense feeding the mission ledger on stock)")
+
     def _claim_freeze(self, generation=None):
         """Consume the most recent unclaimed freeze FROM THIS GOAL.
 
@@ -1520,9 +1622,11 @@ class CoverageExplorerNode(Node):
             ]
             return claimed
 
-    def _note_failure(self, cell, generation=None):
+    def _note_failure(self, cell, generation=None, kind="failed"):
         """Record that driving to `cell` failed: suppress it, and give up entirely if
-        goals are failing everywhere.
+        goals are failing everywhere. `kind` names the terminal path for the
+        breaker's epitaph (stall_killed / aborted / rejected) -- counted, never
+        diagnosed.
 
         The give-up half is the important one. Suppression alone still lets a broken
         stack chew through the entire map one cell at a time -- on 2026-08-09 that was
@@ -1561,14 +1665,34 @@ class CoverageExplorerNode(Node):
                              self._remaining_candidates())
             return
 
+        here = self._robot_world(self._map.header.frame_id or "map") if self._map else None
         with self._lock:
             self._consecutive_failures += 1
             n = self._consecutive_failures
+            self._failure_streak.append((kind, here))
+            streak = list(self._failure_streak)
         if n >= self._max_consecutive_failures:
+            # D53's epitaph rule: COUNT, DON'T DIAGNOSE, and key locality on the
+            # ROVER's poses, not the goals'. The 2026-08-19 breaker said "failed
+            # at different places -- this is the stack, not the room" over five
+            # failures at ONE rover pose (spread 0.03 m) whose cause was the
+            # floor: the goals were different places, the rover was not, and the
+            # line inverted the diagnosis it had no business making.
+            kinds = {}
+            for k, _ in streak:
+                kinds[k] = kinds.get(k, 0) + 1
+            counts_txt = ", ".join(f"{v} {k}" for k, v in sorted(kinds.items()))
+            poses = [p for _, p in streak if p is not None]
+            spread_txt = "UNKNOWN"
+            if len(poses) >= 2:
+                spread = max(math.hypot(px - poses[0][0], py - poses[0][1])
+                             for px, py in poses[1:])
+                spread_txt = f"{spread:.2f} m"
             self.get_logger().error(
-                f"{n} goals in a row failed, at different places — this is the stack, "
-                "not the room. Stopping. Check the controller (a stuck 'boxed in' "
-                "state fails every goal in milliseconds) before running again."
+                f"{n} consecutive goals ended without success ({counts_txt}); "
+                f"rover pose spread across the streak: {spread_txt}. Stopping and "
+                "reporting the counts — stack, room, or floor is the per-goal "
+                "ledger's question, not this line's."
             )
             self._mission_done = True
             res = self._map.info.resolution if self._map else 0.05

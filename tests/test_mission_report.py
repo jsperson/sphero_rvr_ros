@@ -59,6 +59,10 @@ def test_goal_counts_and_map_files_round_trip():
     assert r["goals"] == {"sent": 5, "succeeded": 4, "aborted": 1,
                           "aborted_after_recovery": None,
                           "aborted_without_recovery": None,
+                          # UNKNOWN-not-zero, same as its siblings (D53's
+                          # watchdog stall-kill class, named 2026-08-19 after
+                          # five of them ended a flight with aborted=0)
+                          "stall_killed": None,
                           "planner_rejections": 7,
                           # UNKNOWN-not-zero, same as its siblings (the field
                           # arrived with cert 3's conflation fix, 2026-08-19)
