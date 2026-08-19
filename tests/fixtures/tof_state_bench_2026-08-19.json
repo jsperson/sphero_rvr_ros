@@ -1,0 +1,940 @@
+{
+ "note": "every /tof/state line from bag_bench_20260819_122918 (the D59 sitting), sensor-clock fields only",
+ "rows": [
+  {
+   "uptime_s": 9.9,
+   "frames": 7,
+   "rate_hz": 6.46
+  },
+  {
+   "uptime_s": 11.0,
+   "frames": 13,
+   "rate_hz": 5.91
+  },
+  {
+   "uptime_s": 11.9,
+   "frames": 19,
+   "rate_hz": 6.13
+  },
+  {
+   "uptime_s": 12.9,
+   "frames": 26,
+   "rate_hz": 6.3
+  },
+  {
+   "uptime_s": 13.9,
+   "frames": 32,
+   "rate_hz": 6.32
+  },
+  {
+   "uptime_s": 14.9,
+   "frames": 39,
+   "rate_hz": 6.41
+  },
+  {
+   "uptime_s": 15.9,
+   "frames": 46,
+   "rate_hz": 6.73
+  },
+  {
+   "uptime_s": 16.9,
+   "frames": 53,
+   "rate_hz": 6.82
+  },
+  {
+   "uptime_s": 17.9,
+   "frames": 60,
+   "rate_hz": 6.83
+  },
+  {
+   "uptime_s": 18.9,
+   "frames": 67,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 19.9,
+   "frames": 74,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 21.0,
+   "frames": 81,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 22.0,
+   "frames": 88,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 23.0,
+   "frames": 95,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 24.0,
+   "frames": 102,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 25.0,
+   "frames": 109,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 26.0,
+   "frames": 116,
+   "rate_hz": 6.99
+  },
+  {
+   "uptime_s": 27.0,
+   "frames": 123,
+   "rate_hz": 6.99
+  },
+  {
+   "uptime_s": 28.0,
+   "frames": 130,
+   "rate_hz": 6.97
+  },
+  {
+   "uptime_s": 29.0,
+   "frames": 137,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 30.0,
+   "frames": 144,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 31.0,
+   "frames": 151,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 31.9,
+   "frames": 157,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 32.9,
+   "frames": 164,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 33.9,
+   "frames": 171,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 34.9,
+   "frames": 178,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 35.9,
+   "frames": 185,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 36.9,
+   "frames": 192,
+   "rate_hz": 6.91
+  },
+  {
+   "uptime_s": 37.9,
+   "frames": 199,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 38.9,
+   "frames": 206,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 40.0,
+   "frames": 213,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 41.0,
+   "frames": 220,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 42.0,
+   "frames": 227,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 43.0,
+   "frames": 234,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 44.0,
+   "frames": 241,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 44.9,
+   "frames": 247,
+   "rate_hz": 6.89
+  },
+  {
+   "uptime_s": 46.0,
+   "frames": 254,
+   "rate_hz": 6.77
+  },
+  {
+   "uptime_s": 46.9,
+   "frames": 259,
+   "rate_hz": 6.47
+  },
+  {
+   "uptime_s": 48.0,
+   "frames": 266,
+   "rate_hz": 6.43
+  },
+  {
+   "uptime_s": 49.0,
+   "frames": 273,
+   "rate_hz": 6.37
+  },
+  {
+   "uptime_s": 50.0,
+   "frames": 280,
+   "rate_hz": 6.44
+  },
+  {
+   "uptime_s": 50.9,
+   "frames": 286,
+   "rate_hz": 6.53
+  },
+  {
+   "uptime_s": 51.9,
+   "frames": 293,
+   "rate_hz": 6.85
+  },
+  {
+   "uptime_s": 52.9,
+   "frames": 300,
+   "rate_hz": 6.88
+  },
+  {
+   "uptime_s": 53.9,
+   "frames": 307,
+   "rate_hz": 6.91
+  },
+  {
+   "uptime_s": 54.9,
+   "frames": 314,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 55.9,
+   "frames": 321,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 56.9,
+   "frames": 328,
+   "rate_hz": 6.91
+  },
+  {
+   "uptime_s": 58.0,
+   "frames": 335,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 59.0,
+   "frames": 342,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 60.0,
+   "frames": 349,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 61.0,
+   "frames": 356,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 62.0,
+   "frames": 363,
+   "rate_hz": 6.97
+  },
+  {
+   "uptime_s": 63.0,
+   "frames": 370,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 64.0,
+   "frames": 377,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 65.0,
+   "frames": 384,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 65.9,
+   "frames": 390,
+   "rate_hz": 6.91
+  },
+  {
+   "uptime_s": 66.9,
+   "frames": 397,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 67.9,
+   "frames": 404,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 68.9,
+   "frames": 411,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 69.9,
+   "frames": 418,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 70.9,
+   "frames": 425,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 71.9,
+   "frames": 432,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 72.9,
+   "frames": 439,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 74.0,
+   "frames": 446,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 75.0,
+   "frames": 453,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 76.0,
+   "frames": 460,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 77.0,
+   "frames": 467,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 77.9,
+   "frames": 473,
+   "rate_hz": 6.82
+  },
+  {
+   "uptime_s": 79.0,
+   "frames": 480,
+   "rate_hz": 6.68
+  },
+  {
+   "uptime_s": 80.0,
+   "frames": 486,
+   "rate_hz": 6.53
+  },
+  {
+   "uptime_s": 80.9,
+   "frames": 492,
+   "rate_hz": 6.44
+  },
+  {
+   "uptime_s": 81.9,
+   "frames": 498,
+   "rate_hz": 6.3
+  },
+  {
+   "uptime_s": 82.9,
+   "frames": 504,
+   "rate_hz": 6.24
+  },
+  {
+   "uptime_s": 84.0,
+   "frames": 511,
+   "rate_hz": 6.27
+  },
+  {
+   "uptime_s": 85.0,
+   "frames": 518,
+   "rate_hz": 6.42
+  },
+  {
+   "uptime_s": 85.9,
+   "frames": 524,
+   "rate_hz": 6.47
+  },
+  {
+   "uptime_s": 86.9,
+   "frames": 531,
+   "rate_hz": 6.63
+  },
+  {
+   "uptime_s": 87.9,
+   "frames": 538,
+   "rate_hz": 6.8
+  },
+  {
+   "uptime_s": 88.9,
+   "frames": 545,
+   "rate_hz": 6.89
+  },
+  {
+   "uptime_s": 89.9,
+   "frames": 552,
+   "rate_hz": 6.91
+  },
+  {
+   "uptime_s": 90.9,
+   "frames": 559,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 91.9,
+   "frames": 566,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 93.0,
+   "frames": 573,
+   "rate_hz": 6.87
+  },
+  {
+   "uptime_s": 94.0,
+   "frames": 580,
+   "rate_hz": 6.87
+  },
+  {
+   "uptime_s": 94.9,
+   "frames": 586,
+   "rate_hz": 6.87
+  },
+  {
+   "uptime_s": 95.9,
+   "frames": 593,
+   "rate_hz": 6.86
+  },
+  {
+   "uptime_s": 96.9,
+   "frames": 600,
+   "rate_hz": 6.86
+  },
+  {
+   "uptime_s": 97.9,
+   "frames": 607,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 98.9,
+   "frames": 614,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 99.9,
+   "frames": 621,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 100.9,
+   "frames": 628,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 101.9,
+   "frames": 635,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 102.9,
+   "frames": 642,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 104.0,
+   "frames": 649,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 105.0,
+   "frames": 656,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 106.0,
+   "frames": 663,
+   "rate_hz": 6.97
+  },
+  {
+   "uptime_s": 107.0,
+   "frames": 670,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 108.0,
+   "frames": 677,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 109.0,
+   "frames": 684,
+   "rate_hz": 6.97
+  },
+  {
+   "uptime_s": 110.0,
+   "frames": 691,
+   "rate_hz": 6.96
+  },
+  {
+   "uptime_s": 111.0,
+   "frames": 698,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 112.0,
+   "frames": 705,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 112.9,
+   "frames": 711,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 113.9,
+   "frames": 718,
+   "rate_hz": 6.92
+  },
+  {
+   "uptime_s": 114.9,
+   "frames": 725,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 115.9,
+   "frames": 732,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 116.9,
+   "frames": 739,
+   "rate_hz": 6.93
+  },
+  {
+   "uptime_s": 117.9,
+   "frames": 746,
+   "rate_hz": 6.95
+  },
+  {
+   "uptime_s": 118.9,
+   "frames": 753,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 119.9,
+   "frames": 760,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 120.9,
+   "frames": 767,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 122.0,
+   "frames": 774,
+   "rate_hz": 6.94
+  },
+  {
+   "uptime_s": 122.9,
+   "frames": 780,
+   "rate_hz": 6.84
+  },
+  {
+   "uptime_s": 123.9,
+   "frames": 787,
+   "rate_hz": 6.84
+  },
+  {
+   "uptime_s": 124.9,
+   "frames": 794,
+   "rate_hz": 6.84
+  },
+  {
+   "uptime_s": 125.9,
+   "frames": 801,
+   "rate_hz": 6.82
+  },
+  {
+   "uptime_s": 126.9,
+   "frames": 807,
+   "rate_hz": 6.66
+  },
+  {
+   "uptime_s": 127.9,
+   "frames": 814,
+   "rate_hz": 6.73
+  },
+  {
+   "uptime_s": 128.9,
+   "frames": 821,
+   "rate_hz": 6.76
+  },
+  {
+   "uptime_s": 129.9,
+   "frames": 828,
+   "rate_hz": 6.81
+  },
+  {
+   "uptime_s": 130.9,
+   "frames": 835,
+   "rate_hz": 6.86
+  },
+  {
+   "uptime_s": 132.0,
+   "frames": 843,
+   "rate_hz": 7.07
+  },
+  {
+   "uptime_s": 133.0,
+   "frames": 850,
+   "rate_hz": 7.14
+  },
+  {
+   "uptime_s": 134.0,
+   "frames": 857,
+   "rate_hz": 7.14
+  },
+  {
+   "uptime_s": 134.9,
+   "frames": 864,
+   "rate_hz": 7.16
+  },
+  {
+   "uptime_s": 135.9,
+   "frames": 871,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 136.9,
+   "frames": 878,
+   "rate_hz": 7.15
+  },
+  {
+   "uptime_s": 137.9,
+   "frames": 885,
+   "rate_hz": 7.12
+  },
+  {
+   "uptime_s": 139.0,
+   "frames": 892,
+   "rate_hz": 6.99
+  },
+  {
+   "uptime_s": 139.9,
+   "frames": 899,
+   "rate_hz": 7.0
+  },
+  {
+   "uptime_s": 140.9,
+   "frames": 906,
+   "rate_hz": 7.01
+  },
+  {
+   "uptime_s": 141.9,
+   "frames": 913,
+   "rate_hz": 7.02
+  },
+  {
+   "uptime_s": 143.0,
+   "frames": 921,
+   "rate_hz": 7.1
+  },
+  {
+   "uptime_s": 144.0,
+   "frames": 928,
+   "rate_hz": 7.21
+  },
+  {
+   "uptime_s": 144.9,
+   "frames": 935,
+   "rate_hz": 7.22
+  },
+  {
+   "uptime_s": 145.9,
+   "frames": 942,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 146.9,
+   "frames": 949,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 148.0,
+   "frames": 957,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 149.0,
+   "frames": 964,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 149.9,
+   "frames": 971,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 150.9,
+   "frames": 978,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 151.9,
+   "frames": 985,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 153.0,
+   "frames": 993,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 154.0,
+   "frames": 1000,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 154.9,
+   "frames": 1007,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 155.9,
+   "frames": 1014,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 156.9,
+   "frames": 1021,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 157.9,
+   "frames": 1028,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 159.0,
+   "frames": 1036,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 160.0,
+   "frames": 1043,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 160.9,
+   "frames": 1050,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 161.9,
+   "frames": 1057,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 162.9,
+   "frames": 1064,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 164.0,
+   "frames": 1072,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 165.0,
+   "frames": 1079,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 166.0,
+   "frames": 1086,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 166.9,
+   "frames": 1093,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 167.9,
+   "frames": 1100,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 168.9,
+   "frames": 1107,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 170.0,
+   "frames": 1115,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 171.0,
+   "frames": 1122,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 171.9,
+   "frames": 1129,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 172.9,
+   "frames": 1136,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 173.9,
+   "frames": 1143,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 175.0,
+   "frames": 1151,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 176.0,
+   "frames": 1158,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 176.9,
+   "frames": 1165,
+   "rate_hz": 7.2
+  },
+  {
+   "uptime_s": 177.9,
+   "frames": 1172,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 178.9,
+   "frames": 1179,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 180.0,
+   "frames": 1187,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 181.0,
+   "frames": 1194,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 182.0,
+   "frames": 1201,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 182.9,
+   "frames": 1208,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 183.9,
+   "frames": 1215,
+   "rate_hz": 7.19
+  },
+  {
+   "uptime_s": 184.9,
+   "frames": 1222,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 186.0,
+   "frames": 1230,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 187.0,
+   "frames": 1237,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 187.9,
+   "frames": 1244,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 188.9,
+   "frames": 1251,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 189.9,
+   "frames": 1258,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 190.9,
+   "frames": 1265,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 192.0,
+   "frames": 1273,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 193.0,
+   "frames": 1280,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 193.9,
+   "frames": 1287,
+   "rate_hz": 7.17
+  },
+  {
+   "uptime_s": 194.9,
+   "frames": 1294,
+   "rate_hz": 7.18
+  },
+  {
+   "uptime_s": 195.9,
+   "frames": 1301,
+   "rate_hz": 7.19
+  }
+ ]
+}

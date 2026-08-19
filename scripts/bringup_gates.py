@@ -35,6 +35,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from lifecycle_msgs.srv import GetState
+from sphero_rvr_core.tof_gate import MIN_COUNTER_SPAN_S, tof_gate_verdict
 from rcl_interfaces.srv import GetParameters
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
@@ -200,12 +201,42 @@ def main() -> int:
         fields = dict(re.findall(r"(\w+)=([^\s']+)", tof))
         if int(fields.get("obstacle_consumers", "0")) < 1:
             return fail("tof", "obstacle_consumers=0 -- supervisor not subscribed")
-        rate = float(fields.get("rate_hz", "0") or 0)
-        if rate < TOF_RATE_MIN_HZ:
-            return fail("tof", f"{rate} Hz below the {TOF_RATE_MIN_HZ} band")
+        # D59: the rate is measured from the sensor's FRAMES COUNTER across
+        # >=10 s of its own clock, never from one sample of the noisy 5 s
+        # rate_hz window -- a single sample of that field against the hard band
+        # stopped the 2026-08-19 bench sitting at 6.30/6.43 on a sensor whose
+        # counter never ran below 6.65 (bag_bench_20260819_122918; the replay
+        # is tests/test_tof_gate.py). Counters-not-levels, applied to our own
+        # gate; the band and its staleness derivation are unchanged above.
+        samples = []
+        verdict, rate = None, None
+        counter_deadline = time.monotonic() + MIN_COUNTER_SPAN_S + 10.0
+        while time.monotonic() < counter_deadline:
+            fields = dict(re.findall(r"(\w+)=([^\s']+)", probe.tof_line))
+            try:
+                pair = (int(fields["frames"]), float(fields["uptime_s"]))
+            except (KeyError, ValueError):
+                return fail("tof", "state line lacks frames/uptime_s -- the "
+                            "counter gate cannot run; fix the producer, do not "
+                            "fall back to the one-sample rate_hz field")
+            if not samples or pair != samples[-1]:
+                samples.append(pair)
+                verdict, rate = tof_gate_verdict(samples, TOF_RATE_MIN_HZ)
+                if verdict is not None:
+                    break
+            time.sleep(0.2)
+        if verdict is None:
+            return fail("tof", f"frames counter never spanned "
+                        f"{MIN_COUNTER_SPAN_S:.0f}s of sensor uptime -- the "
+                        "producer is up but its clock/counter is not advancing")
+        if not verdict:
+            return fail("tof", f"{rate} Hz over >={MIN_COUNTER_SPAN_S:.0f}s of "
+                        f"the sensor's own frames counter, below the "
+                        f"{TOF_RATE_MIN_HZ} band")
         receipts["tof.rate_hz"] = rate
         receipts["tof.i2c_errors"] = int(fields.get("i2c_errors", "-1"))
-        print(f"GATE PASS tof ({rate} Hz, i2c_errors="
+        print(f"GATE PASS tof ({rate} Hz by frames counter over "
+              f">={MIN_COUNTER_SPAN_S:.0f}s, i2c_errors="
               f"{receipts['tof.i2c_errors']})", flush=True)
 
         # brake state: the D39 hold must not already be engaged
