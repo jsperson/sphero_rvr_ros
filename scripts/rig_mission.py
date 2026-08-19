@@ -48,18 +48,27 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 #: THE RATIFIED NUMBERS (PM round 2026-08-18). B1 30 s, B2 window per arm,
-#: B3 15 m + 3 goals, F1 window 300 s, F2 window 600 s, cert budget 1800 s.
-ARM_WINDOW_S = {"f1": 300.0, "f2": 600.0, "cert": 1800.0}
+#: B3 15 m + 3 goals, F1 window 300 s, F2-family windows 600 s, cert 1800 s.
+ARM_WINDOW_S = {"f1": 300.0, "f2a": 600.0, "f2": 600.0, "cert": 1800.0}
 B1_ARM_S = 30.0
 B3_PATH_M = 15.0
 B3_GOALS = 3
 
 #: Per-arm PRE-REGISTERED predictions, bar -> expected pass/fail. The package
 #: verdict is "every actual == predicted". f1 never arms, so B1/B2/B3 fail and
-#: no report ever exists (B4 fail); f2 arms into a blocked start, must END
-#: HONESTLY (B4 pass: the report names the failure) without completing (B2 fail).
+#: no report ever exists (B4 fail).
+#:
+#: THE F2a/F2b AMENDMENT (PM ruling, same night): F2's first run scored B4 PASS
+#: on a report the runner's own cleanup stop had caused -- fabricated input --
+#: while the product sat in D38's armed-forever silence. Ruled PACKAGE-DEVIATED.
+#: So the F2 scene now runs twice: "f2a" against the UN-fixed product predicts
+#: B4 FAIL (the repaired bar must be seen to catch the silence before it is
+#: trusted -- the adversary rule applies to the repair too), and "f2" (F2b)
+#: against the FIXED product keeps the ORIGINAL ratified predictions: the
+#: explorer itself names the failure. That green is the one that counts.
 PREDICTED = {
     "f1":   {"B1": False, "B2": False, "B3": False, "B4": False, "B5": True},
+    "f2a":  {"B1": True,  "B2": False, "B3": False, "B4": False, "B5": True},
     "f2":   {"B1": True,  "B2": False, "B3": False, "B4": True,  "B5": True},
     "cert": {"B1": True,  "B2": True,  "B3": True,  "B4": True,  "B5": True},
 }
@@ -74,6 +83,7 @@ class Watch(Node):
         super().__init__("rig_mission_runner")
         self.status = None            # latest parsed status dict
         self.report = None            # latest parsed report dict
+        self.report_t = None          # monotonic arrival time of that report
         self.path_m = 0.0
         self.nonempty_marks = 0
         self.promotes = 0
@@ -99,6 +109,7 @@ class Watch(Node):
     def _on_report(self, msg):
         try:
             self.report = json.loads(msg.data)
+            self.report_t = time.monotonic()
         except ValueError:
             pass
 
@@ -136,7 +147,7 @@ def call_trigger(node, name, timeout_s=10.0):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--arm", required=True, choices=("f1", "f2", "cert"))
+    ap.add_argument("--arm", required=True, choices=("f1", "f2a", "f2", "cert"))
     args = ap.parse_args()
     window_s = ARM_WINDOW_S[args.arm]
     predicted = PREDICTED[args.arm]
@@ -203,26 +214,45 @@ def main() -> int:
             say(f"done=true after {time.monotonic() - t_start:.0f}s")
             break
         time.sleep(1.0)
+    stop_called_at = None
     if not done_seen:
         say(f"window expired ({window_s:.0f}s) without done=true")
         if arm_the_mission:
             # leave the rig quiescent for teardown; a goal in flight after the
             # verdict is a leaked mission, not evidence
+            stop_called_at = time.monotonic()
             call_trigger(watch, "/coverage_explorer/mission/stop", timeout_s=5.0)
     time.sleep(3.0)   # let the terminal report land (TRANSIENT_LOCAL, but be kind)
 
     # ---- scoring -------------------------------------------------------------
     s = watch.status or {}
     goals_ok = int(s.get("goals_succeeded", 0))
-    b2 = done_seen
     b3 = watch.path_m >= B3_PATH_M and goals_ok >= B3_GOALS
+    # B4 judges only what the EXPLORER said of its own accord: a report that
+    # arrived after this runner's own cleanup stop is self-caused evidence and is
+    # EXCLUDED (PM ruling 2026-08-18 -- F2's first run scored a pass on the
+    # STOPPED_BY_OPERATOR report the runner itself had triggered; ruled
+    # fabricated input, ratified fix (a)).
     report = watch.report
+    if (report is not None and stop_called_at is not None
+            and (watch.report_t is None or watch.report_t >= stop_called_at)):
+        say(f"B4: excluding self-caused report (outcome="
+            f"{report.get('outcome')}) -- it arrived after this runner's own stop")
+        report = None
     if report is None:
         b4 = False
     elif done_seen:
-        b4 = bool(report.get("complete"))
+        b4 = bool(report.get("outcome"))      # the end is named, whatever it was
     else:
         b4 = report.get("outcome") not in (None, "COMPLETE")
+    # B2 SHARPENED (flagged to the PM with the D38 batch): the ratified shorthand
+    # was "done=true within budget", written when only a COMPLETE mission set
+    # done. The D38 fix makes honest INCOMPLETE ends set done too -- as it
+    # should -- so the literal reading would score F2b's honest end as a PASS
+    # and contradict the ruling's own F2b prediction (B2 FAIL). The intent was
+    # always "the mission COMPLETES": done seen AND the explorer's own report
+    # says complete.
+    b2 = done_seen and bool((report or {}).get("complete"))
     b5 = watch.nonempty_marks == 0 and watch.promotes == 0
 
     actual = {"B1": b1, "B2": b2, "B3": b3, "B4": b4, "B5": b5}
