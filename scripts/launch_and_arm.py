@@ -171,34 +171,46 @@ def gate_verify():
             "commit or stash; an uncommitted edit flies unreviewed")
     say("verify", f"HEAD == origin/{BRANCH} == {head[:7]}, tree clean")
 
-    # installed tree: index install/ once by basename, then demand every shipped
-    # source file has a byte-identical installed twin under its own parent dir.
-    index = {}
-    for root, _dirs, files in os.walk(os.path.join(WS, "install")):
-        for f in files:
-            index.setdefault(f, []).append(os.path.join(root, f))
+    # installed tree: every shipped file's counterpart at its DETERMINISTIC
+    # package-anchored install path -- never a basename hunt across install/,
+    # which matched explore_lite's own explore.launch.py on its first live run
+    # and called OUR launch file stale. A counterpart whose realpath resolves
+    # INTO the repo (this workspace is --symlink-install: egg-link modules,
+    # install->build->src links for share files) is identical by construction;
+    # a real-file counterpart (a copy-install) is byte-compared.
+    import_roots = []
+    for sp in glob.glob(os.path.join(WS, "install", "sphero_rvr_driver",
+                                     "lib", "python*", "site-packages")):
+        import_roots.append(sp)
+        for link in glob.glob(os.path.join(sp, "*.egg-link")):
+            import_roots.append(open(link).readline().strip())
+    share = os.path.join(WS, "install", "sphero_rvr_driver",
+                         "share", "sphero_rvr_driver")
     checked, missing, stale = 0, [], []
-    for reldir, pattern in (("src/sphero_rvr_driver", "*.py"),
-                            ("src/sphero_rvr_core", "*.py"),
-                            ("config", "*.yaml"), ("launch", "*.py")):
-        parent = os.path.basename(reldir)
+    for reldir, pattern, roots in (
+            ("src/sphero_rvr_driver", "*.py", import_roots),
+            ("src/sphero_rvr_core", "*.py", import_roots),
+            ("config", "*.yaml", [share]),
+            ("launch", "*.py", [share])):
+        anchor = os.path.basename(reldir)
         for src_path in sorted(glob.glob(os.path.join(REPO, reldir, pattern))):
             name = os.path.basename(src_path)
-            twins = [p for p in index.get(name, [])
-                     if os.path.basename(os.path.dirname(p)) == parent]
+            twins = [p for p in (os.path.join(r, anchor, name) for r in roots)
+                     if os.path.exists(p)]
             if not twins:
-                missing.append(f"{parent}/{name}")
+                missing.append(f"{anchor}/{name}")
                 continue
             for twin in twins:
-                if not filecmp.cmp(src_path, twin, shallow=False):
-                    stale.append(f"{parent}/{name}")
+                if (os.path.realpath(twin) != os.path.realpath(src_path)
+                        and not filecmp.cmp(src_path, twin, shallow=False)):
+                    stale.append(f"{anchor}/{name}")
             checked += 1
     if missing or stale:
         die(f"installed tree does not match source -- missing: {missing[:5]} "
             f"stale: {stale[:5]}",
             f"cd {WS} && colcon build --packages-select sphero_rvr_driver, "
             f"then rerun; a stale install runs last week's code under this week's SHA")
-    say("verify", f"installed tree matches source ({checked} files byte-compared)")
+    say("verify", f"installed tree matches source ({checked} files verified)")
     return head[:7]
 
 
