@@ -91,6 +91,20 @@ replay), then a field A/B on the same room: coverage rate, stall_killed count,
 firmware stalls, supervisor brake engagements at speed. The re-fly's numbers
 (174.5 s / 7.29 m² / 8 kills / 2 stalls) are the baseline row already banked.
 
+**Replay verdicts (2026-08-19 evening):** falsifier EXACT (all 8 recorded
+kills reproduced, zero false kills on succeeded goals); certifier met its
+pre-registered predictions with ONE deviation, ratified as a priced trade
+(PM, verbatim): *"True pins now die in ~9-18 s instead of 6-7. Priced: the
+extra window is exactly where the composed machinery works — firmware Spin
+(1 s, field-proven today) often unsticks before the bar matters, the watcher
+fires at 12 s INSIDE the new window and marks (field-proven 7-for-7), and D56
+books the pin as a discovery — so the patience buys learn-and-reroute time
+rather than pure thrash. Cost worst-case: tens of seconds per mission at
+genuine pins (re-fly had ~2). Benefit: the entire false-kill class (8 of 13
+goals, the morning's mission-ender) at zero. The trade favors patience and
+aligns with contact-is-a-data-point: a pin should produce a mark, not a fast
+funeral."* This note IS that decision's record; no separate round.
+
 ## Rollback
 
 All yaml; one commit reverts; no code paths change shape.
