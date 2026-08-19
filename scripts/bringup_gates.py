@@ -104,7 +104,8 @@ def main() -> int:
     ap.add_argument("--csv", required=True, help="recorder csv path (growth gate)")
     ap.add_argument("--bag", required=True, help="bag directory (growth gate)")
     ap.add_argument("--timeout", type=float, default=90.0,
-                    help="overall budget; lifecycles get most of it")
+                    help="lifecycle-settle budget (phase A polls to 0.7x this); "
+                         "phase B gates carry their own independent ceilings")
     args = ap.parse_args()
 
     t_start = time.monotonic()
@@ -128,152 +129,161 @@ def main() -> int:
         print(f"GATE FAIL {gate}: {detail}", flush=True)
         return finish(1)
 
-    # ---- PHASE A: lifecycles ARE the settle (polled, never slept) ---------------
-    clients = {}
-    for name in LIFECYCLES[args.stack]:
-        clients[name] = probe.create_client(GetState, f"/{name}/get_state")
-    pending = set(clients)
-    deadline = time.monotonic() + args.timeout * 0.7
-    while pending and time.monotonic() < deadline:
-        for name in sorted(pending):
-            client = clients[name]
-            if not client.service_is_ready():
-                continue
-            future = client.call_async(GetState.Request())
-            t0 = time.monotonic()
-            while not future.done() and time.monotonic() - t0 < 2.0:
-                time.sleep(0.05)
-            result = future.result() if future.done() else None
-            if result is not None and result.current_state.label == "active":
-                receipts[f"lifecycle.{name}"] = "active"
-                pending.discard(name)
+    # ADVISORY FIX (review 2026-08-18): an unforeseen exception anywhere in the
+    # gate body (malformed status json, csv vanishing mid-read) must still walk
+    # out through finish() -- otherwise the daemon spinner is live at interpreter
+    # teardown and the refusal arrives as a core dump instead of a GATE FAIL line.
+    try:
+        # ---- PHASE A: lifecycles ARE the settle (polled, never slept) ---------------
+        clients = {}
+        for name in LIFECYCLES[args.stack]:
+            clients[name] = probe.create_client(GetState, f"/{name}/get_state")
+        pending = set(clients)
+        deadline = time.monotonic() + args.timeout * 0.7
+        while pending and time.monotonic() < deadline:
+            for name in sorted(pending):
+                client = clients[name]
+                if not client.service_is_ready():
+                    continue
+                future = client.call_async(GetState.Request())
+                t0 = time.monotonic()
+                while not future.done() and time.monotonic() - t0 < 2.0:
+                    time.sleep(0.05)
+                result = future.result() if future.done() else None
+                if result is not None and result.current_state.label == "active":
+                    receipts[f"lifecycle.{name}"] = "active"
+                    pending.discard(name)
+            if pending:
+                time.sleep(0.5)
         if pending:
-            time.sleep(0.5)
-    if pending:
-        return fail("lifecycles", f"never active: {sorted(pending)} -- a node that "
-                    "is up but not active publishes nothing and refuses nothing")
-    receipts["settle_s"] = round(time.monotonic() - t_start, 1)
-    print(f"GATE PASS lifecycles ({receipts['settle_s']}s)", flush=True)
+            return fail("lifecycles", f"never active: {sorted(pending)} -- a node that "
+                        "is up but not active publishes nothing and refuses nothing")
+        receipts["settle_s"] = round(time.monotonic() - t_start, 1)
+        print(f"GATE PASS lifecycles ({receipts['settle_s']}s)", flush=True)
 
-    # ---- PHASE B: everything else, concurrently off the one node ----------------
-    # Every wait below is a poll with a CEILING, never a sleep: on a healthy
-    # bringup each returns in well under a second, and the generous ceilings only
-    # matter on the bringups that were going to fail anyway. (bespoke has no
-    # lifecycle phase, so these ceilings are also its whole settle.)
-    # supervisor params -- the robot's own declared values, not the YAML
-    param_client = probe.create_client(
-        GetParameters, "/lidar_collision_stop_supervisor/get_parameters")
-    if not wait_until(lambda: param_client.service_is_ready() or None, 60.0):
-        return fail("params", "supervisor parameter service unavailable")
-    request = GetParameters.Request(names=list(SUPERVISOR_PARAMS))
-    future = param_client.call_async(request)
-    t0 = time.monotonic()
-    while not future.done() and time.monotonic() - t0 < 5.0:
-        time.sleep(0.05)
-    result = future.result() if future.done() else None
-    if result is None:
-        return fail("params", "get_parameters timed out")
-    for name, value in zip(SUPERVISOR_PARAMS, result.values):
-        got = (str(bool(value.bool_value)).lower() if value.type == 1
-               else f"{value.double_value:.4f}".rstrip("0").rstrip("."))
-        want = SUPERVISOR_PARAMS[name]
-        if got != want:
-            return fail("params", f"{name} is {got}, expected {want}")
-        receipts[f"param.{name}"] = got
-    print("GATE PASS params", flush=True)
+        # ---- PHASE B: everything else, concurrently off the one node ----------------
+        # Every wait below is a poll with a CEILING, never a sleep: on a healthy
+        # bringup each returns in well under a second, and the generous ceilings only
+        # matter on the bringups that were going to fail anyway. (bespoke has no
+        # lifecycle phase, so these ceilings are also its whole settle.)
+        # supervisor params -- the robot's own declared values, not the YAML
+        param_client = probe.create_client(
+            GetParameters, "/lidar_collision_stop_supervisor/get_parameters")
+        if not wait_until(lambda: param_client.service_is_ready() or None, 60.0):
+            return fail("params", "supervisor parameter service unavailable")
+        request = GetParameters.Request(names=list(SUPERVISOR_PARAMS))
+        future = param_client.call_async(request)
+        t0 = time.monotonic()
+        while not future.done() and time.monotonic() - t0 < 5.0:
+            time.sleep(0.05)
+        result = future.result() if future.done() else None
+        if result is None:
+            return fail("params", "get_parameters timed out")
+        for name, value in zip(SUPERVISOR_PARAMS, result.values):
+            got = (str(bool(value.bool_value)).lower() if value.type == 1
+                   else f"{value.double_value:.4f}".rstrip("0").rstrip("."))
+            want = SUPERVISOR_PARAMS[name]
+            if got != want:
+                return fail("params", f"{name} is {got}, expected {want}")
+            receipts[f"param.{name}"] = got
+        print("GATE PASS params", flush=True)
 
-    # tof: the sensor's own words (rule-B-off-with-tests-green, never again)
-    tof = wait_until(lambda: probe.tof_line, 30.0)
-    if tof is None:
-        return fail("tof", "no /tof/state -- the brake FAILS OPEN with no producer")
-    fields = dict(re.findall(r"(\w+)=([^\s']+)", tof))
-    if int(fields.get("obstacle_consumers", "0")) < 1:
-        return fail("tof", "obstacle_consumers=0 -- supervisor not subscribed")
-    rate = float(fields.get("rate_hz", "0") or 0)
-    if rate < TOF_RATE_MIN_HZ:
-        return fail("tof", f"{rate} Hz below the {TOF_RATE_MIN_HZ} band")
-    receipts["tof.rate_hz"] = rate
-    receipts["tof.i2c_errors"] = int(fields.get("i2c_errors", "-1"))
-    print(f"GATE PASS tof ({rate} Hz, i2c_errors="
-          f"{receipts['tof.i2c_errors']})", flush=True)
+        # tof: the sensor's own words (rule-B-off-with-tests-green, never again)
+        tof = wait_until(lambda: probe.tof_line, 30.0)
+        if tof is None:
+            return fail("tof", "no /tof/state -- the brake FAILS OPEN with no producer")
+        fields = dict(re.findall(r"(\w+)=([^\s']+)", tof))
+        if int(fields.get("obstacle_consumers", "0")) < 1:
+            return fail("tof", "obstacle_consumers=0 -- supervisor not subscribed")
+        rate = float(fields.get("rate_hz", "0") or 0)
+        if rate < TOF_RATE_MIN_HZ:
+            return fail("tof", f"{rate} Hz below the {TOF_RATE_MIN_HZ} band")
+        receipts["tof.rate_hz"] = rate
+        receipts["tof.i2c_errors"] = int(fields.get("i2c_errors", "-1"))
+        print(f"GATE PASS tof ({rate} Hz, i2c_errors="
+              f"{receipts['tof.i2c_errors']})", flush=True)
 
-    # brake state: the D39 hold must not already be engaged
-    state = wait_until(lambda: probe.state_line, 20.0)
-    if state is None or "cam_hold_active" not in state:
-        return fail("brake", "no /collision_stop/state with cam_hold fields")
-    hold = re.search(r"cam_hold_active=(\w+)", state).group(1)
-    if hold != "false":
-        return fail("brake", f"D39 hold already engaged before arming ({hold})")
-    receipts["brake.cam_hold"] = hold
-    print("GATE PASS brake", flush=True)
+        # brake state: the D39 hold must not already be engaged
+        state = wait_until(lambda: probe.state_line, 20.0)
+        if state is None or "cam_hold_active" not in state:
+            return fail("brake", "no /collision_stop/state with cam_hold fields")
+        hold = re.search(r"cam_hold_active=(\w+)", state).group(1)
+        if hold != "false":
+            return fail("brake", f"D39 hold already engaged before arming ({hold})")
+        receipts["brake.cam_hold"] = hold
+        print("GATE PASS brake", flush=True)
 
-    # bespoke: D29 makes bringup disarmed; an already-armed explorer here means a
-    # mission is running and the caller is about to lose the start of it
-    if args.stack == "bespoke":
-        status = wait_until(lambda: probe.explorer_status, 30.0)
-        if status is None:
-            return fail("disarmed", "no /coverage_explorer/status")
-        st = json.loads(status)
-        if st["armed"]:
-            return fail("disarmed", "the explorer is ALREADY ARMED before bringup "
-                        "armed it -- a mission is running")
-        receipts["explorer.armed"] = st["armed"]
-        receipts["explorer.done"] = st["done"]
-        print("GATE PASS disarmed", flush=True)
+        # bespoke: D29 makes bringup disarmed; an already-armed explorer here means a
+        # mission is running and the caller is about to lose the start of it
+        if args.stack == "bespoke":
+            status = wait_until(lambda: probe.explorer_status, 30.0)
+            if status is None:
+                return fail("disarmed", "no /coverage_explorer/status")
+            st = json.loads(status)
+            if st["armed"]:
+                return fail("disarmed", "the explorer is ALREADY ARMED before bringup "
+                            "armed it -- a mission is running")
+            receipts["explorer.armed"] = st["armed"]
+            receipts["explorer.done"] = st["done"]
+            print("GATE PASS disarmed", flush=True)
 
-    # recording: growth, not existence (poll-with-timeout keeps the semantics --
-    # a recorder that opened a file and died leaves a header behind)
-    def size(path):
-        try:
-            if os.path.isdir(path):
-                return sum(os.path.getsize(os.path.join(path, f))
-                           for f in os.listdir(path))
-            return os.path.getsize(path)
-        except OSError:
-            return 0
+        # recording: growth, not existence (poll-with-timeout keeps the semantics --
+        # a recorder that opened a file and died leaves a header behind)
+        def size(path):
+            try:
+                if os.path.isdir(path):
+                    return sum(os.path.getsize(os.path.join(path, f))
+                               for f in os.listdir(path))
+                return os.path.getsize(path)
+            except OSError:
+                return 0
 
-    a_csv, a_bag = size(args.csv), size(args.bag)
-    grown = wait_until(
-        lambda: (True if size(args.csv) > a_csv and size(args.bag) > a_bag
-                 else None), 15.0, period_s=0.5)
-    if not grown:
-        return fail("recording", f"csv {a_csv}->{size(args.csv)} bag "
-                    f"{a_bag}->{size(args.bag)} -- an unrecorded run has to be "
-                    f"repeated")
-    header = open(args.csv).readline()
-    for column in ("cam_hold_active", "cam_hold_reason"):
-        if column not in header:
-            return fail("recording", f"recorder csv lacks {column}")
-    receipts["recording"] = "growing"
-    print("GATE PASS recording", flush=True)
+        a_csv, a_bag = size(args.csv), size(args.bag)
+        grown = wait_until(
+            lambda: (True if size(args.csv) > a_csv and size(args.bag) > a_bag
+                     else None), 15.0, period_s=0.5)
+        if not grown:
+            return fail("recording", f"csv {a_csv}->{size(args.csv)} bag "
+                        f"{a_bag}->{size(args.bag)} -- an unrecorded run has to be "
+                        f"repeated")
+        header = open(args.csv).readline()
+        for column in ("cam_hold_active", "cam_hold_reason"):
+            if column not in header:
+                return fail("recording", f"recorder csv lacks {column}")
+        receipts["recording"] = "growing"
+        print("GATE PASS recording", flush=True)
 
-    # stock's marks + battery run LAST on purpose: the battery percentage in
-    # the READY receipt is the freshest read this process can give the operator
-    # before liftoff, not a number from the top of the gate suite.
-    # stock: the touch port's producer must be on the wire
-    if args.stack == "stock":
-        pubs = wait_until(
-            lambda: (probe.count_publishers("/contact_marks") or None), 10.0)
-        if not pubs:
-            return fail("marks", "/contact_marks has no publisher -- a flight "
-                        "without it has no touch response at all")
-        receipts["marks.publishers"] = pubs
-        print(f"GATE PASS marks ({pubs} publisher)", flush=True)
+        # stock's marks + battery run LAST on purpose: the battery percentage in
+        # the READY receipt is the freshest read this process can give the operator
+        # before liftoff, not a number from the top of the gate suite.
+        # stock: the touch port's producer must be on the wire
+        if args.stack == "stock":
+            pubs = wait_until(
+                lambda: (probe.count_publishers("/contact_marks") or None), 10.0)
+            if not pubs:
+                return fail("marks", "/contact_marks has no publisher -- a flight "
+                            "without it has no touch response at all")
+            receipts["marks.publishers"] = pubs
+            print(f"GATE PASS marks ({pubs} publisher)", flush=True)
 
-        battery = wait_until(lambda: probe.battery, 20.0)
-        if battery is None:
-            return fail("battery", "no /battery_state -- driver not reporting; "
-                        "chassis off?")
-        if battery < BATTERY_FLOOR:
-            return fail("battery", f"{battery * 100:.0f}% under the "
-                        f"{BATTERY_FLOOR * 100:.0f}% floor")
-        receipts["battery_pct"] = round(battery * 100)
-        print(f"GATE PASS battery ({receipts['battery_pct']}%)", flush=True)
+            battery = wait_until(lambda: probe.battery, 20.0)
+            if battery is None:
+                return fail("battery", "no /battery_state -- driver not reporting; "
+                            "chassis off?")
+            if battery < BATTERY_FLOOR:
+                return fail("battery", f"{battery * 100:.0f}% under the "
+                            f"{BATTERY_FLOOR * 100:.0f}% floor")
+            receipts["battery_pct"] = round(battery * 100)
+            print(f"GATE PASS battery ({receipts['battery_pct']}%)", flush=True)
 
 
-    receipts["gates_total_s"] = round(time.monotonic() - t_start, 1)
-    print("READY " + json.dumps(receipts, sort_keys=True), flush=True)
-    return finish(0)
+        receipts["gates_total_s"] = round(time.monotonic() - t_start, 1)
+        print("READY " + json.dumps(receipts, sort_keys=True), flush=True)
+        return finish(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        return fail("probe", f"unhandled: {e!r}")
 
 
 if __name__ == "__main__":
