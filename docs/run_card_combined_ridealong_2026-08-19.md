@@ -98,3 +98,26 @@ bag-time, and the bag is the autopsy)
 Scott's eyewitness annotations reconcile against the bag post-flight — where
 they disagree, the bag wins on timing and the eyewitness wins on what the room
 actually contained.
+
+---
+
+## CORRECTION — 2026-08-19, after the post-flight read (dated, not rewritten)
+
+The post-flight read's F1 called the pivot failure **location-specific**
+("something at that spot"). Scott's ground truth, verbatim: *"There is no
+grippy spot. The floor is uniform except for the double thickness of the mat
+under my chair."* The honest mechanism: **duty 45 is MARGINAL for from-rest
+pivots on this floor everywhere** — the working pivots' 0.62–0.88
+commanded-vs-achieved efficiency was the tell — and the three stalls landed
+where hard from-rest pivots happened to be demanded. A probabilistic threshold
+crossing, not a spot property. (The two contact marks remain false either way;
+D57's corroboration gate is unaffected — widened in relevance, if anything.)
+
+Same conversation, design ruling: *"I worry about any fixed duty. This is just
+one room. We may be on carpet or hardwoods."* The duty-band-extension fallback
+named in this flight's read is **WITHDRAWN as a remedy** (a diagnostic sweep at
+most, never a fix). Direction of record: feedback owns correctness, calibration
+seeds the first guess — recovery spins via the firmware heading loop (bench
+pending), in-path pivots pending the firmware-native-velocity-loop
+investigation, and the measured pivot curve demotes over time from AUTHORITY to
+FEED-FORWARD HINT.

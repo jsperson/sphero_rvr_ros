@@ -11,6 +11,17 @@ ceiling) into scrub friction; three firmware motor stalls; two FALSE contact
 marks planted in the gap from rotation stalls; Spin recovery ran at 5.83 rad/s
 (= duty 45) and stalled like everything else.
 
+> **CORRECTION 2026-08-19 (post-design, Scott's ground truth):** the
+> "location-specific" framing in this note is wrong — the floor is uniform (no
+> grippy spot); duty 45 is marginal for from-rest pivots EVERYWHERE on it, and
+> the stalls landed where hard from-rest pivots were demanded. Nothing in Part
+> 1 or Part 2 changes. **The duty-band-extension fallback named below is
+> WITHDRAWN by Scott's ruling** ("I worry about any fixed duty. This is just
+> one room.") — feedback, not calibration: the in-path residual now routes to
+> the firmware-native-velocity-loop investigation, and the curve demotes over
+> time to a feed-forward hint. See the run card's dated correction for the
+> full wording.
+
 ---
 
 ## Part 1 — batch (a): Spin recovery through the precise-turn gateway
