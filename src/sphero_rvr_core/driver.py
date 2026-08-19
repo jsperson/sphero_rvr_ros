@@ -190,6 +190,10 @@ class RVRDriver:
         self._fail_safe_active = False
         self._fail_safe_reason: Optional[str] = None
         self._control_task: Optional[asyncio.Task] = None
+        # D31: cooperative shutdown -- checked at the control loop's top so the
+        # loop exits within one period even if its cancellation gets eaten by
+        # 3.9 wait_for's cancellation race (see disconnect()).
+        self._control_stopping = False
         self._sequence_id = 0
         self._motor_transport_write_count = 0
         self._motion_transport_write_count = 0
@@ -229,18 +233,56 @@ class RVRDriver:
             except Exception:
                 LOGGER.warning("reset_yaw failed at connect", exc_info=True)
             self._target_heading_deg = 0.0
+        self._control_stopping = False
         self._control_task = asyncio.create_task(self._control_loop())
 
+    #: The disconnect join bound, DERIVED from the loop's longest legitimate
+    #: iteration (D31 ruling 2026-08-19): dispatcher.request's default response
+    #: timeout 1.0 s (dispatcher.py:173) + the safe-stop fallback that chains
+    #: onto a send failure (safe_stop_attempts 2 x safety_dispatch_timeout_s
+    #: 0.10 + retry delay 0.02 = 0.22 s) + one control period 0.01 s = 1.23 s
+    #: worst case with the loop alive and merely slow. 2.0 s gives ~60%%
+    #: headroom; past it the task is genuinely stuck, and the loud failure
+    #: below must never fire on a live-but-slow path.
+    DISCONNECT_JOIN_TIMEOUT_S = 2.0
+
     async def disconnect(self) -> None:
+        # Idempotent by ruling: teardown paths love calling this twice, and the
+        # second call must be a no-op rather than a second cancel/await cycle
+        # against an already-finished task.
+        if not self._connected and self._control_task is None:
+            return
         if self._imu_streaming_active:
             try:
                 await self.disable_imu_streaming()
             except Exception:
                 pass
         if self._control_task is not None:
-            self._control_task.cancel()
+            task = self._control_task
+            # THE D31 FIX, both belts (design ratified 2026-08-19). Python
+            # 3.9's asyncio.wait_for (the Mac; the Pi runs 3.12 where it was
+            # reimplemented) can CONSUME a cancellation that lands in the same
+            # iteration its inner future resolves -- the control loop then
+            # returns to its top un-cancelled and the old bare `await task`
+            # blocked forever (6/360 idle-host hangs, disconnect_hang_probe).
+            # (1) the cooperative flag ends the loop at its next top-of-loop
+            # even when the cancel is eaten; (2) the join is BOUNDED with
+            # asyncio.wait -- chosen precisely because it is not the racy
+            # primitive and does not cancel on timeout -- and a task still
+            # pending past the derived bound FAILS shutdown loudly instead of
+            # blocking it silently.
+            self._control_stopping = True
+            task.cancel()
+            _done, pending = await asyncio.wait(
+                {task}, timeout=self.DISCONNECT_JOIN_TIMEOUT_S)
+            if pending:
+                raise RuntimeError(
+                    "RVR control task survived cancel + stop flag for "
+                    f"{self.DISCONNECT_JOIN_TIMEOUT_S}s -- disconnect refuses "
+                    "to hang silently (D31); the task is leaked and shutdown "
+                    "is NOT clean")
             try:
-                await self._control_task
+                task.exception()          # retrieve, so nothing warns later
             except asyncio.CancelledError:
                 pass
             self._control_task = None
@@ -804,7 +846,10 @@ class RVRDriver:
 
     async def _control_loop(self) -> None:
         stop_sent_for_stale = False
-        while True:
+        # `while not stopping` rather than `while True` IS the D31 fix's first
+        # belt: after an eaten cancellation the loop lands here, sees the flag
+        # disconnect() set, and ends within one control period.
+        while not self._control_stopping:
             await asyncio.sleep(self._control_period)
             if self._emergency_stopped:
                 continue
