@@ -413,11 +413,12 @@ class RVRDriver:
     async def set_led_group(self, group_name: str, r: int, g: int, b: int) -> None:
         await self._send(lambda seq: self.commands.set_led_group(seq, group_name, r, g, b), CommandPriority.LOW)
 
-    #: How a LEFT (ROS +yaw) turn maps onto the firmware heading frame. ASSUMED
-    #: -1 (firmware heading is compass-like, CW-positive: turning left decreases
-    #: it) from the fused-yaw-runs-backwards evidence; the bench card MEASURES it
-    #: (item iii) before the flag below ever lets a turn run. If the bench says
-    #: +1, this constant flips and the card re-runs -- one constant, one author.
+    #: How a LEFT (ROS +yaw) turn maps onto the firmware heading frame.
+    #: MEASURED, 2026-08-19 bench card item (iii): a +90 command produced
+    #: firmware heading 294.9 -> 204.9 (decreasing) while the rover turned
+    #: physically LEFT (odom +87.7 deg; Scott, watching: "Perfeect 90 degree
+    #: turn."). The firmware frame is compass-like, CW-positive; -1 is a
+    #: measurement now, not an assumption.
     PRECISE_TURN_HEADING_SIGN = -1.0
     #: A turn computed from a stale yaw is a turn to a made-up heading. The
     #: freshness bound is generous against dropouts (IMU streams at ~10 Hz) and

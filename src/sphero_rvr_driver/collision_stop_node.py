@@ -367,8 +367,14 @@ def main(args=None):
                 Imu, "/imu", self._on_imu_for_turn, qos_profile_sensor_data,
                 callback_group=self._low_obstacle_group,
             )
+            # ABSOLUTE action name: the flight launch remaps this node's
+            # SERVICES (stop -> /stop etc.) but actions do not ride those
+            # remaps -- the 2026-08-19 card found the server at /precise_turn
+            # while every design doc said /collision_stop/precise_turn. Named
+            # absolutely, like rvr_node's cmd/event lane, so the name IS the
+            # contract.
             self._precise_turn_server = ActionServer(
-                self, Spin, "precise_turn",
+                self, Spin, "/collision_stop/precise_turn",
                 execute_callback=self._execute_precise_turn,
                 cancel_callback=lambda req: CancelResponse.ACCEPT,
                 callback_group=self._service_group,

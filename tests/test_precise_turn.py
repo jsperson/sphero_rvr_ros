@@ -156,11 +156,19 @@ def test_the_driver_lane_is_thin_and_reports_refusals():
     assert "turn_by_degrees" in RVR_SRC
 
 
-def test_both_yamls_ship_the_flag_false():
+def test_both_yamls_carry_the_measured_flag_together():
+    """Flipped TRUE in the reviewed flag-flip commit citing the 2026-08-19
+    card's measured numbers (estop preemption, stop-kills-hold, 21/21 turns
+    within bars, sign measured). The invariant that survives the flip: BOTH
+    yamls agree -- a half-flipped pair is a gateway that admits what the driver
+    refuses, or worse."""
+    values = {}
     for name in ("lean_rvr_tank_si.yaml", "collision_stop.yaml"):
         text = (REPO / "config" / name).read_text()
         m = re.search(r"precise_turn_bench_verified:\s*(\w+)", text)
         assert m, f"{name} lost the bench flag"
-        assert m.group(1) == "false", (
-            f"{name} ships the bench flag {m.group(1)} -- it flips only in a "
-            f"reviewed commit citing the measured card")
+        values[name] = m.group(1)
+    assert len(set(values.values())) == 1, f"flags disagree: {values}"
+    assert set(values.values()) == {"true"}, (
+        f"flags are {values}: false again means a re-bench decision, recorded "
+        f"in its own reviewed commit, never a drive-by")
