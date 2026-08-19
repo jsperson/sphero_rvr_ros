@@ -34,8 +34,21 @@ coverage_explorer:
     # Goal-progress watchdog: a goal that PLANNED but then makes < epsilon progress
     # within the timeout gets dropped -- planning is not what failed, so re-asking
     # the planner would just get the same yes.
-    goal_progress_timeout_s: 6.0
-    goal_progress_epsilon_m: 0.10
+    # 9.0 (was 6.0) and 0.18 (was 0.10) — re-derived with the speed raise
+    # (consensus pin: the bar keys on the REGULATED MINIMUM, never cruise).
+    # WINDOW = the gateway turn's own bound (precise_turn_timeout_s 5.0) + 4 s
+    # of displacement time: the re-fly's goal 1 spent 4 s of its 6 s budget in
+    # a recovery turn and was killed while making legitimate discovery
+    # progress — a goal that opens with a turn no longer starves.
+    # BAR = k * v_regulated_min * window = 0.133 * 0.15 * 9.0 = 0.18 m, i.e. a
+    # net rate of 0.02 m/s — placed between the MEASURED distributions from
+    # bag_20260819_141021: legitimate (succeeded-goal) 6 s windows never fell
+    # below 0.037 m/s net (n=29), genuinely-pinned end-game windows ran a
+    # median 0.005 m/s (n=21). 0.02 sits ~2x from both sides, and legitimate
+    # rates only rise at the new cruise. tests/test_speed_raise.py pins the
+    # formula and the separation.
+    goal_progress_timeout_s: 9.0
+    goal_progress_epsilon_m: 0.18
     base_frame: base_link
     cycle_period_s: 1.0
     # Stop proposing a spot for a while once a DRIVE there failed -- stalled, aborted

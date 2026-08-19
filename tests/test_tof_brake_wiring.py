@@ -184,15 +184,32 @@ def test_clear_floor_produces_NO_brake_input():
 
 def test_stale_tof_degrades_to_lidar_only():
     """REVERT-PROOF 1, through the REAL wiring. The staleness bound must be short enough
-    that acting on the oldest tolerated frame cannot consume the approach margin."""
+    that acting on the oldest tolerated frame cannot consume the approach margin.
+
+    AMENDED with the 2026-08-19 speed raise (cert amendment, PM-reviewed with
+    the batch): at the 0.35 cruise the UNSCALED form fails (0.105 > 0.098) and
+    the margin holds only through the brake's own in-window speed scaling —
+    forward_speed_scale at the window's outer edge caps the speed the stale
+    frame can be acted on at. The scale credit is imported from the production
+    formula, never restated, and the naive form is asserted to still fail so
+    this pin can't silently become vacuous."""
+    from sphero_rvr_core.low_obstacle_brake import forward_speed_scale
     max_age = _f("low_obstacle_max_age_s")
     cruise = _f("max_forward_mps")
-    travel = max_age * cruise
-    approach = 0.298 - _f("low_obstacle_stop_distance_m")
+    stop = _f("low_obstacle_stop_distance_m")
+    reach = 0.298
+    approach = reach - stop
+    scale_at_edge = forward_speed_scale(
+        reach, stop, _f("low_obstacle_slow_distance_m"),
+        _f("low_obstacle_min_forward_scale"))
+    travel = scale_at_edge * max_age * cruise
     assert travel < approach, (
-        f"a cloud aged to the {max_age} s limit allows {travel:.3f} m of travel, which "
-        f"exceeds the {approach:.3f} m between detection and the stop threshold -- the "
-        "staleness bound is longer than the margin it protects")
+        f"a cloud aged to the {max_age} s limit allows {travel:.3f} m of travel even "
+        f"scale-credited, which exceeds the {approach:.3f} m between detection and the "
+        "stop threshold -- the staleness bound is longer than the margin it protects")
+    assert max_age * cruise > approach, (
+        "the unscaled form fits again -- the scale credit is no longer load-bearing; "
+        "simplify this pin and the yaml derivation together")
     assert max_age <= 0.4, (
         f"low_obstacle_max_age_s is {max_age}; the ToF runs at 6.5-7.6 Hz, so anything "
         "beyond ~0.4 s is several frames of silence treated as fresh")

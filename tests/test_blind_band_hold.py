@@ -263,8 +263,14 @@ def test_reversing_out_retires_the_belief():
     assert r1.active and r1.reason == "vanished_in_band"
     assert r1.nearest_m == pytest.approx(0.201)
 
-    # Far enough out that the sensor would have reported it. Silence is now a fact.
-    r2 = _fwd(hold, [], pose_delta=(-0.060, 0.0, 0.0))
+    # Far enough out that the sensor would have reported it. Silence is now a
+    # fact. The distance is DERIVED (band + closure + margin), not remembered:
+    # closure scales with the deployed max_forward_mps, so the 2026-08-19 speed
+    # raise moved the retirement threshold from 0.227 to 0.272 m automatically —
+    # the SAFE direction (held longer; Scott's fail-direction ruling) — and a
+    # hardcoded 0.060 m reverse stopped clearing it.
+    further = (BAND + CLOSURE) - 0.201 + 0.010
+    r2 = _fwd(hold, [], pose_delta=(-further, 0.0, 0.0))
     assert not r2.active
     assert r2.reason == "retired_sight_through"
     assert forward_speed_scale(r2.nearest_m, STOP, SLOW) == 1.0

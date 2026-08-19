@@ -64,7 +64,10 @@ def test_lean_driver_uses_native_tank_si_without_changing_deployed_rvr_config() 
 
     assert deployed["velocity_control_mode"] == "raw_motor"
     assert lean["velocity_control_mode"] == "native_tank_si"
-    assert lean["max_linear_mps"] == 0.20
+    # 0.35 since the 2026-08-19 linear speed raise (Scott's directive, consensus
+    # + derivations in docs/design_linear_speed_raise_2026-08-19.md; the three-
+    # gates equality is pinned in tests/test_speed_raise.py).
+    assert lean["max_linear_mps"] == 0.35
     assert "native_rc_si" not in lean_path.read_text(encoding="utf-8")
     for name, expected in {
         "max_angular_rad_s": 0.4,

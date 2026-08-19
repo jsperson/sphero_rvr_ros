@@ -268,10 +268,22 @@ controller_server:
       # use_rotate_to_heading gives the same pivot-then-drive behaviour with one
       # authority over the rotation rate instead of two.
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.20
+      # 0.35 (was 0.20) — THE LINEAR SPEED RAISE (Scott's directive + consensus,
+      # docs/design_linear_speed_raise_2026-08-19.md). Receipts: braking at 0.35
+      # = 0.35*0.25 + 0.02 = 0.11 m, so the supervisor's stop_distance 0.30
+      # still governs and the rover rests ~0.09 m off the nose; ToF staleness
+      # travel 0.30 s * 0.35 = 0.105 m against the tof brake's 0.45 m stop
+      # (0.45 > 0.30 + 0.105, margin 0.045 m); hardware headroom large (tank SI
+      # ~1.5 m/s/tread). Rotation constants deliberately untouched (Scott:
+      # "turns are plenty fast"). Certification: rig falsifier + field A/B vs
+      # the re-fly baseline (174.5 s / 7.29 m^2 / 8 stall-kills).
+      desired_linear_vel: 0.35
       lookahead_dist: 0.26
       min_lookahead_dist: 0.15
-      max_lookahead_dist: 0.36
+      # 0.50 (was 0.36) — caught in the design round, decided not inherited:
+      # velocity-scaled lookahead at the new cruise is 0.35 * 1.3 = 0.455,
+      # which the old max CLIPPED. 0.50 clears it with margin.
+      max_lookahead_dist: 0.50
       lookahead_time: 1.3
       use_velocity_scaled_lookahead_dist: true
       transform_tolerance: 0.2
@@ -286,7 +298,13 @@ controller_server:
       # turned out to have a hard dead zone, assuming linear has none would be the
       # same mistake in a new costume. Provisional 0.10 = the supervisor's crawl
       # floor, kept until a linear sweep exists.
-      regulated_linear_scaling_min_speed: 0.10
+      # 0.15 (was 0.10), proportional to the cruise raise. NOTE, from the
+      # re-fly bag: measured legitimate crawl ran 0.053-0.066 m/s, BELOW the
+      # old 0.10 — RPP regulates under its own floor in approach phases, so
+      # this minimum is a curvature floor, not a guarantee; the progress bar
+      # derivation (coverage_explorer.yaml) accounts for that with measured
+      # net-displacement rates, not this constant alone.
+      regulated_linear_scaling_min_speed: 0.15
 
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.60

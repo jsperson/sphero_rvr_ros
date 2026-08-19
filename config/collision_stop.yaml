@@ -152,7 +152,15 @@ lidar_collision_stop_supervisor:
     # to the driver's max_linear_mps and the decisive cruise so the rover actually
     # runs at 0.20. Braking at 0.20 is ~0.07 m -> effective stop ~0.20 m (~9 cm off
     # the nose), still safe.
-    max_forward_mps: 0.20
+    # 0.35 (was 0.20) — the speed raise's FINAL gate, moved together with the
+    # driver and RPP gates (the gap-crossing lesson: this clamp silently
+    # overrides both if forgotten). Braking at 0.35 = 0.35*measured_stop_time
+    # 0.25 + margin 0.02 = 0.11 m -> rest ~0.19 m from base_link, ~0.09 m off
+    # the measured nose; stop_distance_m 0.30 STILL GOVERNS (physics term
+    # 0.0965+0.02+0.11 = 0.227 < 0.30). SLOW band time at 0.35 = 0.20/0.35 =
+    # 0.57 s of ease-off (>= the 0.5 s floor we hold it to). ToF chain:
+    # staleness 0.30 s * 0.35 = 0.105 m; tof stop 0.45 > 0.30 + 0.105.
+    max_forward_mps: 0.35
     # ARC authority only, as of 2026-08-18 -- UNMEASURED and deliberately untouched
     # (the arc-rate run card is its close path). Pivots are clamped by
     # max_pivot_rate_rad_s below, not by this. Before the split, this value clamped
@@ -287,13 +295,19 @@ lidar_collision_stop_supervisor:
     low_obstacle_max_range_m: 0.60
     low_obstacle_min_forward_scale: 0.60
     # ~2 frames at the measured 6.5-7.6 Hz (2 / 6.5 = 0.308 s). THE BUDGET IS TRAVEL,
-    # NOT TIME: at the 0.20 m/s cruise, 0.30 s of stale data is 0.060 m of travel, and
-    # it must stay inside the approach window -- reach 0.297 minus stop 0.20 = 0.097 m
-    # in the true frame. 0.060 < 0.097, so the rover cannot cross the whole window on a
-    # single stale frame. (0.6 s, the camera's at 5 Hz, would be 0.12 m: more than the
-    # window it is supposed to protect.) The window moved with the re-derivation --
-    # 0.098 -> 0.097 m -- so this constant was re-checked against it rather than
-    # assumed to still hold. UNCHANGED at 0.30.
+    # NOT TIME: stale-data travel must stay inside the approach window -- reach
+    # 0.297 minus stop 0.20 = 0.097 m in the true frame.
+    # RE-DERIVED FOR THE 0.35 CRUISE (2026-08-19 speed raise), and the naive form
+    # FAILS: 0.35 x 0.30 = 0.105 m > 0.097 -- at face value the rover crosses the
+    # whole window on one stale frame. What saves it is the brake's OWN speed
+    # scaling (low_obstacle_brake.forward_speed_scale, read not inferred): inside
+    # the window the scale is at most scale(0.297) = 0.60 + 0.40 x
+    # (0.297-0.20)/(0.60-0.20) = 0.697, so in-window speed <= 0.697 x 0.35 =
+    # 0.244 m/s and stale travel <= 0.073 m < 0.097 (margin 0.024 m). THIS MARGIN
+    # NOW DEPENDS on min_forward_scale 0.60 / slow 0.60 / stop 0.20 staying put --
+    # tests/test_speed_raise.py pins the whole chain so none moves alone.
+    # (The old comment's 0.060 < 0.097 used UNSCALED cruise; the scale credit is
+    # new and required at 0.35.) UNCHANGED at 0.30.
     low_obstacle_max_age_s: 0.30
     # Robot geometry, sensor-independent: unchanged from the camera era.
     low_obstacle_swept_path: true
@@ -312,11 +326,13 @@ lidar_collision_stop_supervisor:
     #                      x -- the run-1 archive states this band as x (0.152-0.164)
     #                      and the brake compares hypot(x, y), so transcribing the
     #                      archive's figures here would pin the wrong quantity.
-    #   closure          = max_forward_mps x low_obstacle_max_age_s = 0.20 x 0.30
-    #                      = 0.060 m, which is the SAME travel budget already derived
-    #                      at low_obstacle_max_age_s above, reused rather than
-    #                      restated so the two cannot drift apart.
-    #   arms below       = 0.2272 m. Run 1's last trustworthy reading was 0.181 m.
+    #   closure          = max_forward_mps x low_obstacle_max_age_s = 0.35 x 0.30
+    #                      = 0.105 m (the 2026-08-19 speed raise moved this; both
+    #                      operands are read live in the node, so the hold's arm
+    #                      threshold moved WITH it, automatically and in the SAFE
+    #                      direction -- it arms earlier).
+    #   arms below       = 0.1672 + 0.105 = 0.272 m (was 0.227 at the 0.20 cruise).
+    #                      Run 1's last trustworthy reading was 0.181 m.
     #
     # NOTE WHAT THIS DOES AND DOES NOT COVER, because the pair is the whole safety
     # argument, and the two clauses use DIFFERENT operands:
