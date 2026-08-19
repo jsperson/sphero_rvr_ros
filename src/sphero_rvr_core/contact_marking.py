@@ -33,6 +33,48 @@ import math
 from dataclasses import dataclass
 
 from sphero_rvr_core.decisive_control import freeze_mark_pose
+from sphero_rvr_core.pivot_curve import PIVOT_LINEAR_EPSILON_MPS
+
+#: D57's stall classes. The 2026-08-19 flight proved the touch sense has a
+#: false-positive class: a ROTATION stall against floor grip produces the same
+#: counter delta as a real contact with nothing there -- two false marks planted
+#: in the door gap (Scott's eyewitness ground truth: chassis touching nothing).
+#: Translation stalls remain strong contact evidence (the d45bd24 boot class);
+#: rotation stalls are weak evidence and must corroborate before painting.
+STALL_TRANSLATION = "translation"
+STALL_ROTATION = "rotation"
+STALL_IDLE = "idle"
+
+#: plan_pivot's own zero test (its `zero_epsilon` default): a commanded rotation
+#: at or below this produces duty 0 -- treads never move, so no stall can be a
+#: rotation stall below it. CHANGE BOTH OR NEITHER; the drift test reads both.
+PIVOT_ZERO_EPSILON_RAD_S = 1e-9
+
+
+def classify_stall(vx: float, wz: float) -> str:
+    """Which kind of commanded motion was stalling when the counter ticked.
+
+    Both boundaries are the DRIVER'S OWN, imported not copied, so the marker and
+    the drivetrain agree about what a command was (derived-with-receipt, no new
+    tunables):
+
+    - `PIVOT_LINEAR_EPSILON_MPS` (pivot_curve, 0.005): the one shared definition
+      of "in place" -- the driver's control loop routes a command to the pivot
+      path below it and the translation path at or above it.
+    - `PIVOT_ZERO_EPSILON_RAD_S`: plan_pivot's zero test -- below it no duty is
+      emitted at all, and any nonzero request above it is raised to at least
+      `pivot_min_duty` (treads move, a stall is possible).
+
+    TRANSLATION: the rover was commanded through space -- a stall is strong
+    contact evidence; mark as always. ROTATION: commanded rotation only -- the
+    flight's floor-grip signature; paint requires corroboration. IDLE: a stall
+    with no commanded motion is a phantom; never mark.
+    """
+    if abs(float(vx)) >= PIVOT_LINEAR_EPSILON_MPS:
+        return STALL_TRANSLATION
+    if abs(float(wz)) > PIVOT_ZERO_EPSILON_RAD_S:
+        return STALL_ROTATION
+    return STALL_IDLE
 
 #: THE MEASURED BODY -- Scott's tape 2026-08-15, referenced to base_link, asserted in
 #: `tests/test_footprint_derivation.py`. NOT the padded numbers: `collision_stop.yaml`

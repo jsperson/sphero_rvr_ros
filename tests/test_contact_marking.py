@@ -218,3 +218,102 @@ def test_retrying_the_same_spot_is_one_fact_not_four():
     for i in range(4):
         marks.add(1.0 + 0.02 * i, 1.0, now=float(i * 13))
     assert len(marks.live(now=100.0)) == 1
+
+
+# --- D57: stall classes -- translation marks, rotation must corroborate ---------------
+#
+# The 2026-08-19 flight's ground truth (Scott, eyewitness): two permanent marks
+# planted in the door gap from pure-rotation stalls against floor grip, chassis
+# touching nothing. The commanded twists below are the flight's own numbers.
+
+from sphero_rvr_core.contact_marking import (  # noqa: E402
+    STALL_IDLE,
+    STALL_ROTATION,
+    STALL_TRANSLATION,
+    PIVOT_ZERO_EPSILON_RAD_S,
+    classify_stall,
+)
+from sphero_rvr_core.pivot_curve import PIVOT_LINEAR_EPSILON_MPS  # noqa: E402
+from sphero_rvr_core.refusal_promotion import RecentReturns  # noqa: E402
+
+
+def test_the_flights_three_stalls_all_classify_as_rotation():
+    """The false-positive class, by its own recorded commands: cmd_vel at each of
+    the three firmware stalls (t+26/33/48) was vx 0.000 with wz 3.550/3.550/5.830."""
+    for wz in (3.550, 3.550, 5.830):
+        assert classify_stall(0.000, wz) == STALL_ROTATION
+
+
+def test_a_driven_contact_classifies_as_translation_arcing_included():
+    """The d45bd24 boot class (forward drive), reverse contacts (D37's rear-edge
+    rule), and an RPP arc (translation WITH rotation) are all translation stalls:
+    the rover was commanded through space, so a stall is strong contact evidence."""
+    assert classify_stall(0.12, 0.0) == STALL_TRANSLATION
+    assert classify_stall(-0.08, 0.0) == STALL_TRANSLATION
+    assert classify_stall(0.10, 1.2) == STALL_TRANSLATION
+
+
+def test_a_stall_with_no_commanded_motion_is_a_phantom():
+    assert classify_stall(0.0, 0.0) == STALL_IDLE
+
+
+def test_the_class_boundaries_are_the_drivers_own_not_new_tunables():
+    """Derived-with-receipt (the design round's pin): the translation boundary IS
+    pivot_curve's PIVOT_LINEAR_EPSILON_MPS -- the one shared definition of "in
+    place" the driver's control loop routes on -- and the rotation/idle boundary
+    is plan_pivot's zero test. Imported, not copied: these assertions hold the
+    classifier to the same authority the drivetrain obeys, so the two can never
+    disagree about what a command was."""
+    assert classify_stall(PIVOT_LINEAR_EPSILON_MPS, 0.0) == STALL_TRANSLATION
+    assert classify_stall(PIVOT_LINEAR_EPSILON_MPS * 0.99, 0.0) == STALL_IDLE
+    assert classify_stall(0.0, PIVOT_ZERO_EPSILON_RAD_S * 2) == STALL_ROTATION
+    assert classify_stall(0.0, PIVOT_ZERO_EPSILON_RAD_S) == STALL_IDLE
+    # the receipt itself: plan_pivot's zero_epsilon default is this constant
+    import inspect
+    from sphero_rvr_core.pivot_curve import plan_pivot
+    zero_default = inspect.signature(plan_pivot).parameters["zero_epsilon"].default
+    assert zero_default == PIVOT_ZERO_EPSILON_RAD_S, (
+        "plan_pivot's zero test drifted from the classifier's copy of it -- "
+        "CHANGE BOTH OR NEITHER")
+
+
+def test_rotation_paint_needs_a_fresh_return_inside_the_disc():
+    """The corroboration rule, on the watcher's own rig-certified ring (one
+    authority): a fresh return inside the would-be disc admits the mark; an
+    empty ring, a stale return, or a return outside the disc refuses it."""
+    disc_x, disc_y, disc_r = 1.0, 0.5, 0.145
+    fresh = RecentReturns()
+    fresh.add(t=100.0, x=disc_x + 0.05, y=disc_y)
+    assert fresh.fresh_near(100.5, disc_x, disc_y, radius_m=disc_r)
+
+    empty = RecentReturns()
+    assert not empty.fresh_near(100.5, disc_x, disc_y, radius_m=disc_r)
+
+    stale = RecentReturns()
+    stale.add(t=10.0, x=disc_x, y=disc_y)
+    assert not stale.fresh_near(100.5, disc_x, disc_y, radius_m=disc_r)
+
+    outside = RecentReturns()
+    outside.add(t=100.0, x=disc_x + disc_r + 0.10, y=disc_y)
+    assert not outside.fresh_near(100.5, disc_x, disc_y, radius_m=disc_r)
+
+
+def test_the_marker_wires_the_corroboration_feed_deliberately():
+    """The QoS care-item, pinned at source: the marker subscribes /tof/points on
+    the plain default profile -- the SAME profile the tof node publishes with and
+    the refusal watcher already receives this stream on. The touch-port register
+    carries one open QoS-silence row; this pin exists so the seam cannot grow a
+    silent sibling by someone 'improving' one side's QoS alone."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver" /
+           "contact_marker_node.py").read_text()
+    assert '"tof_points_topic", "/tof/points"' in src
+    assert "self._on_tof, 10," in src, (
+        "the marker's /tof/points subscription no longer uses the plain default "
+        "profile (depth int => RELIABLE+VOLATILE); if that changed deliberately, "
+        "re-verify against the tof node's publisher profile and update this pin")
+    tof_src = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver" /
+               "tof_node.py").read_text()
+    assert 'create_publisher(PointCloud2, "~/points", 5)' in tof_src, (
+        "the tof points publisher's profile changed -- re-verify the marker's "
+        "and the watcher's subscriptions against it before updating this pin")

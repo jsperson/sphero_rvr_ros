@@ -45,15 +45,18 @@ from sphero_rvr_core.contact_marking import (
     FOOTPRINT_FRONT_M,
     FOOTPRINT_REAR_M,
     ROBOT_RADIUS_M,
+    STALL_IDLE,
+    STALL_ROTATION,
     PoseDataLagsStamp,
     StallEventTracker,
+    classify_stall,
     contact_mark_centre,
     default_margin_m,
     disc_points,
     resolve_contact_pose,
 )
 from sphero_rvr_core.decisive_control import FreezeMarkSet
-from sphero_rvr_core.refusal_promotion import MAX_DISCS_PER_FIRING
+from sphero_rvr_core.refusal_promotion import MAX_DISCS_PER_FIRING, RecentReturns
 
 #: The height marks are presented at. These stand for an obstacle the LIDAR cannot see,
 #: so they must arrive at a height the costmap's filter would have accepted from the
@@ -97,6 +100,7 @@ class ContactMarkerNode(Node):
 
         self.declare_parameter("diagnostics_topic", "/diagnostics")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
+        self.declare_parameter("tof_points_topic", "/tof/points")
         self.declare_parameter("stall_counter_key", "motor_stall_events")
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("robot_frame", "base_link")
@@ -125,8 +129,17 @@ class ContactMarkerNode(Node):
             ttl_s=float(self.get_parameter("mark_ttl_s").value),
             merge_radius_m=float(self.get_parameter("merge_radius_m").value),
         )
-        #: Last COMMANDED linear sign. The command, never odometry -- D37's rule.
+        #: Last COMMANDED twist. The command, never odometry -- D37's rule. Angular
+        #: joined linear for D57: with only linear tracked, the 2026-08-19 flight's
+        #: pure-rotation stalls (vx 0.000, wz 3.55) were indistinguishable from a
+        #: forward contact and planted two false FRONT marks in the door gap.
         self._last_cmd_linear = 0.0
+        self._last_cmd_angular = 0.0
+        #: D57's corroboration evidence: recent raw ToF returns in map frame, the
+        #: same rig-certified ring the refusal watcher trusts (one authority --
+        #: trust returns, not paint). Rotation-stall paint requires a fresh return
+        #: inside the would-be mark disc; translation stalls never consult it.
+        self._returns = RecentReturns()
         #: Counts for the mission report, including the failures. A node that silently
         #: drops contacts it could not place would make the report agree with itself
         #: and disagree with the world.
@@ -134,6 +147,12 @@ class ContactMarkerNode(Node):
         self.marks_placed = 0
         self.contacts_unplaceable = 0
         self.contacts_collapsed = 0
+        #: D57: rotation stalls whose paint was withheld (no fresh ToF return in
+        #: the would-be disc) and stalls with no commanded motion at all. Counted
+        #: loudly -- the STALL stays fully visible on /diagnostics either way;
+        #: only the permanent paint is withheld.
+        self.rotation_stalls_unmarked = 0
+        self.stalls_idle = 0
         #: One record per PLANTED mark, carrying placement provenance (path
         #: exact/fallback + signed staleness). In the report so an autopsy never has
         #: to reconstruct "was this mark exactly-placed?" from timestamps.
@@ -144,6 +163,17 @@ class ContactMarkerNode(Node):
         self._pub = self.create_publisher(PointCloud2, "/contact_marks", marks_qos())
         self.create_subscription(
             Twist, str(self.get_parameter("cmd_vel_topic").value), self._on_cmd, 10
+        )
+        # D57 corroboration feed. QoS DELIBERATE, not defaulted-by-omission: the
+        # tof node publishes ~/points with the default profile (RELIABLE +
+        # VOLATILE, depth 5); a plain depth-10 subscription here is the SAME
+        # profile the refusal watcher already receives this stream on. The
+        # touch-port register carries one open QoS-silence row -- this comment
+        # and tests/test_contact_marking's wiring pin exist so this seam never
+        # grows a sibling.
+        self.create_subscription(
+            PointCloud2, str(self.get_parameter("tof_points_topic").value),
+            self._on_tof, 10,
         )
         self.create_subscription(
             DiagnosticArray,
@@ -173,6 +203,28 @@ class ContactMarkerNode(Node):
 
     def _on_cmd(self, msg: Twist) -> None:
         self._last_cmd_linear = float(msg.linear.x)
+        self._last_cmd_angular = float(msg.angular.z)
+
+    def _on_tof(self, msg: PointCloud2) -> None:
+        """Raw returns into the corroboration ring, transformed to map -- the
+        watcher's own recipe. A return that cannot be placed (no TF) vouches for
+        nothing and is dropped."""
+        try:
+            transform = self._buffer.lookup_transform(
+                self._global_frame, msg.header.frame_id, rclpy.time.Time())
+        except Exception:
+            return
+        t = transform.transform.translation
+        q = transform.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        c, s = math.cos(yaw), math.sin(yaw)
+        now = time.monotonic()
+        n = msg.width * msg.height
+        for i in range(n):
+            px, py, _ = struct.unpack_from("<fff", msg.data, i * msg.point_step)
+            self._returns.add(now, t.x + c * px - s * py, t.y + s * px + c * py)
+        self._returns.prune(now)
 
     @staticmethod
     def _pose_of(transform):
@@ -251,7 +303,9 @@ class ContactMarkerNode(Node):
             )
             return
 
-        reversing = self._last_cmd_linear < 0.0
+        vx, wz = self._last_cmd_linear, self._last_cmd_angular
+        stall_class = classify_stall(vx, wz)
+        reversing = vx < 0.0
         mx, my = contact_mark_centre(
             resolved.x, resolved.y, resolved.yaw,
             reversing=reversing,
@@ -259,6 +313,29 @@ class ContactMarkerNode(Node):
             rear_m=self._rear,
             margin_m=self._margin,
         )
+        if stall_class == STALL_IDLE:
+            self.stalls_idle += 1
+            self.get_logger().error(
+                f"STALL WITH NO COMMANDED MOTION (vx {vx:+.3f} m/s, wz {wz:+.3f} "
+                f"rad/s) — a phantom by definition; NO MARK. If this repeats, the "
+                f"command pairing is broken, not the room."
+            )
+            return
+        if stall_class == STALL_ROTATION and not self._returns.fresh_near(
+                time.monotonic(), mx, my, radius_m=self._radius):
+            # D57: the 2026-08-19 flight planted two false marks in the door gap
+            # from exactly this signature (pure rotation into floor grip, nothing
+            # there -- Scott's eyewitness ground truth). Rotation paint must earn
+            # corroboration; the stall itself stays fully visible on /diagnostics
+            # and in this node's report.
+            self.rotation_stalls_unmarked += 1
+            self.get_logger().warning(
+                f"ROTATION STALL, PAINT WITHHELD (vx {vx:+.3f} m/s, wz {wz:+.3f} "
+                f"rad/s): no fresh ToF return inside the would-be disc at "
+                f"({mx:.3f}, {my:.3f}). Floor grip wears contact's clothes; a "
+                f"permanent lethal disc needs a sensor to vouch for it."
+            )
+            return
         self._marks.add(mx, my, time.monotonic())
         self.marks_placed += 1
         self._mark_placements.append({
@@ -267,6 +344,7 @@ class ContactMarkerNode(Node):
             "stamp": f"{msg.header.stamp.sec}.{msg.header.stamp.nanosec:09d}",
             "path": resolved.path,
             "staleness_ms": round(resolved.staleness_s * 1000.0, 1),
+            "stall_class": stall_class,
         })
         self.get_logger().warning(
             f"CONTACT MARKED at ({mx:.3f}, {my:.3f}) in {self._global_frame}. "
@@ -275,8 +353,10 @@ class ContactMarkerNode(Node):
             f"path={resolved.path} staleness={resolved.staleness_s * 1000.0:+.0f} ms "
             f"-> ({resolved.x:.3f}, {resolved.y:.3f}, yaw "
             f"{math.degrees(resolved.yaw):.1f} deg). "
-            f"Commanded linear {self._last_cmd_linear:+.3f} m/s so "
-            f"{'REAR' if reversing else 'FRONT'} edge. This mark is permanent."
+            f"Commanded (vx {vx:+.3f}, wz {wz:+.3f}) -> {stall_class} stall, "
+            f"{'REAR' if reversing else 'FRONT'} edge"
+            f"{'; ToF-corroborated' if stall_class == STALL_ROTATION else ''}. "
+            f"This mark is permanent."
         )
         self._publish()
 
@@ -358,6 +438,8 @@ class ContactMarkerNode(Node):
             "marks_placed": self.marks_placed,
             "contacts_unplaceable": self.contacts_unplaceable,
             "contacts_collapsed": self.contacts_collapsed,
+            "rotation_stalls_unmarked": self.rotation_stalls_unmarked,
+            "stalls_idle": self.stalls_idle,
             "marks": self._marks.as_report_list(time.monotonic()),
             "mark_placements": list(self._mark_placements),
             "promotions_accepted": self.promotions_accepted,
