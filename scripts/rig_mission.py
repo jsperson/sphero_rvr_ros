@@ -27,6 +27,14 @@ designed heartbeat, so "zero traffic" taken literally would fail vacuously on a
 healthy quiet marker. A cloud with points in this rig — which has no contact
 physics at all — is a phantom marker firing, and that is the finding the clause
 exists to catch. Promotions are counted literally (every message is a firing).
+
+ORDER-SENSITIVITY AMENDMENT (2026-08-19 evening, dated — the D60 lesson): a
+single cert run SAMPLES a coverage-order distribution; order is timing-sensitive
+across code changes, and on a pocket-bearing map (D60) some orders truncate the
+mission at any speed while others complete. The 2026-08-19 morning cert's
+COMPLETE was one such sample — sound as an existence proof of the composed
+mission, NOT as proof the map holds no traps. A cert on a map not audited
+pocket-free certifies the run it saw, no more.
 """
 
 from __future__ import annotations
