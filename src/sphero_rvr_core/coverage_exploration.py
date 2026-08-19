@@ -46,15 +46,25 @@ OCCUPIED_THRESHOLD = 65
 
 
 class CandidateSelection(NamedTuple):
-    """candidate_goals' answer: the goals, and the honest residue.
+    """candidate_goals' answer: the goals, the honest residue, and the proof.
 
     ``excluded_no_viewpoint`` counts clusters dropped because NO free cell
     within coverage_radius_m of them clears the viewpoint standoff -- ground
     the mission cannot cover without asking the safety stack to stand down.
     The count rides into the mission report so a COMPLETE never silently
-    absorbs them (ratified pin 2, 2026-08-19)."""
+    absorbs them (ratified pin 2, 2026-08-19).
+
+    ``viewpoints`` maps each offered candidate cell to the standoff-clearing
+    free cell that PROVED its cluster coverable -- the caller's fallback goal
+    pose when the candidate's own approach ladder yields nothing the safety
+    stack permits. Cert attempt 3 (the ladder squeeze): a ring-boundary
+    representative near a box had every ladder pose inside the envelope, no
+    other cluster cell was ever offered, and the single-cluster selection
+    starved at 12%% coverage. The proof of coverability now travels WITH the
+    candidate instead of being discarded after the exclusion check."""
     candidates: list
     excluded_no_viewpoint: int
+    viewpoints: dict
 
 
 def point_clears_standoff(occ, w: int, h: int, cx: int, cy: int, res: float,
@@ -76,14 +86,23 @@ def point_clears_standoff(occ, w: int, h: int, cx: int, cy: int, res: float,
     return True
 
 
-def cluster_has_viewpoint(occ, w: int, h: int, cells: list, res: float,
-                          coverage_radius_m: float, standoff_m: float,
-                          free_threshold: int) -> bool:
-    """True if SOME free cell within coverage_radius_m of the cluster clears the
-    standoff -- i.e. there exists a pose the safety stack permits from which
-    driving there covers the cluster. Bounded multi-source BFS from the cluster
-    cells; a cluster failing this is unreachable-by-construction for coverage,
-    not merely unlucky this cycle."""
+def cluster_viewpoint(occ, w: int, h: int, cells: list, res: float,
+                      coverage_radius_m: float, standoff_m: float,
+                      free_threshold: int):
+    """The free cell that PROVES the cluster coverable, or None.
+
+    A standoff-clearing free cell within coverage_radius_m of the cluster -- a
+    pose the safety stack permits from which driving there covers the cluster.
+    FIRST-FOUND by bounded multi-source BFS from the cluster cells (ratified
+    pin 1, 2026-08-19): nearest-to-cluster in BFS step order, no optimality
+    claim, deterministic for a given grid. None means the cluster is
+    unreachable-by-construction for coverage, not merely unlucky this cycle."""
+    # a cluster cell can be its own viewpoint when it sits in open floor --
+    # checked first so an open-floor cluster's proof IS one of its own cells
+    for cx, cy in cells:
+        if _is_free(occ, cy * w + cx, free_threshold):
+            if point_clears_standoff(occ, w, h, cx, cy, res, standoff_m):
+                return (cx, cy)
     radius_cells = coverage_radius_m / res
     seen = set(cells)
     frontier_q = deque((c, 0.0) for c in cells)
@@ -91,19 +110,23 @@ def cluster_has_viewpoint(occ, w: int, h: int, cells: list, res: float,
         (cx, cy), dist = frontier_q.popleft()
         if dist > 0 and _is_free(occ, cy * w + cx, free_threshold):
             if point_clears_standoff(occ, w, h, cx, cy, res, standoff_m):
-                return True
+                return (cx, cy)
         if dist >= radius_cells:
             continue
         for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
             if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in seen:
                 seen.add((nx, ny))
                 frontier_q.append(((nx, ny), dist + 1.0))
-    # the cluster's own cells count too (a cell can be its own viewpoint when it
-    # sits in open floor)
-    return any(
-        point_clears_standoff(occ, w, h, cx, cy, res, standoff_m)
-        for cx, cy in cells if _is_free(occ, cy * w + cx, free_threshold)
-    )
+    return None
+
+
+def cluster_has_viewpoint(occ, w: int, h: int, cells: list, res: float,
+                          coverage_radius_m: float, standoff_m: float,
+                          free_threshold: int) -> bool:
+    """True if cluster_viewpoint finds a proof cell. Kept as the boolean face
+    of the same question; the cell itself now travels with the candidate."""
+    return cluster_viewpoint(occ, w, h, cells, res, coverage_radius_m,
+                             standoff_m, free_threshold) is not None
 
 
 @dataclass(frozen=True)
@@ -215,7 +238,7 @@ def candidate_goals(
     order and takes the first that plans. Returns up to ``max_candidates`` cells.
     """
     if not (0 <= robot_cx < w and 0 <= robot_cy < h):
-        return CandidateSelection([], 0)
+        return CandidateSelection([], 0, {})
 
     def is_free(cx: int, cy: int) -> bool:
         return _is_free(occ, cy * w + cx, config.free_threshold)
@@ -278,32 +301,43 @@ def candidate_goals(
     checked_cluster: set = set()
     found: list = []
     excluded_no_viewpoint = 0
+    viewpoints: dict = {}
     while dq:
         cx, cy = dq.popleft()
         if is_target(cx, cy) and (cx, cy) not in checked_cluster:
             cells = cluster_cells(cx, cy, checked_cluster)
             if len(cells) >= config.min_cluster_cells:
-                if viewpoint_standoff_m > 0.0 and not cluster_has_viewpoint(
+                vp = None
+                if viewpoint_standoff_m > 0.0:
+                    vp = cluster_viewpoint(
                         occ, w, h, cells, res, config.coverage_radius_m,
-                        viewpoint_standoff_m, config.free_threshold):
-                    # No pose the safety stack permits can cover this cluster --
-                    # dropping it here is honest (and COUNTED in the return, so
-                    # COMPLETE never silently absorbs it); offering it would feed
-                    # the failure breaker instead (cert attempt 2's tail).
-                    excluded_no_viewpoint += 1
-                    continue
+                        viewpoint_standoff_m, config.free_threshold)
+                    if vp is None:
+                        # No pose the safety stack permits can cover this
+                        # cluster -- dropping it here is honest (and COUNTED in
+                        # the return, so COMPLETE never silently absorbs it);
+                        # offering it would feed the failure breaker instead
+                        # (cert attempt 2's tail).
+                        excluded_no_viewpoint += 1
+                        continue
                 rep = representative(cells)
                 if rep is not None:
                     found.append(rep)
+                    if vp is not None:
+                        # the proof travels with the candidate: the caller's
+                        # fallback goal when rep's own ladder clears nothing
+                        # (cert attempt 3's starvation)
+                        viewpoints[rep] = vp
                     if len(found) >= config.max_candidates:
-                        return CandidateSelection(found, excluded_no_viewpoint)
+                        return CandidateSelection(found, excluded_no_viewpoint,
+                                                  viewpoints)
         for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
             if 0 <= nx < w and 0 <= ny < h:
                 nidx = ny * w + nx
                 if not visited[nidx] and _is_free(occ, nidx, config.free_threshold):
                     visited[nidx] = 1
                     dq.append((nx, ny))
-    return CandidateSelection(found, excluded_no_viewpoint)
+    return CandidateSelection(found, excluded_no_viewpoint, viewpoints)
 
 
 # Nav2 publishes its costmap as an OccupancyGrid scaled 0..100 (-1 unknown), where

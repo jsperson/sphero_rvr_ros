@@ -328,6 +328,12 @@ class CoverageExplorerNode(Node):
         self._goals_aborted_without_recovery = 0
         self._goals_aborted = 0
         self._planner_rejections = 0
+        # the planner_rejections counter's honest siblings (cert attempt 3's
+        # conflation): queries = times the planner was actually ASKED;
+        # standoff_skips = ladder poses the safety envelope filtered before any
+        # planner query was spent, on candidates that yielded no goal
+        self._planner_queries = 0
+        self._standoff_skips = 0
         self._reported = False
         self._consecutive_failures = 0
         self._consecutive_freezes = 0
@@ -621,6 +627,7 @@ class CoverageExplorerNode(Node):
                 "goals_aborted_after_recovery": self._goals_aborted_after_recovery,
                 "goals_aborted_without_recovery": self._goals_aborted_without_recovery,
                 "planner_rejections": self._planner_rejections,
+                "standoff_skips": self._standoff_skips,
                 "covered_cells": len(self._covered),
                 "unstick_attempts": self._unstick_attempts,
                 "escapes": len(self._escape_events),
@@ -725,6 +732,7 @@ class CoverageExplorerNode(Node):
                     goals_aborted_after_recovery=self._goals_aborted_after_recovery,
                     goals_aborted_without_recovery=self._goals_aborted_without_recovery,
                     planner_rejections=self._planner_rejections,
+                    standoff_skips=self._standoff_skips,
                     # THE FORENSIC FIELDS, which this call site omitted until
                     # 2026-08-16. Gauntlet mission 1 ended here, and its report carried
                     # `freeze_events: []` while the status line counted 5 and the log
@@ -824,6 +832,7 @@ class CoverageExplorerNode(Node):
                 break
             gx, gy = cell
             gwx, gwy = cell_center_world(gx, gy, ox, oy, res)
+            ladder_queries_before = self._planner_queries
             # Try the cell, then progressively closer stand-off points along the
             # line back toward the robot. Demanding the planner reach the cell
             # EXACTLY was too strict and ended missions early: frontier cells sit
@@ -854,13 +863,34 @@ class CoverageExplorerNode(Node):
                 if self._planner_can_reach(awx, awy, frame):
                     goal_cell, goal_point = cell, (awx, awy)
                     break
+            if goal_cell is None:
+                # STANDOFF-SKIP ACCOUNTING, arithmetic on purpose: the guarded
+                # revert-proof pins the ladder loop's exact shape (continue-only
+                # standoff gate), so skips are derived as ladder length minus
+                # planner queries actually spent -- exact for a candidate that
+                # yielded nothing, which is the only candidate the end message
+                # narrates. planner_rejections stays what its name says.
+                ladder_n = sum(1 for _ in self._approach_points(gwx, gwy, wx, wy))
+                self._standoff_skips += max(
+                    0, ladder_n - (self._planner_queries - ladder_queries_before))
+                # THE LADDER-SQUEEZE FALLBACK (cert attempt 3, ratified pin 2):
+                # when every ladder pose sits inside the safety envelope, fall
+                # back to the selection's PROVEN viewpoint -- the standoff-
+                # clearing cell that qualified this cluster in the first place.
+                # It clears the envelope by construction; the PLANNER remains
+                # the reachability gate on it, same as every pose.
+                vp = selection.viewpoints.get(cell)
+                if vp is not None:
+                    vwx, vwy = cell_center_world(vp[0], vp[1], ox, oy, res)
+                    if (math.hypot(vwx - wx, vwy - wy) >= self._min_goal_distance_m
+                            and self._planner_can_reach(vwx, vwy, frame)):
+                        goal_cell, goal_point = cell, (vwx, vwy)
             if goal_cell is not None:
                 break
         self._last_candidate_count = len(candidates)
         self._unplannable_last_cycle = (
             len(candidates) if goal_cell is None else candidates.index(goal_cell)
         )
-        self._planner_rejections += self._unplannable_last_cycle
         if goal_cell is None and exhausted:
             return  # inconclusive cycle: leave the completion counter alone
 
@@ -876,8 +906,9 @@ class CoverageExplorerNode(Node):
             # done, which is the whole failure this outcome exists to avoid.
             self._unstick_attempts += 1
             self.get_logger().warn(
-                f"{len(candidates)} target(s) left but none plannable from here "
-                f"({self._unplannable_last_cycle} refused by the PLANNER) — "
+                f"{len(candidates)} target(s) left, no goal found from here "
+                f"(mission totals: {self._planner_rejections} planner NOs, "
+                f"{self._standoff_skips} poses inside the safety envelope) — "
                 f"unsticking (attempt {self._unstick_attempts}/{self._max_unstick})"
             )
             self._unstick(toward=self._cell_world(candidates[0], ox, oy, res))
@@ -914,15 +945,20 @@ class CoverageExplorerNode(Node):
                     # 2026-08-07 false COMPLETE, and now it is a structural
                     # distinction (targets exist vs targets don't) rather than an
                     # inference from how much got blacklisted.
+                    # COUNTS, NOT DIAGNOSIS (cert attempt 3, 2026-08-19): the old
+                    # message asserted "refused by the PLANNER" from a counter
+                    # that also absorbed standoff skips, and a mission report
+                    # carried 24 planner refusals in a run whose planner log
+                    # shows zero. The line now states each named counter and
+                    # lets the reader convict a mechanism.
                     self.get_logger().warn(
                         f"exploration ENDED with {len(candidates)} target(s) still "
-                        f"wanted but NONE plannable — {len(self._covered)} cells "
-                        "covered, so COVERAGE IS INCOMPLETE. All "
-                        f"{self._unplannable_last_cycle} of this cycle's candidates "
-                        "were refused by the PLANNER, which is now the only gate a "
-                        "candidate faces: the goal-clearance filter that used to run "
-                        "ahead of it is gone, so this count is the whole story rather "
-                        "than the second half of one."
+                        f"wanted and no goal found — {len(self._covered)} cells "
+                        "covered, so COVERAGE IS INCOMPLETE. Mission totals: "
+                        f"{self._planner_rejections} planner NOs, "
+                        f"{self._standoff_skips} approach poses inside the safety "
+                        f"envelope, {self._excluded_no_viewpoint} cluster(s) with "
+                        "no permitted viewpoint at last selection."
                     )
                     self._finish(OUTCOME_NO_PLANNABLE_TARGETS, res, len(candidates))
                 else:
@@ -967,6 +1003,7 @@ class CoverageExplorerNode(Node):
             goals_aborted_after_recovery=self._goals_aborted_after_recovery,
             goals_aborted_without_recovery=self._goals_aborted_without_recovery,
             planner_rejections=self._planner_rejections,
+            standoff_skips=self._standoff_skips,
             remaining_candidates=remaining,
             cells_excluded_no_viewpoint=self._excluded_no_viewpoint,
             map_files=files,
@@ -1110,6 +1147,7 @@ class CoverageExplorerNode(Node):
         goal.goal.pose.orientation.w = 1.0
         goal.use_start = False  # plan from the robot's live pose
         deadline = time.monotonic() + self._plan_timeout_s
+        self._planner_queries += 1
         handle = self._await(self._planner.send_goal_async(goal), deadline)
         if handle is None or not handle.accepted:
             return False
@@ -1119,7 +1157,17 @@ class CoverageExplorerNode(Node):
             # also stop running, or slow planner queries pile up server-side.
             handle.cancel_goal_async()
             return False
-        return len(result.result.path.poses) > 0
+        reachable = len(result.result.path.poses) > 0
+        # planner_rejections MEANS THE PLANNER SAID NO, counted here at the one
+        # place the planner actually answers -- and nowhere else. It used to
+        # accumulate candidates-without-goal, which cert attempt 3 turned into
+        # false narration: a report claiming 24 planner refusals in a run whose
+        # planner log shows zero (every one was a standoff skip). Server
+        # unavailable / timeout above deliberately do NOT count: no answer is
+        # not a NO.
+        if not reachable:
+            self._planner_rejections += 1
+        return reachable
 
     def _ladder_running(self):
         """True while the controller is actively working an escape.

@@ -116,6 +116,10 @@ def build_report(
     goals_aborted_after_recovery=None,
     goals_aborted_without_recovery=None,
     planner_rejections=0,
+    # Distinct from planner_rejections BY RULING (cert attempt 3's conflation,
+    # 2026-08-19): approach poses the safety envelope filtered before any
+    # planner query was spent. UNKNOWN by default like its siblings.
+    standoff_skips=None,
     # DEFAULTS TO UNKNOWN, NOT TO ZERO, and that is the whole point of this line.
     # It defaulted to 0 until 2026-08-16, and on that night the START_BLOCKED call
     # site omitted the argument -- so gauntlet mission 1's report published
@@ -196,6 +200,9 @@ def build_report(
                 else int(goals_aborted_without_recovery)
             ),
             "planner_rejections": int(planner_rejections),
+            "standoff_skips": (
+                None if standoff_skips is None else int(standoff_skips)
+            ),
         },
         "remaining_candidates": (
             None if remaining_candidates is None else int(remaining_candidates)

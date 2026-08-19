@@ -125,3 +125,105 @@ def test_the_report_carries_the_count_without_fabricating_zero():
     counted = build_report(OUTCOME_COMPLETE, covered_cells=1, resolution=RES,
                            duration_s=1.0, cells_excluded_no_viewpoint=2)
     assert counted["cells_excluded_no_viewpoint"] == 2
+
+
+def test_the_ladder_squeeze_still_yields_a_goal_via_the_proven_viewpoint():
+    """THE CERT-3 MUST-FLIP (second campaign, 2026-08-19): a candidate whose
+    ENTIRE approach ladder sits inside the safety envelope must still carry a
+    goal — the selection's proven viewpoint. On 5c7f330 CandidateSelection had
+    no viewpoints field and the node discarded the proof after the exclusion
+    check: the single-cluster selection starved at 12% coverage with the
+    planner never asked.
+
+    Geometry reproduces the squeeze: a long wall slab, the target cluster 0.10 m
+    beneath it, the robot far along the SAME wall line — so the ladder poses
+    (target, 0.375 m back, 0.675 m back, all on the robot-ward line) every one
+    hug the slab and fail the standoff, while open floor south of the cluster
+    holds a legal viewpoint within coverage radius."""
+    w = h = 70
+    occ = grid(w, h)
+    wall(occ, w, [(x, y) for x in range(20, 56) for y in (30, 31, 32)])
+    cluster = [(x, y) for x in (25, 26, 27) for y in (27, 28)]
+    covered = {(x, y) for y in range(h) for x in range(w)} - set(cluster)
+    cfg = CoverageConfig(free_threshold=0)
+    robot = (58, 28)
+    selection = candidate_goals(occ, w, h, 0.0, 0.0, RES, robot[0], robot[1],
+                                covered, set(), cfg,
+                                viewpoint_standoff_m=VIEWPOINT_STANDOFF_M)
+    assert len(selection.candidates) == 1
+    rep = selection.candidates[0]
+    # the whole robot-ward ladder fails the envelope: the squeeze is real
+    import math as _math
+    rx, ry = robot
+    d = _math.hypot(rep[0] - rx, rep[1] - ry)
+    ux, uy = (rx - rep[0]) / d, (ry - rep[1]) / d
+    ladder = [rep] + [
+        (rep[0] + ux * (0.75 * frac / RES), rep[1] + uy * (0.75 * frac / RES))
+        for frac in (0.5, 0.9)
+    ]
+    for px, py in ladder:
+        assert not point_clears_standoff(occ, w, h, int(px), int(py), RES,
+                                         VIEWPOINT_STANDOFF_M), (
+            f"ladder pose ({px:.0f},{py:.0f}) clears -- the squeeze geometry "
+            f"is wrong and this test proves nothing")
+    # ...and the selection still carries the way out
+    vp = selection.viewpoints[rep]
+    assert point_clears_standoff(occ, w, h, vp[0], vp[1], RES,
+                                 VIEWPOINT_STANDOFF_M)
+    assert occ[vp[1] * w + vp[0]] == 0, "the viewpoint must be free floor"
+
+
+def test_open_floor_viewpoints_ride_along_without_changing_selection():
+    """No-regression, extended for the fallback: candidates identical with and
+    without the clamp (as before), and the viewpoint dict is a benign passenger
+    for open-floor clusters (the proof is simply one of the cluster's own
+    cells or a neighbor -- present, legal, unused unless the ladder starves)."""
+    w = h = 60
+    occ = grid(w, h)
+    cluster = [(x, y) for x in (40, 41, 42) for y in (40, 41, 42)]
+    covered = {(x, y) for y in range(h) for x in range(w)} - set(cluster)
+    cfg = CoverageConfig(free_threshold=0)
+    without = candidate_goals(occ, w, h, 0.0, 0.0, RES, 10, 10, covered, set(), cfg)
+    with_clamp = candidate_goals(occ, w, h, 0.0, 0.0, RES, 10, 10, covered, set(),
+                                 cfg, viewpoint_standoff_m=VIEWPOINT_STANDOFF_M)
+    assert without.candidates == with_clamp.candidates
+    rep = with_clamp.candidates[0]
+    vp = with_clamp.viewpoints[rep]
+    assert point_clears_standoff(occ, w, h, vp[0], vp[1], RES,
+                                 VIEWPOINT_STANDOFF_M)
+
+
+def test_the_node_falls_back_to_the_viewpoint_and_the_planner_still_gates_it():
+    """Source guard: the fallback consults selection.viewpoints ONLY after the
+    ladder found nothing, and the planner gates the viewpoint pose exactly as
+    it gates every pose. The revert-proof's two-gate loop shape is untouched
+    (verified by that test passing unamended, ratified pin 3)."""
+    from pathlib import Path
+
+    node_src = (Path(__file__).resolve().parents[1] / "src" /
+                "sphero_rvr_driver" / "coverage_explorer_node.py").read_text()
+    assert "selection.viewpoints.get(cell)" in node_src
+    idx = node_src.index("selection.viewpoints.get(cell)")
+    assert "if goal_cell is None:" in node_src[idx - 1500:idx], (
+        "the fallback no longer waits for the ladder to fail first")
+    tail = node_src[idx:idx + 600]
+    assert "_planner_can_reach(vwx, vwy, frame)" in tail, (
+        "the viewpoint pose skips the planner -- reachability lost its gate")
+
+
+def test_planner_rejections_means_the_planner_said_no():
+    """Cert 3's conflation, closed at the source: the only increment of
+    _planner_rejections lives inside _planner_can_reach on a genuine empty
+    answer, and the old candidates-without-goal accumulation is gone."""
+    from pathlib import Path
+
+    node_src = (Path(__file__).resolve().parents[1] / "src" /
+                "sphero_rvr_driver" / "coverage_explorer_node.py").read_text()
+    assert node_src.count("self._planner_rejections +=") == 1, (
+        "planner_rejections has more than one incrementer again -- the "
+        "conflation that wrote 24 refusals into a report whose planner log "
+        "shows zero")
+    assert "self._planner_rejections += self._unplannable_last_cycle" \
+        not in node_src
+    assert '"standoff_skips"' in node_src, (
+        "the envelope's own counter left the status payload")
