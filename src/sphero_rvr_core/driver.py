@@ -281,11 +281,21 @@ class RVRDriver:
                     f"{self.DISCONNECT_JOIN_TIMEOUT_S}s -- disconnect refuses "
                     "to hang silently (D31); the task is leaked and shutdown "
                     "is NOT clean")
+            # AMENDMENT (review of ff03e02): retrieve-and-DROP was an error-
+            # visibility regression -- the old bare `await` re-raised a control
+            # loop that died of a genuine bug, and cleanup code that swallows
+            # that is the tools-that-lie family wearing cleanup clothing. A
+            # non-cancellation exception RE-RAISES, preserving the old loudness;
+            # the task slot is cleared FIRST so a retry after the crash
+            # surfaces can still finish the teardown (same philosophy as the
+            # failed-join retry).
             try:
-                task.exception()          # retrieve, so nothing warns later
+                crash = task.exception()
             except asyncio.CancelledError:
-                pass
+                crash = None
             self._control_task = None
+            if crash is not None:
+                raise crash
         if self._connected and not self._emergency_stopped and not self._fail_safe_active:
             try:
                 await self.stop()

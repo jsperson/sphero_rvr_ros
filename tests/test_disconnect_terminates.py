@@ -139,3 +139,33 @@ async def test_disconnect_twice_is_a_no_op():
     await driver.disconnect()
     assert time.monotonic() - started < 0.1, (
         "the second disconnect did real work; it must be a no-op")
+
+
+async def test_a_crashed_control_task_surfaces_through_disconnect():
+    """Review amendment to ff03e02: the old bare `await` re-raised a control
+    loop that died of a genuine bug; the first version of the fix retrieved
+    and silently DROPPED it -- an error-visibility regression on the driver
+    seam. A crash must stay loud through disconnect, and the retry after the
+    crash surfaced must still complete the teardown."""
+    driver = _driver()
+    await driver.connect()
+
+    async def dies_of_a_bug():
+        await asyncio.sleep(0.01)
+        raise ValueError("the control loop's own defect, not a cancellation")
+
+    real = driver._control_task
+    real.cancel()
+    try:
+        await real
+    except asyncio.CancelledError:
+        pass
+    driver._control_task = asyncio.get_running_loop().create_task(
+        dies_of_a_bug())
+    await asyncio.sleep(0.03)     # let it crash before disconnect joins it
+
+    with pytest.raises(ValueError, match="control loop's own defect"):
+        await driver.disconnect()
+
+    # the crash surfaced; the retry finishes the teardown cleanly
+    await driver.disconnect()
