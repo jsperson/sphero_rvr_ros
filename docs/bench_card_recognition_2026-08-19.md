@@ -195,3 +195,60 @@ connection failure).**
 
 **The recognition/bridge tool STAYS DISABLED pending schema redesign +
 re-cert.** Nothing on this card changed flight behavior.
+
+---
+
+## RE-CERT RESULTS (2026-08-20 afternoon sitting, schema redesign live)
+
+*Per the re-cert plan (design_recognition_schema_redesign_2026-08-20.md §8,
+amended §8b): R2′/R3/R6a/R6c rerun on the redesigned schema; R1/R4/R5/R6b
+stand on the morning's receipts. Build 3c3f05f; 23 invocations, 23/23
+schema-valid, camera down after all 23; bag sitting_bag_20260820_154736.*
+
+**EVERY BAR MET — RE-CERT COMPLETE.**
+
+- **R3 falsifier (ran FIRST): PASS 7/7 zero-match** — book .92, shovel .95,
+  rocket .95, banana .97, flower pot .93, fence .98, person .95 (fired only
+  on Scott's confirmed "clear"); all identity=null; every description names
+  the actual scene. Zero-FP lineage now: 25+ old-schema invocations + the
+  24-frame offline corpus + 7 fresh live probes = zero fabrications ever.
+- **R2′ bottle: PASS 3/3 amended bars** — match .95/.98/.90, identity
+  unverified 3/3 with the reason stated ("label not legible enough to
+  confirm"), zero mismatch, zero wrong confirmed. The morning's forced-false
+  frame-class now returns the approach-candidate answer with a bearing.
+  **Decoy (glue bottle): match=true + identity=MISMATCH .90 with the
+  contradicting evidence NAMED** ("white bottle with a red nozzle...
+  resembling a spray/cleaner bottle rather than a dark Dr Pepper soda
+  bottle") — PIN 1's evidence rule, live. **Variant (larger DP bottle):
+  match+unverified .82** — generalizes across vessel size, no over-fit.
+- **R2′ controller: PASS 4/4** — "xbox controller" 3/3 match (.78/.82/.72),
+  identity {unverified, CONFIRMED, unverified}, zero mismatch; Scott's
+  ground truth: genuine Xbox, "recognizing controller is a pass," so zero
+  wrong confirms. **Epistemic note, recorded deliberately:** the one
+  confirm was form-inferred and Scott judges the brand not easily
+  recognizable — factually right but evidentially thin. The silver
+  controller supplementaries showed restraint IS the default (unverified
+  .62, "Xbox-specific details are not visible") — the red form-confirm is
+  the outlier on record. **The third-party-gamepad falsifier remains
+  AVAILABLE-UNEXERCISED** (both controllers genuine; today did not test the
+  wrong-confirm edge). **"game controller" (identity-free, the amendment's
+  plain-object probe): match + CONFIRMED .85** — the schema's
+  no-identity-component rule followed exactly.
+- **R2′ picture (recorded class, ungated): 3/3 match=true** (.60/.55/.78),
+  all honestly unverified — the class the original card scored 1/3 now
+  detects every time.
+- **Aggregate: 9/9 vs ≥8/9.**
+- **R6a (transport failure, the fix's live proof): PASS** — bad base_url →
+  `REFUSED: recognition failed: VLM request failed (ConnectionError) —
+  endpoint or network trouble, not a verdict about the scene`, service
+  ANSWERED, node ALIVE, camera down. This morning the same induction killed
+  the node with no answer. **R6c: PASS** — clean success on the same node
+  immediately after restore; node alive at close.
+- **Supply verdict (same sitting): CLOSED** — kernel journal across the
+  4h23m boot on the new mains path shows ZERO under-voltage/throttle
+  events; the old outlet/cable path is convicted; no purchase needed.
+
+**Consequence: the primitive is CERTIFIED for composition on the redesigned
+schema. The tool-enable flip proceeds as its own reviewed commit (the
+watcher-flip pattern). The live search rehearsal is a FLIGHT (it drives)
+and needs its own staging + envelope + clear.**

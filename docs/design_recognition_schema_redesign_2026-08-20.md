@@ -200,6 +200,21 @@ invocation with the identity-free target **"game controller"** on the staged
 controller — the true plain-object confirmed-probe (expectation:
 `match=true`, `identity=confirmed` per the no-identity-component rule).
 
+## 8c. RE-CERT RESULT (2026-08-20 afternoon — the round closes)
+
+**Every bar met; full ledger on the bench card (RE-CERT RESULTS section).**
+Highlights against this note's own asks: the zero-FP bar held live (7/7
+absent probes zero-match), both §4 identity bars held (zero mismatch on
+true targets, zero wrong confirms — the one brand-confirm was factually
+correct per ground truth, with an epistemic thinness note recorded), the
+decoy produced mismatch-with-named-evidence (PIN 1 live on both branches),
+the §8b plain-object probe returned match+confirmed exactly per the
+no-identity-component rule, and the §7 fix proved itself live
+(refusal+alive where the morning had node death). The third-party-gamepad
+falsifier is noted AVAILABLE-UNEXERCISED. The round's remaining step is
+the tool-enable flip (reviewed commit, watcher-flip pattern); the live
+search rehearsal is out of this round — it drives, so it is a flight.
+
 ## 9. Explicitly OUT OF SCOPE this round
 
 - **Orientation-robustness** (objects at odd poses/rotations): the camera
