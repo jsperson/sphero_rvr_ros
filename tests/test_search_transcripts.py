@@ -232,6 +232,42 @@ def test_budget_exhaustion_ends_a_search_that_will_not_stop():
     assert lines[-1].startswith("[budget] stopping after 3")
 
 
+def test_a_model_call_failure_ends_the_instruction_in_words():
+    """Flight 2's crash (2026-08-20): query_text raised after empty retries and
+    the client died holding a live search candidate. The loop must end HONESTLY
+    on a failed model call — transcript line, clean return, no propagation, and
+    the runner is never touched again."""
+    calls = {"n": 0}
+
+    def failing_model(system, prompt):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return '{"tool": "look_and_recognize", "args": {"target": "dr pepper bottle"}}'
+        raise RuntimeError("model returned no usable text after retries (last: '')")
+
+    runner = ScriptedRunner([look_result(True, "unverified", "right", 159.8)])
+    lines = []
+    run_instruction("search the room for the dr pepper bottle",
+                    failing_model, runner, Budget(), out=lines.append)  # must NOT raise
+    assert len(runner.calls) == 1, "no tool may run after the model call fails"
+    assert any(line.startswith("[model-failure]") for line in lines)
+    assert "no usable" in " ".join(lines)
+
+
+def test_the_client_default_token_headroom_carries_the_truncation_lesson():
+    """Source pin: task_client's --max-tokens default is 1500 (json_mode models
+    reason before the JSON; 500 truncated to empty at flight 2's history-heavy
+    call 11). The comment must cite the trap so the next model path checks
+    BEFORE flying."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver" /
+           "task_client.py").read_text()
+    assert '"--max-tokens", type=int, default=1500' in src
+    assert "truncates to nothing" in src
+    assert "500" not in src.split('"--max-tokens"')[1].split(")")[0], \
+        "the old default must not linger in the argument line"
+
+
 # --- the stanza itself ---------------------------------------------------------
 
 def test_the_system_prompt_carries_the_search_loop():

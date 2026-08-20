@@ -285,7 +285,13 @@ def main(argv=None):
     ap.add_argument("--api-key-file",
                     default=os.path.expanduser("~/.config/synthetic/api_key"))
     ap.add_argument("--max-tool-calls", type=int, default=8)
-    ap.add_argument("--max-tokens", type=int, default=500)
+    # 1500, NOT 500: json_mode models reason before the JSON and a small cap
+    # truncates to nothing — the synthetic-vlm trap, learned by the vision
+    # path in 2026-08, re-learned HERE on flight 2 (2026-08-20) when call 11's
+    # history-heavy prompt came back empty three times and crashed the client
+    # mid-search. Third seam to learn it; the next model path checks BEFORE
+    # flying.
+    ap.add_argument("--max-tokens", type=int, default=1500)
     ap.add_argument("--model-timeout-s", type=float, default=60.0)
     ap.add_argument("--tool-timeout-s", type=float, default=180.0)
     ap.add_argument("instruction", nargs="*",

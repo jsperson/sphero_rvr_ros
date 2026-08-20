@@ -345,7 +345,22 @@ def run_instruction(instruction, ask_model, runner, budget, out=print):
             out(f"[budget] stopping after {budget.used} tool calls")
             return
         prompt = build_user_turn(instruction, history)
-        reply = ask_model(SYSTEM_PROMPT, prompt)
+        # A MISSION-HOLDING CLIENT ENDS IN WORDS (flight 2, 2026-08-20): the
+        # model call itself can fail — empty replies past retries, transport
+        # errors — and an uncaught raise here killed the client while it held
+        # a live search candidate. The catch is deliberately broad because
+        # ask_model is injected and its failure taxonomy is unbounded; the
+        # response is uniform: say so and end. (The R6a refuse-don't-die
+        # doctrine at the loop's own seam; the cancel-on-exit guard in the
+        # client covers any goto still in flight.)
+        try:
+            reply = ask_model(SYSTEM_PROMPT, prompt)
+        except Exception as exc:
+            out(f"[model-failure] {exc}")
+            out("[model-failure] the model produced no usable reply; ending "
+                "the instruction honestly — the robot is not left holding an "
+                "unspoken mission")
+            return
         try:
             decision = parse_reply(reply)
         except ContractError as exc:
