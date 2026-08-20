@@ -12,6 +12,7 @@ import base64
 import json
 import math
 import re
+import sys
 
 import requests
 
@@ -68,14 +69,21 @@ def _reply_text(r):
 
 
 def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
-               timeout=30.0, retries=3, json_mode=False):
-    """Same endpoint, key and retry discipline as `query_vlm`, without an image.
+               timeout=30.0, retries=3, json_mode=False, escalation=3):
+    """Same endpoint and key discipline as `query_vlm`, without an image — but
+    with an ESCALATING-CAP retry ladder instead of same-cap retries.
 
-    Exists because the task client reasons over text (a tool contract and tool
-    results), not pictures -- so this adds an argument shape, not a dependency or a
-    provider. `json_mode` sets response_format json_object, which is what makes a
-    model that likes to think out loud still land on a parseable object; see the
-    vision path's note about needing token headroom for the same reason.
+    Why (flights 2+3, 2026-08-20, replayed offline): reasoning-style models
+    spend tokens thinking BEFORE any content, and a hard decision (the search
+    loop's bearing->coordinates trigonometry) burned >1500 reasoning tokens —
+    so the content came back EMPTY, deterministically, and a same-cap retry
+    re-ran the identical guillotine three times. Replay E: the exact failing
+    prompt was empty at 1500 and returned a geometrically correct goto at
+    4000. The ladder keeps the BASE cap cheap for the common short decisions
+    and escalates x3 after the first empty reply (1500 -> 4500 covers the
+    measured 4000 winner with margin); later attempts stay at the escalated
+    cap so transient-garbage retries still exist there. Each escalation is
+    printed to stderr so the cost is visible in the client log.
     """
     messages = []
     if system:
@@ -85,7 +93,13 @@ def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     last = ""
-    for _ in range(retries):
+    for attempt in range(retries):
+        cap = max_tokens if attempt == 0 else int(max_tokens * escalation)
+        if attempt == 1 and cap != max_tokens:
+            print(f"[query_text] empty reply at max_tokens={max_tokens}; "
+                  f"escalating to {cap} (reasoning-burn ladder)",
+                  file=sys.stderr, flush=True)
+        payload["max_tokens"] = cap
         r = requests.post(
             f"{base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}",

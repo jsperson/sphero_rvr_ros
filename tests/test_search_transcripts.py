@@ -254,6 +254,16 @@ def test_a_model_call_failure_ends_the_instruction_in_words():
     assert "no usable" in " ".join(lines)
 
 
+def test_the_default_transcript_writer_flushes_per_line():
+    """Flights 2+3: plain print block-buffered the transcript to its file, so a
+    LIVE flight looked dead from outside ("nothing is running") and events
+    arrived in one burst at exit. The loop's default writer must flush."""
+    import inspect
+    from sphero_rvr_core.task_agent import _say, run_instruction
+    assert inspect.signature(run_instruction).parameters["out"].default is _say
+    assert "flush=True" in inspect.getsource(_say)
+
+
 def test_the_client_default_token_headroom_carries_the_truncation_lesson():
     """Source pin: task_client's --max-tokens default is 1500 (json_mode models
     reason before the JSON; 500 truncated to empty at flight 2's history-heavy
@@ -279,6 +289,10 @@ def test_the_system_prompt_carries_the_search_loop():
     assert "after searching" in SYSTEM_PROMPT and "where you looked" in SYSTEM_PROMPT
     assert "half a metre short" in SYSTEM_PROMPT
     assert "demotes a candidate" in SYSTEM_PROMPT
+    # the reasoning discount (flight 3's root cause: the model burned its cap
+    # on bearing trigonometry) — approximate coordinates are LICENSED:
+    assert "Roughly toward" in SYSTEM_PROMPT
+    assert "precision comes" in SYSTEM_PROMPT
     assert "misread at range" in SYSTEM_PROMPT
     assert "could not verify" in SYSTEM_PROMPT
 

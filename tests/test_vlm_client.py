@@ -132,3 +132,57 @@ def test_a_wellformed_body_still_returns_its_text(monkeypatch):
             {"choices": [{"message": {"content": '  {"match": true}  '}}]}))
     assert vc.query_vlm("http://x", "k", "m", "p", b"j") == '{"match": true}'
     assert vc.query_text("http://x", "k", "m", "p") == '{"match": true}'
+
+
+# --- the reasoning-burn ladder (flights 2+3, replay E as the must-flip) --------
+
+def _body(content):
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def test_the_escalating_ladder_is_replay_E_as_a_test(monkeypatch):
+    """THE MUST-FLIP, from the offline replay of flight 3's failing prompt:
+    empty at the base cap, a correct goto at the escalated cap. The ladder must
+    make exactly two calls — base, then base x3 — and return the second's
+    content. A same-cap retry (the old behavior) would re-run the identical
+    guillotine and this test would fail on the caps it saw."""
+    import sphero_rvr_core.vlm_client as vc
+    caps = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        caps.append(json["max_tokens"])
+        if json["max_tokens"] <= 1500:
+            return _FakeResponse(_body(""))          # reasoning ate the cap
+        return _FakeResponse(_body('{"tool": "goto", "args": {"x": 0.1, "y": 0.3}}'))
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    reply = vc.query_text("http://x", "k", "m", "p", max_tokens=1500, json_mode=True)
+    assert reply == '{"tool": "goto", "args": {"x": 0.1, "y": 0.3}}'
+    assert caps == [1500, 4500], \
+        f"expected one base attempt then one x3 escalation, saw caps {caps}"
+
+
+def test_all_attempts_empty_still_raises_after_the_full_ladder(monkeypatch):
+    import sphero_rvr_core.vlm_client as vc
+    caps = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        caps.append(json["max_tokens"])
+        return _FakeResponse(_body(""))
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    with pytest.raises(RuntimeError, match="no usable text"):
+        vc.query_text("http://x", "k", "m", "p", max_tokens=1500)
+    assert caps == [1500, 4500, 4500], \
+        "later attempts stay at the escalated cap (transient-garbage retries live there)"
+
+
+def test_transient_garbage_at_the_escalated_cap_still_gets_its_retry(monkeypatch):
+    import sphero_rvr_core.vlm_client as vc
+    replies = iter(["", "<|garbage|>", "final answer"])
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse(_body(next(replies)))
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    assert vc.query_text("http://x", "k", "m", "p", max_tokens=1500) == "final answer"

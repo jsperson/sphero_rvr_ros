@@ -290,7 +290,11 @@ def main(argv=None):
     # path in 2026-08, re-learned HERE on flight 2 (2026-08-20) when call 11's
     # history-heavy prompt came back empty three times and crashed the client
     # mid-search. Third seam to learn it; the next model path checks BEFORE
-    # flying.
+    # flying. Deterministic reasoning-burn beyond this base is handled by
+    # query_text's escalating-cap retry ladder (x3 after the first empty
+    # reply) — raising this default wholesale was considered and declined
+    # (2026-08-20 consensus); it remains the operator's override for a run
+    # that wants a bigger base.
     ap.add_argument("--max-tokens", type=int, default=1500)
     ap.add_argument("--model-timeout-s", type=float, default=60.0)
     ap.add_argument("--tool-timeout-s", type=float, default=180.0)

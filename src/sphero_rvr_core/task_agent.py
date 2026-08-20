@@ -134,7 +134,9 @@ something):
   it, with where it is from the bearing and your position.
 - match=true with "unverified" is a CANDIDATE, not a find: use goto to drive
   toward the bearing, stopping about half a metre short of where the object
-  should be -- never onto it -- then look again from there. Up close,
+  should be -- never onto it -- then look again from there. Roughly toward
+  the bearing is fine: do NOT compute precise coordinates -- precision comes
+  from the confirm look, not from the drive. Up close,
   "confirmed" is the find; "mismatch" means it is not the thing, resume
   searching elsewhere; "unverified" AGAIN up close is itself the answer: report
   an object like it whose identity you could not verify, and say so plainly.
@@ -321,7 +323,14 @@ def describe_call(tool: str, args: dict) -> str:
     return f"{tool}({inner})"
 
 
-def run_instruction(instruction, ask_model, runner, budget, out=print):
+def _say(line):
+    """Default transcript writer: FLUSHED per line. Plain print block-buffers
+    when stdout is a file, so flights 2+3's transcripts arrived as one burst at
+    exit and a live client looked dead from outside ("nothing is running")."""
+    print(line, flush=True)
+
+
+def run_instruction(instruction, ask_model, runner, budget, out=_say):
     """Drive one English instruction to completion.
 
     Lives in the pure core rather than beside the ROS client because it IS the
