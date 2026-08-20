@@ -192,10 +192,16 @@ def test_a_point_dead_ahead_of_the_camera_is_center():
 
 def test_a_point_dead_ahead_of_the_BODY_is_sector_right():
     """The live confirmation from the sitting: a body-centered object reads
-    RIGHT (camera azimuth −14°, inside the right band)."""
+    RIGHT (camera azimuth −14°, inside the right band). Since the boundary
+    overlap it is ALSO reachable from a center call (−14 is 3° inside center's
+    widened edge — exactly the borderline the overlap exists for); a
+    clearly-right object at body −25° (camera −39°) is not."""
     r, amb = range_from_tof_points([(1.2, 0.0)], "right")
     assert r == pytest.approx(1.2) and amb is False
-    assert range_from_tof_points([(1.2, 0.0)], "center") is None
+    deep = math.radians(-20.0)   # camera −34°: inside right's widened band,
+    p = (1.2 * math.cos(deep), 1.2 * math.sin(deep))   # outside center's
+    assert range_from_tof_points([p], "right") == (pytest.approx(1.2), False)
+    assert range_from_tof_points([p], "center") is None
 
 
 def test_a_single_standing_cluster_is_unambiguous():
@@ -282,6 +288,35 @@ def test_placement_1_still_passes_the_discrimination():
                   for r in (0.3, 0.45, 0.54, 1.0, 1.02, 1.05)]
     r, amb = range_from_tof_points(floor_only, "center")
     assert r == pytest.approx(1.02) and amb is False
+
+
+def test_placement_3_is_the_boundary_must_flip():
+    """The sector-boundary miss, killed: the bottle stood ~2° inside center
+    (body +23°) but the VLM defensibly called "left"; the unwidened left band
+    (body 25-47°) missed it and returned a background object at 1.82 — +0.57
+    out of bar. With the 6° overlap the left-called band reaches +19°, finds
+    the bottle's cluster (1.21-1.26 vs tape 1.251), and the pulled-in
+    background is honestly flagged by the EXISTING multiplicity logic."""
+    bottle_az = math.radians(23.0)   # body frame, ~2° inside center's edge
+    backgd_az = math.radians(30.0)
+    floor_az = math.radians(28.0)
+    pts = ([(r * math.cos(bottle_az), r * math.sin(bottle_az))
+            for r in (1.21, 1.24, 1.26)] +
+           [(1.82 * math.cos(backgd_az), 1.82 * math.sin(backgd_az))] +
+           [(r * math.cos(floor_az), r * math.sin(floor_az))
+            for r in (0.3, 0.4, 0.5)])
+    r, amb = range_from_tof_points(pts, "left")
+    assert r == pytest.approx(1.24), \
+        "the left-called band must now reach the boundary bottle"
+    assert amb is True, "the pulled-in background is a second cluster — flagged"
+
+
+def test_the_overlap_does_not_leak_far_off_sector_objects():
+    """6° widens the seams, not the whole compass: an object 20° outside the
+    called band stays out."""
+    away = math.radians(60.0)   # far left of the left band's widened edge
+    assert range_from_tof_points(
+        [(1.0 * math.cos(away), 1.0 * math.sin(away))], "left") is None
 
 
 def test_placement_1_is_the_must_flip():

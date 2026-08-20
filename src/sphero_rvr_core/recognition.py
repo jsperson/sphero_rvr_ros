@@ -42,6 +42,20 @@ _SECTOR_BANDS_DEG = {
     "right": (-33.0, -11.0),
 }
 
+#: Band overlap at sector boundaries, degrees. DERIVED (range sitting
+#: placement 3, 2026-08-20): a bottle ~2° inside center was defensibly called
+#: "left" by the VLM (it stood at ~36% of frame width, a boundary judgment),
+#: and the unwidened left band missed it entirely — the range came back as a
+#: background return, +0.57 out of bar, while the sensor held the bottle at
+#: 1.21-1.26 vs tape 1.251. 6° = the 2° observed miss + ±5°-class VLM boundary
+#: noise, with margin, while bands stay mostly disjoint (widened edges, camera
+#: frame: left [5,39], center [-17,17], right [-39,-5] — adjacent bands share
+#: 12° of their 34°). An object near a boundary now lands in the called band
+#: whichever side the VLM picks. Neighbor objects pulled in by the widening
+#: are DELIBERATELY left to the existing cluster+ambiguous logic — multiplicity
+#: is already reported honestly (nearest + flagged); no new mechanism.
+SIGHTING_BAND_OVERLAP_DEG = 6.0
+
 
 #: Floor-clutter cutoff for sighting ranges, metres. DERIVED from the range
 #: sitting's own measurement (2026-08-20, placement 1, 114 in-band returns
@@ -94,6 +108,8 @@ def range_from_tof_points(points_xy, where_in_frame,
     if where_in_frame not in _SECTOR_BANDS_DEG:
         raise ValueError(f"where_in_frame {where_in_frame!r} has no sector band")
     lo, hi = _SECTOR_BANDS_DEG[where_in_frame]
+    lo -= SIGHTING_BAND_OVERLAP_DEG
+    hi += SIGHTING_BAND_OVERLAP_DEG
     ranges, near_band = [], 0
     for x, y in points_xy:
         r = math.hypot(x, y)
