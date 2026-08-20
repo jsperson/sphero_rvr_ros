@@ -60,6 +60,19 @@ SIGHTING_FLOOR_CLUTTER_M = 0.8
 #: 0.38 — 0.25 separates with margin both ways.
 SIGHTING_CLUSTER_GAP_M = 0.25
 
+#: Near-band floor, metres: in-band returns in [SIGHTING_NEAR_BAND_M,
+#: SIGHTING_FLOOR_CLUTTER_M) are DISCARDED from the range but FLAG AMBIGUITY —
+#: placement 2 (2026-08-20): a bottle at tape 0.742 returned 0.72-0.73, below
+#: the cutoff, and the range confidently reported the BACKGROUND at 1.67
+#: unambiguous — "confidently wrong about which object it measured", the worst
+#: class an instrument hands a navigator. Endpoints derived: 0.6 sits above
+#: the measured floor-clutter ceiling (0.54 in BOTH placements' distributions)
+#: with margin, and below it only floor lives; the 0.8 top is the cutoff.
+#: Residual documented: an object hiding INSIDE the clutter band (<0.6) still
+#: escapes the flag — the stanza's never-confirm-below-0.8 rule is the
+#: argument that a compliant searcher rarely meets one.
+SIGHTING_NEAR_BAND_M = 0.6
+
 
 def range_from_tof_points(points_xy, where_in_frame,
                           mount_offset_deg=CAMERA_MOUNT_OFFSET_DEG):
@@ -81,14 +94,18 @@ def range_from_tof_points(points_xy, where_in_frame,
     if where_in_frame not in _SECTOR_BANDS_DEG:
         raise ValueError(f"where_in_frame {where_in_frame!r} has no sector band")
     lo, hi = _SECTOR_BANDS_DEG[where_in_frame]
-    ranges = []
+    ranges, near_band = [], 0
     for x, y in points_xy:
         r = math.hypot(x, y)
-        if r < SIGHTING_FLOOR_CLUTTER_M:
-            continue
         cam_az = math.degrees(math.atan2(y, x)) - float(mount_offset_deg)
-        if lo <= cam_az <= hi:
-            ranges.append(r)
+        if not (lo <= cam_az <= hi):
+            continue
+        if r < SIGHTING_NEAR_BAND_M:
+            continue                      # floor clutter: lives in every band
+        if r < SIGHTING_FLOOR_CLUTTER_M:
+            near_band += 1                # something STANDS too near to rank
+            continue
+        ranges.append(r)
     if not ranges:
         return None
     ranges.sort()
@@ -98,7 +115,7 @@ def range_from_tof_points(points_xy, where_in_frame,
             clusters.append([])
         clusters[-1].append(r)
     nearest = clusters[0]
-    return nearest[len(nearest) // 2], len(clusters) > 1
+    return nearest[len(nearest) // 2], (len(clusters) > 1 or near_band > 0)
 
 #: Sector-center yaw offsets, radians. Image LEFT is the robot's LEFT, which is
 #: POSITIVE yaw (REP-103). Thirds have centers at +/- FOV/3 and 0.

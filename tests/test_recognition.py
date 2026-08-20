@@ -243,6 +243,47 @@ PLACEMENT1_RANGES = [
 ]
 
 
+#: Placement 2's fixture (bottle at TAPE 0.742 returning 0.72-0.73 in the
+#: near band; floor clutter ending 0.52; door/wall background 1.47-1.84):
+#: the 127 center-band ranges verbatim, captured with the scene standing.
+PLACEMENT2_RANGES = [
+    0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.29, 0.29,
+    0.29, 0.29, 0.30, 0.30, 0.30, 0.30, 0.31, 0.32, 0.32, 0.32, 0.32, 0.33,
+    0.33, 0.33, 0.34, 0.34, 0.34, 0.35, 0.38, 0.39, 0.40, 0.40, 0.40, 0.40,
+    0.40, 0.41, 0.41, 0.41, 0.41, 0.41, 0.41, 0.41, 0.42, 0.42, 0.42, 0.42,
+    0.47, 0.48, 0.48, 0.48, 0.50, 0.52, 0.72, 0.72, 0.72, 0.72, 0.72, 0.73,
+    1.47, 1.60, 1.61, 1.61, 1.61, 1.61, 1.61, 1.62, 1.62, 1.62, 1.62, 1.63,
+    1.63, 1.63, 1.63, 1.63, 1.63, 1.63, 1.63, 1.64, 1.64, 1.64, 1.64, 1.64,
+    1.65, 1.65, 1.65, 1.66, 1.66, 1.66, 1.66, 1.67, 1.67, 1.67, 1.67, 1.67,
+    1.67, 1.69, 1.70, 1.70, 1.70, 1.70, 1.71, 1.71, 1.71, 1.72, 1.72, 1.72,
+    1.73, 1.79, 1.79, 1.79, 1.79, 1.79, 1.79, 1.81, 1.81, 1.81, 1.81, 1.82,
+    1.82, 1.82, 1.82, 1.82, 1.83, 1.83, 1.84,
+]
+
+
+def test_placement_2_is_the_near_band_must_flip():
+    """The lie, killed: a bottle at 0.742 (returns 0.72-0.73, in the near
+    band) with standing background must yield the background range FLAGGED
+    AMBIGUOUS — the old code said 1.67 unambiguous, confidently wrong about
+    which object it measured."""
+    ahead = math.radians(14.0)
+    pts = [(r * math.cos(ahead), r * math.sin(ahead)) for r in PLACEMENT2_RANGES]
+    r, amb = range_from_tof_points(pts, "center")
+    assert 1.47 <= r <= 1.84
+    assert amb is True, "near-band returns must flag ambiguity"
+
+
+def test_placement_1_still_passes_the_discrimination():
+    """The refinement must NOT flip placement 1: its clutter tops out at 0.54,
+    BELOW the near band — clean floor clutter alone never flags ambiguity
+    (the flag there comes from the multiple standing clusters, as before)."""
+    ahead = math.radians(14.0)
+    floor_only = [(r * math.cos(ahead), r * math.sin(ahead))
+                  for r in (0.3, 0.45, 0.54, 1.0, 1.02, 1.05)]
+    r, amb = range_from_tof_points(floor_only, "center")
+    assert r == pytest.approx(1.02) and amb is False
+
+
 def test_placement_1_is_the_must_flip():
     """The committed field fixture: the exact distribution that failed the
     ±0.15 bar (median 0.502 vs truth 1.754) must now yield the nearest
