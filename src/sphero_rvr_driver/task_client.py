@@ -45,7 +45,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
-from sphero_rvr_core.task_agent import Budget, run_instruction
+from sphero_rvr_core.task_agent import Budget, availability_note, run_instruction
 
 
 class ToolRunner(Node):
@@ -76,6 +76,21 @@ class ToolRunner(Node):
     # Each runner returns the tool's own JSON result string. Failures are returned,
     # not raised: an envelope refusal is information the model must see and correct,
     # not an exception that ends the instruction.
+    def probe_availability(self, wait_s=0.5):
+        """tool name -> bool for every probeable interface, feeding the pure
+        `availability_note` (search round 2 §5: the preamble kills the
+        discovery tax at the root instead of letting each flight pay it)."""
+        avail = {}
+        for name, client in (("observe", self._observe),
+                             ("query_semantic_map", self._query),
+                             ("turn", self._turn),
+                             ("look_and_recognize", self._recognize)):
+            avail[name] = client.wait_for_service(timeout_sec=wait_s)
+        for name, client in self._mission.items():
+            avail[name] = client.wait_for_service(timeout_sec=wait_s)
+        avail["goto"] = self._goto.wait_for_server(timeout_sec=wait_s)
+        return avail
+
     def run(self, tool, args):
         if tool == "goto":
             return self._run_goto(args)
@@ -315,8 +330,17 @@ def main(argv=None):
     ask = make_model_caller(args.base_url, key, args.model, args.max_tokens,
                             args.model_timeout_s)
     try:
+        # One availability probe per process: interfaces this configuration
+        # does not expose get named in the instruction preamble instead of
+        # being discovered one failed call at a time. NOTE the honest limit:
+        # this catches MISSING interfaces; a task_node whose backend is absent
+        # still answers ok=false per call (its services always exist), and the
+        # system prompt's do-not-retry-unavailable rule handles that case.
+        note = availability_note(runner.probe_availability())
+        if note:
+            print(note.strip(), flush=True)
         if args.instruction:
-            run_instruction(" ".join(args.instruction), ask, runner,
+            run_instruction(note + " ".join(args.instruction), ask, runner,
                             Budget(args.max_tool_calls))
         else:
             print("task_client — type an instruction, or Ctrl-D to quit.")
@@ -330,7 +354,7 @@ def main(argv=None):
                     continue
                 # A fresh budget per instruction: the ceiling bounds one request, so
                 # a long session is not one long unbounded agent.
-                run_instruction(line, ask, runner, Budget(args.max_tool_calls))
+                run_instruction(note + line, ask, runner, Budget(args.max_tool_calls))
     except KeyboardInterrupt:
         pass
     finally:

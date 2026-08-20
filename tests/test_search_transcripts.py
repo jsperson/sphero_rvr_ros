@@ -220,16 +220,58 @@ def test_a_hallucinated_approach_tool_is_reprompted_once_and_corrected():
     assert "approach" in model.prompts[1] and "rejected" in model.prompts[1]
 
 
-def test_budget_exhaustion_ends_a_search_that_will_not_stop():
-    """A searcher re-looking at the same view forever is the explorer's 93-goal
-    thrash with a camera — the budget is the backstop and its ending is loud."""
+def test_the_model_is_told_its_remaining_budget_every_turn():
+    """Flights 1+4 ended wordless because the model cannot count a budget it is
+    never shown — the calls-remaining line must reach every prompt."""
+    model, _, _ = drive(
+        replies=[
+            '{"tool": "look_and_recognize", "args": {"target": "dr pepper bottle"}}',
+            '{"say": "Nothing seen."}',
+        ],
+        results=[look_result(False, None)],
+        budget=Budget(max_tool_calls=5))
+    assert "You have 5 tool call(s) remaining" in model.prompts[0]
+    assert "You have 4 tool call(s) remaining" in model.prompts[1]
+    assert "MUST finish with say" in model.prompts[0]
+
+
+def test_budget_exhaustion_demands_a_final_say_and_gets_one():
+    """THE BELT (flight 4: the last call went to a redundant query and the
+    mission ended wordless): after the last tool call, the model gets ONE
+    no-tool turn demanding say — the honest partial answer."""
+    looks = '{"tool": "look_and_recognize", "args": {"target": "dr pepper bottle"}}'
+    model, runner, lines = drive(
+        replies=[looks, looks,
+                 '{"say": "Not found in the two views I checked."}'],
+        results=[look_result(False, None)] * 2,
+        budget=Budget(max_tool_calls=2))
+    assert len(runner.calls) == 2
+    assert "NO tool calls left" in model.prompts[2]
+    assert lines[-1].startswith("robot> Not found")
+
+
+def test_a_model_that_ignores_the_final_say_demand_ends_in_the_loops_words():
     looks = '{"tool": "look_and_recognize", "args": {"target": "dr pepper bottle"}}'
     _, runner, lines = drive(
-        replies=[looks, looks, looks],
-        results=[look_result(False, None)] * 3,
-        budget=Budget(max_tool_calls=3))
-    assert len(runner.calls) == 3
-    assert lines[-1].startswith("[budget] stopping after 3")
+        replies=[looks, looks],
+        results=[look_result(False, None)],
+        budget=Budget(max_tool_calls=1))
+    assert len(runner.calls) == 1, "the post-budget tool reply must not run"
+    assert lines[-1].startswith("[budget] stopping after 1")
+    assert "did not give one" in lines[-1]
+
+
+# --- the configuration preamble (§5) -------------------------------------------
+
+def test_availability_note_names_only_the_missing_tools():
+    from sphero_rvr_core.task_agent import availability_note
+    note = availability_note({"explore": False, "observe": False,
+                              "status": False, "goto": True,
+                              "look_and_recognize": True})
+    assert "explore" in note and "observe" in note and "status" in note
+    assert "goto" not in note and "look_and_recognize" not in note
+    assert "do not call" in note
+    assert availability_note({"goto": True, "turn": True}) == ""
 
 
 def test_a_model_call_failure_ends_the_instruction_in_words():
@@ -293,6 +335,12 @@ def test_the_system_prompt_carries_the_search_loop():
     # on bearing trigonometry) — approximate coordinates are LICENSED:
     assert "Roughly toward" in SYSTEM_PROMPT
     assert "precision comes" in SYSTEM_PROMPT
+    # round 2 (three flights of receipts): the discovery-tax and re-query
+    # rules, and the endgame say rule keyed to the now-visible budget:
+    assert "will not become available" in SYSTEM_PROMPT
+    assert "Do not repeat a query that answered empty" in SYSTEM_PROMPT
+    assert "ends without say wastes everything" in SYSTEM_PROMPT
+    assert "when 1 remains you MUST reply" in SYSTEM_PROMPT
     assert "misread at range" in SYSTEM_PROMPT
     assert "could not verify" in SYSTEM_PROMPT
 

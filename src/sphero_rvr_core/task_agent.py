@@ -148,12 +148,34 @@ something):
 - When the places worth looking from are exhausted without a confirm, stop and
   say so. Do not re-look at the same view hoping for a different answer, and
   do not spend the whole budget proving what you already know.
+- Some configurations do not run explore, observe or status. A tool that
+  reports unavailable will not become available during this instruction -- do
+  not call it again; search with look_and_recognize, turn, goto and
+  where_am_i instead.
+- Do not repeat a query that answered empty unless something has changed.
 
 Rules:
 - One tool per reply. You will be given the result and may then call another.
 - If a tool result says ok=false, read the message and correct your next call.
 - When you have the answer, or the task is done, reply with {"say": ...}.
+- An instruction that ends without say wastes everything it learned. You are
+  told how many tool calls remain; when 1 remains you MUST reply with
+  {"say": ...}, reporting what you know -- an honest partial answer beats one
+  more tool call.
 - Never invent a tool. Never add arguments that are not listed."""
+
+
+def availability_note(available: dict) -> str:
+    """One preamble line naming the tools this configuration does not run —
+    or "" when everything is up. Kills the discovery tax at the root (three
+    flights burned 3-5 calls each learning explore/observe/status were absent
+    the hard way). `available` maps tool name -> bool, gathered by the client
+    probing its own service clients; this half stays pure and tested."""
+    missing = sorted(name for name, up in available.items() if not up)
+    if not missing:
+        return ""
+    return (f"Unavailable in this configuration (do not call): "
+            f"{', '.join(missing)}.\n\n")
 
 
 class ContractError(ValueError):
@@ -297,12 +319,18 @@ class Budget:
         return max(0, self.max_tool_calls - self.used)
 
 
-def build_user_turn(instruction: str, history: list) -> str:
+def build_user_turn(instruction: str, history: list,
+                    calls_remaining: Optional[int] = None) -> str:
     """The prompt for one turn: the instruction plus what the tools have answered.
 
     History is replayed as plain text rather than as provider-specific tool-call
     message types, so this works against any chat endpoint and stays honest about
     what the model has actually been told. Native tool-calling is the v2 upgrade.
+
+    `calls_remaining` is SHOWN to the model (flights 1+4, 2026-08-20): both
+    wordless budget-endings happened because the model literally cannot count a
+    budget it is never told — the endgame rule in the system prompt is
+    unfollowable without this line.
     """
     lines = [f"Instruction: {instruction}"]
     if history:
@@ -311,6 +339,10 @@ def build_user_turn(instruction: str, history: list) -> str:
         for call, result in history:
             lines.append(f"- called {call} -> {result}")
     lines.append("")
+    if calls_remaining is not None:
+        lines.append(f"You have {calls_remaining} tool call(s) remaining. "
+                     "When 1 remains you MUST finish with say — report what "
+                     "you know.")
     lines.append("Reply with one JSON object.")
     return "\n".join(lines)
 
@@ -349,11 +381,24 @@ def run_instruction(instruction, ask_model, runner, budget, out=_say):
     """
     history = []
     reprompted = False
+    final_say_demanded = False
     while True:
         if budget.exhausted:
-            out(f"[budget] stopping after {budget.used} tool calls")
-            return
-        prompt = build_user_turn(instruction, history)
+            # THE BELT (flight 4: the model spent its last call on a redundant
+            # query and the mission ended wordless): one final model turn with
+            # no tool authority, demanding the say. If the model STILL answers
+            # with a tool, the loop ends in its own words below.
+            if not final_say_demanded:
+                final_say_demanded = True
+                instruction = (f"{instruction}\n\nYou have NO tool calls left. "
+                               'Reply with {"say": ...} now, reporting what '
+                               "you know so far — an honest partial answer.")
+            else:
+                out(f"[budget] stopping after {budget.used} tool calls — the "
+                    "model was asked for a final say and did not give one")
+                return
+        prompt = build_user_turn(instruction, history,
+                                 calls_remaining=budget.remaining)
         # A MISSION-HOLDING CLIENT ENDS IN WORDS (flight 2, 2026-08-20): the
         # model call itself can fail — empty replies past retries, transport
         # errors — and an uncaught raise here killed the client while it held
@@ -385,6 +430,11 @@ def run_instruction(instruction, ask_model, runner, budget, out=_say):
         if decision.is_final:
             out(f"robot> {decision.say}")
             return
+        if budget.exhausted:
+            # The final-say demand was answered with ANOTHER tool call; loop
+            # back into the exhausted branch, which ends the instruction in
+            # words rather than letting spend() raise.
+            continue
         call = describe_call(decision.tool, decision.args)
         budget.spend()
         out(f"[tool {budget.used}/{budget.max_tool_calls}] {call}")
