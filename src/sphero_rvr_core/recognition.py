@@ -37,45 +37,83 @@ _WHERE_OFFSET_RAD = {
 }
 
 
+#: The identity verdicts a match can carry. Order matters to no one; the WORDS
+#: matter to the searcher: `unverified` is the approach-candidate answer (right
+#: kind of object, identity not resolvable from here) and `mismatch` is the
+#: pruning signal (visible evidence CONTRADICTS the identity). Design +
+#: consensus: docs/design_recognition_schema_redesign_2026-08-20.md.
+IDENTITY_VALUES = ("confirmed", "unverified", "mismatch")
+
+
 def build_prompt(target: str) -> str:
-    """One question about one target, answer shape stated exactly."""
+    """Two verdicts about one target: object-match and identity, split so that
+    honest doubt and blindness stop sharing a word (the 2026-08-20 bench card's
+    core exhibit: every bottle frame was detected, but brand-doubt had nowhere
+    to go except seen=false)."""
     target = str(target).strip()
     if not target:
         raise ValueError("empty target — the verb needs a thing to look for")
     return (
         f"You are the camera of a small ground robot. Look at this photo and "
-        f"answer ONE question: is there a {target} visible?\n"
+        f"answer about ONE target: a {target}.\n"
         'Reply with ONLY a JSON object, exactly this shape:\n'
-        '{"seen": true/false, "where_in_frame": "left"|"center"|"right"|null, '
+        '{"match": true/false, '
+        '"identity": "confirmed"|"unverified"|"mismatch"|null, '
+        '"where_in_frame": "left"|"center"|"right"|null, '
         '"confidence": 0.0-1.0, "description": "one short sentence"}\n'
-        "Rules: where_in_frame must be null when seen is false, and one of "
-        "left/center/right when seen is true. confidence is YOUR confidence in "
-        "the seen answer. Do not mention anything except the answer object."
+        "Rules:\n"
+        f"- match is true when an object of the target's basic kind is visible "
+        f"(any bottle counts as a match when asked for a specific bottle). "
+        f"Name the supporting evidence you see in description. Never report "
+        f"match true for something you cannot describe.\n"
+        "- identity, when match is true: 'confirmed' means the distinguishing "
+        "features of the specific thing asked for are visible and match; "
+        "'unverified' means right kind of object but you cannot verify the "
+        "specific identity from this photo — this is the honest answer when "
+        "unsure; 'mismatch' means visible evidence CONTRADICTS the identity — "
+        "then name that contradicting evidence in description. If the target "
+        "has no distinguishing identity beyond its kind, use 'confirmed'. "
+        "When match is false, identity must be null.\n"
+        "- where_in_frame must be null when match is false, and one of "
+        "left/center/right when match is true.\n"
+        "- confidence is YOUR confidence in the match answer.\n"
+        "Do not mention anything except the answer object."
     )
 
 
 def parse_recognition_reply(text: str) -> dict:
     """The reply, held to the schema — or a loud ValueError naming the breach.
 
-    Returns exactly {seen, where_in_frame, confidence, description} and nothing
-    else; extra fields are dropped, missing/invalid ones refuse.
+    Returns exactly {match, identity, where_in_frame, confidence, description}
+    and nothing else; extra fields are dropped, missing/invalid ones refuse.
     """
     data = extract_json(text)
     if data is None:
         raise ValueError(f"no JSON object in VLM reply: {text[:120]!r}")
-    if not isinstance(data.get("seen"), bool):
-        raise ValueError(f"'seen' missing or not a bool: {data.get('seen')!r}")
-    seen = data["seen"]
+    if not isinstance(data.get("match"), bool):
+        raise ValueError(f"'match' missing or not a bool: {data.get('match')!r}")
+    match = data["match"]
+    identity = data.get("identity")
     where = data.get("where_in_frame")
-    if seen:
+    if match:
+        if identity not in IDENTITY_VALUES:
+            raise ValueError(
+                f"match=true but identity is {identity!r} (must be one of "
+                f"{IDENTITY_VALUES} — a match that won't say whether it is the "
+                f"thing asked for is unusable)")
         if where not in WHERE_VALUES:
             raise ValueError(
-                f"seen=true but where_in_frame is {where!r} (must be one of "
+                f"match=true but where_in_frame is {where!r} (must be one of "
                 f"{WHERE_VALUES} — a sighting with no place is unusable)")
     else:
+        if identity not in (None, "null"):
+            raise ValueError(
+                f"match=false but identity is {identity!r} (must be null — "
+                f"an identity verdict with no object is a contradiction)")
+        identity = None
         if where not in (None, "null"):
             raise ValueError(
-                f"seen=false but where_in_frame is {where!r} (must be null — "
+                f"match=false but where_in_frame is {where!r} (must be null — "
                 f"a place with no sighting is a contradiction)")
         where = None
     try:
@@ -88,7 +126,7 @@ def parse_recognition_reply(text: str) -> dict:
     description = data.get("description")
     if not isinstance(description, str) or not description.strip():
         raise ValueError("'description' missing or empty")
-    return {"seen": seen, "where_in_frame": where,
+    return {"match": match, "identity": identity, "where_in_frame": where,
             "confidence": confidence, "description": description.strip()}
 
 
@@ -166,10 +204,11 @@ def build_result(*, target: str, parsed: dict, photo_path: str,
     result carrying secrets is worse).
     """
     bearing = (bearing_from_frame_position(capture_yaw_rad, parsed["where_in_frame"])
-               if parsed["seen"] else None)
+               if parsed["match"] else None)
     return {
         "target": str(target),
-        "seen": parsed["seen"],
+        "match": parsed["match"],
+        "identity": parsed["identity"],
         "where_in_frame": parsed["where_in_frame"],
         "confidence": parsed["confidence"],
         "description": parsed["description"],

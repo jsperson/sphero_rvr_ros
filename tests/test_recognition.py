@@ -29,11 +29,22 @@ NODE_SRC = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver" /
 
 # --- the prompt ------------------------------------------------------------------------
 
-def test_the_prompt_asks_one_question_about_one_target():
+def test_the_prompt_asks_both_verdicts_about_one_target():
     p = build_prompt("dr pepper bottle")
     assert "dr pepper bottle" in p
-    assert '"seen"' in p and '"where_in_frame"' in p and '"confidence"' in p
+    assert '"match"' in p and '"identity"' in p
+    assert '"where_in_frame"' in p and '"confidence"' in p
+    assert "confirmed" in p and "unverified" in p and "mismatch" in p
     assert "left" in p and "center" in p and "right" in p
+
+
+def test_the_prompt_demands_named_evidence_for_both_hard_verdicts():
+    """PIN 1 (consensus 2026-08-20): match AND mismatch both require their
+    evidence named in description — a bare contradiction claim is exactly the
+    misread-label failure the range rule exists for."""
+    p = build_prompt("dr pepper bottle")
+    assert "supporting evidence" in p
+    assert "contradicting evidence" in p
 
 
 def test_an_empty_target_refuses_loudly():
@@ -43,30 +54,44 @@ def test_an_empty_target_refuses_loudly():
 
 # --- the strict parse: schema or a loud reason ------------------------------------------
 
-def test_a_clean_sighting_parses():
+def test_a_confirmed_match_parses():
     r = parse_recognition_reply(
-        'Some preamble. {"seen": true, "where_in_frame": "left", '
+        'Some preamble. {"match": true, "identity": "confirmed", '
+        '"where_in_frame": "left", '
         '"confidence": 0.85, "description": "red bottle on the floor"}')
-    assert r == {"seen": True, "where_in_frame": "left", "confidence": 0.85,
-                 "description": "red bottle on the floor"}
+    assert r == {"match": True, "identity": "confirmed", "where_in_frame": "left",
+                 "confidence": 0.85, "description": "red bottle on the floor"}
 
 
-def test_a_clean_absence_parses_with_null_place():
+def test_the_honest_middle_parses():
+    """The redesign's reason for existing: right kind of object, identity not
+    resolvable — the answer the old single boolean could not carry."""
     r = parse_recognition_reply(
-        '{"seen": false, "where_in_frame": null, "confidence": 0.9, '
-        '"description": "no bottle visible"}')
-    assert r["seen"] is False and r["where_in_frame"] is None
+        '{"match": true, "identity": "unverified", "where_in_frame": "center", '
+        '"confidence": 0.8, "description": "a bottle, label unreadable"}')
+    assert r["match"] is True and r["identity"] == "unverified"
+
+
+def test_a_clean_absence_parses_with_null_identity_and_place():
+    r = parse_recognition_reply(
+        '{"match": false, "identity": null, "where_in_frame": null, '
+        '"confidence": 0.9, "description": "no bottle visible"}')
+    assert r["match"] is False
+    assert r["identity"] is None and r["where_in_frame"] is None
 
 
 @pytest.mark.parametrize("bad,why", [
     ("not json at all", "no JSON"),
-    ('{"where_in_frame": "left", "confidence": 0.9, "description": "x"}', "seen missing"),
-    ('{"seen": "yes", "where_in_frame": "left", "confidence": 0.9, "description": "x"}', "seen not bool"),
-    ('{"seen": true, "where_in_frame": null, "confidence": 0.9, "description": "x"}', "sighting with no place"),
-    ('{"seen": true, "where_in_frame": "behind", "confidence": 0.9, "description": "x"}', "invalid sector"),
-    ('{"seen": false, "where_in_frame": "left", "confidence": 0.9, "description": "x"}', "place with no sighting"),
-    ('{"seen": true, "where_in_frame": "left", "confidence": 1.4, "description": "x"}', "confidence out of range"),
-    ('{"seen": true, "where_in_frame": "left", "confidence": 0.9, "description": ""}', "empty description"),
+    ('{"identity": null, "where_in_frame": "left", "confidence": 0.9, "description": "x"}', "match missing"),
+    ('{"match": "yes", "identity": "confirmed", "where_in_frame": "left", "confidence": 0.9, "description": "x"}', "match not bool"),
+    ('{"match": true, "identity": null, "where_in_frame": "left", "confidence": 0.9, "description": "x"}', "match with no identity verdict"),
+    ('{"match": true, "identity": "probably", "where_in_frame": "left", "confidence": 0.9, "description": "x"}', "invented identity value"),
+    ('{"match": true, "identity": "confirmed", "where_in_frame": null, "confidence": 0.9, "description": "x"}', "sighting with no place"),
+    ('{"match": true, "identity": "confirmed", "where_in_frame": "behind", "confidence": 0.9, "description": "x"}', "invalid sector"),
+    ('{"match": false, "identity": "mismatch", "where_in_frame": null, "confidence": 0.9, "description": "x"}', "identity verdict with no object"),
+    ('{"match": false, "identity": null, "where_in_frame": "left", "confidence": 0.9, "description": "x"}', "place with no sighting"),
+    ('{"match": true, "identity": "confirmed", "where_in_frame": "left", "confidence": 1.4, "description": "x"}', "confidence out of range"),
+    ('{"match": true, "identity": "confirmed", "where_in_frame": "left", "confidence": 0.9, "description": ""}', "empty description"),
 ])
 def test_every_schema_breach_refuses_with_a_reason(bad, why):
     """A near-miss reply silently treated as 'not seen' is a searcher that finds
@@ -105,9 +130,9 @@ def test_no_frames_refuses():
 
 # --- provenance: the result carries everything, and CANNOT carry the key ----------------
 
-def test_the_result_carries_full_provenance():
-    parsed = {"seen": True, "where_in_frame": "right", "confidence": 0.7,
-              "description": "bottle by the table"}
+def test_the_result_carries_full_provenance_and_both_verdicts():
+    parsed = {"match": True, "identity": "unverified", "where_in_frame": "right",
+              "confidence": 0.7, "description": "bottle by the table"}
     r = build_result(target="bottle", parsed=parsed, photo_path="/x/y.jpg",
                      map_x=1.234, map_y=-0.5678, capture_yaw_rad=0.0,
                      stamp="20260819_150000", model="syn:large:vision")
@@ -115,14 +140,26 @@ def test_the_result_carries_full_provenance():
     assert r["map_pose"] == {"x": 1.234, "y": -0.568, "yaw_deg": 0.0}
     assert r["bearing_deg"] == pytest.approx(-HORIZONTAL_FOV_DEG / 3.0, abs=0.1)
     assert r["stamp"] and r["model"] and r["target"] == "bottle"
+    assert r["match"] is True and r["identity"] == "unverified"
 
 
 def test_an_absence_result_has_no_bearing():
-    parsed = {"seen": False, "where_in_frame": None, "confidence": 0.9,
-              "description": "nothing"}
+    parsed = {"match": False, "identity": None, "where_in_frame": None,
+              "confidence": 0.9, "description": "nothing"}
     r = build_result(target="bottle", parsed=parsed, photo_path="p",
                      map_x=0, map_y=0, capture_yaw_rad=0, stamp="s", model="m")
     assert r["bearing_deg"] is None
+    assert r["identity"] is None
+
+
+def test_an_unverified_candidate_still_gets_a_bearing():
+    """Two-stage search consumes match=true candidates by bearing; identity
+    doubt must not cost the approach its direction."""
+    parsed = {"match": True, "identity": "unverified", "where_in_frame": "left",
+              "confidence": 0.6, "description": "a bottle, brand unclear"}
+    r = build_result(target="dr pepper bottle", parsed=parsed, photo_path="p",
+                     map_x=0, map_y=0, capture_yaw_rad=0, stamp="s", model="m")
+    assert r["bearing_deg"] == pytest.approx(HORIZONTAL_FOV_DEG / 3.0, abs=0.1)
 
 
 def test_the_result_builder_cannot_carry_a_key_by_construction():
@@ -180,6 +217,63 @@ def test_camera_down_is_in_a_finally():
 def test_stationarity_is_fail_closed_by_default():
     assert '"require_stationary", True' in NODE_SRC
     assert "fail-closed" in NODE_SRC.lower() or "fail-closed" in NODE_SRC
+
+
+# --- the R6a fix: transport failure is a refusal, never node death ----------------------
+
+def test_transport_exceptions_are_caught_at_the_vlm_call_site():
+    """Source pin (consensus 2026-08-20, §7): requests.RequestException is
+    caught AT THE CALL SITE — on the bench card a ConnectionError escaped,
+    propagated out of executor.spin(), and killed the node (R6a's receipt).
+    No blanket except is allowed to absorb this job."""
+    look = NODE_SRC[NODE_SRC.index("def _look"):NODE_SRC.index("def _snapshot")]
+    assert "except requests.RequestException" in look
+    assert look.index("query_vlm") < look.index("except requests.RequestException")
+    assert "except Exception" not in look and "except:" not in look
+
+
+def test_a_transport_failure_is_a_refusal_and_the_node_survives(tmp_path, monkeypatch):
+    """The pin as a live behavior, where rclpy exists (the Pi): a VLM call that
+    raises a transport error yields REFUSED naming the failure class, and the
+    node answers AGAIN afterwards — alive, no manual cleanup."""
+    rclpy = pytest.importorskip("rclpy")
+    import requests as _requests
+    from sensor_msgs.msg import Image
+    from std_srvs.srv import Trigger
+    import sphero_rvr_driver.recognition_node as rn
+
+    key = tmp_path / "key"
+    key.write_text("test-key-not-real")
+    rclpy.init()
+    node = None
+    try:
+        node = rn.RecognitionNode()
+        node.set_parameters([
+            rclpy.parameter.Parameter("target", value="bottle"),
+            rclpy.parameter.Parameter("api_key_file", value=str(key)),
+            rclpy.parameter.Parameter("require_stationary", value=False),
+        ])
+        frame = np.full((8, 8, 3), 128, dtype=np.uint8)
+        monkeypatch.setattr(node, "_snapshot", lambda: [(Image(), frame)])
+        monkeypatch.setattr(node, "_pose_at", lambda stamp: (0.0, 0.0, 0.0))
+        monkeypatch.setattr(node, "_encode", lambda img: b"jpeg-bytes")
+
+        def _raise(*a, **k):
+            raise _requests.ConnectionError("connection refused (test)")
+        monkeypatch.setattr(rn, "query_vlm", _raise)
+
+        resp = node._look(Trigger.Request(), Trigger.Response())
+        assert resp.success is False
+        assert "REFUSED" in resp.message and "ConnectionError" in resp.message
+        # the message names the class, never the endpoint (URL stays log-side)
+        assert "http" not in resp.message.lower()
+        # ALIVE: the same node answers a second invocation
+        resp2 = node._look(Trigger.Request(), Trigger.Response())
+        assert resp2.success is False and "REFUSED" in resp2.message
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
 
 
 # --- the warm-up fix: frame quality gate (bench card R2's convicted mechanism) --------

@@ -111,8 +111,15 @@ Tools:
 - where_am_i(): the robot's position, heading, and a summary of the map it has
   built. Free and instant; call it whenever position matters.
 - look_and_recognize(target): point the camera, take a photo, and ask a vision
-  model whether the named thing is visible. The robot must be STATIONARY; it costs
-  a real cloud call; the answer includes where in the frame and a bearing. If the
+  model about the named thing. The robot must be STATIONARY; it costs a real cloud
+  call. The answer carries TWO verdicts plus a place and bearing: "match" means an
+  object of that KIND is visible; "identity" says whether it is verifiably the
+  specific thing asked for -- "confirmed" (distinguishing features visible and
+  matching), "unverified" (right kind of object, identity not resolvable from
+  here: get closer and look again, or say so honestly), or "mismatch" (visible
+  evidence contradicts it). Trust "mismatch" by RANGE: from far away labels get
+  misread, so a distant mismatch only demotes a candidate -- revisit it if nothing
+  better turns up; up close, mismatch means it is not the thing -- move on. If the
   result says the tool is disabled or refused, report that honestly -- never guess
   at what the camera would have seen.
 

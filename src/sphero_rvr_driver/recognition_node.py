@@ -33,6 +33,7 @@ import time
 
 import cv2
 import rclpy
+import requests
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -191,6 +192,17 @@ class RecognitionNode(Node):
                 target=target, parsed=parsed, photo_path=photo_path,
                 map_x=pose[0], map_y=pose[1], capture_yaw_rad=pose[2],
                 stamp=stamp, model=str(self.get_parameter("model").value))
+        except requests.RequestException as exc:
+            # Transport failures are LOUD refusals, never node death: on the
+            # 2026-08-20 bench card (R6a) a ConnectionError escaped this
+            # handler's predecessor, propagated out of executor.spin(), and
+            # killed the node. The refusal names the failure CLASS only — the
+            # exception text can carry the full endpoint URL, which belongs in
+            # the log, not the answer.
+            self.get_logger().warning(f"VLM transport failure: {exc}")
+            return self._refuse(response, "recognition failed: VLM request "
+                                f"failed ({type(exc).__name__}) — endpoint or "
+                                "network trouble, not a verdict about the scene")
         except (ValueError, RuntimeError) as exc:
             # Parse/contract breaches are LOUD refusals, never empty results.
             return self._refuse(response, f"recognition failed: {exc}")
