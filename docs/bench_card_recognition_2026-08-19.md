@@ -85,3 +85,113 @@ may begin); FOV constant updated with the measurement; results recorded here
 verbatim. Any fail → register row with the receipts, primitive stays
 bench-only. Nothing on this card changes flight behavior either way — the
 node is a leaf no mission invokes yet.
+
+---
+
+## RESULTS (run 2026-08-20, Scott staging; logs: bench4/bench5/bench6 on the Pi)
+
+Build under test: 45476c9 (includes the R2-original dark-frame capture fix
+717a012 — the warm-up quality gate). Stack up stock, chassis on, rover
+stationary at the angled pose (4° right of tape-normal, lidar-measured).
+Photos: ~/recognitions/ on the Pi (30+ invocations).
+
+### R1 — REFUSAL LADDER: **PASS**
+
+All three refusals loud, no camera process during any refusal: (a) no target;
+(b) missing `api_key_file` refusal names the PATH, never contents; (c)
+supervisor down → the fail-closed stationarity refusal.
+
+### R2 — HIT RATE: **6/9 vs ≥8/9 — FAILS AS WRITTEN**; the per-class ledger is the product
+
+The ORIGINAL R2 run failed on dark frames (capture raced auto-exposure);
+defect fixed same morning (717a012, warm-up/quality gate), deployed 45476c9,
+and the rerun logged ZERO dark frames — capture defect cured, field-proven.
+Rerun ledger, per class:
+
+- **xbox controller 3/3** seen=true, conf 0.90/0.95/0.92 — plain distinct
+  objects are solved.
+- **dr pepper bottle 2/3 as written** — but DETECTION was 3/3: every frame's
+  reply describes the bottle (position, cap, label); the misses are the model
+  honestly declining to certify the BRAND ("its contents and label do not
+  match Dr Pepper", conf 0.62; "not identifiable as Dr Pepper", 0.72). The
+  failure class is brand/identity verification asked of a 640px JPEG, not
+  blindness — the single-question schema has no way to say "object yes,
+  identity unsure," which is the schema-redesign round's core exhibit.
+- **family picture in a frame 1/3** — small, low-salience target; two honest
+  seen=false ("no clearly framed family picture"), one seen=true center 0.62.
+
+### R3 — FALSE-POSITIVE RATE: **BAR MET — 0 FP, ZERO fabrications in 25+ invocations**
+
+0/6 valid absent-target probes seen=true, bright-condition rerun 3/3 clean
+(banana ×2 conf 0.95/0.98, person probe), and the decisive person-probe:
+shown a scene, asked for "person" — seen=false conf 0.98. Across every
+invocation of the whole card (25+), the model NEVER asserted an absent
+object. The zero-FP record is the primitive's most valuable property and is
+non-negotiable in the redesign.
+
+### R4 — FOV MEASUREMENT: **PASS**
+
+9-mark walk monotonic right→center→left, stable sector boundaries. Vendor
+66° HFOV VALIDATED (right edge crossing found between +0.45 and +0.60 m at
+1.2 m). Mount offset MEASURED: camera axis ~14° LEFT of body axis = 10° from
+the walk + 4° deliberate staging body-yaw (lidar-measured against the
+east-west wall; SLAM-zero-at-angled-pose caveat noted). `HORIZONTAL_FOV_DEG`
+keeps 66 with this card as receipt; the mount offset is a new measured
+constant for the composition round.
+
+### R5 — ToF NON-INTERFERENCE: **BAR FAILS AS WRITTEN — AND THAT IS THE CHARTER'S RECEIPT**
+
+tof frames-counter (≥10 s spans): 6.85 Hz quiet-stack baseline; 6.11 and
+6.43 Hz in camera-up/VLM windows — below the 6.5 Hz band, a −0.4 to −0.7 Hz
+camera drag. The rover was stationary by this card's design, so the sensor
+was not safety-active; what the number proves is that snapshot-mode camera
+work DOES starve the ToF, which validates the never-while-driving charter
+EMPIRICALLY rather than by caution. This is the banked baseline evidence for
+any future camera-while-moving row: that row must clear this measured drag,
+not an assumption.
+
+### R6 — CAMERA-DOWN RECEIPTS: **camera lifecycle PASS on every path; (a) exposes a node-survival DEFECT**
+
+Camera process absent after every invocation of the card (ps + node list;
+one stale `/camera_node` daemon-cache ghost verified dead by silent topic hz
+and gone after cache refresh).
+
+- **(a) bad `base_url`** — camera DOWN before the failure (the snapshot
+  `finally` is upstream of the VLM call) ✓, BUT the failure mode is NODE
+  DEATH, not a refusal: `requests.exceptions.ConnectionError` escapes the
+  `except (ValueError, RuntimeError)` at the VLM call site, propagates out of
+  `executor.spin()`, and the process exits (bench5 traceback, 10:59). The
+  service caller never receives a response; restart is manual. **FAILS "no
+  manual cleanup, ever."** Defect: the VLM call must catch transport errors
+  (`requests.RequestException`) into the loud-refusal path. Fix goes with the
+  schema-redesign round (consensus first); primitive stays bench-only anyway.
+- **(b) silent `image_topic`** — the first induction (`ros2 param set` on a
+  live node) was VACUOUS: the subscription binds at init; the param changed,
+  the wiring didn't (no REFUSED line anywhere in bench5). REDONE VALIDLY
+  2026-08-20 11:11 by restarting the node with `-p image_topic:=/bench6_silent_topic`:
+  refusal text captured verbatim — `REFUSED: camera produced no QUALITY
+  frames within the timeout (all frames dark/unsettled, or none arrived —
+  camera DOWN again; see log)` — while a mid-window probe showed the REAL
+  topic flowing at ~13 Hz (camera up, node correctly wired elsewhere: the
+  induction mechanism is proven, not assumed). Camera down after; node
+  SURVIVED this path. **PASS.**
+- **(c) clean recovery** — node restarted on pure defaults, one clean
+  invocation: success=True, `seen=true, center, conf 0.72` on the staged
+  picture, photo + provenance recorded, camera down after, node alive.
+  **PASS.**
+
+### OVERALL VERDICT
+
+**CERTIFIED as measured: capture (zero dark frames post-fix), honesty
+(zero false positives in 25+), plain-object recognition (controller 3/3,
+bottle detection 3/3), geometry (FOV validated, mount offset measured),
+camera lifecycle (down after every path including a node crash).**
+
+**NOT certified: the ANSWER SCHEMA — a single seen-boolean cannot carry
+"object present, identity unverified," which cost the bottle class its bar
+and is exactly wrong for two-stage search. Goes to the schema-redesign
+consensus round. Plus the R6a transport-exception defect (node death on VLM
+connection failure).**
+
+**The recognition/bridge tool STAYS DISABLED pending schema redesign +
+re-cert.** Nothing on this card changed flight behavior.
