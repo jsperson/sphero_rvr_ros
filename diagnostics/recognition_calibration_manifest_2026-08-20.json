@@ -1,0 +1,43 @@
+{
+  "_doc": "FROZEN calibration corpus for the recognition schema redesign (docs/design_recognition_schema_redesign_2026-08-20.md §6, consensus PIN 2). Enumerated and committed BEFORE the first prompt iteration; no frame may be added or dropped mid-calibration. Ground truth comes from the bench card's receipted staging (bench5/bench6 logs, archived with the photos in the vault at 03_validation/recognition_corpus_2026-08-20/). Photos live outside git: on the Pi at ~/recognitions/, on the Mac in the vault archive.",
+  "iteration_budget": 6,
+  "_budget_doc": "PIN 2: if the prompt cannot clear every gate within 6 evaluated iterations, calibration STOPS and the round returns to the PM — warm-iterating past the budget is the model-polishing drift this guards against.",
+  "gates": {
+    "schema_valid": "every included frame parses (parse_recognition_reply) — any parse failure fails the iteration",
+    "absent_zero_fp": "class=absent: match=false on ALL frames — one match=true fails the iteration (the zero-FP bar)",
+    "bottle_detect": "class=bottle: match=true on ALL frames",
+    "bottle_identity_honest": "class=bottle: identity in [confirmed, unverified] on ALL frames — a mismatch on the true target is a false contradiction and fails the iteration",
+    "controller": "class=controller: match=true AND identity=confirmed on ALL frames",
+    "picture_recorded": "class=picture: recorded verbatim, NO gate (pixel-starved at 1.2 m; the approach-required exemplar)"
+  },
+  "frames": [
+    {"file": "recognition_20260820_094755.jpg", "target": "laptop", "class": "absent", "gt_match": false, "note": "R3 probe; scene: door, couch, bottle"},
+    {"file": "recognition_20260820_094810.jpg", "target": "car", "class": "absent", "gt_match": false, "note": "R3 probe"},
+    {"file": "recognition_20260820_094830.jpg", "target": "dog", "class": "absent", "gt_match": false, "note": "R3 probe"},
+    {"file": "recognition_20260820_103802.jpg", "target": "dog", "class": "absent", "gt_match": false, "note": "R3 bright rerun probe"},
+    {"file": "recognition_20260820_105622.jpg", "target": "person", "class": "absent", "gt_match": false, "note": "R3 person-probe (old schema: seen=false conf 0.98, the decisive receipt)"},
+    {"file": "recognition_20260820_105759.jpg", "target": "banana", "class": "absent", "gt_match": false, "note": "R3 probe"},
+    {"file": "recognition_20260820_105821.jpg", "target": "banana", "class": "absent", "gt_match": false, "note": "R3 probe"},
+    {"file": "recognition_20260820_103850.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "staged true target, left sector (old: seen=true 0.72)"},
+    {"file": "recognition_20260820_103949.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "center (old: seen=true 0.86)"},
+    {"file": "recognition_20260820_104100.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "center (old: seen=true 0.82)"},
+    {"file": "recognition_20260820_104147.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "right (old: seen=true 0.72)"},
+    {"file": "recognition_20260820_104430.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "THE FORCED-FALSE EXHIBIT: old schema seen=false 0.62 while the reply described the bottle ('label do not match Dr Pepper') — the frame the redesign exists for"},
+    {"file": "recognition_20260820_104616.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "right (old: seen=true 0.70)"},
+    {"file": "recognition_20260820_104724.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "right edge, partially visible (old: seen=true 0.60)"},
+    {"file": "recognition_20260820_105033.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "right (old: seen=true 0.62)"},
+    {"file": "recognition_20260820_105052.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "forced-false #2: old seen=false 0.72, reply described 'small bottle with red label'"},
+    {"file": "recognition_20260820_105119.jpg", "target": "dr pepper bottle", "class": "bottle", "gt_match": true, "note": "right, branding not legible (old: seen=true 0.55)"},
+    {"file": "recognition_20260820_105300.jpg", "target": "xbox controller", "class": "controller", "gt_match": true, "note": "center (old: seen=true 0.90)"},
+    {"file": "recognition_20260820_105315.jpg", "target": "xbox controller", "class": "controller", "gt_match": true, "note": "center (old: seen=true 0.95)"},
+    {"file": "recognition_20260820_105332.jpg", "target": "xbox controller", "class": "controller", "gt_match": true, "note": "center (old: seen=true 0.92)"},
+    {"file": "recognition_20260820_105458.jpg", "target": "family picture in a frame", "class": "picture", "gt_match": true, "note": "staged at center mark (old: seen=false 0.80)"},
+    {"file": "recognition_20260820_105523.jpg", "target": "family picture in a frame", "class": "picture", "gt_match": true, "note": "staged (old: seen=false 0.72)"},
+    {"file": "recognition_20260820_105607.jpg", "target": "family picture in a frame", "class": "picture", "gt_match": true, "note": "staged (old: seen=true center 0.62)"},
+    {"file": "recognition_20260820_111539.jpg", "target": "family picture in a frame", "class": "picture", "gt_match": true, "note": "bench6 R6c clean-recovery frame (old: seen=true center 0.72)"}
+  ],
+  "excluded": [
+    {"file": "recognition_20260820_104813.jpg", "reason": "R4 FOV-edge walk position; old reply says no bottle visible and the object may truly have left the frame — presence-in-frame not reconstructable, so no honest ground truth exists"},
+    {"files": "recognition_20260820_092132 through 094328 (15 frames)", "reason": "the original pre-fix R2 run: its invocation log is not in the archived set and several frames are the dark-capture class that the quality gate now stops before any VLM call — scene reconstruction would be secondhand"}
+  ]
+}
