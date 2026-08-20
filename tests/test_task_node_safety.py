@@ -146,13 +146,20 @@ def test_task_client_only_reaches_the_task_tool_interfaces():
     assert "/recognition/" not in body
 
 
-def test_the_recognition_tool_lands_disabled_behind_the_bench():
-    """The watcher-flip pattern, applied: the flag defaults FALSE, the refusal
-    cites the bench card, and the flip is a reviewed one-line diff when the
-    card passes — never an ambient enable."""
+def test_the_recognition_tool_is_enabled_with_its_receipts_on_the_flag():
+    """The watcher-flip pattern, completed 2026-08-20: the default flipped TRUE
+    in a reviewed commit AFTER the re-cert sitting passed every bar, and the
+    flag's own documentation must carry the receipts and the first-mission
+    watch-item condition (one fabricated match or wrong confirmed reverts the
+    default same-day). The disabled-path refusal machinery stays in place —
+    the parameter can always be set false again."""
     node_body = TASK_NODE.read_text()
-    assert '"recognition_tool_enabled", False' in node_body
+    assert '"recognition_tool_enabled", True' in node_body
     assert "bench_card_recognition_2026-08-19" in node_body
+    assert "WATCH-ITEM CONDITION" in node_body
+    assert "reverts this default same-day" in node_body
+    # the disabled branch survives the flip (revert needs no code change)
+    assert "this tool is DISABLED" in node_body
 
 
 def test_turn_reaches_only_the_gateway():

@@ -205,11 +205,20 @@ class TaskNode(Node):
                                  callback_group=cbg)
         self.create_service(Trigger, "task/where_am_i", self._on_where_am_i,
                             callback_group=cbg)
-        # look_and_recognize: forwards to the recognition node's verb. LANDS
-        # DISABLED (the watcher-flip pattern): the flag below defaults false and
-        # flips in a reviewed commit only when the bench card
-        # (docs/bench_card_recognition_2026-08-19.md) passes.
-        self.declare_parameter("recognition_tool_enabled", False)
+        # look_and_recognize: forwards to the recognition node's verb.
+        # ENABLED 2026-08-20 (the watcher-flip pattern, this flip is the
+        # reviewed commit). Receipts: the re-cert sitting passed EVERY bar on
+        # the redesigned schema — 23/23 schema-valid, zero false positives,
+        # zero wrong confirms, camera down after all 23, R6a refusal+alive —
+        # on top of the offline calibration (all gates, iteration 1/6) and
+        # the zero-FP lineage (25+ old-schema + 24-frame corpus + 7 live
+        # probes, zero fabrications ever). Full ledger:
+        # docs/bench_card_recognition_2026-08-19.md (RE-CERT RESULTS).
+        # WATCH-ITEM CONDITION (mirrors the watcher's first-flight clause):
+        # on the first mission that uses this tool, every look_and_recognize
+        # result gets inspected against its photo; one fabricated match or
+        # wrong confirmed reverts this default same-day.
+        self.declare_parameter("recognition_tool_enabled", True)
         self.declare_parameter("recognition_target", "")
         self._recognition_params = self.create_client(
             SetParameters, "/recognition/set_parameters", callback_group=cbg)
