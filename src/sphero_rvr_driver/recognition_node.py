@@ -42,6 +42,8 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 import tf2_ros
 
+from sensor_msgs_py import point_cloud2
+
 from sphero_rvr_core.image_decode import imgmsg_to_array
 from sphero_rvr_core.recognition import (
     build_prompt,
@@ -49,6 +51,7 @@ from sphero_rvr_core.recognition import (
     frame_quality_ok,
     parse_recognition_reply,
     pick_sharpest,
+    range_from_tof_points,
 )
 from sphero_rvr_core.vlm_client import query_vlm
 
@@ -84,10 +87,21 @@ class RecognitionNode(Node):
         self._frames: list = []
         self._collect = False
         self._state = None            # (text, monotonic)
+        # Round 2 §1: tof points gathered DURING the snapshot window give the
+        # sighting a measured range (freshness by construction — only clouds
+        # that arrive while the camera is up are kept). Buffered per-frame-id
+        # in the SENSOR frame; transformed lazily at result time.
+        self.declare_parameter("tof_points_topic", "/tof/points")
+        self._tof_clouds: list = []   # (frame_id, [(x, y), ...])
+        self._tf_2d_cache: dict = {}  # frame_id -> (tx, ty, cos, sin)
         cbg = ReentrantCallbackGroup()
         self.create_subscription(
             Image, str(self.get_parameter("image_topic").value),
             self._on_image, 3, callback_group=cbg)
+        from sensor_msgs.msg import PointCloud2
+        self.create_subscription(
+            PointCloud2, str(self.get_parameter("tof_points_topic").value),
+            self._on_tof_points, 5, callback_group=cbg)
         self.create_subscription(
             String, str(self.get_parameter("state_topic").value),
             lambda m: setattr(self, "_state", (m.data, time.monotonic())),
@@ -106,6 +120,39 @@ class RecognitionNode(Node):
     def _on_image(self, msg):
         if self._collect:
             self._frames.append(msg)
+
+    def _on_tof_points(self, msg):
+        if not self._collect:
+            return
+        pts = [(float(p[0]), float(p[1])) for p in
+               point_cloud2.read_points(msg, field_names=("x", "y"),
+                                        skip_nans=True)]
+        if pts:
+            self._tof_clouds.append((msg.header.frame_id, pts))
+
+    def _sighting_range(self, parsed):
+        """Median tof range in the sighting's sector, from clouds captured in
+        the snapshot window — or None, honestly (no return, no TF, no match)."""
+        if not parsed["match"] or not self._tof_clouds:
+            return None
+        base_pts = []
+        for frame_id, pts in self._tof_clouds:
+            tf2d = self._tf_2d_cache.get(frame_id)
+            if tf2d is None:
+                try:
+                    tf = self._tf_buffer.lookup_transform(
+                        "base_link", frame_id, rclpy.time.Time())
+                except Exception:
+                    continue
+                t, q = tf.transform.translation, tf.transform.rotation
+                yaw = math.atan2(2 * (q.w * q.z + q.x * q.y),
+                                 1 - 2 * (q.y * q.y + q.z * q.z))
+                tf2d = (t.x, t.y, math.cos(yaw), math.sin(yaw))
+                self._tf_2d_cache[frame_id] = tf2d
+            tx, ty, c, s = tf2d
+            base_pts.extend((tx + c * x - s * y, ty + s * x + c * y)
+                            for x, y in pts)
+        return range_from_tof_points(base_pts, parsed["where_in_frame"])
 
     # ---- the refusal ladder (every refusal names its reason) --------------------
 
@@ -191,7 +238,8 @@ class RecognitionNode(Node):
             result = build_result(
                 target=target, parsed=parsed, photo_path=photo_path,
                 map_x=pose[0], map_y=pose[1], capture_yaw_rad=pose[2],
-                stamp=stamp, model=str(self.get_parameter("model").value))
+                stamp=stamp, model=str(self.get_parameter("model").value),
+                range_m=self._sighting_range(parsed), range_source="tof")
         except requests.RequestException as exc:
             # Transport failures are LOUD refusals, never node death: on the
             # 2026-08-20 bench card (R6a) a ConnectionError escaped this
@@ -228,6 +276,7 @@ class RecognitionNode(Node):
         invocations to near-black frames the model then (honestly) called
         absence."""
         self._frames = []
+        self._tof_clouds = []
         cmd = str(self.get_parameter("camera_launch_cmd").value)
         want = int(self.get_parameter("frame_count").value)
         deadline = time.monotonic() + float(

@@ -252,3 +252,15 @@ schema-valid, camera down after all 23; bag sitting_bag_20260820_154736.*
 schema. The tool-enable flip proceeds as its own reviewed commit (the
 watcher-flip pattern). The live search rehearsal is a FLIGHT (it drives)
 and needs its own staging + envelope + clear.**
+
+### Round-2 addendum (2026-08-20 evening): range_m — QUEUED re-cert row
+
+The flight program added `range_m`/`range_source` to the result (tof points
+gathered in the snapshot window, sector band via the measured 14° mount
+offset — design_search_round2_2026-08-20.md §1). **Nuance, stated per the
+consensus: the field is USABLE immediately (it simply arrives, null-honest),
+but its ACCURACY is uncertified until the queued sitting — one staged object
+on the existing tape marks at 2–3 distances, bar `range_m` within ±0.15 m of
+tape truth, absent target → null. Until that sitting passes, the search
+stanza's reliance on range is not itself considered certified.** ~5 minutes
+of Scott's staging, zero motion, queued for his next convenient moment.

@@ -28,6 +28,48 @@ HORIZONTAL_FOV_DEG = 66.0
 #: actual granularity (a VLM asked for degrees invents them).
 WHERE_VALUES = ("left", "center", "right")
 
+#: Camera axis vs body axis, degrees LEFT (positive yaw). MEASURED on the
+#: 2026-08-20 bench card (R4: 10° from the 9-mark walk + 4° lidar-measured
+#: deliberate staging yaw), and confirmed live the same day (a body-centered
+#: bottle reads sector RIGHT at −22°, exactly as this offset predicts).
+CAMERA_MOUNT_OFFSET_DEG = 14.0
+
+#: Sector bands in the CAMERA frame, degrees (left edge positive per REP-103):
+#: thirds of the validated 66° HFOV.
+_SECTOR_BANDS_DEG = {
+    "left": (11.0, 33.0),
+    "center": (-11.0, 11.0),
+    "right": (-33.0, -11.0),
+}
+
+
+def range_from_tof_points(points_xy, where_in_frame,
+                          mount_offset_deg=CAMERA_MOUNT_OFFSET_DEG):
+    """Median planar range (metres) of tof points inside the sighting's sector,
+    or None when no point falls there — never a guess (search round 2 §1: the
+    approach leg was a blind guess without this, and flight 4 landed too deep).
+
+    `points_xy` are (x, y) in the BASE frame. GEOMETRY: a point's camera-frame
+    azimuth is its body azimuth MINUS the mount offset (the camera points 14°
+    LEFT, so a point dead ahead of the CAMERA sits at body +14°); the sector
+    bands are thirds of the measured 66° FOV in the camera frame.
+    """
+    if where_in_frame not in _SECTOR_BANDS_DEG:
+        raise ValueError(f"where_in_frame {where_in_frame!r} has no sector band")
+    lo, hi = _SECTOR_BANDS_DEG[where_in_frame]
+    ranges = []
+    for x, y in points_xy:
+        r = math.hypot(x, y)
+        if r < 1e-6:
+            continue
+        cam_az = math.degrees(math.atan2(y, x)) - float(mount_offset_deg)
+        if lo <= cam_az <= hi:
+            ranges.append(r)
+    if not ranges:
+        return None
+    ranges.sort()
+    return ranges[len(ranges) // 2]
+
 #: Sector-center yaw offsets, radians. Image LEFT is the robot's LEFT, which is
 #: POSITIVE yaw (REP-103). Thirds have centers at +/- FOV/3 and 0.
 _WHERE_OFFSET_RAD = {
@@ -195,7 +237,8 @@ def pick_sharpest(grays) -> int:
 
 def build_result(*, target: str, parsed: dict, photo_path: str,
                  map_x: float, map_y: float, capture_yaw_rad: float,
-                 stamp: str, model: str) -> dict:
+                 stamp: str, model: str,
+                 range_m=None, range_source=None) -> dict:
     """The verb's answer WITH PROVENANCE — photo, pose, bearing, time, model.
 
     BY CONSTRUCTION this function cannot leak a credential: its signature has
@@ -217,6 +260,13 @@ def build_result(*, target: str, parsed: dict, photo_path: str,
                      "yaw_deg": round(math.degrees(float(capture_yaw_rad)), 1)},
         "bearing_deg": (None if bearing is None
                         else round(math.degrees(bearing), 1)),
+        # Round 2 §1: a measured range turns the approach leg from a guess
+        # into a placement. null is honest (no tof return in the sector) and
+        # a match=false sighting carries no range by construction.
+        "range_m": (None if (range_m is None or not parsed["match"])
+                    else round(float(range_m), 3)),
+        "range_source": (None if (range_m is None or not parsed["match"])
+                         else str(range_source or "tof")),
         "stamp": str(stamp),
         "model": str(model),
     }

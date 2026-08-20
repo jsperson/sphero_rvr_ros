@@ -329,7 +329,9 @@ def test_the_system_prompt_carries_the_search_loop():
     assert "two-stage loop" in SYSTEM_PROMPT
     assert "CANDIDATE, not a find" in SYSTEM_PROMPT
     assert "after searching" in SYSTEM_PROMPT and "where you looked" in SYSTEM_PROMPT
-    assert "half a metre short" in SYSTEM_PROMPT
+    assert "about 0.8 m" in SYSTEM_PROMPT          # min confirm range (flight 4's miss)
+    assert "range minus about a metre" in SYSTEM_PROMPT   # range-aware stop
+    assert "use it to place your approach stop" in SYSTEM_PROMPT
     assert "demotes a candidate" in SYSTEM_PROMPT
     # the reasoning discount (flight 3's root cause: the model burned its cap
     # on bearing trigonometry) — approximate coordinates are LICENSED:

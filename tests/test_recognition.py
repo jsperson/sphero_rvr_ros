@@ -171,6 +171,75 @@ def test_the_result_builder_cannot_carry_a_key_by_construction():
         "guarantee is gone")
 
 
+# --- range at the look (search round 2 §1): tof band geometry ---------------------------
+
+from sphero_rvr_core.recognition import (  # noqa: E402
+    CAMERA_MOUNT_OFFSET_DEG,
+    range_from_tof_points,
+)
+
+
+def test_the_mount_offset_constant_is_the_measured_value():
+    assert CAMERA_MOUNT_OFFSET_DEG == 14.0
+
+
+def test_a_point_dead_ahead_of_the_camera_is_center():
+    """The offset's sign, pinned: the camera points 14° LEFT, so a point at
+    body azimuth +14° sits on the CAMERA axis — sector center."""
+    p = (math.cos(math.radians(14.0)), math.sin(math.radians(14.0)))
+    assert range_from_tof_points([p], "center") == pytest.approx(1.0)
+
+
+def test_a_point_dead_ahead_of_the_BODY_is_sector_right():
+    """The live confirmation from the sitting: a body-centered object reads
+    RIGHT (camera azimuth −14°, inside the right band)."""
+    assert range_from_tof_points([(1.2, 0.0)], "right") == pytest.approx(1.2)
+    assert range_from_tof_points([(1.2, 0.0)], "center") is None
+
+
+def test_range_is_the_median_of_in_band_points_only():
+    ahead = math.radians(14.0)
+    in_band = [(r * math.cos(ahead), r * math.sin(ahead)) for r in (0.9, 1.0, 3.0)]
+    out_band = [(0.0, 1.0)]   # body +90° — no sector holds it
+    assert range_from_tof_points(in_band + out_band, "center") == pytest.approx(1.0)
+
+
+def test_no_points_in_band_is_none_never_a_guess():
+    assert range_from_tof_points([], "center") is None
+    with pytest.raises(ValueError):
+        range_from_tof_points([(1.0, 0.0)], "behind")
+
+
+def test_the_result_carries_range_only_on_a_match():
+    parsed_hit = {"match": True, "identity": "unverified",
+                  "where_in_frame": "right", "confidence": 0.7, "description": "d"}
+    r = build_result(target="t", parsed=parsed_hit, photo_path="p", map_x=0,
+                     map_y=0, capture_yaw_rad=0, stamp="s", model="m",
+                     range_m=1.234, range_source="tof")
+    assert r["range_m"] == 1.234 and r["range_source"] == "tof"
+    parsed_miss = {"match": False, "identity": None, "where_in_frame": None,
+                   "confidence": 0.9, "description": "d"}
+    r = build_result(target="t", parsed=parsed_miss, photo_path="p", map_x=0,
+                     map_y=0, capture_yaw_rad=0, stamp="s", model="m",
+                     range_m=1.234, range_source="tof")
+    assert r["range_m"] is None and r["range_source"] is None
+    r = build_result(target="t", parsed=parsed_hit, photo_path="p", map_x=0,
+                     map_y=0, capture_yaw_rad=0, stamp="s", model="m")
+    assert r["range_m"] is None and r["range_source"] is None
+
+
+def test_the_node_gathers_tof_in_the_snapshot_window_only():
+    """Source pins: the tof subscription exists, collection is gated on the
+    same flag as frames (freshness by construction), and the buffer resets at
+    snapshot start."""
+    assert '"tof_points_topic", "/tof/points"' in NODE_SRC
+    on_tof = NODE_SRC[NODE_SRC.index("def _on_tof_points"):
+                      NODE_SRC.index("def _sighting_range")]
+    assert "if not self._collect" in on_tof
+    snap = NODE_SRC[NODE_SRC.index("def _snapshot"):NODE_SRC.index("def _pose_at")]
+    assert "self._tof_clouds = []" in snap
+
+
 # --- the consensus key pins, held at the node's source ----------------------------------
 
 def test_key_absence_is_a_loud_refusal_at_invocation():
