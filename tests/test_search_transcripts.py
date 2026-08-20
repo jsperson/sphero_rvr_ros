@@ -332,6 +332,9 @@ def test_the_system_prompt_carries_the_search_loop():
     assert "about 0.8 m" in SYSTEM_PROMPT          # min confirm range (flight 4's miss)
     assert "range minus about a metre" in SYSTEM_PROMPT   # range-aware stop
     assert "use it to place your approach stop" in SYSTEM_PROMPT
+    # ruling C: an ambiguous range is a MINIMUM, never the certified distance
+    assert "range_ambiguous" in SYSTEM_PROMPT
+    assert "treat range_m as a MINIMUM" in SYSTEM_PROMPT
     assert "demotes a candidate" in SYSTEM_PROMPT
     # the reasoning discount (flight 3's root cause: the model burned its cap
     # on bearing trigonometry) — approximate coordinates are LICENSED:

@@ -187,27 +187,74 @@ def test_a_point_dead_ahead_of_the_camera_is_center():
     """The offset's sign, pinned: the camera points 14° LEFT, so a point at
     body azimuth +14° sits on the CAMERA axis — sector center."""
     p = (math.cos(math.radians(14.0)), math.sin(math.radians(14.0)))
-    assert range_from_tof_points([p], "center") == pytest.approx(1.0)
+    assert range_from_tof_points([p], "center") == (pytest.approx(1.0), False)
 
 
 def test_a_point_dead_ahead_of_the_BODY_is_sector_right():
     """The live confirmation from the sitting: a body-centered object reads
     RIGHT (camera azimuth −14°, inside the right band)."""
-    assert range_from_tof_points([(1.2, 0.0)], "right") == pytest.approx(1.2)
+    r, amb = range_from_tof_points([(1.2, 0.0)], "right")
+    assert r == pytest.approx(1.2) and amb is False
     assert range_from_tof_points([(1.2, 0.0)], "center") is None
 
 
-def test_range_is_the_median_of_in_band_points_only():
+def test_a_single_standing_cluster_is_unambiguous():
     ahead = math.radians(14.0)
-    in_band = [(r * math.cos(ahead), r * math.sin(ahead)) for r in (0.9, 1.0, 3.0)]
+    pts = [(r * math.cos(ahead), r * math.sin(ahead)) for r in (0.9, 1.0, 1.1)]
     out_band = [(0.0, 1.0)]   # body +90° — no sector holds it
-    assert range_from_tof_points(in_band + out_band, "center") == pytest.approx(1.0)
+    assert range_from_tof_points(pts + out_band, "center") == \
+        (pytest.approx(1.0), False)
 
 
-def test_no_points_in_band_is_none_never_a_guess():
+def test_two_standing_clusters_return_the_nearest_flagged_ambiguous():
+    ahead = math.radians(14.0)
+    pts = [(r * math.cos(ahead), r * math.sin(ahead))
+           for r in (1.0, 1.05, 2.0, 2.1)]
+    r, amb = range_from_tof_points(pts, "center")
+    assert r == pytest.approx(1.05) and amb is True
+
+
+def test_floor_clutter_alone_is_none_never_a_guess():
+    """Below the derived 0.8 m cutoff lives the tof's own floor — those
+    returns must never masquerade as a sighting range."""
+    ahead = math.radians(14.0)
+    floor = [(r * math.cos(ahead), r * math.sin(ahead)) for r in (0.3, 0.4, 0.5)]
+    assert range_from_tof_points(floor, "center") is None
     assert range_from_tof_points([], "center") is None
     with pytest.raises(ValueError):
         range_from_tof_points([(1.0, 0.0)], "behind")
+
+
+#: THE MUST-FLIP FIXTURE (consensus pin 3, free from placement 1's own six
+#: clouds): the 114 in-band ranges verbatim. Old median-of-everything said
+#: 0.502 (the FAIL); the ruling-C aggregation must say nearest-standing ~1.14
+#: with ambiguous=True (two other clusters share the sector).
+PLACEMENT1_RANGES = [
+    0.26, 0.27, 0.27, 0.27, 0.27, 0.27, 0.27, 0.27, 0.27, 0.28, 0.28, 0.28,
+    0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.28, 0.29, 0.29, 0.29, 0.29,
+    0.31, 0.31, 0.31, 0.32, 0.32, 0.32, 0.32, 0.32, 0.33, 0.33, 0.33, 0.33,
+    0.34, 0.34, 0.37, 0.38, 0.38, 0.39, 0.39, 0.39, 0.39, 0.39, 0.39, 0.40,
+    0.40, 0.40, 0.40, 0.41, 0.41, 0.41, 0.41, 0.50, 0.51, 0.52, 0.53, 0.54,
+    1.09, 1.11, 1.11, 1.11, 1.12, 1.12, 1.13, 1.14, 1.15, 1.15, 1.16, 1.16,
+    1.16, 1.17, 1.19, 1.19, 1.20, 1.58, 1.58, 1.58, 1.59, 1.59, 1.59, 1.59,
+    1.60, 1.60, 1.60, 1.60, 1.61, 1.61, 1.61, 1.61, 1.61, 1.61, 1.61, 1.61,
+    1.61, 1.62, 1.62, 1.62, 1.62, 1.62, 1.62, 1.62, 1.62, 1.63, 1.63, 1.63,
+    1.63, 1.64, 1.64, 1.64, 1.64, 1.71,
+]
+
+
+def test_placement_1_is_the_must_flip():
+    """The committed field fixture: the exact distribution that failed the
+    ±0.15 bar (median 0.502 vs truth 1.754) must now yield the nearest
+    STANDING cluster (~1.14, the mystery object) flagged ambiguous — the safe
+    minimum, exactly what ruling C promises the searcher."""
+    ahead = math.radians(14.0)
+    pts = [(r * math.cos(ahead), r * math.sin(ahead)) for r in PLACEMENT1_RANGES]
+    r, amb = range_from_tof_points(pts, "center")
+    assert 1.09 <= r <= 1.20, f"nearest standing cluster expected, got {r}"
+    assert amb is True
+    # and the old failure is provably dead: nothing near the floor median
+    assert abs(r - 0.502) > 0.4
 
 
 def test_the_result_carries_range_only_on_a_match():
@@ -215,14 +262,16 @@ def test_the_result_carries_range_only_on_a_match():
                   "where_in_frame": "right", "confidence": 0.7, "description": "d"}
     r = build_result(target="t", parsed=parsed_hit, photo_path="p", map_x=0,
                      map_y=0, capture_yaw_rad=0, stamp="s", model="m",
-                     range_m=1.234, range_source="tof")
+                     range_m=1.234, range_source="tof", range_ambiguous=True)
     assert r["range_m"] == 1.234 and r["range_source"] == "tof"
+    assert r["range_ambiguous"] is True
     parsed_miss = {"match": False, "identity": None, "where_in_frame": None,
                    "confidence": 0.9, "description": "d"}
     r = build_result(target="t", parsed=parsed_miss, photo_path="p", map_x=0,
                      map_y=0, capture_yaw_rad=0, stamp="s", model="m",
-                     range_m=1.234, range_source="tof")
+                     range_m=1.234, range_source="tof", range_ambiguous=True)
     assert r["range_m"] is None and r["range_source"] is None
+    assert r["range_ambiguous"] is None
     r = build_result(target="t", parsed=parsed_hit, photo_path="p", map_x=0,
                      map_y=0, capture_yaw_rad=0, stamp="s", model="m")
     assert r["range_m"] is None and r["range_source"] is None

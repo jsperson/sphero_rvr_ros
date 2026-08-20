@@ -235,11 +235,14 @@ class RecognitionNode(Node):
             photo_path = os.path.join(photo_dir, f"recognition_{stamp}.jpg")
             with open(photo_path, "wb") as fh:
                 fh.write(jpeg)
+            sighting = self._sighting_range(parsed)
             result = build_result(
                 target=target, parsed=parsed, photo_path=photo_path,
                 map_x=pose[0], map_y=pose[1], capture_yaw_rad=pose[2],
                 stamp=stamp, model=str(self.get_parameter("model").value),
-                range_m=self._sighting_range(parsed), range_source="tof")
+                range_m=None if sighting is None else sighting[0],
+                range_source="tof",
+                range_ambiguous=None if sighting is None else sighting[1])
         except requests.RequestException as exc:
             # Transport failures are LOUD refusals, never node death: on the
             # 2026-08-20 bench card (R6a) a ConnectionError escaped this

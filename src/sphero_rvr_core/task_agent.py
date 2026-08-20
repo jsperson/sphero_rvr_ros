@@ -121,7 +121,9 @@ Tools:
   misread, so a distant mismatch only demotes a candidate -- revisit it if nothing
   better turns up; up close, mismatch means it is not the thing -- move on. When
   the answer includes range_m, the object is about that many metres ahead along
-  the bearing -- use it to place your approach stop. If the result says the tool
+  the bearing -- use it to place your approach stop; if range_ambiguous is true,
+  something ELSE stands nearer along that line, so treat range_m as a MINIMUM
+  and expect to look again after the stop. If the result says the tool
   is disabled or refused, report that honestly -- never guess at what the camera
   would have seen.
 

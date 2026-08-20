@@ -43,11 +43,35 @@ _SECTOR_BANDS_DEG = {
 }
 
 
+#: Floor-clutter cutoff for sighting ranges, metres. DERIVED from the range
+#: sitting's own measurement (2026-08-20, placement 1, 114 in-band returns
+#: over 6 clouds): the tof's floor-grazing clutter — present in EVERY sector,
+#: always — ended at 0.54 m and the first standing object began at 1.09 m, so
+#: 0.8 splits the gap with margin both ways. DELIBERATELY THE SAME NUMBER as
+#: the search stanza's minimum confirm range ("never closer than about
+#: 0.8 m"): one constant, one meaning — nearer than this the camera loses
+#: floor objects AND the tof sees mostly floor. If the two ever need to
+#: diverge, that is a design round, not a quiet edit.
+SIGHTING_FLOOR_CLUTTER_M = 0.8
+
+#: Cluster gap, metres: consecutive in-band returns further apart than this
+#: belong to different standing objects. DERIVED same sitting: the observed
+#: intra-cluster spreads were <=0.13 m and the inter-cluster gaps 0.55 and
+#: 0.38 — 0.25 separates with margin both ways.
+SIGHTING_CLUSTER_GAP_M = 0.25
+
+
 def range_from_tof_points(points_xy, where_in_frame,
                           mount_offset_deg=CAMERA_MOUNT_OFFSET_DEG):
-    """Median planar range (metres) of tof points inside the sighting's sector,
-    or None when no point falls there — never a guess (search round 2 §1: the
-    approach leg was a blind guess without this, and flight 4 landed too deep).
+    """(range_m, ambiguous) for the sighting's sector, or None — never a guess.
+
+    Consensus ruling C (2026-08-20, after placement 1 FAILED the ±0.15 bar):
+    a plain median drowned the bottle (1.61 m, in-bar) under 60 floor-grazing
+    returns (median 0.50). So: drop the floor-clutter band, CLUSTER what
+    stands, return the NEAREST cluster's median — the safe error direction
+    (an intervening object shortens the leg; the re-look recovers) — with
+    `ambiguous=True` whenever other standing clusters exist, so the model
+    treats the number as a minimum. No standing returns at all -> None.
 
     `points_xy` are (x, y) in the BASE frame. GEOMETRY: a point's camera-frame
     azimuth is its body azimuth MINUS the mount offset (the camera points 14°
@@ -60,7 +84,7 @@ def range_from_tof_points(points_xy, where_in_frame,
     ranges = []
     for x, y in points_xy:
         r = math.hypot(x, y)
-        if r < 1e-6:
+        if r < SIGHTING_FLOOR_CLUTTER_M:
             continue
         cam_az = math.degrees(math.atan2(y, x)) - float(mount_offset_deg)
         if lo <= cam_az <= hi:
@@ -68,7 +92,13 @@ def range_from_tof_points(points_xy, where_in_frame,
     if not ranges:
         return None
     ranges.sort()
-    return ranges[len(ranges) // 2]
+    clusters = [[ranges[0]]]
+    for r in ranges[1:]:
+        if r - clusters[-1][-1] > SIGHTING_CLUSTER_GAP_M:
+            clusters.append([])
+        clusters[-1].append(r)
+    nearest = clusters[0]
+    return nearest[len(nearest) // 2], len(clusters) > 1
 
 #: Sector-center yaw offsets, radians. Image LEFT is the robot's LEFT, which is
 #: POSITIVE yaw (REP-103). Thirds have centers at +/- FOV/3 and 0.
@@ -238,7 +268,7 @@ def pick_sharpest(grays) -> int:
 def build_result(*, target: str, parsed: dict, photo_path: str,
                  map_x: float, map_y: float, capture_yaw_rad: float,
                  stamp: str, model: str,
-                 range_m=None, range_source=None) -> dict:
+                 range_m=None, range_source=None, range_ambiguous=None) -> dict:
     """The verb's answer WITH PROVENANCE — photo, pose, bearing, time, model.
 
     BY CONSTRUCTION this function cannot leak a credential: its signature has
@@ -267,6 +297,10 @@ def build_result(*, target: str, parsed: dict, photo_path: str,
                     else round(float(range_m), 3)),
         "range_source": (None if (range_m is None or not parsed["match"])
                          else str(range_source or "tof")),
+        # ambiguous=True: other standing clusters share the sector — the range
+        # is a MINIMUM, not the sighted object's certified distance.
+        "range_ambiguous": (None if (range_m is None or not parsed["match"])
+                            else bool(range_ambiguous)),
         "stamp": str(stamp),
         "model": str(model),
     }
