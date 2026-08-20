@@ -57,14 +57,18 @@ def test_task_node_is_wired_as_a_real_entry_point():
     assert "task_node = sphero_rvr_driver.task_node:main" in setup
 
 
-def test_task_node_exposes_exactly_the_SIX_tools_and_no_more():
+def test_task_node_exposes_exactly_the_NINE_tools_and_no_more():
     """A surface that quietly grows is how a thin node stops being thin, so the tool
     set is a WHITELIST and adding to it is a deliberate edit here.
 
-    WIDENED 3 -> 6 on 2026-08-14 for Track 2 v2 (`explore`, `stop`, `status`) --
-    widened rather than relaxed, which is the same distinction the ToF node's
-    subscription boundary drew when rule B needed /scan. The new tools are named
-    individually; a SEVENTH tool, whatever it is, fails this test.
+    WIDENED 3 -> 6 on 2026-08-14 for Track 2 v2 (`explore`, `stop`, `status`).
+    WIDENED 6 -> 9 on 2026-08-20 for the LLM-verb bridge round 1, PM-ratified
+    (design_llm_verb_bridge_2026-08-20): `turn` (a client of the supervisor's
+    precise-turn gateway -- admission stays the safety layer), `where_am_i`
+    (owner facts, read-only), `look_and_recognize` (LANDS DISABLED behind the
+    recognition bench card; the enable flag flips in its own reviewed diff).
+    Widened rather than relaxed, both times; a TENTH tool, whatever it is,
+    fails this test.
 
     Still out of scope and still asserted: `set_search_classes`, `capture_photo`, and
     anything that would give this surface its own motion authority. An e-stop tool in
@@ -73,7 +77,8 @@ def test_task_node_exposes_exactly_the_SIX_tools_and_no_more():
     """
     source = TASK_NODE.read_text()
     tools = ("task/goto", "task/observe", "task/query_semantic_map",
-             "task/explore", "task/stop", "task/status")
+             "task/explore", "task/stop", "task/status",
+             "task/turn", "task/where_am_i", "task/look_and_recognize")
     for tool in tools:
         assert f'"{tool}"' in source, f"{tool} is no longer exposed"
 
@@ -121,17 +126,43 @@ def test_task_client_publishes_nothing():
     assert "create_publisher" not in _executable_body(TASK_CLIENT.read_text())
 
 
-def test_task_client_only_reaches_the_three_tool_interfaces():
+def test_task_client_only_reaches_the_task_tool_interfaces():
     """It may talk to task_node and nothing else. A client that could call
-    /navigate_to_pose directly would bypass the envelope entirely."""
+    /navigate_to_pose directly would bypass the envelope entirely — and the
+    bridge round 1 additions widen the surface it must NOT touch: the
+    precise-turn gateway and the recognition node are task_node's to call,
+    never the client's (the same envelope-bypass class, new doors)."""
     body = _executable_body(TASK_CLIENT.read_text())
     assert '"task/goto"' in body
     assert '"task/observe"' in body
     assert '"task/query_semantic_map"' in body
-    # The bare Nav2 interfaces are the envelope bypass; only task_node may use them.
+    assert '"task/turn"' in body
+    assert '"task/look_and_recognize"' in body
+    # The bare interfaces are the envelope bypass; only task_node may use them.
     assert '"navigate_to_pose"' not in body
     assert '"compute_path_to_pose"' not in body
     assert '"/observe"' not in body
+    assert "collision_stop/precise_turn" not in body
+    assert "/recognition/" not in body
+
+
+def test_the_recognition_tool_lands_disabled_behind_the_bench():
+    """The watcher-flip pattern, applied: the flag defaults FALSE, the refusal
+    cites the bench card, and the flip is a reviewed one-line diff when the
+    card passes — never an ambient enable."""
+    node_body = TASK_NODE.read_text()
+    assert '"recognition_tool_enabled", False' in node_body
+    assert "bench_card_recognition_2026-08-19" in node_body
+
+
+def test_turn_reaches_only_the_gateway():
+    """task/turn is a CLIENT of the supervisor's precise-turn gateway and of
+    nothing else motor-capable: the admission stays the safety layer, and the
+    node's own re-check of the sanity bound is asserted present (the schema is
+    a convenience; the node is the boundary)."""
+    node_body = TASK_NODE.read_text()
+    assert '"/collision_stop/precise_turn"' in node_body
+    assert "-180.0 <= degrees <= 180.0" in node_body
 
 
 def test_task_client_is_removable_and_nothing_depends_on_it():

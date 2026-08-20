@@ -45,6 +45,7 @@ from sphero_rvr_core.image_decode import imgmsg_to_array
 from sphero_rvr_core.recognition import (
     build_prompt,
     build_result,
+    frame_quality_ok,
     parse_recognition_reply,
     pick_sharpest,
 )
@@ -154,12 +155,14 @@ class RecognitionNode(Node):
             if not ok:
                 return self._refuse(response, reason)
 
-        frames = self._snapshot()
-        if not frames:
-            return self._refuse(response, "camera produced no frames within "
-                                "the timeout (camera DOWN again; see log)")
+        captured = self._snapshot()
+        if not captured:
+            return self._refuse(response, "camera produced no QUALITY frames "
+                                "within the timeout (all frames dark/unsettled, "
+                                "or none arrived — camera DOWN again; see log)")
         try:
-            arrays = [imgmsg_to_array(f, order="bgr") for f in frames]
+            frames = [c[0] for c in captured]
+            arrays = [c[1] for c in captured]
             grays = [a.mean(axis=2) for a in arrays]
             best = pick_sharpest(grays)
             frame, img = frames[best], arrays[best]
@@ -201,8 +204,17 @@ class RecognitionNode(Node):
     # ---- camera lifecycle: up -> N frames -> DOWN, unconditionally ---------------
 
     def _snapshot(self):
-        """Start the camera pipeline, collect frames, stop it. The stop is in a
-        finally: the charter's snapshot-then-down survives every error path."""
+        """Start the camera pipeline, collect QUALITY frames, stop it. The stop
+        is in a finally: the charter's snapshot-then-down survives every error
+        path.
+
+        THE WARM-UP FIX (bench card R2, 2026-08-20): frames are decoded and
+        quality-gated AS THEY ARRIVE — under-exposed/unsettled warm-up frames
+        are discarded (loudly, counted) and collection continues until
+        `frame_count` frames PASS `frame_quality_ok` or the timeout. The old
+        first-three-frames capture raced auto-exposure and lost 3 of 9 card
+        invocations to near-black frames the model then (honestly) called
+        absence."""
         self._frames = []
         cmd = str(self.get_parameter("camera_launch_cmd").value)
         want = int(self.get_parameter("frame_count").value)
@@ -214,9 +226,28 @@ class RecognitionNode(Node):
                                 stdin=subprocess.DEVNULL)
         try:
             self._collect = True
-            while len(self._frames) < want and time.monotonic() < deadline:
+            accepted, rejected, seen = [], 0, 0
+            while len(accepted) < want and time.monotonic() < deadline:
+                while seen < len(self._frames) and len(accepted) < want:
+                    msg = self._frames[seen]
+                    seen += 1
+                    try:
+                        arr = imgmsg_to_array(msg, order="bgr")
+                    except Exception:
+                        rejected += 1
+                        continue
+                    ok, reason = frame_quality_ok(arr)
+                    if ok:
+                        accepted.append((msg, arr))
+                    else:
+                        rejected += 1
+                        self.get_logger().info(f"frame discarded: {reason}")
                 time.sleep(0.1)
-            return list(self._frames[:want])
+            if rejected:
+                self.get_logger().info(
+                    f"snapshot kept {len(accepted)} frame(s), discarded "
+                    f"{rejected} (warm-up/quality)")
+            return accepted
         finally:
             self._collect = False
             self._frames = []

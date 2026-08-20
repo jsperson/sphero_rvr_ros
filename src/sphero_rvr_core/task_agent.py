@@ -47,9 +47,34 @@ TOOL_SCHEMAS: dict[str, dict[str, tuple[type, bool]]] = {
         "radius_m": ((int, float), False),
         "min_confidence": ((int, float), False),
     },
+    # The bridge round 1 (design_llm_verb_bridge_2026-08-20, consensus pins):
+    "turn": {
+        "degrees": ((int, float), True),
+    },
+    "where_am_i": {},
+    "look_and_recognize": {
+        "target": ((str,), True),
+    },
 }
 
-SYSTEM_PROMPT = """You control a small ground robot through exactly six tools.
+#: CONTRACT-LAYER RANGE BOUNDS (consensus pin b): sanity lives at the schema,
+#: safety lives at the admission. |degrees| <= 180 because a single in-place
+#: turn never needs more (the long way round is a model mistake, not a plan),
+#: and the bound is checked HERE so a nonsense number is refused before any ROS
+#: call — while the supervisor's precise-turn admission remains the layer that
+#: refuses a sane number at an unsafe moment. Both layers are named in
+#: tests/test_task_agent.py so neither can quietly absorb the other's job.
+ARG_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
+    "turn": {"degrees": (-180.0, 180.0)},
+}
+
+#: String arguments that must be non-empty after strip: an empty target is a
+#: question about nothing, refused at the contract like every unbounded thing.
+NONEMPTY_STRINGS: dict[str, tuple[str, ...]] = {
+    "look_and_recognize": ("target",),
+}
+
+SYSTEM_PROMPT = """You control a small ground robot through exactly nine tools.
 
 Reply with ONE JSON object and nothing else. Either call a tool:
   {"tool": "goto", "args": {"x": 1.0, "y": 0.5}}
@@ -79,6 +104,17 @@ Tools:
 - status(): what the robot is doing right now. If the result says the status is STALE
   or unavailable, report THAT -- it means the robot has stopped reporting, which is
   worth more to the user than any older value.
+- turn(degrees): turn in place using the robot's own heading controller. Positive is
+  left (counter-clockwise), negative is right; degrees must be between -180 and 180
+  (take the short way). The robot may REFUSE a turn near obstacles or while a stop
+  is held -- read the message and either move first or tell the user.
+- where_am_i(): the robot's position, heading, and a summary of the map it has
+  built. Free and instant; call it whenever position matters.
+- look_and_recognize(target): point the camera, take a photo, and ask a vision
+  model whether the named thing is visible. The robot must be STATIONARY; it costs
+  a real cloud call; the answer includes where in the frame and a bearing. If the
+  result says the tool is disabled or refused, report that honestly -- never guess
+  at what the camera would have seen.
 
 Rules:
 - One tool per reply. You will be given the result and may then call another.
@@ -181,6 +217,17 @@ def validate_args(tool: str, args: dict) -> dict:
                 f"{'a number' if types != (str,) else 'a string'}, got {value!r}."
             )
         out[name] = value
+    for name, (lo, hi) in ARG_BOUNDS.get(tool, {}).items():
+        if name in out and not (lo <= float(out[name]) <= hi):
+            raise ContractError(
+                f"{tool} argument {name!r} must be between {lo:g} and {hi:g} "
+                f"(got {out[name]!r}). This is the contract's sanity bound; the "
+                f"robot's own admission may still refuse a sane value at an "
+                f"unsafe moment."
+            )
+    for name in NONEMPTY_STRINGS.get(tool, ()):
+        if name in out and not out[name].strip():
+            raise ContractError(f"{tool} argument {name!r} must not be empty.")
     if tool == "query_semantic_map":
         near = [k for k in ("near_x", "near_y", "radius_m") if k in out]
         if near and len(near) != 3:

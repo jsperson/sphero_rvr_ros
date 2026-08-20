@@ -180,3 +180,74 @@ def test_camera_down_is_in_a_finally():
 def test_stationarity_is_fail_closed_by_default():
     assert '"require_stationary", True' in NODE_SRC
     assert "fail-closed" in NODE_SRC.lower() or "fail-closed" in NODE_SRC
+
+
+# --- the warm-up fix: frame quality gate (bench card R2's convicted mechanism) --------
+
+from sphero_rvr_core.recognition import (  # noqa: E402
+    CAST_RATIO_MAX,
+    LUMA_FLOOR,
+    frame_quality_ok,
+)
+
+#: MEASURED on the 2026-08-20 bench card's own frames (per-channel means):
+#: the dark class (092438) and the bright class (092454) — the fixtures below
+#: are those exact JPEGs, and the synthetic twins here carry their measured
+#: means so the boundary logic tests everywhere while the real-frame must-flip
+#: runs where cv2 exists.
+DARK_MEANS = (9.0, 9.5, 9.3)      # B, G, R -> luma 9.4
+BRIGHT_MEANS = (91.2, 98.4, 98.5)  # -> luma 97.6
+
+
+def _flat(bgr_means):
+    frame = np.zeros((24, 24, 3))
+    for i, v in enumerate(bgr_means):
+        frame[:, :, i] = v
+    return frame
+
+
+def test_the_measured_dark_class_is_rejected_and_bright_accepted():
+    ok, reason = frame_quality_ok(_flat(DARK_MEANS))
+    assert not ok and "underexposed" in reason
+    ok, reason = frame_quality_ok(_flat(BRIGHT_MEANS))
+    assert ok
+
+
+def test_the_floor_sits_between_the_measured_classes_with_margin():
+    """Derivation pin: 40 is 4.3x above the measured dark luma (9.4) and 2.4x
+    below the measured bright floor (97.2). If either class drifts toward the
+    floor, this fails before the field does."""
+    dark_luma = 0.114 * 9.0 + 0.587 * 9.5 + 0.299 * 9.3
+    bright_luma = 0.114 * 91.2 + 0.587 * 98.4 + 0.299 * 98.5
+    assert dark_luma * 3 < LUMA_FLOOR < bright_luma / 2
+
+
+def test_a_gross_color_cast_is_rejected_even_when_bright():
+    ok, reason = frame_quality_ok(_flat((150.0, 60.0, 60.0)))
+    assert not ok and "cast" in reason
+    assert CAST_RATIO_MAX == 1.5
+
+
+def test_the_real_card_frames_flip_the_gate():
+    """THE MUST-FLIP ON REAL FRAMES (the ruling's literal pin): the card's own
+    dark frame is REJECTED and its bright frame ACCEPTED, decoded from the
+    committed JPEGs. Runs where cv2 exists (the Pi; skipped elsewhere — the
+    synthetic twins above cover the logic everywhere)."""
+    cv2 = pytest.importorskip("cv2")
+    fx = Path(__file__).resolve().parent / "fixtures"
+    dark = cv2.imread(str(fx / "recognition_20260820_092438.jpg"))
+    bright = cv2.imread(str(fx / "recognition_20260820_092454.jpg"))
+    assert dark is not None and bright is not None
+    ok, reason = frame_quality_ok(dark)
+    assert not ok, "the card's dark frame passed the gate — R2's mechanism is back"
+    ok, _ = frame_quality_ok(bright)
+    assert ok, "the card's bright frame failed the gate — the fix over-rejects"
+
+
+def test_the_node_gates_frames_inside_the_collect_loop():
+    """Source pin: quality filtering happens AS FRAMES ARRIVE in _snapshot (so
+    collection continues past warm-up frames), not after the fact."""
+    snap = NODE_SRC[NODE_SRC.index("def _snapshot"):NODE_SRC.index("def _pose_at")]
+    assert "frame_quality_ok" in snap
+    # the CODE's finally (rindex — the docstring mentions the word too)
+    assert snap.index("frame_quality_ok") < snap.rindex("finally:")

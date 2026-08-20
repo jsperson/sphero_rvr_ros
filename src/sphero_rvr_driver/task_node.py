@@ -47,6 +47,7 @@ result shape -- lives in `sphero_rvr_core.task_tools`.
 """
 
 import json
+import math
 import threading
 import time
 
@@ -57,6 +58,11 @@ from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalRespons
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from nav_msgs.msg import OccupancyGrid
+from nav2_msgs.action import Spin
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 import tf2_ros
@@ -179,9 +185,46 @@ class TaskNode(Node):
                             callback_group=cbg)
         self.create_service(Trigger, "task/query_semantic_map", self._on_query,
                             callback_group=cbg)
+
+        # --- the bridge round 1 (design_llm_verb_bridge_2026-08-20) ---------------
+        # turn: a CLIENT of the supervisor's precise-turn gateway. The node checks
+        # sanity (|degrees| <= 180, authoritative re-check of the contract's bound);
+        # the gateway's admission remains the safety layer and its refusal comes
+        # back as an ok=false the model reads like any envelope answer.
+        self.declare_parameter("turn_degrees", 0.0)
+        self._turn_client = ActionClient(self, Spin, "/collision_stop/precise_turn",
+                                         callback_group=cbg)
+        self.create_service(Trigger, "task/turn", self._on_turn,
+                            callback_group=cbg)
+        # where_am_i: owner facts, read-only -- TF pose/heading + /map metadata.
+        map_qos = QoSProfile(depth=1)
+        map_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+        map_qos.reliability = QoSReliabilityPolicy.RELIABLE
+        self._map_meta = None
+        self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos,
+                                 callback_group=cbg)
+        self.create_service(Trigger, "task/where_am_i", self._on_where_am_i,
+                            callback_group=cbg)
+        # look_and_recognize: forwards to the recognition node's verb. LANDS
+        # DISABLED (the watcher-flip pattern): the flag below defaults false and
+        # flips in a reviewed commit only when the bench card
+        # (docs/bench_card_recognition_2026-08-19.md) passes.
+        self.declare_parameter("recognition_tool_enabled", False)
+        self.declare_parameter("recognition_target", "")
+        self._recognition_params = self.create_client(
+            SetParameters, "/recognition/set_parameters", callback_group=cbg)
+        self._recognition_call = self.create_client(
+            Trigger, "/recognition/look_and_recognize", callback_group=cbg)
+        self.create_service(Trigger, "task/look_and_recognize",
+                            self._on_look_and_recognize, callback_group=cbg)
+
         self.get_logger().info(
             "task_node ready — tools: task/goto (action), task/observe, "
-            f"task/query_semantic_map (envelope {self._envelope.to_json_dict()})"
+            "task/query_semantic_map, task/explore, task/stop, task/status, "
+            "task/turn, task/where_am_i, task/look_and_recognize"
+            f" (envelope {self._envelope.to_json_dict()};"
+            f" recognition tool enabled="
+            f"{self.get_parameter('recognition_tool_enabled').value})"
         )
 
     # --- plumbing -------------------------------------------------------------
@@ -200,6 +243,138 @@ class TaskNode(Node):
         except Exception:
             return None
         return tf.transform.translation.x, tf.transform.translation.y
+
+    def _robot_pose_yaw(self):
+        """(x, y, yaw) in the map frame, or None -- same refusal-not-guess rule
+        as _robot_xy."""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._map_frame, self._base_frame, rclpy.time.Time()
+            )
+        except Exception:
+            return None
+        t, q = tf.transform.translation, tf.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return t.x, t.y, yaw
+
+    # --- the bridge round 1 handlers ------------------------------------------
+
+    def _on_map(self, msg):
+        known = sum(1 for v in msg.data if v >= 0)
+        self._map_meta = {
+            "size_m": [round(msg.info.width * msg.info.resolution, 2),
+                       round(msg.info.height * msg.info.resolution, 2)],
+            "resolution_m": round(msg.info.resolution, 3),
+            "known_pct": round(100.0 * known / max(1, len(msg.data)), 1),
+        }
+
+    def _on_where_am_i(self, request, response):
+        pose = self._robot_pose_yaw()
+        if pose is None:
+            response.success = False
+            response.message = tool_result(
+                False, "where_am_i",
+                "no map->base_link transform — the robot does not know where it "
+                "is right now, and that is the answer")
+            return response
+        x, y, yaw = pose
+        response.success = True
+        response.message = tool_result(
+            True, "where_am_i", "",
+            x=round(x, 3), y=round(y, 3), yaw_deg=round(math.degrees(yaw), 1),
+            map=self._map_meta or "no map received yet")
+        return response
+
+    def _on_turn(self, request, response):
+        degrees = float(self.get_parameter("turn_degrees").value)
+        # AUTHORITATIVE re-check of the contract's sanity bound: the schema is a
+        # convenience for the model; this node is the boundary.
+        if not -180.0 <= degrees <= 180.0:
+            response.success = False
+            response.message = tool_result(
+                False, "turn", f"degrees must be within [-180, 180], got {degrees}")
+            return response
+        if abs(degrees) < 1.0:
+            response.success = False
+            response.message = tool_result(
+                False, "turn", "a turn under 1 degree is a no-op; not sent")
+            return response
+        if not self._turn_client.wait_for_server(timeout_sec=3.0):
+            response.success = False
+            response.message = tool_result(
+                False, "turn", "the precise-turn gateway is not available")
+            return response
+        goal = Spin.Goal()
+        goal.target_yaw = math.radians(degrees)
+        handle = self._await(self._turn_client.send_goal_async(goal),
+                             time.monotonic() + 5.0)
+        if handle is None or not handle.accepted:
+            response.success = False
+            response.message = tool_result(
+                False, "turn", "the gateway did not accept the turn")
+            return response
+        result = self._await(handle.get_result_async(), time.monotonic() + 12.0)
+        if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
+            response.success = True
+            response.message = tool_result(
+                True, "turn", f"turned {degrees:+.0f} degrees (firmware-settled)")
+        else:
+            response.success = False
+            response.message = tool_result(
+                False, "turn",
+                "the turn was REFUSED or did not settle — the robot's own "
+                "admission refuses turns near obstacles or while a stop is "
+                "held. Move first, or report this to the user.")
+        return response
+
+    def _on_look_and_recognize(self, request, response):
+        if not bool(self.get_parameter("recognition_tool_enabled").value):
+            response.success = False
+            response.message = tool_result(
+                False, "look_and_recognize",
+                "this tool is DISABLED until its bench certification passes "
+                "(docs/bench_card_recognition_2026-08-19.md). Report that "
+                "honestly; do not guess at what the camera would see.")
+            return response
+        target = str(self.get_parameter("recognition_target").value).strip()
+        if not target:
+            response.success = False
+            response.message = tool_result(
+                False, "look_and_recognize", "no target set")
+            return response
+        if not self._recognition_params.wait_for_service(timeout_sec=3.0) or \
+           not self._recognition_call.wait_for_service(timeout_sec=3.0):
+            response.success = False
+            response.message = tool_result(
+                False, "look_and_recognize",
+                "the recognition node is not running")
+            return response
+        p = Parameter()
+        p.name = "target"
+        p.value = ParameterValue(type=ParameterType.PARAMETER_STRING,
+                                 string_value=target)
+        setp = SetParameters.Request(parameters=[p])
+        if self._await(self._recognition_params.call_async(setp),
+                       time.monotonic() + 5.0) is None:
+            response.success = False
+            response.message = tool_result(
+                False, "look_and_recognize", "could not set the target")
+            return response
+        result = self._await(self._recognition_call.call_async(Trigger.Request()),
+                             time.monotonic() + 100.0)
+        if result is None:
+            response.success = False
+            response.message = tool_result(
+                False, "look_and_recognize",
+                "the camera verb timed out (camera + cloud call can take a "
+                "minute; this took longer)")
+            return response
+        # The verb's own message is already the structured JSON answer (or a
+        # loud REFUSED with its reason) -- forward it verbatim, both fields.
+        response.success = result.success
+        response.message = result.message
+        return response
 
     def _await(self, future, deadline):
         """Block until `future` resolves or `deadline` passes; None on timeout.

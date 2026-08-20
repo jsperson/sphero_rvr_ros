@@ -65,9 +65,13 @@ class ToolRunner(Node):
         # exactly like observe, which is the payoff of task_node keeping them Triggers.
         self._mission = {
             name: self.create_client(Trigger, f"task/{name}")
-            for name in ("explore", "stop", "status")
+            for name in ("explore", "stop", "status", "where_am_i")
         }
         self._query = self.create_client(Trigger, "task/query_semantic_map")
+        # Bridge round 1: argument-carrying Triggers use the same typed-parameter
+        # route as query (scalars via task_node's parameters, then the call).
+        self._turn = self.create_client(Trigger, "task/turn")
+        self._recognize = self.create_client(Trigger, "task/look_and_recognize")
 
     # Each runner returns the tool's own JSON result string. Failures are returned,
     # not raised: an envelope refusal is information the model must see and correct,
@@ -79,8 +83,15 @@ class ToolRunner(Node):
             return self._call(self._observe, "observe")
         if tool == "query_semantic_map":
             return self._run_query(args)
-        if tool in ("explore", "stop", "status"):
+        if tool in ("explore", "stop", "status", "where_am_i"):
             return self._call(self._mission[tool], tool)
+        if tool == "turn":
+            return self._run_param_tool(self._turn, "turn",
+                                        {"turn_degrees": float(args["degrees"])})
+        if tool == "look_and_recognize":
+            return self._run_param_tool(self._recognize, "look_and_recognize",
+                                        {"recognition_target": str(args["target"])},
+                                        timeout_s=110.0)
         return json.dumps({"ok": False, "message": f"no such tool {tool!r}"})
 
     def _spin_until(self, future, deadline):
@@ -151,6 +162,50 @@ class ToolRunner(Node):
                             "possibly stale filter"),
             })
         return self._call(self._query, "query_semantic_map")
+
+    def _run_param_tool(self, client, label, params_wanted, timeout_s=None):
+        """The query pattern generalized: typed scalar parameters carry the
+        arguments (task_node's interface doctrine), then the Trigger fires. Same
+        refuse-on-partial-set rule as query — a half-applied argument is a call
+        the model did not make."""
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+
+        setter = self.create_client(SetParameters, "/task_node/set_parameters")
+        if not setter.wait_for_service(timeout_sec=5.0):
+            return json.dumps({"ok": False,
+                               "message": "task_node parameters unavailable"})
+        params = []
+        for name, value in params_wanted.items():
+            p = Parameter()
+            p.name = name
+            if isinstance(value, str):
+                p.value = ParameterValue(type=ParameterType.PARAMETER_STRING,
+                                         string_value=value)
+            else:
+                p.value = ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
+                                         double_value=float(value))
+            params.append(p)
+        response = self._spin_until(setter.call_async(
+            SetParameters.Request(parameters=params)), time.monotonic() + 10.0)
+        if response is None:
+            return json.dumps({"ok": False,
+                               "message": f"setting {label} parameters timed out"})
+        failed = [p.name for p, r in zip(params, getattr(response, "results", []))
+                  if not getattr(r, "successful", False)]
+        if failed or len(getattr(response, "results", [])) != len(params):
+            return json.dumps({"ok": False,
+                               "message": f"could not set {label} parameter(s) "
+                                          f"{failed or 'all'}; not calling"})
+        if not client.wait_for_service(timeout_sec=5.0):
+            return json.dumps({"ok": False,
+                               "message": f"{label} unavailable — is task_node running?"})
+        future = client.call_async(Trigger.Request())
+        deadline = time.monotonic() + (timeout_s or self._timeout_s)
+        result = self._spin_until(future, deadline)
+        if result is None:
+            return json.dumps({"ok": False, "message": f"{label} timed out"})
+        return result.message
 
     def _run_goto(self, args):
         if not self._goto.wait_for_server(timeout_sec=5.0):

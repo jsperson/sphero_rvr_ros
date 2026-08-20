@@ -105,6 +105,38 @@ def bearing_from_frame_position(capture_yaw_rad: float, where_in_frame: str) -> 
     return yaw
 
 
+#: FRAME QUALITY GATE (the warm-up fix, bench card R2's convicted mechanism):
+#: every invocation cold-starts the camera, and frames captured before auto-
+#: exposure/white-balance settle are near-black — the model then honestly
+#: reports absence on an unusable frame (6 dark-frame opportunities on the
+#: 2026-08-20 card produced 6 honest absences and 0 hallucinations; the
+#: RECOGNIZER was exonerated, the CAPTURE was convicted). Constants MEASURED
+#: from that card's own frames: dark class luma 9.4 (recognition_20260820_
+#: 092438), bright class 97.2-100.9 (092132/092454/092520/092904) — the floor
+#: 40 sits 4.3x above the measured dark and 2.4x below the measured bright.
+#: The cast bound is stated INSURANCE: the card's global cast ratios were all
+#: ~1.06-1.08 (the observed magenta was local, not a global mean shift), so
+#: today's fixtures do not exercise it; it exists to catch a grossly unsettled
+#: AWB frame that is bright enough to pass luma.
+LUMA_FLOOR = 40.0
+CAST_RATIO_MAX = 1.5
+
+
+def frame_quality_ok(bgr) -> tuple:
+    """(ok, reason) for one BGR frame: bright enough, and no gross global color
+    cast. numpy-only (this module stays cv2-free)."""
+    import numpy as np
+    img = np.asarray(bgr, dtype=float)
+    b, g, r = (float(img[:, :, i].mean()) for i in range(3))
+    luma = 0.114 * b + 0.587 * g + 0.299 * r
+    if luma < LUMA_FLOOR:
+        return False, f"underexposed (luma {luma:.1f} < {LUMA_FLOOR:g} — warm-up)"
+    ratio = max(b, g, r) / max(min(b, g, r), 1.0)
+    if ratio > CAST_RATIO_MAX:
+        return False, f"color cast (channel ratio {ratio:.2f} > {CAST_RATIO_MAX:g})"
+    return True, ""
+
+
 def sharpness(gray) -> float:
     """Focus score: variance of the discrete Laplacian, numpy-only (this module
     stays cv2-free). Higher = sharper. `gray` is a 2-D array."""

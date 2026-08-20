@@ -11,6 +11,7 @@ import json
 import pytest
 
 from sphero_rvr_core.task_agent import (
+    SYSTEM_PROMPT,
     TOOL_SCHEMAS,
     Budget,
     ContractError,
@@ -150,3 +151,69 @@ def test_user_turn_carries_the_instruction_and_prior_results():
 def test_describe_call_is_stable_and_sorted():
     assert describe_call("goto", {"y": 2, "x": 1}) == "goto(x=1, y=2)"
     assert describe_call("observe", {}) == "observe()"
+
+
+# --- bridge round 1: turn / where_am_i / look_and_recognize -------------------------
+# (design_llm_verb_bridge_2026-08-20, consensus pins a+b: every addition proves its
+# refusal machinery against hallucinated/malformed variants, and turn's bound lives
+# at the CONTRACT layer while the admission stays the SAFETY layer -- both named.)
+
+def test_turn_accepts_a_sane_call():
+    d = parse_reply('{"tool": "turn", "args": {"degrees": -90}}')
+    assert d.tool == "turn" and d.args == {"degrees": -90}
+
+
+def test_turn_refuses_out_of_range_naming_both_layers():
+    """Sanity at the schema, safety at the admission: the refusal text tells the
+    model the robot's own admission still exists -- so a model cannot conclude
+    that an in-range number is a guaranteed turn."""
+    with pytest.raises(ContractError) as e:
+        parse_reply('{"tool": "turn", "args": {"degrees": 720}}')
+    msg = str(e.value)
+    assert "sanity" in msg and "admission" in msg
+
+
+def test_turn_refuses_malformed_variants():
+    for bad in (
+        '{"tool": "turn", "args": {}}',                          # missing
+        '{"tool": "turn", "args": {"degrees": "ninety"}}',       # wrong type
+        '{"tool": "turn", "args": {"degrees": true}}',           # bool-as-number
+        '{"tool": "turn", "args": {"degrees": 90, "fast": 1}}',  # unknown arg
+        '{"tool": "turn", "args": {"degrees": -180.1}}',         # just out of range
+    ):
+        with pytest.raises(ContractError):
+            parse_reply(bad)
+
+
+def test_where_am_i_takes_no_arguments_and_refuses_any():
+    assert parse_reply('{"tool": "where_am_i", "args": {}}').tool == "where_am_i"
+    with pytest.raises(ContractError):
+        parse_reply('{"tool": "where_am_i", "args": {"frame": "map"}}')
+
+
+def test_look_and_recognize_requires_a_nonempty_target():
+    d = parse_reply('{"tool": "look_and_recognize", "args": {"target": "bottle"}}')
+    assert d.args == {"target": "bottle"}
+    for bad in (
+        '{"tool": "look_and_recognize", "args": {}}',
+        '{"tool": "look_and_recognize", "args": {"target": "   "}}',
+        '{"tool": "look_and_recognize", "args": {"target": 7}}',
+    ):
+        with pytest.raises(ContractError):
+            parse_reply(bad)
+
+
+def test_hallucinated_bridge_tools_are_still_refused():
+    """The new names must not loosen the closed set: near-miss hallucinations
+    refuse exactly like before."""
+    for bad in ('{"tool": "rotate", "args": {"degrees": 90}}',
+                '{"tool": "look", "args": {"target": "bottle"}}',
+                '{"tool": "recognize", "args": {"target": "bottle"}}'):
+        with pytest.raises(ContractError):
+            parse_reply(bad)
+
+
+def test_the_prompt_documents_all_nine_tools():
+    for name in sorted(TOOL_SCHEMAS):
+        assert name in SYSTEM_PROMPT, f"{name} missing from the system prompt"
+    assert "nine tools" in SYSTEM_PROMPT
