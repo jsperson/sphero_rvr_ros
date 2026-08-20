@@ -264,8 +264,8 @@ def test_the_client_default_token_headroom_carries_the_truncation_lesson():
            "task_client.py").read_text()
     assert '"--max-tokens", type=int, default=1500' in src
     assert "truncates to nothing" in src
-    assert "500" not in src.split('"--max-tokens"')[1].split(")")[0], \
-        "the old default must not linger in the argument line"
+    assert "default=500)" not in src, \
+        "the old default must not linger anywhere in the client"
 
 
 # --- the stanza itself ---------------------------------------------------------
