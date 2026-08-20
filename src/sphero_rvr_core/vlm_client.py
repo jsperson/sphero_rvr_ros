@@ -69,9 +69,18 @@ def _reply_text(r):
 
 
 def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
-               timeout=30.0, retries=3, json_mode=False, escalation=3):
+               timeout=30.0, retries=3, json_mode=False, escalation=3,
+               sticky=None):
     """Same endpoint and key discipline as `query_vlm`, without an image — but
     with an ESCALATING-CAP retry ladder instead of same-cap retries.
+
+    STICKY ESCALATION (§4, consensus 2026-08-20; evidence: flight 4 paid the
+    ladder FIVE times, once per hard decision, re-sending a growing prompt
+    each time): pass the same mutable dict as `sticky` across calls and the
+    cap that last SUCCEEDED is where the next call starts — the first hard
+    decision pays the ladder once and the rest of the mission starts
+    escalated, while trivial early calls (before any escalation) stay at the
+    cheap base. Caller-scoped: the caller owns the dict and its lifetime.
 
     Why (flights 2+3, 2026-08-20, replayed offline): reasoning-style models
     spend tokens thinking BEFORE any content, and a hard decision (the search
@@ -92,11 +101,14 @@ def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
     payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    base = max_tokens
+    if sticky is not None:
+        base = max(base, int(sticky.get("cap", 0)))
     last = ""
     for attempt in range(retries):
-        cap = max_tokens if attempt == 0 else int(max_tokens * escalation)
-        if attempt == 1 and cap != max_tokens:
-            print(f"[query_text] empty reply at max_tokens={max_tokens}; "
+        cap = base if attempt == 0 else max(base, int(max_tokens * escalation))
+        if attempt == 1 and cap != base:
+            print(f"[query_text] empty reply at max_tokens={base}; "
                   f"escalating to {cap} (reasoning-burn ladder)",
                   file=sys.stderr, flush=True)
         payload["max_tokens"] = cap
@@ -110,6 +122,8 @@ def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
         r.raise_for_status()
         content = _reply_text(r)
         if len(content) >= 2 and "<|" not in content:
+            if sticky is not None and cap > int(sticky.get("cap", 0)):
+                sticky["cap"] = cap
             return content
         last = content
     raise RuntimeError(f"model returned no usable text after retries (last: {last!r})")

@@ -287,9 +287,15 @@ class ToolRunner(Node):
 def make_model_caller(base_url, api_key, model, max_tokens, timeout_s):
     from sphero_rvr_core.vlm_client import query_text
 
+    # Sticky escalation state, scoped to this caller (= this client process):
+    # the first hard decision pays the reasoning-burn ladder once, and every
+    # later call in the session starts at the cap that worked (§4, 2026-08-20).
+    sticky = {}
+
     def ask(system, prompt):
         return query_text(base_url, api_key, model, prompt, system=system,
-                          max_tokens=max_tokens, timeout=timeout_s, json_mode=True)
+                          max_tokens=max_tokens, timeout=timeout_s,
+                          json_mode=True, sticky=sticky)
     return ask
 
 

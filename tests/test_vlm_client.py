@@ -186,3 +186,44 @@ def test_transient_garbage_at_the_escalated_cap_still_gets_its_retry(monkeypatch
 
     monkeypatch.setattr(vc.requests, "post", fake_post)
     assert vc.query_text("http://x", "k", "m", "p", max_tokens=1500) == "final answer"
+
+
+def test_sticky_escalation_pays_the_ladder_once_per_session(monkeypatch):
+    """§4 (flight 4 paid the ladder FIVE times): with a shared sticky dict, the
+    first hard decision escalates 1500->4500 and every later call STARTS at
+    4500 — one base attempt wasted per session, not per decision."""
+    import sphero_rvr_core.vlm_client as vc
+    caps = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        caps.append(json["max_tokens"])
+        if json["max_tokens"] <= 1500:
+            return _FakeResponse(_body(""))
+        return _FakeResponse(_body("decision"))
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    sticky = {}
+    assert vc.query_text("http://x", "k", "m", "p1", max_tokens=1500,
+                         sticky=sticky) == "decision"
+    assert vc.query_text("http://x", "k", "m", "p2", max_tokens=1500,
+                         sticky=sticky) == "decision"
+    assert caps == [1500, 4500, 4500], \
+        f"second call must START escalated, saw {caps}"
+    assert sticky["cap"] == 4500
+
+
+def test_without_sticky_each_call_pays_its_own_ladder(monkeypatch):
+    """The default stays stateless — sticky is opt-in, caller-owned."""
+    import sphero_rvr_core.vlm_client as vc
+    caps = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        caps.append(json["max_tokens"])
+        if json["max_tokens"] <= 1500:
+            return _FakeResponse(_body(""))
+        return _FakeResponse(_body("decision"))
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    vc.query_text("http://x", "k", "m", "p1", max_tokens=1500)
+    vc.query_text("http://x", "k", "m", "p2", max_tokens=1500)
+    assert caps == [1500, 4500, 1500, 4500]
