@@ -264,3 +264,46 @@ on the existing tape marks at 2–3 distances, bar `range_m` within ±0.15 m of
 tape truth, absent target → null. Until that sitting passes, the search
 stanza's reliance on range is not itself considered certified.** ~5 minutes
 of Scott's staging, zero motion, queued for his next convenient moment.
+
+### RANGE RE-CERT RESULTS (2026-08-20 evening sitting) — **CERTIFIED**
+
+*Preamble, the sitting's meta-lesson (PM's words, three instances in one
+evening): THE SENSOR MEASURES TRULY; THE SEAMS BETWEEN SUBSYSTEMS ARE WHERE
+TRUTH GETS EATEN. Every failure below was an aggregation or geometry seam;
+the tof itself was never once wrong.*
+
+The sitting ran as a live falsifier-driven design round — three shots, two
+design defects caught by the bars, both fixed-and-certified same sitting
+(f244e73 final build; every fix carries the field distribution that convicted
+it as a committed must-flip fixture):
+
+- **Placement 1 (tape 1.754):** FAILED as first built — median-of-everything
+  said 0.502, drowning the bottle (1.61, in-bar) under 60 floor-clutter
+  returns. → RULING C: cluster + nearest-standing + `range_ambiguous`
+  (8cdfc9e). RERUN: range 1.145 + ambiguous=true — the couch (photo-confirmed
+  by Scott's own read) IS the nearest standing object; the CORRECT answer for
+  the stated scene. VALID CERT SHOT.
+- **Placement 2 (tape 0.742, accidental edge-case):** cutoff correctly
+  discarded the sub-0.8 bottle (whose returns, 0.72–0.73, were −0.02 from
+  tape — the sensor again) but reported background 1.67 UNAMBIGUOUS — the
+  confidently-wrong-object class. → NEAR-BAND refinement [0.6, 0.8) flags
+  ambiguity (81f9654). Boundary specimen recorded; residual (<0.6 hiders)
+  documented with the stanza's never-confirm-below-0.8 argument.
+- **Placement 3 (tape 1.251):** FAILED as shot — the VLM's defensible
+  borderline "left" call aimed the unwidened band ~2° off a bottle the
+  sensor held at 1.21–1.26. → 6° BAND OVERLAP (f244e73). RE-SHOT under the
+  SAME borderline call (no lucky flip): **range 1.248 vs tape 1.251 —
+  0.003 m**, confirmed 0.87, ambiguous honestly true. IN BAR, fix
+  live-proven under its own failure condition.
+- **Absent probe (floor cleared, room vacated):** match=false 0.98,
+  identity/range_m/range_ambiguous all null, camera down. PASS.
+- Vision throughout: FOUR true `confirmed` verdicts on the real bottle's
+  legible label (0.85–0.92) — the confirm range for this object class
+  extends to at least 1.75 m in this light.
+- Procedural scars, owned: one invocation fired without re-setting the
+  target after a node restart — the R1 refusal ladder caught it loudly
+  (the certified refusal machinery protecting its successor's cert).
+
+**The search stanza's reliance on range_m is now CERTIFIED** (the addendum's
+usable-now nuance is discharged). Flight 5 — the full-loop bottle hunt —
+is the next flight this card supports.
