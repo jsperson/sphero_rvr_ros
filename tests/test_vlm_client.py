@@ -85,3 +85,50 @@ def test_extract_still_handles_the_flat_explorer_schema():
     text = '```json\n{"turn_deg": -20, "go": true, "reason": "doorway left"}\n```'
     got = extract_json(text)
     assert got["turn_deg"] == -20 and got["go"] is True
+
+
+# --- malformed 200 bodies refuse, never raise bare (the R6a family, widened) ---
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+@pytest.mark.parametrize("body", [
+    {},                                        # no choices
+    {"choices": []},                           # empty choices
+    {"choices": [{}]},                         # no message
+    {"choices": [{"message": {}}]},            # no content
+    {"choices": [{"message": {"content": None}}]},  # content not a string
+    {"choices": "surprise"},                   # wrong container type
+    ValueError("body is not JSON"),            # .json() itself refuses
+])
+def test_a_malformed_200_body_is_a_RuntimeError_not_a_bare_KeyError(monkeypatch, body):
+    """A 200 with an unexpected body shape is a misbehaving endpoint, not a
+    transport failure — the same refuse-don't-die doctrine as the node's R6a
+    fix (consensus 2026-08-20): the caller gets RuntimeError, which the node's
+    call site already turns into a loud refusal."""
+    import sphero_rvr_core.vlm_client as vc
+    monkeypatch.setattr(vc.requests, "post", lambda *a, **k: _FakeResponse(body))
+    with pytest.raises(RuntimeError, match="unexpected body shape"):
+        vc.query_vlm("http://x", "k", "m", "prompt", b"jpeg")
+    with pytest.raises(RuntimeError, match="unexpected body shape"):
+        vc.query_text("http://x", "k", "m", "prompt")
+
+
+def test_a_wellformed_body_still_returns_its_text(monkeypatch):
+    import sphero_rvr_core.vlm_client as vc
+    monkeypatch.setattr(
+        vc.requests, "post",
+        lambda *a, **k: _FakeResponse(
+            {"choices": [{"message": {"content": '  {"match": true}  '}}]}))
+    assert vc.query_vlm("http://x", "k", "m", "p", b"j") == '{"match": true}'
+    assert vc.query_text("http://x", "k", "m", "p") == '{"match": true}'

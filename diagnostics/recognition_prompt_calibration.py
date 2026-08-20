@@ -52,7 +52,10 @@ def evaluate(frames: list, results: dict) -> dict:
             elif r["identity"] not in IDENTITY_HONEST:
                 gates["bottle_identity_honest"] = False
         elif cls == "controller":
-            if not (r["match"] and r["identity"] == "confirmed"):
+            # AMENDED 2026-08-20 (PM ruling, see manifest _amendments): the
+            # target string is brand-qualified, so unverified at standoff is
+            # honest — the gate mirrors the bottle gate.
+            if not r["match"] or r["identity"] not in IDENTITY_HONEST:
                 gates["controller"] = False
         # picture: recorded, never gated
     return gates

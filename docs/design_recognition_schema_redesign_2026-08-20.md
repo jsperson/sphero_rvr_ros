@@ -169,6 +169,37 @@ Scott's staging is ONE short batch (R2′ objects + R3 probe words + present
 for R6a/c), ~15 min, zero motion — requested via the PM when the offline
 calibration (§6) has already passed.
 
+## 8b. CALIBRATION RESULT (2026-08-20, appended after PM ruling)
+
+**COMPLETE AT 1 OF 6 ITERATIONS — the committed prompt cleared every gate
+with zero prompt changes.** Frozen corpus (24 frames, manifest
+`diagnostics/recognition_calibration_manifest_2026-08-20.json`), run on the
+Pi against `syn:large:vision`, record
+`~/recognition_calibration/iteration_1_20260820_113341.json`:
+
+- absent 7/7 `match=false` (0.90–0.98) — **the zero-FP record survives the
+  split**;
+- bottle 10/10 `match=true`, 10/10 `identity=unverified`, zero false
+  mismatches — including BOTH forced-false exhibits (104430 → match 0.80,
+  105052 → match 0.94): the defect this round exists for is fixed on its own
+  evidence;
+- controller 3/3 `match=true`, identity unverified/confirmed/unverified —
+  PASS under the AMENDED gate (PM ruling, recorded verbatim in the
+  manifest's `_amendments`: "xbox controller" is brand-qualified as a fact
+  of the frozen target string; the design note's §4 table had misclassified
+  it as the plain exemplar, and demanding confirmed on ~60 px of logo-free
+  pixels would reward exactly the false confidence the zero-wrong-confirmed
+  bar forbids);
+- picture 4/4 `match=true` unverified 0.55–0.70 (recorded, ungated) — the
+  class the old schema scored 1-of-3-plus-1 now reports the object every
+  time with honest identity doubt;
+- schema-valid 24/24, zero parse breaches.
+
+**Sitting-plan addition (the amendment's live coverage patch):** one fresh
+invocation with the identity-free target **"game controller"** on the staged
+controller — the true plain-object confirmed-probe (expectation:
+`match=true`, `identity=confirmed` per the no-identity-component rule).
+
 ## 9. Explicitly OUT OF SCOPE this round
 
 - **Orientation-robustness** (objects at odd poses/rotations): the camera

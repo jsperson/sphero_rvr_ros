@@ -7,9 +7,17 @@
     "absent_zero_fp": "class=absent: match=false on ALL frames — one match=true fails the iteration (the zero-FP bar)",
     "bottle_detect": "class=bottle: match=true on ALL frames",
     "bottle_identity_honest": "class=bottle: identity in [confirmed, unverified] on ALL frames — a mismatch on the true target is a false contradiction and fails the iteration",
-    "controller": "class=controller: match=true AND identity=confirmed on ALL frames",
+    "controller": "class=controller: match=true on ALL frames, identity in [confirmed, unverified] on ALL frames, zero mismatch, zero WRONG confirmed (AMENDED 2026-08-20, PM ruling after iteration 1 — see _amendments)",
     "picture_recorded": "class=picture: recorded verbatim, NO gate (pixel-starved at 1.2 m; the approach-required exemplar)"
   },
+  "_amendments": [
+    {
+      "date": "2026-08-20",
+      "gate": "controller",
+      "original_text_retained": "class=controller: match=true AND identity=confirmed on ALL frames",
+      "ruling": "PM ruling after iteration 1 (gate corrected, not bar-lawyered): (1) 'xbox controller' is brand-qualified AS A FACT of the frozen target string — the design note mis-CLASSIFIED it as the plain exemplar and the gate inherited the misclassification, not a different standard; (2) the ratified schema's own doctrine says brand-qualified targets at standoff legitimately return unverified — the bottle gate already embodies it; (3) demanding confirmed-3/3 on 60 px of logo-free pixels REWARDS false confidence, the exact direction the zero-wrong-confirmed bar exists to forbid — an un-amended gate would optimize the prompt AGAINST the design's own safety property. Coverage gap patched LIVE, not by corpus surgery: the re-cert sitting adds one fresh invocation with the identity-free target 'game controller' on the staged controller (expectation: match + confirmed) as the true plain-object confirmed-probe."
+    }
+  ],
   "frames": [
     {"file": "recognition_20260820_094755.jpg", "target": "laptop", "class": "absent", "gt_match": false, "note": "R3 probe; scene: door, couch, bottle"},
     {"file": "recognition_20260820_094810.jpg", "target": "car", "class": "absent", "gt_match": false, "note": "R3 probe"},

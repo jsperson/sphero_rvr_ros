@@ -47,11 +47,24 @@ def query_vlm(base_url, api_key, model, prompt, jpeg_bytes, max_tokens=300, time
             timeout=timeout,
         )
         r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"].strip()
+        content = _reply_text(r)
         if len(content) >= 5 and "<|" not in content:
             return content
         last = content
     raise RuntimeError(f"VLM returned no usable text after retries (last: {last!r})")
+
+
+def _reply_text(r):
+    """The reply body's content field — or RuntimeError on a 200 whose body has
+    the wrong shape. A misbehaving endpoint answering 200-with-garbage raised a
+    bare KeyError here, the same refuse-don't-die family as the transport fix
+    (bench card R6a, consensus 2026-08-20)."""
+    try:
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+        raise RuntimeError(
+            f"VLM returned an unexpected body shape: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
@@ -81,7 +94,7 @@ def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
             timeout=timeout,
         )
         r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"].strip()
+        content = _reply_text(r)
         if len(content) >= 2 and "<|" not in content:
             return content
         last = content
