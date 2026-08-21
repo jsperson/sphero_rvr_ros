@@ -25,7 +25,6 @@ def generate_launch_description():
     mapping_launch = share / "launch" / "mapping.launch.py"
     default_rvr_params = share / "config" / "lean_rvr_tank_si.yaml"
     default_slam_params = share / "config" / "slam_toolbox.yaml"
-    default_nav2_params = share / "config" / "lean_nav2.yaml"
     default_explore_lite_params = share / "config" / "lean_explore_lite.yaml"
     default_coverage_params = share / "config" / "coverage_explorer.yaml"
     standard_nav_to_pose_bt = (
@@ -474,8 +473,18 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "slam_params_file", default_value=str(default_slam_params)
             ),
+            # NO DEFAULT, deliberately (bespoke deletion, 2026-08-21): which
+            # costmap config flies is a decision, and the old implicit default
+            # (the bespoke-era lean_nav2.yaml) was a loaded footgun — a
+            # hand-typed launch would silently run bespoke costmaps (no touch,
+            # no tof) under the stock middle. The launch now REFUSES to come up
+            # without an explicit choice; launch_and_arm.py passes the stock
+            # file, as it always did.
             DeclareLaunchArgument(
-                "nav2_params_file", default_value=str(default_nav2_params)
+                "nav2_params_file",
+                description=("REQUIRED: absolute path to the Nav2 params file "
+                             "(the deployed stock config is "
+                             "lean_nav2_stock.yaml; no implicit default)"),
             ),
             DeclareLaunchArgument(
                 "explore_lite_params_file",

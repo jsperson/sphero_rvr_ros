@@ -32,7 +32,6 @@ setup(
                 "config/lidar.yaml",
                 "config/slam_toolbox.yaml",
                 "config/lean_rvr_tank_si.yaml",
-                "config/lean_nav2.yaml",
                 "config/lean_explore_lite.yaml",
                 "config/coverage_explorer.yaml",
                 "config/camera.yaml",

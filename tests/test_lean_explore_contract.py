@@ -161,71 +161,9 @@ def test_explore_lite_dependency_and_small_room_parameters_are_pinned() -> None:
         "min_frontier_size": 0.2,
     }
 
-    nav2 = _yaml("config/lean_nav2.yaml")
-    assert nav2["global_costmap"]["global_costmap"]["ros__parameters"][
-        "static_layer"
-    ]["plugin"] == "nav2_costmap_2d::StaticLayer"
     assert "mapping.launch.py" in (
         REPO_ROOT / "launch/explore.launch.py"
     ).read_text(encoding="utf-8")
-
-
-def test_lean_nav2_has_explicit_unstamped_bounded_single_goal_contracts() -> None:
-    nav2 = _yaml("config/lean_nav2.yaml")
-    controller = nav2["controller_server"]["ros__parameters"]
-    follow = controller["FollowPath"]
-    behavior = nav2["behavior_server"]["ros__parameters"]
-    bt = nav2["bt_navigator"]["ros__parameters"]
-
-    assert controller["enable_stamped_cmd_vel"] is False
-    assert behavior["enable_stamped_cmd_vel"] is False
-    assert follow["plugin"] == (
-        "nav2_rotation_shim_controller::RotationShimController"
-    )
-    assert follow["primary_controller"] == (
-        "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-    )
-    assert follow["desired_linear_vel"] == 0.20
-    assert follow["rotate_to_heading_angular_vel"] == 0.4
-    assert follow["min_approach_linear_velocity"] == 0.12
-    assert follow["use_regulated_linear_velocity_scaling"] is False
-    assert follow["use_cost_regulated_linear_velocity_scaling"] is False
-    assert follow["allow_reversing"] is False
-    assert nav2["planner_server"]["ros__parameters"]["GridBased"]["plugin"] == (
-        "nav2_smac_planner::SmacPlanner2D"
-    )
-    assert bt["navigators"] == ["navigate_to_pose"]
-    assert bt["navigate_to_pose"]["plugin"] == (
-        "nav2_bt_navigator::NavigateToPoseNavigator"
-    )
-
-    text = (REPO_ROOT / "config/lean_nav2.yaml").read_text(encoding="utf-8")
-    assert "DWBLocalPlanner" not in text
-    assert "velocity_smoother" not in text
-    assert "deadband" not in text.lower()
-
-
-def test_lean_nav2_terminal_contract_counts_rotation_without_a_heading_gap() -> None:
-    nav2 = _yaml("config/lean_nav2.yaml")
-    controller = nav2["controller_server"]["ros__parameters"]
-    progress = controller["progress_checker"]
-    goal = controller["goal_checker"]
-    follow = controller["FollowPath"]
-
-    assert progress == {
-        "plugin": "nav2_controller::PoseProgressChecker",
-        "required_movement_radius": 0.02,
-        "required_movement_angle": 0.10,
-        "movement_time_allowance": 30.0,
-    }
-    assert goal["xy_goal_tolerance"] == 0.10
-    assert goal["yaw_goal_tolerance"] == 0.35
-    assert follow["rotate_to_heading_min_angle"] <= goal["yaw_goal_tolerance"]
-
-    # Terminal acceptance is independent of cruise speed; the angular ceiling
-    # remains fixed while linear cruise was raised to 0.12 m/s (wide-gap tuning).
-    assert follow["desired_linear_vel"] == 0.20
-    assert follow["rotate_to_heading_angular_vel"] == 0.4
 
 
 def test_explore_graph_keeps_supervisor_as_sole_motor_command_publisher() -> None:
@@ -277,7 +215,6 @@ def test_lean_explore_surfaces_are_installed() -> None:
     for path in (
         "launch/explore.launch.py",
         "config/lean_rvr_tank_si.yaml",
-        "config/lean_nav2.yaml",
         "config/lean_explore_lite.yaml",
         "docs/lean_explore_run_guide.md",
     ):

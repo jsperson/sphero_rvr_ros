@@ -317,17 +317,14 @@ def test_the_stock_command_is_the_flown_3c_shape():
         "enable_imu_fusion:=false") == 1
 
 
-def test_the_bespoke_command_is_unchanged_plus_the_explicit_stock_ports_off():
-    """bespoke stays byte-compatible with what this script always launched, and it
-    turns the stock middle's ports OFF explicitly: the touch-port marker, and --
-    since the 2026-08-19 ratification flipped the launch default to true -- the
-    refusal watcher (ratified for stock only, and bespoke has no contact_marker
-    to grant its requests anyway)."""
-    cmd = _module().launch_command("bespoke")
-    for token in ("start_explore:=true", "use_coverage_explorer:=true",
-                  "use_decisive_controller:=true", "start_contact_marker:=false",
-                  "start_refusal_watcher:=false"):
-        assert token in cmd, f"bespoke command lost {token}"
+def test_bespoke_is_deleted_and_refuses_rather_than_launching_from_memory():
+    """Scott's deletion order, 2026-08-21: bespoke had not run since the stock
+    middle landed and everything moved underneath it — not a fallback,
+    unexercised code that looked like one. It comes back from history and
+    re-earns its place, or not at all; a stack name that silently launched a
+    stale composition would be worse than the error."""
+    with pytest.raises(ValueError):
+        _module().launch_command("bespoke")
 
 
 def test_an_unknown_stack_refuses_rather_than_guessing():
@@ -484,7 +481,7 @@ def test_the_watcher_default_is_the_ratified_on_with_an_explicit_off_override():
     assert "start_refusal_watcher" not in mod.launch_command("stock")
     assert "start_refusal_watcher:=false" in mod.launch_command(
         "stock", no_watcher=True)
-    assert "start_refusal_watcher:=false" in mod.launch_command("bespoke")
+    # (the bespoke command's explicit OFF pin died with bespoke, 2026-08-21)
 
 
 def test_the_stock_bag_records_the_promotion_request_lane():

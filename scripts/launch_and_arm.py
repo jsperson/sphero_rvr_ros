@@ -78,12 +78,13 @@ def launch_command(stack, imu_fusion=True, no_watcher=False):
     enable_imu_fusion defaults TRUE per the protocol's standing open-decision
     ("include it unless the run reproduces a wheel-odom-only baseline").
 
-    bespoke: the pre-§3a coverage stack, byte-for-byte the command this script has
-    always run -- plus explicit start_contact_marker:=false and
-    start_refusal_watcher:=false, because the marker and the watcher are the STOCK
-    middle's touch port (the bespoke controller has its own freeze marks); neither
-    is that stack's port, and the watcher ratification covered stock only. (Its idle cost measured
-    0.2% of a core over 60 s on 2026-08-19 -- the old ~14% folk number is dead.)
+    bespoke is GONE (Scott's deletion order, 2026-08-21): it had not run since
+    the stock middle landed, and the driver, firmware Spin default, supervisor
+    gates and deployed params all moved underneath it -- it was not a fallback,
+    it was unexercised code that looked like one. If it is ever needed it comes
+    back from history and re-earns its place. (The watcher idle-cost note
+    survives the deletion: 0.2% of a core over 60 s, 2026-08-19 -- the old
+    ~14% folk number is dead.)
     """
     if stack in ("stock", "stock-explore"):
         # no_watcher: the explicit OFF override. start_refusal_watcher defaults
@@ -109,18 +110,6 @@ def launch_command(stack, imu_fusion=True, no_watcher=False):
             'nav2_params_file:="$(ros2 pkg prefix sphero_rvr_driver)'
             '/share/sphero_rvr_driver/config/lean_nav2_stock.yaml"'
             + watcher
-        )
-    if stack == "bespoke":
-        # start_refusal_watcher:=false for the same reason as the marker: the
-        # watcher is the STOCK middle's mechanism, and Scott's 2026-08-19
-        # ratification covered stock only. Without contact_marker there is no
-        # grantor for its requests anyway -- riding the flipped launch default
-        # here would be scope creep, not a decision anyone made.
-        return (
-            "ros2 launch sphero_rvr_driver explore.launch.py "
-            "start_motion_stack:=true start_explore:=true "
-            "use_coverage_explorer:=true use_decisive_controller:=true "
-            "start_contact_marker:=false start_refusal_watcher:=false"
         )
     raise ValueError(f"unknown stack {stack!r}")
 
@@ -350,19 +339,18 @@ def teardown():
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stack", choices=("stock", "bespoke", "stock-explore"),
+    ap.add_argument("--stack", choices=("stock", "stock-explore"),
                     help="REQUIRED (except --teardown). Which stack flies: 'stock' "
                          "= the §3a middle (RPP + bt_navigator on lean_nav2_stock, "
                          "contact_marker up, NEVER arms -- liftoff belongs to "
-                         "scripts/fly_stock_goal.py); 'bespoke' = the coverage "
-                         "stack, armed via mission/start as always; 'stock-explore' "
+                         "scripts/fly_stock_goal.py); 'stock-explore' "
                          "= the stock middle with coverage_explorer riding on top "
                          "(2026-08-18 consensus), armed via mission/start after "
                          "every gate incl. the explorer's own disarmed gate. No "
                          "default: a wrong-stack launch costs a flight, so the "
-                         "operator says which.")
+                         "operator says which. (bespoke deleted 2026-08-21.)")
     ap.add_argument("--no-arm", action="store_true",
-                    help="bespoke/stock-explore: run every gate and stop before "
+                    help="stock-explore: run every gate and stop before "
                          "mission/start")
     ap.add_argument("--no-imu-fusion", action="store_true",
                     help="stock only: reproduce a wheel-odom-only baseline (the "
@@ -382,7 +370,7 @@ def main():
         teardown()
         return
     if not args.stack:
-        ap.error("--stack {stock,bespoke} is required to bring anything up")
+        ap.error("--stack {stock,stock-explore} is required to bring anything up")
 
     if os.path.exists(PIDFILE):
         die("a previous run's pidfile exists", f"run --teardown first, or rm {PIDFILE}")

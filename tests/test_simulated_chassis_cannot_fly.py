@@ -52,7 +52,6 @@ def test_the_default_config_talks_to_a_real_device():
         "launch/bringup_stationary_test.launch.py",
         "config/rvr.yaml",
         "config/lean_rvr_tank_si.yaml",
-        "config/lean_nav2.yaml",
         "config/lean_nav2_stock.yaml",
         "scripts/launch_and_arm.py",
     ],
