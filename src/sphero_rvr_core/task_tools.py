@@ -198,3 +198,55 @@ def describe_mission(p):
     return (f"{head}. {sent} goals sent, {ok} reached, {bad} aborted; "
             f"{p.get('covered_cells', 0)} cells covered; {left_txt} place(s) still "
             "wanted.")
+
+
+# --- capability reporting (design_capability_reporting_2026-08-20) -------------
+
+def assemble_capabilities(predicates, stamp):
+    """The `task/capabilities` answer from per-tool (ready, why) predicates.
+
+    Pure so the wire shape is tested without ROS. `predicates` maps tool name ->
+    (ready: bool, why: str|None); a ready tool carries no `why` (an explanation
+    for something that works is noise the model would read), a not-ready one
+    MUST say why -- an unexplained refusal teaches the model nothing and earns
+    a wasted retry. `stamp` is the node's clock at assembly (consensus pin):
+    consumed-in-seconds is the design intent, and the stamp makes a violated
+    snapshot visible instead of trusted.
+    """
+    tools = {}
+    for name, (ready, why) in sorted(predicates.items()):
+        if ready:
+            tools[name] = {"ready": True}
+        else:
+            tools[name] = {"ready": False,
+                           "why": why or "unavailable (no reason given)"}
+    return tool_result(True, "capabilities", "", stamp=str(stamp), tools=tools)
+
+
+def merge_capabilities(available, capabilities_message):
+    """Fold the owner's capability report into the client's exists-probe.
+
+    Returns (available, reasons): a tool is unavailable if the probe found it
+    missing OR the report says ready=false -- the report can only DEMOTE, never
+    promote, because a service the client cannot even see is unavailable no
+    matter what anyone reports. A malformed or absent report degrades to the
+    plain probe exactly (older task_node deploys keep working unchanged).
+    """
+    available = dict(available)
+    reasons = {}
+    try:
+        data = json.loads(capabilities_message)
+    except (TypeError, ValueError):
+        return available, reasons
+    tools = data.get("tools") if isinstance(data, dict) else None
+    if not isinstance(tools, dict):
+        return available, reasons
+    for name, info in tools.items():
+        if name not in available or not isinstance(info, dict):
+            continue
+        if not info.get("ready", True):
+            available[name] = False
+            why = info.get("why")
+            if why:
+                reasons[name] = str(why)
+    return available, reasons

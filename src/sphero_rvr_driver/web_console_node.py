@@ -259,7 +259,8 @@ class MissionManager:
         try:
             # Per-instruction, not per-process: this server outlives stack
             # restarts, and a preamble describing last hour's graph is a lie.
-            note = availability_note(self._runner.probe_availability())
+            note = availability_note(self._runner.probe_availability(),
+                                     self._runner.capability_reasons)
             if note:
                 self._emit(note.strip())
             run_instruction(note + text, self._ask,

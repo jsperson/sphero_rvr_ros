@@ -57,7 +57,7 @@ def test_task_node_is_wired_as_a_real_entry_point():
     assert "task_node = sphero_rvr_driver.task_node:main" in setup
 
 
-def test_task_node_exposes_exactly_the_NINE_tools_and_no_more():
+def test_task_node_exposes_exactly_the_TEN_tools_and_no_more():
     """A surface that quietly grows is how a thin node stops being thin, so the tool
     set is a WHITELIST and adding to it is a deliberate edit here.
 
@@ -67,8 +67,10 @@ def test_task_node_exposes_exactly_the_NINE_tools_and_no_more():
     precise-turn gateway -- admission stays the safety layer), `where_am_i`
     (owner facts, read-only), `look_and_recognize` (LANDS DISABLED behind the
     recognition bench card; the enable flag flips in its own reviewed diff).
-    Widened rather than relaxed, both times; a TENTH tool, whatever it is,
-    fails this test.
+    WIDENED 9 -> 10 on 2026-08-20 overnight, PM-ratified
+    (design_capability_reporting_2026-08-20): `capabilities` -- READ-ONLY, no
+    motion, no backend calls; the owner reporting which tools are backed, from
+    the same predicates the handlers enforce. An ELEVENTH tool fails this test.
 
     Still out of scope and still asserted: `set_search_classes`, `capture_photo`, and
     anything that would give this surface its own motion authority. An e-stop tool in
@@ -78,7 +80,8 @@ def test_task_node_exposes_exactly_the_NINE_tools_and_no_more():
     source = TASK_NODE.read_text()
     tools = ("task/goto", "task/observe", "task/query_semantic_map",
              "task/explore", "task/stop", "task/status",
-             "task/turn", "task/where_am_i", "task/look_and_recognize")
+             "task/turn", "task/where_am_i", "task/look_and_recognize",
+             "task/capabilities")
     for tool in tools:
         assert f'"{tool}"' in source, f"{tool} is no longer exposed"
 
@@ -175,18 +178,32 @@ def test_turn_reaches_only_the_gateway():
 def test_task_client_is_removable_and_nothing_depends_on_it():
     """Stage D acceptance, mechanically: delete the client and the robot is
     unchanged. Nothing in the driver package may import it, and no launch file may
-    start it."""
+    start it.
+
+    WIDENED to a client LAYER on 2026-08-20 overnight (web console batch A,
+    PM-ratified): `web_console_node.py` is a SECOND head on the same removable
+    client machinery -- it imports ToolRunner from task_client deliberately
+    (reusing the certified contract path is the point), carries the same
+    delete-changes-nothing acceptance in its own docstring, and no launch file
+    may start it either. The rule this test keeps: nothing OUTSIDE the client
+    layer -- no node the robot needs -- may import any of it.
+    """
+    client_layer = {"task_client.py", "web_console_node.py"}
     driver = REPO_ROOT / "src" / "sphero_rvr_driver"
     for path in driver.glob("*.py"):
-        if path.name == "task_client.py":
+        if path.name in client_layer:
             continue
         assert "task_client" not in path.read_text(), (
             f"{path.name} imports the LLM client — it must be removable"
         )
-    for launch in (REPO_ROOT / "launch").glob("*.py"):
-        assert "task_client" not in launch.read_text(), (
-            f"{launch.name} starts the LLM client — it must be opt-in and removable"
+        assert "web_console" not in path.read_text(), (
+            f"{path.name} imports the web console — it must be removable"
         )
+    for launch in (REPO_ROOT / "launch").glob("*.py"):
+        for head in ("task_client", "web_console"):
+            assert head not in launch.read_text(), (
+                f"{launch.name} starts {head} — it must be opt-in and removable"
+            )
 
 
 def test_task_client_carries_no_provider_sdk():

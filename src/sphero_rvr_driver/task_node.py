@@ -68,6 +68,7 @@ from std_srvs.srv import Trigger
 import tf2_ros
 
 from sphero_rvr_core.task_tools import (
+    assemble_capabilities,
     describe_mission,
     EnvelopeError,
     GoalEnvelope,
@@ -226,11 +227,20 @@ class TaskNode(Node):
             Trigger, "/recognition/look_and_recognize", callback_group=cbg)
         self.create_service(Trigger, "task/look_and_recognize",
                             self._on_look_and_recognize, callback_group=cbg)
+        # capabilities: the owner's own report of which tools are BACKED right
+        # now (design_capability_reporting_2026-08-20, ratified). The preamble
+        # catches missing interfaces; this catches present-but-backendless
+        # tools, from the SAME clients and rules the handlers use at call time.
+        # NOT a promise -- every handler's call-time refusal stays the
+        # authority, fail-closed, unchanged.
+        self.create_service(Trigger, "task/capabilities", self._on_capabilities,
+                            callback_group=cbg)
 
         self.get_logger().info(
             "task_node ready — tools: task/goto (action), task/observe, "
             "task/query_semantic_map, task/explore, task/stop, task/status, "
-            "task/turn, task/where_am_i, task/look_and_recognize"
+            "task/turn, task/where_am_i, task/look_and_recognize, "
+            "task/capabilities"
             f" (envelope {self._envelope.to_json_dict()};"
             f" recognition tool enabled="
             f"{self.get_parameter('recognition_tool_enabled').value})"
@@ -540,6 +550,78 @@ class TaskNode(Node):
         with self._status_lock:
             self._mission_status = (time.monotonic(), payload)
 
+    def _status_freshness(self):
+        """(age_s, payload) of the mission status, or (None, None) if never
+        received. ONE rule shared by task/status and task/capabilities so the
+        report and the handler cannot drift apart (the ratified design's
+        shared-predicate requirement)."""
+        with self._status_lock:
+            entry = self._mission_status
+        if entry is None:
+            return None, None
+        at, payload = entry
+        return time.monotonic() - at, payload
+
+    # --- capabilities (design_capability_reporting_2026-08-20) ---------------
+
+    def _capability_predicates(self):
+        """tool -> (ready, why): the SAME clients and rules each handler uses
+        at call time, snapshotted non-blocking. The handlers keep their own
+        wait-with-grace at call time -- this reports the condition, the
+        handlers enforce it, and both read the same objects so they cannot
+        disagree about WHICH backend a tool needs."""
+        pose = self._robot_pose_yaw()
+        no_pose = "no map->base_link transform — the robot does not know where it is"
+        age, _payload = self._status_freshness()
+        if age is None:
+            status = (False, "no mission status has ever been received — the "
+                             "coverage explorer is not running, or not publishing")
+        elif age > self._mission_status_max_age_s:
+            status = (False, f"mission status is STALE ({age:.1f}s old, limit "
+                             f"{self._mission_status_max_age_s:.0f}s)")
+        else:
+            status = (True, None)
+        objects_topic = str(self.get_parameter("semantic_objects_topic").value)
+        with self._objects_lock:
+            have_snapshot = bool(self._objects_json)
+        recognition_on = bool(self.get_parameter("recognition_tool_enabled").value)
+        explorer_why = "%s unavailable — is the coverage explorer running?"
+        return {
+            "goto": (self._nav.server_is_ready() and pose is not None,
+                     ("navigate_to_pose server unavailable"
+                      if not self._nav.server_is_ready() else no_pose)),
+            "turn": (self._turn_client.server_is_ready(),
+                     "the precise-turn gateway is not available"),
+            "observe": (self._observe_client.service_is_ready(),
+                        "observe service unavailable (is semantic_map running "
+                        "with a camera?)"),
+            "query_semantic_map": (
+                have_snapshot or self.count_publishers(objects_topic) > 0,
+                f"no publisher on {objects_topic} and no snapshot held"),
+            "explore": (self._explore_client.service_is_ready(),
+                        explorer_why % "mission/start"),
+            "stop": (self._stop_client.service_is_ready(),
+                     explorer_why % "mission/stop"),
+            "status": status,
+            "where_am_i": (pose is not None, no_pose),
+            "look_and_recognize": (
+                recognition_on and self._recognition_params.service_is_ready()
+                and self._recognition_call.service_is_ready(),
+                ("this tool is DISABLED until its bench certification passes"
+                 if not recognition_on else "the recognition node is not running")),
+        }
+
+    def _on_capabilities(self, request, response):
+        """Which tools are BACKED right now, with reasons — the owner
+        volunteering at instruction start what each handler would otherwise
+        refuse one paid call at a time (flight 5's discovery tax). The stamp is
+        this node's clock at assembly (consensus pin): a consumer holding this
+        snapshot longer than seconds can SEE that it did."""
+        response.success = True
+        response.message = assemble_capabilities(
+            self._capability_predicates(), time.strftime("%Y-%m-%dT%H:%M:%S"))
+        return response
+
     def _forward_trigger(self, client, tool, service_label, success_message):
         """Call another node's Trigger and report what actually happened.
 
@@ -598,16 +680,13 @@ class TaskNode(Node):
         So an absent or aged status is reported as UNAVAILABLE with its age, and never
         smoothed over.
         """
-        with self._status_lock:
-            entry = self._mission_status
-        if entry is None:
+        age, payload = self._status_freshness()
+        if age is None:
             response.success = False
             response.message = tool_result(
                 False, "status", "no mission status has ever been received — the "
                 "coverage explorer is not running, or not publishing")
             return response
-        at, payload = entry
-        age = time.monotonic() - at
         if age > self._mission_status_max_age_s:
             response.success = False
             response.message = tool_result(

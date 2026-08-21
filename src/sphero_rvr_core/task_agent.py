@@ -176,17 +176,24 @@ Rules:
 - Never invent a tool. Never add arguments that are not listed."""
 
 
-def availability_note(available: dict) -> str:
+def availability_note(available: dict, reasons: Optional[dict] = None) -> str:
     """One preamble line naming the tools this configuration does not run —
     or "" when everything is up. Kills the discovery tax at the root (three
     flights burned 3-5 calls each learning explore/observe/status were absent
     the hard way). `available` maps tool name -> bool, gathered by the client
-    probing its own service clients; this half stays pure and tested."""
+    probing its own service clients; this half stays pure and tested.
+
+    `reasons` (capability reporting, rung 2) optionally maps a missing tool to
+    the owner's why — task_node's own report of a present-but-backendless tool
+    ("recognition node not running"). Rendered inline so the model can relay an
+    honest explanation instead of a bare "it was unavailable"."""
+    reasons = reasons or {}
     missing = sorted(name for name, up in available.items() if not up)
     if not missing:
         return ""
-    return (f"Unavailable in this configuration (do not call): "
-            f"{', '.join(missing)}.\n\n")
+    named = ", ".join(f"{name} ({reasons[name]})" if name in reasons else name
+                      for name in missing)
+    return f"Unavailable in this configuration (do not call): {named}.\n\n"
 
 
 class ContractError(ValueError):

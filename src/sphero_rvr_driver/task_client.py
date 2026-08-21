@@ -68,6 +68,9 @@ class ToolRunner(Node):
             for name in ("explore", "stop", "status", "where_am_i")
         }
         self._query = self.create_client(Trigger, "task/query_semantic_map")
+        # Filled by probe_availability from task_node's capability report: the
+        # owner's why per unavailable tool, rendered into the preamble.
+        self.capability_reasons = {}
         # Bridge round 1: argument-carrying Triggers use the same typed-parameter
         # route as query (scalars via task_node's parameters, then the call).
         self._turn = self.create_client(Trigger, "task/turn")
@@ -79,7 +82,16 @@ class ToolRunner(Node):
     def probe_availability(self, wait_s=0.5):
         """tool name -> bool for every probeable interface, feeding the pure
         `availability_note` (search round 2 §5: the preamble kills the
-        discovery tax at the root instead of letting each flight pay it)."""
+        discovery tax at the root instead of letting each flight pay it).
+
+        Rung 2 (design_capability_reporting_2026-08-20): the exists-probe is
+        then MERGED with task_node's own `task/capabilities` report, which sees
+        what this client cannot — a present service whose backend is absent.
+        The owner's whys land in `self.capability_reasons` for the preamble. A
+        task_node without the service degrades to the plain probe exactly.
+        """
+        from sphero_rvr_core.task_tools import merge_capabilities
+
         avail = {}
         for name, client in (("observe", self._observe),
                              ("query_semantic_map", self._query),
@@ -89,6 +101,17 @@ class ToolRunner(Node):
         for name, client in self._mission.items():
             avail[name] = client.wait_for_service(timeout_sec=wait_s)
         avail["goto"] = self._goto.wait_for_server(timeout_sec=wait_s)
+        self.capability_reasons = {}
+        caps = self.create_client(Trigger, "task/capabilities")
+        try:
+            if caps.wait_for_service(timeout_sec=wait_s):
+                result = self._spin_until(caps.call_async(Trigger.Request()),
+                                          time.monotonic() + 5.0)
+                if result is not None:
+                    avail, self.capability_reasons = merge_capabilities(
+                        avail, result.message)
+        finally:
+            self.destroy_client(caps)
         return avail
 
     def run(self, tool, args):
@@ -342,7 +365,8 @@ def main(argv=None):
         # this catches MISSING interfaces; a task_node whose backend is absent
         # still answers ok=false per call (its services always exist), and the
         # system prompt's do-not-retry-unavailable rule handles that case.
-        note = availability_note(runner.probe_availability())
+        note = availability_note(runner.probe_availability(),
+                                 runner.capability_reasons)
         if note:
             print(note.strip(), flush=True)
         if args.instruction:
