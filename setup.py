@@ -7,6 +7,7 @@ setup(
     version="0.1.0",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
+    package_data={"sphero_rvr_driver": ["web_static/*"]},
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/sphero_rvr_driver"]),
         ("share/sphero_rvr_driver", ["package.xml"]),

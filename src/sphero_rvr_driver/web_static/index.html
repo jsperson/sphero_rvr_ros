@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0c0e">
+<title>RVR</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header id="topbar">
+  <div id="wordmark">RVR<span id="livedot" class="off" title="stream"></span></div>
+  <div id="statuspill" class="pill">connecting…</div>
+  <button id="stopbtn" type="button">
+    <span class="stop-word">STOP</span>
+    <span class="stop-sub">not an e-stop</span>
+  </button>
+</header>
+
+<main id="split">
+  <section id="mappanel" aria-label="live map">
+    <canvas id="map"></canvas>
+    <div id="posebadge" class="badge hidden">pose unknown</div>
+    <div id="mapmeta" class="mono"></div>
+  </section>
+
+  <section id="chatpanel" aria-label="mission chat">
+    <div id="chat" role="log" aria-live="polite"></div>
+    <form id="sendbar" autocomplete="off">
+      <input id="sendtext" type="text" placeholder="instruction…"
+             enterkeyhint="send" autocapitalize="off">
+      <button id="sendbtn" type="submit" aria-label="send">→</button>
+    </form>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
