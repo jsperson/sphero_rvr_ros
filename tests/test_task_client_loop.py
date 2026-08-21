@@ -151,10 +151,18 @@ def test_a_failed_tool_result_is_fed_back_verbatim_for_self_correction():
 
 
 def test_exhausted_budget_reports_rather_than_silently_stopping():
-    model = ScriptedModel('{"tool": "observe", "args": {}}')
+    # TWO scripted replies since the belt (search round 2 §"the belt", flight 4):
+    # exhaustion now earns the model one final no-tool turn demanding a say, so a
+    # model that STILL answers with a tool costs one more scripted reply before
+    # the loop ends in its own words. (This test was one reply short from the
+    # belt's landing until 2026-08-21 — red, unnoticed, because run scopes never
+    # included this file; found by the bespoke-deletion full-suite bar.)
+    model = ScriptedModel('{"tool": "observe", "args": {}}',
+                          '{"tool": "observe", "args": {}}')
     runner = RecordingRunner()
     lines, out = transcript()
     b = Budget(max_tool_calls=1)
     run_instruction("look", model, runner, b, out=out)
     assert b.exhausted
     assert any("[budget] stopping after 1 tool calls" in line for line in lines)
+    assert len(runner.calls) == 1, "the belt's demand turn must not run a tool"
