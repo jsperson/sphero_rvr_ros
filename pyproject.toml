@@ -6,3 +6,22 @@ build-backend = "setuptools.build_meta"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+# THE ROS-PLUGIN SHIELD (D31, closed 2026-08-21). If you are here because a
+# launch_testing/launch-based test you added is silently NOT RUNNING: this line
+# is why — delete the two `-p no:` flags below and re-litigate D31 first.
+#
+# When the ROS environment is sourced (the Pi), the distro auto-loads its
+# pytest plugins from system-site (pytest11 entry points). The pair disabled
+# here — launch_testing and launch_ros — divert log records away from pytest's
+# caplog capture: nine tests (5 dispatcher, 3 driver_safety, 1 task_node
+# goto-timeout) asserted on caplog evidence that was being emitted (visible on
+# stderr via logging's lastResort) but never captured, and stood red on the Pi
+# for eleven days under a plausible-but-wrong "flaky under load" story.
+# Proof chain: deterministic across runs; 8/9 fail alone on a quiet Pi;
+# `env -i` (ROS unsourced) → green; per-plugin bisect → this pair; full suite
+# with the pair off → 1426 passed / 0 failed. This repo uses nothing the pair
+# provides (no launch_testing tests, no ros2test). `-p no:<name>` is a no-op
+# where the plugin isn't installed, so dev machines are unaffected.
+# A red that appears WITH this shield in place is a NEW finding: investigate
+# it on its own evidence — do not stretch this diagnosis over it.
+addopts = "-p no:launch_testing -p no:launch_ros"
