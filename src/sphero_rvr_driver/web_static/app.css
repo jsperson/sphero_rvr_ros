@@ -167,7 +167,10 @@ body {
 
 /* ---------------------------------------------------------------- chat */
 
-.entry { animation: rise 160ms ease both; max-width: 92%; }
+/* flex-shrink 0: #chat is a flex column, and without this the browser SQUEEZES
+   entries to fit instead of letting the column scroll — the look card was once
+   crushed to a 60px strip this way while its DOM sat complete underneath. */
+.entry { animation: rise 160ms ease both; max-width: 92%; flex-shrink: 0; }
 @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
 
 .you {
