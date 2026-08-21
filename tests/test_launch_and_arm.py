@@ -317,6 +317,27 @@ def test_the_stock_command_is_the_flown_3c_shape():
         "enable_imu_fusion:=false") == 1
 
 
+def test_no_costmap_config_by_accident():
+    """The bespoke deletion's point (Scott, 2026-08-21): the footgun was an
+    IMPLICIT default — a hand-typed explore.launch silently ran bespoke costmaps
+    (no touch, no tof) under the stock middle. nav2_params_file must therefore
+    have NO default: the launch refuses to come up until an operator (or
+    launch_and_arm, which passes the stock file) says which costmap config
+    flies. A default reappearing here — any default — fails this test."""
+    tree = ast.parse(LAUNCH.read_text())
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "DeclareLaunchArgument"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "nav2_params_file"):
+            assert not any(kw.arg == "default_value" for kw in node.keywords), (
+                "nav2_params_file grew a default again — which costmap config "
+                "flies is a decision, not a fallback")
+            return
+    raise AssertionError("explore.launch.py no longer declares nav2_params_file")
+
+
 def test_bespoke_is_deleted_and_refuses_rather_than_launching_from_memory():
     """Scott's deletion order, 2026-08-21: bespoke had not run since the stock
     middle landed and everything moved underneath it — not a fallback,
