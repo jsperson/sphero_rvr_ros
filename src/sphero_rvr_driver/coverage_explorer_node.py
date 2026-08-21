@@ -98,6 +98,53 @@ from sphero_rvr_core.coverage_exploration import (
 )
 
 
+#: Every map-tied mutable field and a factory for its fresh value — ONE registry
+#: driving `_on_map_clear`, pinned by tests/test_map_clear_reset_completeness.py:
+#: a zero-initialised field added to __init__ without a row here (or a reasoned
+#: allowlist entry in the pin) fails CI instead of surviving a map clear as
+#: stale belief. That drift is exactly how D61 happened once (the done latch),
+#: and the registry's own first draft proved the risk: the hand-written reset it
+#: replaced was missing twelve of these rows on day one.
+MAP_CLEAR_RESETS = {
+    "_map": lambda: None,            # the old room's grid IS the stale belief
+    "_costmap": lambda: None,
+    "_covered": set,
+    "_stalled": dict,
+    "_blocked_logged": lambda: False,
+    "_blocked_until": float,
+    "_unplannable_last_cycle": int,
+    "_unstick_attempts": int,
+    "_mission_start": lambda: None,
+    "_goals_sent": int,
+    "_goals_succeeded": int,
+    "_goals_aborted": int,
+    "_goals_aborted_after_recovery": int,
+    "_goals_aborted_without_recovery": int,
+    "_goals_stall_killed": int,
+    "_planner_rejections": int,
+    "_planner_queries": int,
+    "_standoff_skips": int,
+    "_reported": lambda: False,
+    "_consecutive_failures": int,
+    "_consecutive_freezes": int,
+    "_failure_streak": list,
+    "_pending_freezes": list,
+    "_freeze_events": list,
+    "_escape_events": list,
+    "_escape_poses": list,
+    "_active_goal_saw_ladder": lambda: False,
+    "_goal_inflight": lambda: False,
+    "_goal_start_pose": lambda: None,
+    "_goal_start_time": lambda: None,
+    "_mission_done": lambda: False,
+    "_armed": lambda: False,
+    "_consecutive_empty": int,
+    "_ever_had_target": lambda: False,
+    "_excluded_no_viewpoint": lambda: None,
+    "_last_candidate_count": lambda: None,
+}
+
+
 class CoverageExplorerNode(Node):
     def __init__(self):
         super().__init__("coverage_explorer")
@@ -706,15 +753,27 @@ class CoverageExplorerNode(Node):
                 self._map.info.resolution if self._map is not None else 0.0,
                 self._remaining_candidates(),
             )
+        response.success = True
+        response.message = "mission stopped" if was else "was not running"
+        return response
 
     def _on_map_clear(self, _msg):
         """The map is being forgotten; forget everything measured against it.
 
         A running mission ends first, through the SAME stop-and-report path an
         operator stop takes (a cleared-away mission still happened and still
-        reports). Then every piece of map-tied memory this node owns resets, so
-        the next mission/start arms a genuinely fresh mission — nothing here is
-        another node's state, and no other node touches ours.
+        reports). Then MAP_CLEAR_RESETS — the registry, not a hand list — puts
+        every map-tied field back to its fresh value, so the next mission/start
+        arms a genuinely fresh mission. Nothing here is another node's state,
+        and no other node touches ours.
+
+        (History, kept on purpose: the first landed version of this method was
+        a hand-written reset list that (a) missed twelve map-tied fields and
+        (b) had spliced three service-response lines into this SUBSCRIPTION
+        callback — it logged its success line and then killed the whole node
+        with a NameError, and the live cert read the log line instead of
+        checking the survivor. The registry and its completeness pin exist so
+        neither failure shape can land again.)
         """
         was = self._armed
         self._armed = False
@@ -725,32 +784,13 @@ class CoverageExplorerNode(Node):
                 self._map.info.resolution if self._map is not None else 0.0,
                 self._remaining_candidates(),
             )
-        self._covered.clear()
-        self._goals_sent = 0
-        self._goals_succeeded = 0
-        self._goals_aborted = 0
-        self._goals_aborted_after_recovery = 0
-        self._goals_aborted_without_recovery = 0
-        self._goals_stall_killed = 0
-        self._planner_rejections = 0
-        self._standoff_skips = 0
-        self._freeze_events = []
-        self._escape_events = []
-        self._escape_poses = []
-        self._consecutive_empty = 0
-        self._ever_had_target = False
-        self._excluded_no_viewpoint = None
-        self._last_candidate_count = None
-        self._mission_done = False
-        self._reported = False
-        self._mission_start = None
+        for name, fresh in MAP_CLEAR_RESETS.items():
+            setattr(self, name, fresh())
         self.get_logger().warn(
-            "MAP CLEAR — coverage memory forgotten"
-            + (" (running mission stopped and reported)" if was else "")
-            + "; a fresh mission may be armed")
-        response.success = True
-        response.message = "mission stopped" if was else "was not running"
-        return response
+            "MAP CLEAR — coverage memory forgotten "
+            f"({len(MAP_CLEAR_RESETS)} fields reset"
+            + (", running mission stopped and reported" if was else "")
+            + "); a fresh mission may be armed")
 
     def _tick(self):
         if not self._tick_busy.acquire(blocking=False):

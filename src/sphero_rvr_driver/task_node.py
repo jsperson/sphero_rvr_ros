@@ -664,6 +664,14 @@ class TaskNode(Node):
         steps = {}
         self._map_clear_pub.publish(Empty())
         steps["owners_event"] = "published /map_clear"
+        # COUPLING, stated (review nit 2026-08-21): this settle must outlast
+        # contact_marker's republish PERIOD (its republish_hz param, deployed
+        # default 2.0 Hz -> 0.5 s) so the marker's next tick after forgetting is
+        # the EMPTY cloud before the costmaps are wiped below. 1.0 s = two
+        # periods at the deployed rate. If republish_hz is ever lowered below
+        # ~1 Hz, this constant must grow with it — the marker owns the rate,
+        # this node cannot read another node's parameter without inventing a
+        # seam, so the coupling lives here in words and in the run guide.
         time.sleep(1.0)
         if self._slam_reset.wait_for_service(timeout_sec=1.0):
             reply = self._await(self._slam_reset.call_async(SlamReset.Request()),
