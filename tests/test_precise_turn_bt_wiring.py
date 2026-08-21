@@ -53,9 +53,10 @@ def test_the_launch_arg_defaults_true_and_selects_the_tree():
     target 150.4 deg, heading 151.7 deg, err -1.3 deg, 1.0 s' on the stall
     scrub, (ix) satisfied by live event, PM-reviewed; see the card's RESULTS).
     A revert to false is the watch-item rollback and must cite its wrong turn,
-    or it is a silent revert. The selection expression still reaches all three
-    trees -- decisive first (that mode has no RPP), the retarget on the arg,
-    standard as fallthrough."""
+    or it is a silent revert. The selection expression reaches both surviving
+    trees -- the retarget on the arg, standard as fallthrough. (The decisive
+    tree and its first-priority slot died with the bespoke controller,
+    2026-08-21 project review.)"""
     assert '"use_precise_turn_spin", default_value="true"' in LAUNCH, (
         "the routing arg's default reverted -- if that was the watch-item "
         "rollback (one wrong turn), flip this pin with it and cite the turn; "
@@ -66,14 +67,12 @@ def test_the_launch_arg_defaults_true_and_selects_the_tree():
     expr = LAUNCH[LAUNCH.index("nav_to_pose_bt_xml = ParameterValue"):]
     expr = expr[:expr.index("value_type=str")]
     order = [expr.index(s) for s in (
-        "str(decisive_nav_to_pose_bt)",
-        "use_decisive_controller",
         "str(precise_turn_nav_to_pose_bt)",
         "use_precise_turn_spin",
         "str(standard_nav_to_pose_bt)")]
     assert order == sorted(order), (
-        "the BT selection precedence changed: decisive must win, the retarget "
-        "must gate on its arg, standard must be the fallthrough")
+        "the BT selection precedence changed: the retarget must gate on its "
+        "arg, standard must be the fallthrough")
 
 
 def test_the_flight_commands_do_not_touch_the_arg():

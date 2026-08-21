@@ -304,11 +304,11 @@ def test_the_stock_bag_observes_the_layers_and_the_touch_port():
 # --- the two stacks' launch commands are pinned --------------------------------------
 
 def test_the_stock_command_is_the_flown_3c_shape():
-    """The stock middle's proven invocation: no explorer, no decisive controller,
+    """The stock middle's proven invocation: no explorer,
     lean_nav2_stock resolved from the DEPLOYED share (ros2 pkg prefix, not a source
     path), fusion per the protocol's standing default."""
     cmd = _module().launch_command("stock")
-    for token in ("start_explore:=false", "use_decisive_controller:=false",
+    for token in ("start_explore:=false",
                   "use_coverage_explorer:=false", "enable_imu_fusion:=true",
                   "lean_nav2_stock.yaml", "ros2 pkg prefix"):
         assert token in cmd, f"stock command lost {token}"
@@ -361,7 +361,7 @@ def test_stock_explore_is_the_stock_middle_plus_the_explorer():
     mod = _module()
     cmd = mod.launch_command("stock-explore")
     for token in ("start_explore:=true", "use_coverage_explorer:=true",
-                  "use_decisive_controller:=false", "enable_imu_fusion:=true",
+                  "enable_imu_fusion:=true",
                   "lean_nav2_stock.yaml", "ros2 pkg prefix"):
         assert token in cmd, f"stock-explore command lost {token}"
     assert "mission_autostart" not in cmd, (

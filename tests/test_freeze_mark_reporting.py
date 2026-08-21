@@ -44,7 +44,6 @@ from sphero_rvr_core.mission_report import (
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPLORER = ROOT / "src" / "sphero_rvr_driver" / "coverage_explorer_node.py"
-CONTROLLER = ROOT / "src" / "sphero_rvr_driver" / "decisive_controller_node.py"
 
 DEPLOYED_RADIUS_M = 0.15
 
@@ -221,12 +220,7 @@ def test_the_explorer_and_the_controller_merge_at_the_SAME_radius():
     the explorer merges at the radius actually used. Until then this test is the seam.
     """
     explorer = _declared_default(EXPLORER, "freeze_mark_merge_radius_m")
-    controller = _declared_default(CONTROLLER, "freeze_mark_merge_radius_m")
-
-    assert explorer == controller, (
-        f"explorer merges at {explorer} m, controller at {controller} m -- the "
-        "report's distinct-position count would describe neither"
-    )
+    # (the controller's copy of this default died with the controller, 2026-08-21)
     assert explorer == DEFAULT_FREEZE_MARK_MERGE_RADIUS_M, (
         "mission_report's fallback default disagrees with the deployed nodes"
     )

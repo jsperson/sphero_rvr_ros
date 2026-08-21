@@ -1,9 +1,15 @@
 # Design note: the supervisor-owned escape primitive (D52/D60) — DESIGN ONLY
 
-Status: DRAFT for **Scott-daylight consensus**. Supervisor-owned motion
-authority is not built overnight, ever (standing rule, reaffirmed in tonight's
-mandate). Nothing in this note is scheduled; it exists so the daylight round
-starts from the evidence instead of from memory.
+Status: **DIRECTION B IS DEAD — Scott's decision, 2026-08-21** ("We're
+navigating really well right now. Yesterday demonstrated that. If we haven't
+been using it then we don't need it."). The supervisor-owned escape primitive
+will not be built; `escape_survey` (the module direction B had earmarked) was
+deleted with the bespoke family in the same day's project review — recoverable
+from history if a future round re-earns it. Directions A (exit-plannability
+clause in goal selection) and C (paint-time hygiene) remain OPEN and
+unscheduled; the measured basin geometry below is their evidence base. D52's
+register row should be read with this status: the "named future fix" it records
+is foreclosed, and a wedge's answer today is the explorer's honest end.
 
 ## The two defects this serves, by their receipts
 

@@ -32,10 +32,6 @@ def generate_launch_description():
         / "behavior_trees"
         / "navigate_to_pose_w_replanning_and_recovery.xml"
     )
-    # Decisive mode drops controller_server (and with it Nav2's local costmap),
-    # so the stock BT's local-costmap clears break bt_navigator bringup. Use a
-    # variant whose costmap clears target the global costmap instead.
-    decisive_nav_to_pose_bt = share / "behavior_trees" / "navigate_to_pose_decisive.xml"
     # Batch (a): the standard tree with ONE attribute changed -- Spin retargeted at
     # the supervisor's precise-turn gateway (firmware heading loop). Selected only
     # by use_precise_turn_spin; see the XML's own header for the provenance.
@@ -46,7 +42,6 @@ def generate_launch_description():
     start_motion_stack = LaunchConfiguration("start_motion_stack")
     start_explore = LaunchConfiguration("start_explore")
     enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
-    use_decisive_controller = LaunchConfiguration("use_decisive_controller")
     use_precise_turn_spin = LaunchConfiguration("use_precise_turn_spin")
     use_coverage_explorer = LaunchConfiguration("use_coverage_explorer")
     start_tof = LaunchConfiguration("start_tof")
@@ -173,25 +168,21 @@ def generate_launch_description():
         condition=IfCondition(start_vlm_scene),
     )
 
-    # Pick the navigate-to-pose BT by mode: decisive mode uses the global-costmap
-    # variant (no local costmap exists); RPP mode uses the stock tree, or -- when
+    # Pick the navigate-to-pose BT: the stock tree, or -- when
     # use_precise_turn_spin is true -- the stock tree with Spin retargeted at the
-    # supervisor's precise-turn gateway. Decisive wins if both are set: that mode
-    # has no RPP and its escape already bypasses nav2_behaviors (D36).
+    # supervisor's precise-turn gateway. (The decisive-mode branch and its
+    # global-costmap BT died with the bespoke controller, 2026-08-21 project
+    # review -- five stock flights never reached it.)
     nav_to_pose_bt_xml = ParameterValue(
         PythonExpression(
             [
                 "'",
-                str(decisive_nav_to_pose_bt),
-                "' if '",
-                use_decisive_controller,
-                "' == 'true' else ('",
                 str(precise_turn_nav_to_pose_bt),
                 "' if '",
                 use_precise_turn_spin,
                 "' == 'true' else '",
                 str(standard_nav_to_pose_bt),
-                "')",
+                "'",
             ]
         ),
         value_type=str,
@@ -205,7 +196,7 @@ def generate_launch_description():
             output="screen",
             parameters=[nav2_params_file],
         ),
-        # Default controller: Nav2's RPP/RotationShim FollowPath.
+        # The controller: Nav2's RPP/RotationShim FollowPath.
         Node(
             package="nav2_controller",
             executable="controller_server",
@@ -213,18 +204,6 @@ def generate_launch_description():
             output="screen",
             parameters=[nav2_params_file],
             remappings=[("cmd_vel", "/cmd_vel")],
-            condition=UnlessCondition(use_decisive_controller),
-        ),
-        # Opt-in replacement: our decisive FollowPath controller (drive straight
-        # when aligned, arc while moving, pivot only when large) — same follow_path
-        # action, not lifecycle-managed. Run instead of controller_server, not both.
-        Node(
-            package="sphero_rvr_driver",
-            executable="decisive_controller",
-            name="decisive_controller",
-            output="screen",
-            remappings=[("cmd_vel", "/cmd_vel")],
-            condition=IfCondition(use_decisive_controller),
         ),
         Node(
             package="nav2_bt_navigator",
@@ -244,27 +223,14 @@ def generate_launch_description():
             parameters=[nav2_params_file],
             remappings=[("cmd_vel", "/cmd_vel")],
         ),
-        # Lifecycle manager. Default manages controller_server too; in decisive
-        # mode it must NOT (the decisive controller is a plain node), so it manages
-        # only planner/behavior/bt.
+        # Lifecycle manager (manages controller_server too; the decisive-mode
+        # variant that could not died with the bespoke controller, 2026-08-21).
         Node(
             package="nav2_lifecycle_manager",
             executable="lifecycle_manager",
             name="lifecycle_manager_explore",
             output="screen",
             parameters=[nav2_params_file],
-            condition=UnlessCondition(use_decisive_controller),
-        ),
-        Node(
-            package="nav2_lifecycle_manager",
-            executable="lifecycle_manager",
-            name="lifecycle_manager_explore",
-            output="screen",
-            parameters=[
-                nav2_params_file,
-                {"node_names": ["planner_server", "behavior_server", "bt_navigator"]},
-            ],
-            condition=IfCondition(use_decisive_controller),
         ),
     ]
     explore_lite = Node(
@@ -293,8 +259,8 @@ def generate_launch_description():
     # point -- and until 2026-08-18 NOTHING LAUNCHED IT (the never-launched-node
     # family; caught in pre-flight, flown by hand twice). Default TRUE because the
     # stock middle without it has no touch response at all: a contact plants no
-    # mark and the planner never learns. The bespoke bringup passes false -- its
-    # decisive controller carries its own freeze marks. (The old "~14% of a Pi
+    # mark and the planner never learns. (The bespoke bringup that passed false
+    # died 2026-08-21; its controller carried its own freeze marks.) (The old "~14% of a Pi
     # core when idle" claim here did not survive measurement: 0.2% over 60 s,
     # identity-verified PID, 2026-08-19 -- and the two bogus samples before that
     # measured the `ros2 run` wrapper and an ssh carrier, the
@@ -362,16 +328,6 @@ def generate_launch_description():
                     "Stage B: stream the RVR IMU and fuse it with wheel odom via "
                     "a robot_localization EKF (removes ~20 deg wheel-only yaw "
                     "drift). The driver yields odom -> base_link to the EKF."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "use_decisive_controller",
-                default_value="false",
-                description=(
-                    "Replace the RPP/RotationShim FollowPath controller with the "
-                    "decisive controller (drive straight when aligned, arc while "
-                    "moving, pivot only for large turns — no slow in-place pivots "
-                    "to grind the motors). UNTESTED on hardware; RPP is the default."
                 ),
             ),
             DeclareLaunchArgument(

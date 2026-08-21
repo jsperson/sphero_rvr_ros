@@ -87,7 +87,6 @@ setup(
             "sim_laggy_map_tf = sphero_rvr_driver.sim_laggy_map_tf:main",
             "refusal_watcher = sphero_rvr_driver.refusal_watcher_node:main",
             "lidar_collision_stop_supervisor = sphero_rvr_driver.collision_stop_node:main",
-            "decisive_controller = sphero_rvr_driver.decisive_controller_node:main",
             "coverage_explorer = sphero_rvr_driver.coverage_explorer_node:main",
             "contact_marker = sphero_rvr_driver.contact_marker_node:main",
             "vlm_scene = sphero_rvr_driver.vlm_scene_node:main",

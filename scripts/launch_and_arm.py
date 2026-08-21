@@ -71,7 +71,7 @@ def say(stage, msg):
 def launch_command(stack, imu_fusion=True, no_watcher=False):
     """The exact bringup command per stack. PURE so the tests can pin it.
 
-    stock: the §3a middle -- no explorer, no decisive controller, RPP + bt_navigator
+    stock: the §3a middle -- no explorer, RPP + bt_navigator
     on lean_nav2_stock.yaml (resolved from the DEPLOYED share, not the source tree),
     contact_marker and refusal_watcher via the launch's own defaults (both are part
     of the stock middle; the watcher default is TRUE per 2026-08-19 ratification).
@@ -105,7 +105,6 @@ def launch_command(stack, imu_fusion=True, no_watcher=False):
         return (
             "ros2 launch sphero_rvr_driver explore.launch.py "
             "start_motion_stack:=true " + explore +
-            "use_decisive_controller:=false "
             f"enable_imu_fusion:={'true' if imu_fusion else 'false'} "
             'nav2_params_file:="$(ros2 pkg prefix sphero_rvr_driver)'
             '/share/sphero_rvr_driver/config/lean_nav2_stock.yaml"'

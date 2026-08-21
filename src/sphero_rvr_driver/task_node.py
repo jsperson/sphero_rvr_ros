@@ -10,7 +10,7 @@ inside it, and this file imports nothing that knows what a model is.
 THE SAFETY BOUNDARY IS THE SHAPE OF THIS FILE. It imports no `geometry_msgs`, holds
 no `Twist`, publishes no velocity, and names no `/cmd_vel*` topic. Motion is
 requested exclusively as a map-frame `NavigateToPose` goal; Nav2 plans it, the
-decisive controller drives it, and beneath all of that the collision/STOP/ESTOP
+stock controller drives it, and beneath all of that the collision/STOP/ESTOP
 supervisor stays the sole `/cmd_vel_motor` publisher and the final speed gate. A tool
 surface that could publish a velocity would be a second controller racing the first
 -- this stack's documented way to make a control bug look like a perception bug.

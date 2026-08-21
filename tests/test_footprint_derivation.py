@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from sphero_rvr_core.escape_survey import SurveyConfig
 from sphero_rvr_driver.collision_stop import CollisionStopConfig
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,12 +108,13 @@ def test_no_dataclass_default_disagrees_with_the_deployed_config():
     YAML (0.11/0.16/0.10/0.10), `CollisionStopConfig` (0.22/0.16/0.14/0.14, payload
     0.05) and `SurveyConfig` (0.11/0.16/0.10/0.10). A bench probe that forgot to load
     the YAML answered from a robot twice the real size -- the deployed-config trap with
-    a second and third author. The YAML governs; the defaults may not silently differ."""
+    a second and third author. The YAML governs; the defaults may not silently differ.
+    (SurveyConfig, the third author, died with the bespoke escape family
+    2026-08-21 -- one fewer place for this trap to live.)"""
     for name in ("footprint_front_m", "footprint_rear_m",
                  "footprint_left_m", "footprint_right_m"):
         deployed = _yaml_float(name)
         assert getattr(CollisionStopConfig(), name) == pytest.approx(deployed), name
-        assert getattr(SurveyConfig(), name) == pytest.approx(deployed), name
     assert CollisionStopConfig().payload_margin_m == pytest.approx(
         _yaml_float("payload_margin_m"))
 

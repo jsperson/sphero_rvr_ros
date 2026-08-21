@@ -22,7 +22,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SUPERVISOR_CFG = ROOT / "config" / "collision_stop.yaml"
 SUPERVISOR = ROOT / "src" / "sphero_rvr_driver" / "collision_stop_node.py"
-CONTROLLER = ROOT / "src" / "sphero_rvr_driver" / "decisive_controller_node.py"
 
 
 def test_the_camera_CLOUD_does_not_feed_the_brake_or_the_veto():
@@ -66,17 +65,6 @@ def test_disabling_the_brake_also_disables_the_PIVOT_VETO():
     assert re.search(r"if not self\._lowobs_enable:\s*\n\s*return False", veto), (
         "the veto reads the enable flag but does not return a NON-BLOCKING answer when "
         "it is off -- a disabled sensor must not be able to block anything")
-
-
-def test_the_steering_law_input_is_disabled_in_code_by_a_named_switch():
-    """Not by pointing at a topic nobody publishes. That disables it just as well and
-    reads to the next person as a configuration mistake rather than a decision."""
-    src = CONTROLLER.read_text()
-    assert 'declare_parameter("avoid_camera_enable", False)' in src, (
-        "the steering law has no explicit enable switch defaulting to off")
-    assert "if not self._avoid_camera_enable:\n                return" in src, (
-        "the switch exists but nothing gates the blocker on it; a cloud that arrives "
-        "anyway would still steer the rover")
 
 
 def test_the_camera_NODE_still_runs():
