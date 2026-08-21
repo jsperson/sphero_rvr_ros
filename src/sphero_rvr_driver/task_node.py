@@ -676,9 +676,16 @@ class TaskNode(Node):
         if self._slam_reset.wait_for_service(timeout_sec=1.0):
             reply = self._await(self._slam_reset.call_async(SlamReset.Request()),
                                 time.monotonic() + 5.0)
-            steps["slam_reset"] = ("ok — new map starts at the current pose"
-                                   if reply is not None
-                                   else "requested but NOT confirmed within 5s")
+            # slam's OWN verdict, not just an arrived reply (sitting 2026-08-21:
+            # the first version called any reply "ok" — an unread result code is
+            # a fabricated success waiting to happen).
+            if reply is None:
+                steps["slam_reset"] = "requested but NOT confirmed within 5s"
+            elif reply.result == SlamReset.Response.RESULT_SUCCESS:
+                steps["slam_reset"] = "ok — new map starts at the current pose"
+            else:
+                steps["slam_reset"] = (f"slam_toolbox REFUSED the reset "
+                                       f"(result={reply.result})")
         else:
             steps["slam_reset"] = ("slam_toolbox not running — no new map will "
                                    "grow (static-map configuration?)")
