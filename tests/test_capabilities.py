@@ -93,10 +93,11 @@ def test_every_tool_has_a_predicate():
     """A tool added to TOOL_SCHEMAS without a capability predicate must fail
     LOUDLY here (ratified cert plan). Needs rclpy → runs on the Pi."""
     pytest.importorskip("rclpy")
-    import ast, inspect  # noqa: E401
+    import ast, inspect, textwrap  # noqa: E401
     from sphero_rvr_driver import task_node
 
-    source = inspect.getsource(task_node.TaskNode._capability_predicates)
+    source = textwrap.dedent(
+        inspect.getsource(task_node.TaskNode._capability_predicates))
     keys = {node.value for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.Constant) and isinstance(node.value, str)}
     missing = set(TOOL_SCHEMAS) - keys
