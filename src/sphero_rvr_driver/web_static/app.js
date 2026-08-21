@@ -138,6 +138,13 @@ function renderEvent(ev) {
     case "stop":
       return addCard("warn", "stop pressed",
         `goto: ${ev.goto_cancel ?? "?"} · mission: ${briefStop(ev.mission_stop)} · ${ev.note ?? ""}`);
+    case "map_cleared": {
+      const steps = ev.steps
+        ? Object.entries(ev.steps).map(([k, v]) => `${k}: ${v}`).join(" · ") : "";
+      return addCard(ev.ok ? "warn" : "bad",
+        ev.ok ? "map cleared" : "map clear incomplete",
+        (ev.message || "") + (steps ? " — " + steps : ""));
+    }
     case "mission_end": return setBusy(false);
     case "note": return addText("sys", ev.text);
   }
@@ -228,6 +235,33 @@ sendBar.addEventListener("submit", async (e) => {
   } catch (err) {
     addCard("bad", "not sent", "console unreachable: " + err.message);
   }
+});
+
+/* new map: destructive-ish, so one gentle two-tap confirm (no dialog) */
+const newMapBtn = $("newmapbtn");
+let confirmTimer = null;
+newMapBtn.addEventListener("click", async () => {
+  if (!newMapBtn.classList.contains("confirm")) {
+    newMapBtn.classList.add("confirm");
+    newMapBtn.textContent = "tap again to forget map";
+    confirmTimer = setTimeout(() => {
+      newMapBtn.classList.remove("confirm");
+      newMapBtn.textContent = "new map";
+    }, 4000);
+    return;
+  }
+  clearTimeout(confirmTimer);
+  newMapBtn.classList.remove("confirm");
+  newMapBtn.textContent = "clearing…";
+  newMapBtn.disabled = true;
+  try {
+    await fetch("/api/map/clear", { method: "POST" });
+    // the result card arrives through the stream (type "map_cleared")
+  } catch (err) {
+    addCard("bad", "map clear failed", "console unreachable: " + err.message);
+  }
+  newMapBtn.textContent = "new map";
+  newMapBtn.disabled = false;
 });
 
 $("stopbtn").addEventListener("click", async () => {

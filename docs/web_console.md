@@ -62,3 +62,14 @@ collision supervisor is untouched and owns real stopping. The UI says this too.
 Diagnostics with clients at idle (E) equals idle baseline exactly; window B's
 +50% diagnostics is the driving mission's own nav2 traffic, isolated by C/D2/E.
 **The console's presence costs the pipeline nothing measurable.**
+
+## Clearing the map (moved the rover? new room?)
+
+Chat: "clear the map" / the model's `clear_map()` verb — or the **new map**
+button on the map panel (tap twice; no dialog). One action: slam_toolbox Reset +
+Nav2 clear_entirely + the /map_clear event that contact_marker and
+coverage_explorer honor by forgetting their own state (marks, coverage, the
+done latch — a fresh mission can be armed after a clear). The fresh map starts
+nearly empty and grows only as the robot moves — a small map right after
+clearing is normal. On the static-map rig the slam step reports itself absent
+honestly; marks and costmaps still clear.

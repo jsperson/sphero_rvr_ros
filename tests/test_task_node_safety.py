@@ -45,10 +45,17 @@ def test_task_node_never_touches_velocity_or_motor_topics():
     assert "Serial" not in body
 
 
-def test_task_node_publishes_nothing_at_all():
-    """It is a client and a server, never a publisher. Nothing it can do reaches a
-    topic that anything downstream drives on."""
-    assert "create_publisher" not in _executable_body(TASK_NODE.read_text())
+def test_task_node_publishes_nothing_that_moves_anything():
+    """It is a client and a server; nothing it can do reaches a topic that
+    anything downstream DRIVES on. Widened 2026-08-21 for clear_map: the node
+    now owns exactly ONE publisher — the /map_clear Empty event that state
+    owners (contact_marker, coverage_explorer) subscribe to so each forgets its
+    OWN map-tied memory. An event, not a command; no geometry, no velocity, no
+    motion authority. A second publisher, whatever it is, fails this test."""
+    body = _executable_body(TASK_NODE.read_text())
+    assert body.count("create_publisher") == 1
+    assert '"/map_clear"' in body
+    assert "Twist" not in body
 
 
 def test_task_node_is_wired_as_a_real_entry_point():
@@ -57,7 +64,7 @@ def test_task_node_is_wired_as_a_real_entry_point():
     assert "task_node = sphero_rvr_driver.task_node:main" in setup
 
 
-def test_task_node_exposes_exactly_the_TEN_tools_and_no_more():
+def test_task_node_exposes_exactly_the_ELEVEN_tools_and_no_more():
     """A surface that quietly grows is how a thin node stops being thin, so the tool
     set is a WHITELIST and adding to it is a deliberate edit here.
 
@@ -70,7 +77,12 @@ def test_task_node_exposes_exactly_the_TEN_tools_and_no_more():
     WIDENED 9 -> 10 on 2026-08-20 overnight, PM-ratified
     (design_capability_reporting_2026-08-20): `capabilities` -- READ-ONLY, no
     motion, no backend calls; the owner reporting which tools are backed, from
-    the same predicates the handlers enforce. An ELEVENTH tool fails this test.
+    the same predicates the handlers enforce.
+    WIDENED 10 -> 11 on 2026-08-21 (Scott's order: pick the rover up, move it,
+    have it work): `clear_map` -- forget-and-rebuild via slam_toolbox's own
+    Reset + Nav2's own clear services + the /map_clear event our state owners
+    subscribe to. NO motion authority; non-motion, so no review round (Scott's
+    standing rule of 2026-08-21). A TWELFTH tool fails this test.
 
     Still out of scope and still asserted: `set_search_classes`, `capture_photo`, and
     anything that would give this surface its own motion authority. An e-stop tool in
@@ -81,7 +93,7 @@ def test_task_node_exposes_exactly_the_TEN_tools_and_no_more():
     tools = ("task/goto", "task/observe", "task/query_semantic_map",
              "task/explore", "task/stop", "task/status",
              "task/turn", "task/where_am_i", "task/look_and_recognize",
-             "task/capabilities")
+             "task/capabilities", "task/clear_map")
     for tool in tools:
         assert f'"{tool}"' in source, f"{tool} is no longer exposed"
 

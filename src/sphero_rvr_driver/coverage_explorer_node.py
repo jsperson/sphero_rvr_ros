@@ -66,7 +66,7 @@ from nav2_msgs.action import BackUp, ComputePathToPose, NavigateToPose
 from sphero_rvr_core.escape_outcome import (
     CLEARED as ESCAPE_CLEARED, DECLINED as ESCAPE_DECLINED, parse_outcome,
 )
-from std_msgs.msg import Bool, Int32, String
+from std_msgs.msg import Bool, Empty, Int32, String
 from std_srvs.srv import Trigger
 import tf2_ros
 
@@ -407,6 +407,14 @@ class CoverageExplorerNode(Node):
         map_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
         map_qos.reliability = QoSReliabilityPolicy.RELIABLE
         self.create_subscription(OccupancyGrid, map_topic, self._on_map, map_qos, callback_group=cbg)
+        # The map-clear event (task/clear_map, 2026-08-21): coverage memory
+        # describes a map that no longer exists after a clear, so this node —
+        # the memory's owner — forgets it and unlatches `done`. This is ALSO the
+        # legitimate answer to the restart-the-node re-arm refusal (D61): the
+        # refusal exists to stop a second mission reusing the first one's
+        # coverage set, and after a clear there is no set to reuse.
+        self.create_subscription(Empty, "/map_clear", self._on_map_clear, 1,
+                                 callback_group=cbg)
         self._blocked_start_check = bool(self.get_parameter("blocked_start_check").value)
         self._blocked_hold_s = float(self.get_parameter("blocked_hold_s").value)
         if self._blocked_start_check:
@@ -698,6 +706,48 @@ class CoverageExplorerNode(Node):
                 self._map.info.resolution if self._map is not None else 0.0,
                 self._remaining_candidates(),
             )
+
+    def _on_map_clear(self, _msg):
+        """The map is being forgotten; forget everything measured against it.
+
+        A running mission ends first, through the SAME stop-and-report path an
+        operator stop takes (a cleared-away mission still happened and still
+        reports). Then every piece of map-tied memory this node owns resets, so
+        the next mission/start arms a genuinely fresh mission — nothing here is
+        another node's state, and no other node touches ours.
+        """
+        was = self._armed
+        self._armed = False
+        self._cancel_active()
+        if was:
+            self._finish(
+                OUTCOME_STOPPED_BY_OPERATOR,
+                self._map.info.resolution if self._map is not None else 0.0,
+                self._remaining_candidates(),
+            )
+        self._covered.clear()
+        self._goals_sent = 0
+        self._goals_succeeded = 0
+        self._goals_aborted = 0
+        self._goals_aborted_after_recovery = 0
+        self._goals_aborted_without_recovery = 0
+        self._goals_stall_killed = 0
+        self._planner_rejections = 0
+        self._standoff_skips = 0
+        self._freeze_events = []
+        self._escape_events = []
+        self._escape_poses = []
+        self._consecutive_empty = 0
+        self._ever_had_target = False
+        self._excluded_no_viewpoint = None
+        self._last_candidate_count = None
+        self._mission_done = False
+        self._reported = False
+        self._mission_start = None
+        self.get_logger().warn(
+            "MAP CLEAR — coverage memory forgotten"
+            + (" (running mission stopped and reported)" if was else "")
+            + "; a fresh mission may be armed")
         response.success = True
         response.message = "mission stopped" if was else "was not running"
         return response

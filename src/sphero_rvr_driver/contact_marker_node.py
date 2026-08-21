@@ -39,6 +39,7 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
+from std_msgs.msg import Empty
 from tf2_ros import Buffer, ExtrapolationException, TransformListener
 
 from sphero_rvr_core.contact_marking import (
@@ -191,6 +192,10 @@ class ContactMarkerNode(Node):
         self.create_subscription(
             PointCloud2, "/contact_marks/promote", self._on_promote, 10
         )
+        # The map-clear event (task/clear_map, 2026-08-21): this node OWNS the
+        # marks, so it is the one that forgets them — subscribed, never reached
+        # into. A mark from the old room is actively wrong in the new one.
+        self.create_subscription(Empty, "/map_clear", self._on_map_clear, 1)
         self.create_timer(
             1.0 / float(self.get_parameter("republish_hz").value), self._publish
         )
@@ -403,6 +408,19 @@ class ContactMarkerNode(Node):
                 f"This mark is permanent."
             )
         self._publish()
+
+    def _on_map_clear(self, _msg) -> None:
+        forgotten = len(self._marks)
+        self._marks = FreezeMarkSet(
+            ttl_s=float(self.get_parameter("mark_ttl_s").value),
+            merge_radius_m=float(self.get_parameter("merge_radius_m").value),
+        )
+        # Publish the empty cloud NOW rather than waiting a republish tick: the
+        # costmap wipe that follows the event must not race a stale full cloud.
+        self._publish()
+        self.get_logger().warn(
+            f"map clear: forgot {forgotten} contact mark(s) — they described a "
+            "room this map no longer is")
 
     def _publish(self) -> None:
         live = self._marks.live(time.monotonic())

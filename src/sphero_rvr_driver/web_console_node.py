@@ -84,6 +84,7 @@ class WebConsoleNode(Node):
         self._cancel_goto = self.create_client(
             CancelGoal, "task/goto/_action/cancel_goal")
         self._task_stop = self.create_client(Trigger, "task/stop")
+        self._task_clear_map = self.create_client(Trigger, "task/clear_map")
 
     # ------------------------------------------------------------ callbacks
 
@@ -186,6 +187,21 @@ class WebConsoleNode(Node):
         else:
             result["mission_stop"] = "task/stop unavailable — is task_node running?"
         return result
+
+    def clear_map(self):
+        """Forward to task/clear_map — the same door the model uses; the button
+        adds no authority the chat does not have."""
+        if not self._task_clear_map.wait_for_service(timeout_sec=2.0):
+            return {"ok": False,
+                    "message": "task/clear_map unavailable — is task_node running?"}
+        # The clear sleeps a settle second inside task_node; allow for it.
+        reply = self._finish(self._task_clear_map.call_async(Trigger.Request()), 20.0)
+        if reply is None:
+            return {"ok": False, "message": "clear_map did not answer within 20s"}
+        try:
+            return json.loads(reply.message)
+        except ValueError:
+            return {"ok": bool(reply.success), "message": reply.message}
 
 
 class GuardedRunner:
@@ -304,6 +320,11 @@ class ConsoleApp:
 
     def start_instruction(self, text):
         return self._mission.start(text)
+
+    def clear_map(self):
+        result = self._node.clear_map()
+        self.broker.publish({"type": "map_cleared", **result})
+        return result
 
     def stop(self):
         # Refuse further tools FIRST so the running mission cannot slip a new

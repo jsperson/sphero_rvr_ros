@@ -166,6 +166,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             return self._instruction()
         if self.path == "/api/stop":
             return self._send(200, self.app.stop())
+        if self.path == "/api/map/clear":
+            return self._send(200, self.app.clear_map())
         return self._send(404, {"error": f"no such endpoint {self.path}"})
 
     def _instruction(self):

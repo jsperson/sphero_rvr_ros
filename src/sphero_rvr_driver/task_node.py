@@ -63,7 +63,9 @@ from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import Spin
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
-from std_msgs.msg import String
+from nav2_msgs.srv import ClearEntireCostmap
+from slam_toolbox.srv import Reset as SlamReset
+from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
 import tf2_ros
 
@@ -227,6 +229,26 @@ class TaskNode(Node):
             Trigger, "/recognition/look_and_recognize", callback_group=cbg)
         self.create_service(Trigger, "task/look_and_recognize",
                             self._on_look_and_recognize, callback_group=cbg)
+        # clear_map (Scott's order 2026-08-21: pick the rover up, put it in a
+        # different room, have it work). ONE action, built-in-first: slam_toolbox's
+        # own Reset + Nav2's own clear_entirely services; the only custom part is
+        # the /map_clear EVENT, which our own state owners (contact_marker,
+        # coverage_explorer) subscribe to and honor THEMSELVES — no node reaches
+        # into another's memory. Forget-and-rebuild only; no persistence, no
+        # multi-map.
+        self.declare_parameter("slam_reset_service", "/slam_toolbox/reset")
+        self._map_clear_pub = self.create_publisher(Empty, "/map_clear", 1)
+        self._slam_reset = self.create_client(
+            SlamReset, str(self.get_parameter("slam_reset_service").value),
+            callback_group=cbg)
+        self._clear_global = self.create_client(
+            ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap",
+            callback_group=cbg)
+        self._clear_local = self.create_client(
+            ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap",
+            callback_group=cbg)
+        self.create_service(Trigger, "task/clear_map", self._on_clear_map,
+                            callback_group=cbg)
         # capabilities: the owner's own report of which tools are BACKED right
         # now (design_capability_reporting_2026-08-20, ratified). The preamble
         # catches missing interfaces; this catches present-but-backendless
@@ -240,7 +262,7 @@ class TaskNode(Node):
             "task_node ready — tools: task/goto (action), task/observe, "
             "task/query_semantic_map, task/explore, task/stop, task/status, "
             "task/turn, task/where_am_i, task/look_and_recognize, "
-            "task/capabilities"
+            "task/capabilities, task/clear_map"
             f" (envelope {self._envelope.to_json_dict()};"
             f" recognition tool enabled="
             f"{self.get_parameter('recognition_tool_enabled').value})"
@@ -609,6 +631,12 @@ class TaskNode(Node):
                 and self._recognition_call.service_is_ready(),
                 ("this tool is DISABLED until its bench certification passes"
                  if not recognition_on else "the recognition node is not running")),
+            # The costmap clears are the tool's core; a missing slam reset is
+            # reported per call (a static-map rig clears marks and costmaps and
+            # says honestly that no new map will grow).
+            "clear_map": (self._clear_global.service_is_ready()
+                          and self._clear_local.service_is_ready(),
+                          "costmap clear services unavailable — is Nav2 running?"),
         }
 
     def _on_capabilities(self, request, response):
@@ -620,6 +648,55 @@ class TaskNode(Node):
         response.success = True
         response.message = assemble_capabilities(
             self._capability_predicates(), time.strftime("%Y-%m-%dT%H:%M:%S"))
+        return response
+
+    def _on_clear_map(self, request, response):
+        """Forget the map and every belief tied to it; start fresh from here.
+
+        ORDER IS THE CORRECTNESS ARGUMENT: the touch layer's ObstacleLayer never
+        un-marks a cell (measured 2026-08-10, contact_marking docstring), so the
+        owners must clear FIRST — the /map_clear event empties contact_marker's
+        set so its next republish is an empty cloud — and the costmaps are wiped
+        LAST, after a settle that outlasts the marker's 2 Hz republish period.
+        Clearing in the other order lets one stale republish re-paint dead marks
+        into a costmap that can never unlearn them.
+        """
+        steps = {}
+        self._map_clear_pub.publish(Empty())
+        steps["owners_event"] = "published /map_clear"
+        time.sleep(1.0)
+        if self._slam_reset.wait_for_service(timeout_sec=1.0):
+            reply = self._await(self._slam_reset.call_async(SlamReset.Request()),
+                                time.monotonic() + 5.0)
+            steps["slam_reset"] = ("ok — new map starts at the current pose"
+                                   if reply is not None
+                                   else "requested but NOT confirmed within 5s")
+        else:
+            steps["slam_reset"] = ("slam_toolbox not running — no new map will "
+                                   "grow (static-map configuration?)")
+        costmaps_ok = True
+        for name, client in (("global_costmap", self._clear_global),
+                             ("local_costmap", self._clear_local)):
+            if client.wait_for_service(timeout_sec=2.0):
+                reply = self._await(
+                    client.call_async(ClearEntireCostmap.Request()),
+                    time.monotonic() + 5.0)
+                ok = reply is not None
+                steps[name] = "cleared" if ok else "clear NOT confirmed within 5s"
+                costmaps_ok = costmaps_ok and ok
+            else:
+                steps[name] = "clear service unavailable"
+                costmaps_ok = False
+        response.success = costmaps_ok
+        response.message = tool_result(
+            costmaps_ok, "clear_map",
+            ("map and map-tied beliefs cleared — mapping restarts from the "
+             "current pose. The fresh map starts nearly empty and grows as the "
+             "robot moves; a small map right now is normal."
+             if costmaps_ok else
+             "clear was INCOMPLETE — see steps; beliefs may be inconsistent"),
+            steps=steps)
+        self.get_logger().warn(f"task/clear_map: {steps}")
         return response
 
     def _forward_trigger(self, client, tool, service_label, success_message):

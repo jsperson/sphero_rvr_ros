@@ -65,7 +65,7 @@ class ToolRunner(Node):
         # exactly like observe, which is the payoff of task_node keeping them Triggers.
         self._mission = {
             name: self.create_client(Trigger, f"task/{name}")
-            for name in ("explore", "stop", "status", "where_am_i")
+            for name in ("explore", "stop", "status", "where_am_i", "clear_map")
         }
         self._query = self.create_client(Trigger, "task/query_semantic_map")
         # Filled by probe_availability from task_node's capability report: the
@@ -121,7 +121,7 @@ class ToolRunner(Node):
             return self._call(self._observe, "observe")
         if tool == "query_semantic_map":
             return self._run_query(args)
-        if tool in ("explore", "stop", "status", "where_am_i"):
+        if tool in ("explore", "stop", "status", "where_am_i", "clear_map"):
             return self._call(self._mission[tool], tool)
         if tool == "turn":
             return self._run_param_tool(self._turn, "turn",

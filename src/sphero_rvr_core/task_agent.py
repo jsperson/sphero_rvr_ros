@@ -55,6 +55,9 @@ TOOL_SCHEMAS: dict[str, dict[str, tuple[type, bool]]] = {
     "look_and_recognize": {
         "target": ((str,), True),
     },
+    # Map clear (Scott's pick-it-up-and-move-it order, 2026-08-21): one verb,
+    # no arguments, no motion authority.
+    "clear_map": {},
 }
 
 #: CONTRACT-LAYER RANGE BOUNDS (consensus pin b): sanity lives at the schema,
@@ -74,7 +77,7 @@ NONEMPTY_STRINGS: dict[str, tuple[str, ...]] = {
     "look_and_recognize": ("target",),
 }
 
-SYSTEM_PROMPT = """You control a small ground robot through exactly nine tools.
+SYSTEM_PROMPT = """You control a small ground robot through exactly ten tools.
 
 Reply with ONE JSON object and nothing else. Either call a tool:
   {"tool": "goto", "args": {"x": 1.0, "y": 0.5}}
@@ -101,6 +104,11 @@ Tools:
 - stop(): end the mission and cancel the goal being driven. THIS IS NOT AN EMERGENCY
   STOP -- the robot coasts to a halt. If the user sounds like they want an emergency
   stop, do it and then tell them plainly that it was not one.
+- clear_map(): forget the map and every belief tied to it (costmaps, contact
+  marks, exploration memory) and start mapping fresh from where the robot now
+  stands. Use when the robot has been MOVED to a new place, or the user asks for
+  a new/fresh map. The new map starts almost empty and grows only as the robot
+  moves -- a small map right after clearing is normal, not a failure.
 - status(): what the robot is doing right now. If the result says the status is STALE
   or unavailable, report THAT -- it means the robot has stopped reporting, which is
   worth more to the user than any older value.

@@ -361,7 +361,9 @@ def test_the_system_prompt_carries_the_search_loop():
 
 def test_the_stanza_added_no_tool_and_loosened_no_count():
     """Search round 2's ratified shape: a prompt and the EXISTING tools. The
-    closed set stays nine and the prompt still says so."""
+    closed set stays counted and the prompt still says so. (Widened 9 -> 10 on
+    2026-08-21 for `clear_map`, Scott's move-the-rover order — a deliberate
+    edit here, exactly as this guard demands.)"""
     from sphero_rvr_core.task_agent import TOOL_SCHEMAS
-    assert len(TOOL_SCHEMAS) == 9
-    assert "nine tools" in SYSTEM_PROMPT
+    assert len(TOOL_SCHEMAS) == 10
+    assert "ten tools" in SYSTEM_PROMPT

@@ -42,6 +42,10 @@ class FakeApp:
         self.stops += 1
         return {"ok": True, "note": "not an emergency stop"}
 
+    def clear_map(self):
+        self.clears = getattr(self, "clears", 0) + 1
+        return {"ok": True, "message": "map cleared"}
+
 
 @pytest.fixture()
 def served(tmp_path):
@@ -148,6 +152,14 @@ def test_photo_served_confined(served):
     assert resp.status == 200 and body.startswith(b"\xff\xd8")
     for bad in ("missing.jpg", "../../etc/passwd", "look_1.png", ""):
         assert _get(port, f"/api/photo?name={bad}")[0].status == 404
+
+
+def test_map_clear_endpoint(served):
+    app, server, port = served
+    resp, body = _post(port, "/api/map/clear", {})
+    assert resp.status == 200
+    assert json.loads(body)["message"] == "map cleared"
+    assert app.clears == 1
 
 
 def test_unknown_api_is_404(served):

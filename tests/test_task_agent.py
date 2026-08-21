@@ -213,7 +213,7 @@ def test_hallucinated_bridge_tools_are_still_refused():
             parse_reply(bad)
 
 
-def test_the_prompt_documents_all_nine_tools():
+def test_the_prompt_documents_all_ten_tools():
     for name in sorted(TOOL_SCHEMAS):
         assert name in SYSTEM_PROMPT, f"{name} missing from the system prompt"
-    assert "nine tools" in SYSTEM_PROMPT
+    assert "ten tools" in SYSTEM_PROMPT   # widened 2026-08-21: clear_map
