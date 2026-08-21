@@ -123,7 +123,10 @@ Tools:
   the answer includes range_m, the object is about that many metres ahead along
   the bearing -- use it to place your approach stop; if range_ambiguous is true,
   something ELSE stands nearer along that line, so treat range_m as a MINIMUM
-  and expect to look again after the stop. If the result says the tool
+  and expect to look again after the stop. FRAMES, stated exactly: bearing_deg
+  is in the MAP frame (like your yaw_deg from where_am_i -- never hand it to
+  turn); bearing_relative_deg is how far to turn RIGHT NOW to face the object
+  (positive = left) -- THAT is the number turn takes. If the result says the tool
   is disabled or refused, report that honestly -- never guess at what the camera
   would have seen.
 
@@ -136,7 +139,8 @@ something):
   driving to; where_am_i tells you where you are looking from.
 - look_and_recognize with match=true and identity "confirmed" is a find: report
   it, with where it is from the bearing and your position.
-- match=true with "unverified" is a CANDIDATE, not a find: use goto to drive
+- match=true with "unverified" is a CANDIDATE, not a find: turn by
+  bearing_relative_deg to face it, then use goto to drive
   toward the bearing and look again from about a metre away -- NEVER closer
   than about 0.8 m: nearer than that a floor object drops below the camera's
   view, and driving in close also walls you in on the map. With range_m,

@@ -333,6 +333,37 @@ def test_placement_1_is_the_must_flip():
     assert abs(r - 0.502) > 0.4
 
 
+def test_flight_5s_wrong_turn_is_the_relative_bearing_must_flip():
+    """The fixture is flight 5's exact look (2026-08-20): right-sector
+    candidate at yaw −85.6° → map bearing −107.6° — and the model, holding
+    only the map number, issued turn(−108) instead of −22. The result now
+    carries bearing_relative_deg = the directly-spendable turn, computed by
+    subtraction so any future bearing-math correction flows through."""
+    parsed = {"match": True, "identity": "unverified", "where_in_frame": "right",
+              "confidence": 0.4, "description": "a possible bottle"}
+    r = build_result(target="dr pepper bottle", parsed=parsed, photo_path="p",
+                     map_x=0.002, map_y=0.008,
+                     capture_yaw_rad=math.radians(-85.6),
+                     stamp="s", model="m", range_m=1.055, range_source="tof",
+                     range_ambiguous=False)
+    assert r["bearing_deg"] == pytest.approx(-107.6, abs=0.1)
+    assert r["bearing_relative_deg"] == pytest.approx(-22.0, abs=0.1)
+
+
+def test_relative_bearing_wraps_and_nulls_with_the_match():
+    parsed = {"match": True, "identity": "confirmed", "where_in_frame": "left",
+              "confidence": 0.9, "description": "d"}
+    r = build_result(target="t", parsed=parsed, photo_path="p", map_x=0, map_y=0,
+                     capture_yaw_rad=math.pi - 0.01, stamp="s", model="m")
+    assert -180.0 <= r["bearing_relative_deg"] <= 180.0
+    assert r["bearing_relative_deg"] == pytest.approx(22.0, abs=0.1)
+    parsed_miss = {"match": False, "identity": None, "where_in_frame": None,
+                   "confidence": 0.9, "description": "d"}
+    r = build_result(target="t", parsed=parsed_miss, photo_path="p", map_x=0,
+                     map_y=0, capture_yaw_rad=0, stamp="s", model="m")
+    assert r["bearing_relative_deg"] is None
+
+
 def test_the_result_carries_range_only_on_a_match():
     parsed_hit = {"match": True, "identity": "unverified",
                   "where_in_frame": "right", "confidence": 0.7, "description": "d"}

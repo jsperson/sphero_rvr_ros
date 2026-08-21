@@ -335,6 +335,15 @@ def test_the_system_prompt_carries_the_search_loop():
     # ruling C: an ambiguous range is a MINIMUM, never the certified distance
     assert "range_ambiguous" in SYSTEM_PROMPT
     assert "treat range_m as a MINIMUM" in SYSTEM_PROMPT
+    # flight 5's wrong turn: frames are STATED, and the spendable number named
+    # (assert-don't-infer applies to prose too). Collapse whitespace so line
+    # wrapping can't hide a phrase.
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "FRAMES, stated exactly" in flat
+    assert "bearing_deg is in the MAP frame" in flat
+    assert "never hand it to turn" in flat
+    assert "bearing_relative_deg is how far to turn RIGHT NOW" in flat
+    assert "turn by bearing_relative_deg to face it" in flat
     assert "demotes a candidate" in SYSTEM_PROMPT
     # the reasoning discount (flight 3's root cause: the model burned its cap
     # on bearing trigonometry) — approximate coordinates are LICENSED:

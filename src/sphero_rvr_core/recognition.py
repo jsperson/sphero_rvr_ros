@@ -311,6 +311,19 @@ def build_result(*, target: str, parsed: dict, photo_path: str,
     """
     bearing = (bearing_from_frame_position(capture_yaw_rad, parsed["where_in_frame"])
                if parsed["match"] else None)
+    # bearing_relative_deg (flight 5, 2026-08-20): the model read the MAP-frame
+    # bearing as a relative turn and spun −108° instead of −22° — frame
+    # arithmetic under token pressure is exactly what fails, so the result
+    # carries the directly-spendable number. Computed by subtraction (not by
+    # copying the sector offset) so any future correction to the bearing math
+    # flows into this field automatically.
+    relative = None
+    if bearing is not None:
+        relative = bearing - float(capture_yaw_rad)
+        while relative > math.pi:
+            relative -= 2.0 * math.pi
+        while relative < -math.pi:
+            relative += 2.0 * math.pi
     return {
         "target": str(target),
         "match": parsed["match"],
@@ -323,6 +336,8 @@ def build_result(*, target: str, parsed: dict, photo_path: str,
                      "yaw_deg": round(math.degrees(float(capture_yaw_rad)), 1)},
         "bearing_deg": (None if bearing is None
                         else round(math.degrees(bearing), 1)),
+        "bearing_relative_deg": (None if relative is None
+                                 else round(math.degrees(relative), 1)),
         # Round 2 §1: a measured range turns the approach leg from a guess
         # into a placement. null is honest (no tof return in the sector) and
         # a match=false sighting carries no range by construction.

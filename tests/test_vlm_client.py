@@ -212,6 +212,32 @@ def test_sticky_escalation_pays_the_ladder_once_per_session(monkeypatch):
     assert sticky["cap"] == 4500
 
 
+def test_the_timeout_scales_with_the_escalated_cap(monkeypatch):
+    """Flight 5's ending: an escalated 4500-token generation (~112 s at the
+    worst observed reasoning speed) raced a flat 60 s read timeout and lost —
+    the guard saved the client, but the timeout and the ladder were tuned in
+    different rounds and had never met. Escalated attempts now get
+    timeout × escalation; base attempts stay snappy."""
+    import sphero_rvr_core.vlm_client as vc
+    seen = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen.append((json["max_tokens"], timeout))
+        if json["max_tokens"] <= 1500:
+            return _FakeResponse(_body(""))
+        return _FakeResponse(_body("decision"))
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    assert vc.query_text("http://x", "k", "m", "p", max_tokens=1500,
+                         timeout=60.0) == "decision"
+    assert seen == [(1500, 60.0), (4500, 180.0)]
+    # sticky start at an escalated cap gets the scaled ceiling from attempt 0
+    seen.clear()
+    vc.query_text("http://x", "k", "m", "p", max_tokens=1500, timeout=60.0,
+                  sticky={"cap": 4500})
+    assert seen == [(4500, 180.0)]
+
+
 def test_without_sticky_each_call_pays_its_own_ladder(monkeypatch):
     """The default stays stateless — sticky is opt-in, caller-owned."""
     import sphero_rvr_core.vlm_client as vc

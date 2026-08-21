@@ -112,12 +112,20 @@ def query_text(base_url, api_key, model, prompt, system=None, max_tokens=500,
                   f"escalating to {cap} (reasoning-burn ladder)",
                   file=sys.stderr, flush=True)
         payload["max_tokens"] = cap
+        # TIMEOUT SCALES WITH THE CAP (flight 5's ending, 2026-08-20): an
+        # escalated attempt generates up to escalation× the tokens, and at
+        # reasoning-model speeds (~40 tok/s worst observed class) 4500 tokens
+        # is ~112 s — racing a flat 60 s read timeout it sometimes loses
+        # (flight 4's five escalated calls fit; flight 5's post-miss decision
+        # timed out). Base attempts stay snappy; any future cap change
+        # inherits the right ceiling automatically.
+        req_timeout = timeout * escalation if cap > max_tokens else timeout
         r = requests.post(
             f"{base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}",
                      "Content-Type": "application/json"},
             json=payload,
-            timeout=timeout,
+            timeout=req_timeout,
         )
         r.raise_for_status()
         content = _reply_text(r)
