@@ -32,7 +32,6 @@ setup(
                 "config/lidar.yaml",
                 "config/slam_toolbox.yaml",
                 "config/lean_rvr_tank_si.yaml",
-                "config/lean_explore_lite.yaml",
                 "config/coverage_explorer.yaml",
                 "config/camera.yaml",
                 "config/ekf.yaml",
@@ -42,7 +41,6 @@ setup(
         (
             "share/sphero_rvr_driver/behavior_trees",
             [
-                "behavior_trees/navigate_to_pose_decisive.xml",
                 "behavior_trees/navigate_to_pose_stock_precise_turn.xml",
             ],
         ),

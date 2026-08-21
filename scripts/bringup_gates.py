@@ -52,9 +52,6 @@ LIFECYCLES = {
     # lifecycle node -- its gate is the disarmed check below.
     "stock-explore": ["slam_toolbox", "planner_server", "controller_server",
                       "bt_navigator", "behavior_server"],
-    # bespoke never had a lifecycle gate (its arming gate is gate_disarmed);
-    # same gates as before, not more, not fewer.
-    "bespoke": [],
 }
 
 #: The safety constants, read FROM THE ROBOT (a config file is a claim; the
@@ -106,7 +103,7 @@ def wait_until(predicate, timeout_s, period_s=0.2):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--stack", required=True,
-                    choices=("stock", "bespoke", "stock-explore"))
+                    choices=("stock", "stock-explore"))
     ap.add_argument("--csv", required=True, help="recorder csv path (growth gate)")
     ap.add_argument("--bag", required=True, help="bag directory (growth gate)")
     ap.add_argument("--timeout", type=float, default=90.0,
@@ -249,10 +246,10 @@ def main() -> int:
         receipts["brake.cam_hold"] = hold
         print("GATE PASS brake", flush=True)
 
-        # bespoke + stock-explore: D29 makes bringup disarmed; an already-armed
+        # stock-explore: D29 makes bringup disarmed; an already-armed
         # explorer here means a mission is running and the caller is about to
         # lose the start of it
-        if args.stack in ("bespoke", "stock-explore"):
+        if args.stack == "stock-explore":
             status = wait_until(lambda: probe.explorer_status, 30.0)
             if status is None:
                 return fail("disarmed", "no /coverage_explorer/status")

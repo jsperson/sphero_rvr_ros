@@ -395,8 +395,9 @@ def test_the_probe_gates_stock_explore_as_stock_plus_disarmed():
     assert '"stock-explore": ["slam_toolbox", "planner_server", "controller_server"' \
         in PROBE_SRC.replace("\n                      ", " "), (
             "the probe's stock-explore lifecycle roster is not the stock five")
-    assert '("bespoke", "stock-explore")' in PROBE_SRC, (
-        "the probe no longer runs the disarmed gate for stock-explore")
+    assert '== "stock-explore"' in PROBE_SRC, (
+        "the probe no longer runs the disarmed gate for stock-explore "
+        "(the bespoke half of the old pair died 2026-08-21)")
     assert '("stock", "stock-explore")' in PROBE_SRC, (
         "the probe no longer runs marks/battery for stock-explore")
 

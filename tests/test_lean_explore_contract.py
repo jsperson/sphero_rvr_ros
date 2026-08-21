@@ -110,11 +110,12 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
     assert '"start_slam": "true"' in source
     assert '"slam_autostart": "true"' in source
     assert "navigate_to_pose_w_replanning_and_recovery.xml" in source
-    assert 'package="explore_lite"' in source
-    assert 'executable="explore"' in source
-    assert 'name="explore_node"' in source
+    # explore_lite retired 2026-08-21 (Scott's word; superseded since 08-14):
+    # the coverage explorer is the launch's only explorer, and this composition
+    # pin now asserts the ABSENCE of the retired node.
+    assert 'package="explore_lite"' not in source
+    assert "lean_explore_lite.yaml" not in source
     assert 'remappings=[("navigate_to_pose", "/navigate_to_pose")]' in source
-    assert "lean_explore_lite.yaml" in source
 
     for excluded in (
         "mission_service",
@@ -131,39 +132,6 @@ def test_explore_launch_is_the_minimal_supervised_composition() -> None:
         # violation, and a guard that punishes documenting its own reason gets
         # satisfied by deleting the explanation.
         assert excluded not in _strip_comments(source)
-
-
-def test_explore_lite_dependency_and_small_room_parameters_are_pinned() -> None:
-    repos = _yaml("workspace.repos")["repositories"]
-    dependency = repos["m_explore_ros2"]
-    params = _yaml("config/lean_explore_lite.yaml")["explore_node"][
-        "ros__parameters"
-    ]
-
-    assert dependency == {
-        "type": "git",
-        "url": "https://github.com/robo-friends/m-explore-ros2.git",
-        "version": "326cf8a0b487c34246bb8f3326afbcd69576dc60",
-    }
-    assert params == {
-        "use_sim_time": False,
-        "robot_base_frame": "base_link",
-        "return_to_init": False,
-        "costmap_topic": "/global_costmap/costmap",
-        "costmap_updates_topic": "/global_costmap/costmap_updates",
-        "visualize": True,
-        "planner_frequency": 0.1,
-        "progress_timeout": 90.0,
-        "potential_scale": 3.0,
-        "orientation_scale": 0.2,
-        "gain_scale": 1.0,
-        "transform_tolerance": 0.3,
-        "min_frontier_size": 0.2,
-    }
-
-    assert "mapping.launch.py" in (
-        REPO_ROOT / "launch/explore.launch.py"
-    ).read_text(encoding="utf-8")
 
 
 def test_explore_graph_keeps_supervisor_as_sole_motor_command_publisher() -> None:
@@ -215,7 +183,6 @@ def test_lean_explore_surfaces_are_installed() -> None:
     for path in (
         "launch/explore.launch.py",
         "config/lean_rvr_tank_si.yaml",
-        "config/lean_explore_lite.yaml",
         "docs/lean_explore_run_guide.md",
     ):
         assert f'"{path}"' in setup
@@ -223,4 +190,5 @@ def test_lean_explore_surfaces_are_installed() -> None:
     assert "<exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>" in (
         package
     )
-    assert "<exec_depend>explore_lite</exec_depend>" in package
+    assert "<exec_depend>explore_lite</exec_depend>" not in package, (
+        "explore_lite returned to package.xml — it was retired 2026-08-21")

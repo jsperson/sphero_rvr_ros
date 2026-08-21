@@ -25,7 +25,6 @@ def generate_launch_description():
     mapping_launch = share / "launch" / "mapping.launch.py"
     default_rvr_params = share / "config" / "lean_rvr_tank_si.yaml"
     default_slam_params = share / "config" / "slam_toolbox.yaml"
-    default_explore_lite_params = share / "config" / "lean_explore_lite.yaml"
     default_coverage_params = share / "config" / "coverage_explorer.yaml"
     standard_nav_to_pose_bt = (
         nav2_bt_share
@@ -52,17 +51,15 @@ def generate_launch_description():
     rvr_params_file = LaunchConfiguration("rvr_params_file")
     slam_params_file = LaunchConfiguration("slam_params_file")
     nav2_params_file = LaunchConfiguration("nav2_params_file")
-    explore_lite_params_file = LaunchConfiguration("explore_lite_params_file")
     coverage_params_file = LaunchConfiguration("coverage_params_file")
     mission_autostart = LaunchConfiguration("mission_autostart")
 
-    # start_explore picks ONE explorer: coverage+frontier (use_coverage_explorer)
-    # or explore_lite's frontier-only (default). Both drive via NavigateToPose.
-    explore_lite_active = PythonExpression(
-        ["'", start_explore, "' == 'true' and '", use_coverage_explorer, "' == 'false'"]
-    )
+    # ONE explorer: the coverage explorer. (explore_lite and its selection
+    # branch retired 2026-08-21 with Scott's word — superseded since 08-14 and
+    # never flown since. use_coverage_explorer stays as an arg so existing
+    # commands parse, but both values now mean the coverage explorer.)
     coverage_active = PythonExpression(
-        ["'", start_explore, "' == 'true' and '", use_coverage_explorer, "' == 'true'"]
+        ["'", start_explore, "' == 'true'"]
     )
 
     supervised = IncludeLaunchDescription(
@@ -233,17 +230,8 @@ def generate_launch_description():
             parameters=[nav2_params_file],
         ),
     ]
-    explore_lite = Node(
-        package="explore_lite",
-        executable="explore",
-        name="explore_node",
-        output="screen",
-        parameters=[explore_lite_params_file],
-        remappings=[("navigate_to_pose", "/navigate_to_pose")],
-        condition=IfCondition(explore_lite_active),
-    )
     # Coverage + frontier explorer: drives until every reachable free cell is both
-    # seen AND approached within its coverage radius. Runs INSTEAD of explore_lite
+    # seen AND approached within its coverage radius.
     # (does not need the /explore/resume kick — it never quits on empty).
     coverage_explorer = Node(
         package="sphero_rvr_driver",
@@ -314,11 +302,10 @@ def generate_launch_description():
                 "start_explore",
                 default_value="false",
                 description=(
-                    "Start autonomous frontier exploration (explore_lite + the "
-                    "/explore/resume kick). Default false: bringup is INERT — "
-                    "driver, lidar, SLAM, and Nav2 come up but nothing commands "
-                    "motion. Send a NavigateToPose goal to drive directionally, "
-                    "or set true to explore."
+                    "Start the coverage explorer. Default false: bringup is "
+                    "INERT — driver, lidar, SLAM, and Nav2 come up but nothing "
+                    "commands motion. Send a NavigateToPose goal to drive "
+                    "directionally, or set true to explore."
                 ),
             ),
             DeclareLaunchArgument(
@@ -334,10 +321,10 @@ def generate_launch_description():
                 "use_coverage_explorer",
                 default_value="false",
                 description=(
-                    "With start_explore, run the coverage+frontier explorer instead "
-                    "of explore_lite: drives until every reachable free cell is both "
-                    "SEEN and APPROACHED within coverage_radius_m (0.75 m). Default "
-                    "false = explore_lite (frontier/see-only)."
+                    "VESTIGIAL since 2026-08-21 (explore_lite retired): the "
+                    "coverage explorer is the only explorer, and start_explore "
+                    "alone decides. Kept so existing commands parse; both values "
+                    "behave identically."
                 ),
             ),
             DeclareLaunchArgument(
@@ -443,10 +430,6 @@ def generate_launch_description():
                              "lean_nav2_stock.yaml; no implicit default)"),
             ),
             DeclareLaunchArgument(
-                "explore_lite_params_file",
-                default_value=str(default_explore_lite_params),
-            ),
-            DeclareLaunchArgument(
                 "coverage_params_file",
                 default_value=str(default_coverage_params),
             ),
@@ -458,28 +441,9 @@ def generate_launch_description():
             vlm_scene,
             *nav2_nodes,
             # Autonomous exploration is OPT-IN (start_explore, default false) so
-            # bringup is inert and the rover never moves on its own. When enabled:
-            # explore_lite must SUBSCRIBE at startup (a late-started explore misses
-            # the latched costmap and hangs on "waiting for costmap"), so it starts
-            # with the graph but only drives once /explore/resume is kicked after
-            # SLAM + costmaps warm up. (Diagnosed 2026-08-02: without the kick it
-            # quits at ~t+1s.)
-            explore_lite,
+            # bringup is inert and the rover never moves on its own.
             coverage_explorer,
             contact_marker,
             refusal_watcher,
-            # explore_lite quits permanently on ANY empty frontier search — the
-            # cold-start race AND transient mid-run empties. Re-kick
-            # /explore/resume periodically (every ~15 s) so it always restarts
-            # and keeps exploring. Early kicks before warmup are harmless. Only
-            # explore_lite needs this (coverage_explorer never quits on empty).
-            ExecuteProcess(
-                cmd=[
-                    "ros2", "topic", "pub", "-r", "0.0667", "/explore/resume",
-                    "std_msgs/msg/Bool", "{data: true}",
-                ],
-                output="screen",
-                condition=IfCondition(explore_lite_active),
-            ),
         ]
     )
