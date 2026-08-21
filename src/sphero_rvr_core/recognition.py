@@ -31,7 +31,9 @@ WHERE_VALUES = ("left", "center", "right")
 #: Camera axis vs body axis, degrees LEFT (positive yaw). MEASURED on the
 #: 2026-08-20 bench card (R4: 10° from the 9-mark walk + 4° lidar-measured
 #: deliberate staging yaw), and confirmed live the same day (a body-centered
-#: bottle reads sector RIGHT at −22°, exactly as this offset predicts).
+#: bottle reads sector RIGHT at −22°, exactly as this offset predicts). Used
+#: by BOTH the tof range band (body->camera, subtracting) and the bearing
+#: offsets (camera->body, adding) — one constant, one truth, two directions.
 CAMERA_MOUNT_OFFSET_DEG = 14.0
 
 #: Sector bands in the CAMERA frame, degrees (left edge positive per REP-103):
@@ -133,12 +135,25 @@ def range_from_tof_points(points_xy, where_in_frame,
     nearest = clusters[0]
     return nearest[len(nearest) // 2], (len(clusters) > 1 or near_band > 0)
 
-#: Sector-center yaw offsets, radians. Image LEFT is the robot's LEFT, which is
-#: POSITIVE yaw (REP-103). Thirds have centers at +/- FOV/3 and 0.
+#: Camera axis vs body axis, degrees LEFT (positive yaw). MEASURED on the
+#: 2026-08-20 bench card (R4: 10° from the 9-mark walk + 4° lidar-measured
+#: deliberate staging yaw), and confirmed live the same day (a body-centered
+#: bottle reads sector RIGHT at −22°, exactly as this offset predicts).
+#: Sector-center yaw offsets, radians, BODY frame. Image LEFT is the robot's
+#: LEFT, which is POSITIVE yaw (REP-103). Sector centers live in the CAMERA
+#: frame (thirds at +/- FOV/3 and 0) and the camera points
+#: CAMERA_MOUNT_OFFSET_DEG left of the body axis, so the body-frame offset is
+#: camera-center PLUS the mount offset — the SAME constant, same sign
+#: convention, as `range_from_tof_points` (which subtracts it going the other
+#: way, body azimuth -> camera): the two paths visibly share one truth.
+#: HISTORY (2026-08-20 wrap ruling): this dict predated the offset's
+#: measurement and omitted it — every bearing_deg was systematically ~14°
+#: right of the object until the flight-5 wrap batch corrected it. Bearings
+#: were never certified quantities (the range cert's bars were range-only).
 _WHERE_OFFSET_RAD = {
-    "left": math.radians(HORIZONTAL_FOV_DEG) / 3.0,
-    "center": 0.0,
-    "right": -math.radians(HORIZONTAL_FOV_DEG) / 3.0,
+    "left": math.radians(HORIZONTAL_FOV_DEG / 3.0 + CAMERA_MOUNT_OFFSET_DEG),
+    "center": math.radians(CAMERA_MOUNT_OFFSET_DEG),
+    "right": math.radians(-HORIZONTAL_FOV_DEG / 3.0 + CAMERA_MOUNT_OFFSET_DEG),
 }
 
 

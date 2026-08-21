@@ -102,11 +102,18 @@ def test_every_schema_breach_refuses_with_a_reason(bad, why):
 
 # --- bearing: thirds of the (vendor-spec, bench-measured-later) FOV ---------------------
 
-def test_center_is_the_capture_yaw_and_left_is_positive():
-    assert bearing_from_frame_position(0.5, "center") == pytest.approx(0.5)
+def test_center_is_the_camera_axis_not_the_body_axis():
+    """CORRECTED in the 2026-08-20 wrap batch: sector centers live in the
+    CAMERA frame and the camera points 14° left of the body — a frame-center
+    object's bearing is capture yaw + 14°, not capture yaw. The old dict
+    omitted the measured offset and biased every bearing ~14° right."""
+    mount = math.radians(14.0)
     third = math.radians(HORIZONTAL_FOV_DEG) / 3.0
-    assert bearing_from_frame_position(0.5, "left") == pytest.approx(0.5 + third)
-    assert bearing_from_frame_position(0.5, "right") == pytest.approx(0.5 - third)
+    assert bearing_from_frame_position(0.5, "center") == pytest.approx(0.5 + mount)
+    assert bearing_from_frame_position(0.5, "left") == \
+        pytest.approx(0.5 + third + mount)
+    assert bearing_from_frame_position(0.5, "right") == \
+        pytest.approx(0.5 - third + mount)
 
 
 def test_bearing_wraps_at_pi():
@@ -138,7 +145,8 @@ def test_the_result_carries_full_provenance_and_both_verdicts():
                      stamp="20260819_150000", model="syn:large:vision")
     assert r["photo_path"] == "/x/y.jpg"
     assert r["map_pose"] == {"x": 1.234, "y": -0.568, "yaw_deg": 0.0}
-    assert r["bearing_deg"] == pytest.approx(-HORIZONTAL_FOV_DEG / 3.0, abs=0.1)
+    # right sector: camera −22° + the 14° mount = body −8° (wrap-batch fix)
+    assert r["bearing_deg"] == pytest.approx(-HORIZONTAL_FOV_DEG / 3.0 + 14.0, abs=0.1)
     assert r["stamp"] and r["model"] and r["target"] == "bottle"
     assert r["match"] is True and r["identity"] == "unverified"
 
@@ -159,7 +167,7 @@ def test_an_unverified_candidate_still_gets_a_bearing():
               "confidence": 0.6, "description": "a bottle, brand unclear"}
     r = build_result(target="dr pepper bottle", parsed=parsed, photo_path="p",
                      map_x=0, map_y=0, capture_yaw_rad=0, stamp="s", model="m")
-    assert r["bearing_deg"] == pytest.approx(HORIZONTAL_FOV_DEG / 3.0, abs=0.1)
+    assert r["bearing_deg"] == pytest.approx(HORIZONTAL_FOV_DEG / 3.0 + 14.0, abs=0.1)
 
 
 def test_the_result_builder_cannot_carry_a_key_by_construction():
@@ -336,9 +344,12 @@ def test_placement_1_is_the_must_flip():
 def test_flight_5s_wrong_turn_is_the_relative_bearing_must_flip():
     """The fixture is flight 5's exact look (2026-08-20): right-sector
     candidate at yaw −85.6° → map bearing −107.6° — and the model, holding
-    only the map number, issued turn(−108) instead of −22. The result now
-    carries bearing_relative_deg = the directly-spendable turn, computed by
-    subtraction so any future bearing-math correction flows through."""
+    only the map number, issued turn(−108). The result now carries
+    bearing_relative_deg — and because it is computed BY SUBTRACTION, the
+    wrap batch's mount-offset correction flowed straight through: the sector
+    center is truly at body −8° (camera −22° + 14° mount), so the corrected
+    map bearing is −93.6 and the spendable turn −8.0. (The flight's −107.6
+    carried the pre-fix 14° bias.)"""
     parsed = {"match": True, "identity": "unverified", "where_in_frame": "right",
               "confidence": 0.4, "description": "a possible bottle"}
     r = build_result(target="dr pepper bottle", parsed=parsed, photo_path="p",
@@ -346,8 +357,8 @@ def test_flight_5s_wrong_turn_is_the_relative_bearing_must_flip():
                      capture_yaw_rad=math.radians(-85.6),
                      stamp="s", model="m", range_m=1.055, range_source="tof",
                      range_ambiguous=False)
-    assert r["bearing_deg"] == pytest.approx(-107.6, abs=0.1)
-    assert r["bearing_relative_deg"] == pytest.approx(-22.0, abs=0.1)
+    assert r["bearing_deg"] == pytest.approx(-93.6, abs=0.1)
+    assert r["bearing_relative_deg"] == pytest.approx(-8.0, abs=0.1)
 
 
 def test_relative_bearing_wraps_and_nulls_with_the_match():
@@ -356,7 +367,7 @@ def test_relative_bearing_wraps_and_nulls_with_the_match():
     r = build_result(target="t", parsed=parsed, photo_path="p", map_x=0, map_y=0,
                      capture_yaw_rad=math.pi - 0.01, stamp="s", model="m")
     assert -180.0 <= r["bearing_relative_deg"] <= 180.0
-    assert r["bearing_relative_deg"] == pytest.approx(22.0, abs=0.1)
+    assert r["bearing_relative_deg"] == pytest.approx(36.0, abs=0.1)  # 22 + 14 mount
     parsed_miss = {"match": False, "identity": None, "where_in_frame": None,
                    "confidence": 0.9, "description": "d"}
     r = build_result(target="t", parsed=parsed_miss, photo_path="p", map_x=0,

@@ -307,3 +307,14 @@ it as a committed must-flip fixture):
 **The search stanza's reliance on range_m is now CERTIFIED** (the addendum's
 usable-now nuance is discharged). Flight 5 — the full-loop bottle hunt —
 is the next flight this card supports.
+
+**Dated note (2026-08-20 wrap batch): bearing semantics corrected
+POST-cert.** While building `bearing_relative_deg` (flight 5's frame-
+confusion fix) we found the bearing math had always omitted the measured
+14° mount offset — every `bearing_deg` was systematically ~14° right of
+the object. Corrected in the wrap batch (`_WHERE_OFFSET_RAD` now adds the
+same `CAMERA_MOUNT_OFFSET_DEG` the range band uses — one constant, two
+directions, visibly shared). **Bearings were never certified quantities:
+this card's range bars were range-only**, and the range band always used
+the offset (which is why ranges were accurate while bearings carried the
+bias). First certified use of the corrected bearings is the next flight's.
