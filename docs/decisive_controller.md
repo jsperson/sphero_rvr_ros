@@ -74,3 +74,6 @@ Built and unit-tested (364 suite pass, incl. the `ProgressGuard` back-off cases)
 grinding: if it only ever drives / arcs / does rare decisive pivots / backs
 straight off when boxed in and still grinds, that is the drivetrain's answer, not
 the controller's.
+
+---
+**RETIRED 2026-08-21 (project review, Scott's word: "if we haven't been using it then we don't need it").** The controller, its ladder, escapes, BT variant, launch branch and eleven test suites were deleted; five stock-middle flights never reached any of it. The freeze-mark data model it hosted lives on in `sphero_rvr_core/freeze_marks.py` (the touch port's dependency). Recoverable from history only by re-earning its place.

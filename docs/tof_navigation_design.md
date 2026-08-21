@@ -33,7 +33,10 @@ inert:
 **D is inert and the design must not pretend otherwise.** `camera_low` marks the LOCAL
 costmap, and decisive mode removes the local costmap entirely (`explore.launch.py`
 lines 174/185/214/225 — `controller_server` and its costmap are conditioned OUT when
-`use_decisive_controller:=true`). Every mission we fly is decisive mode. So the camera
+`use_decisive_controller:=true`). Every mission flown in THIS design's era was
+decisive mode *(historical — the stock middle replaced it 2026-08-17 and the
+decisive controller was deleted 2026-08-21; the local costmap always exists now)*.
+So the camera
 has had **no planning influence at all** in the flights that matter, and the design
 gains nothing by replacing D. It is listed so that nobody later "restores" a capability
 that was not there.

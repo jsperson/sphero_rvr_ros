@@ -22,10 +22,9 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
 
 ## Preconditions (all checkable cold)
 
-1. **D16 bench probe has run.** The nav2 `behavior_server` Spin gate reads a local
-   costmap that decisive mode removes; until measured, a refused recovery cannot be
-   attributed. If the probe shows Spin refused in decisive mode, expect unstick
-   turns to fall back to straight BackUp and do not read that as a regression.
+1. *(Retired 2026-08-21: the decisive-mode D16 precondition died with the
+   bespoke controller — the stock middle always runs controller_server and its
+   local costmap, so the Spin gate always has its input.)*
 2. **Pi at repo HEAD and rebuilt** (`git -C ~/ros2_ws/src/sphero_rvr_ros log
    --oneline -1` matches origin/main; `colcon build` run since).
 3. **Rover on the FLOOR** (a bench run scans at waist height and proves nothing),
@@ -109,7 +108,6 @@ ros2 launch sphero_rvr_driver explore.launch.py \
     start_motion_stack:=true \
     start_explore:=true \
     use_coverage_explorer:=true \
-    use_decisive_controller:=true \
     start_low_obstacle:=true \
     2>&1 | tee ~/launch_$(date +%Y%m%d_%H%M%S).log
 

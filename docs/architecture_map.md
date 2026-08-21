@@ -16,7 +16,7 @@ what. Read it after the canonical status note at
 ## The spine
 
 ```text
-        /cmd_vel  (whoever is driving: Nav2, teleop, decisive controller)
+        /cmd_vel  (whoever is driving: Nav2 or teleop)
              |
              v
   lidar_collision_stop_supervisor      <- /scan  +  /camera/low_obstacles
@@ -36,7 +36,6 @@ what. Read it after the canonical status note at
 |---|---|---|---|
 | Hardware transport + odometry | `rvr_node.py` → `rvr_node` | `/cmd_vel_motor` → UART; publishes `/odom`, `/encoder_counts`, TF, battery, `/diagnostics` | Sole rover UART owner. Decides no policy. |
 | Safety arbitration + final speed gate | `collision_stop_node.py` → `lidar_collision_stop_supervisor` | `/cmd_vel` + `/scan` + `/camera/low_obstacles` → `/cmd_vel_motor`; `/collision_stop/state`, `stop`/`estop`/`clear_estop` | **Sole `/cmd_vel_motor` publisher.** Owns slow/stop, STOP/ESTOP, stale-command zeroing, and `max_forward_mps` — which clamps EVERY command. |
-| Path following (opt-in) | `decisive_controller_node.py` → `decisive_controller` | Nav2 `FollowPath` action server; replaces `controller_server` when `use_decisive_controller:=true` | Drives straight in the deadband, arcs, pivots only for large errors; back-off reflex; preempts stale goals. Needs `navigate_to_pose_decisive.xml` (no local costmap in this mode). |
 | Coverage + frontier exploration | `coverage_explorer_node.py` → `coverage_explorer` | reads `/map`, sends `NavigateToPose` | Drives until every reachable cell is seen AND approached within 0.75 m. Navigability-aware selection + goal-progress watchdog. |
 | Low-obstacle perception (sub-lidar blind spot) | `low_obstacle_node.py` → `low_obstacle` | camera → `/camera/low_obstacles` (PointCloud2, base_link) | Height-gated floor-boundary contacts (only obstacles below the lidar plane) **plus clear-ray endpoints on obstacle-free bearings** — without those, costmap marks never clear. |
 | VLM scene understanding | `vlm_scene_node.py` → `vlm_scene` | `describe_scene` service → `/vlm_scene/description` | On-demand only; one cloud call per invocation. |
@@ -54,7 +53,7 @@ hardware, it belongs here.
 - RVR protocol/transport: `packet.py`, `commands.py`, `responses.py`, `driver.py`,
   `transport.py`, `serial_transport.py`, `fake_transport.py`, `dispatcher.py`,
   `command_queue.py`, `state.py`, `sensor_streaming.py`, `safety.py`, `odometry.py`
-- Navigation/decisions: `coverage_exploration.py`, `decisive_control.py`
+- Navigation/decisions: `coverage_exploration.py`
 - Camera: `image_decode.py`, `floor_obstacle_detection.py`, `ground_projection.py`,
   `low_obstacle_brake.py`, `vlm_client.py`
 

@@ -32,8 +32,9 @@ from where the rover has driven.
   but the planner refuses every one, it says so — *"targets wanted but NONE
   plannable"* — which is a different outcome and must not be read as success.
 
-It reuses the whole nav stack (planner + decisive controller + collision brake) —
-it just replaces explore_lite's frontier-picking with coverage+frontier-picking.
+It reuses the whole nav stack (planner + RPP controller + collision brake).
+(2026-08-21: explore_lite and the decisive controller are retired; this IS the
+explorer, on the stock middle.)
 
 ## Reachability belongs to the planner
 
@@ -60,12 +61,11 @@ failure memory left is a short TTL on a goal that *planned* and then would not d
 - `diagnostics/plannability_check.py` — prints the whole candidate list with the
   planner's verdict on each. No motion.
 
-## Enable it (opt-in; explore_lite is the default)
+## Enable it (opt-in)
 
 ```bash
 ros2 launch sphero_rvr_driver explore.launch.py start_motion_stack:=true \
-    start_explore:=true enable_imu_fusion:=true use_decisive_controller:=true \
-    use_coverage_explorer:=true
+    start_explore:=true enable_imu_fusion:=true use_coverage_explorer:=true
 ```
 
 With `use_coverage_explorer:=true` the launch runs `coverage_explorer` instead of
