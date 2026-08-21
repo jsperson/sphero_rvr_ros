@@ -56,7 +56,7 @@ from sphero_rvr_core.contact_marking import (
     disc_points,
     resolve_contact_pose,
 )
-from sphero_rvr_core.decisive_control import FreezeMarkSet
+from sphero_rvr_core.freeze_marks import FreezeMarkSet
 from sphero_rvr_core.refusal_promotion import MAX_DISCS_PER_FIRING, RecentReturns
 
 #: The height marks are presented at. These stand for an obstacle the LIDAR cannot see,

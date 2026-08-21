@@ -18,9 +18,9 @@ import pytest
 
 from sphero_rvr_core.decisive_control import (
     BackOffConfig,
-    FreezeMarkSet,
     ProgressGuard,
 )
+from sphero_rvr_core.freeze_marks import FreezeMarkSet
 
 
 CFG = BackOffConfig(stall_time_s=1.0, progress_epsilon_m=0.03, back_off_speed_mps=0.10)

@@ -34,7 +34,7 @@ from fixtures.mission_reports import (  # noqa: E402
     MISSION_1_FREEZE_EVENTS,
     MISSION_2_FREEZE_EVENTS,
 )
-from sphero_rvr_core.decisive_control import FreezeMarkSet, merge_positions
+from sphero_rvr_core.freeze_marks import FreezeMarkSet, merge_positions
 from sphero_rvr_core.mission_report import (
     DEFAULT_FREEZE_MARK_MERGE_RADIUS_M,
     OUTCOME_BLOCKED_BY_UNSEEN_OBSTACLES,

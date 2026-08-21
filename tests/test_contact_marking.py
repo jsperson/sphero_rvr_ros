@@ -20,7 +20,7 @@ from sphero_rvr_core.contact_marking import (
     default_margin_m,
     disc_points,
 )
-from sphero_rvr_core.decisive_control import FreezeMarkSet
+from sphero_rvr_core.freeze_marks import FreezeMarkSet
 
 
 # --- the counter seam ---------------------------------------------------------------

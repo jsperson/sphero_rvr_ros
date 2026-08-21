@@ -34,7 +34,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from sphero_rvr_core.decisive_control import freeze_mark_pose
+from sphero_rvr_core.freeze_marks import freeze_mark_pose
 from sphero_rvr_core.pivot_curve import PIVOT_LINEAR_EPSILON_MPS
 
 #: D57's stall classes. The 2026-08-19 flight proved the touch sense has a

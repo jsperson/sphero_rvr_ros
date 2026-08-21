@@ -16,7 +16,7 @@ here: a 34-minute SLAM map was destroyed by a stack restart on 2026-08-08 and to
 both arms of an A/B with it.
 """
 
-from sphero_rvr_core.decisive_control import merge_positions
+from sphero_rvr_core.freeze_marks import merge_positions
 
 # The radius at which two freeze events are one place. CHANGE BOTH OR NEITHER: this
 # must equal decisive_controller_node's `freeze_mark_merge_radius_m` default, because
