@@ -80,18 +80,20 @@ def test_the_steering_law_input_is_disabled_in_code_by_a_named_switch():
 
 
 def test_the_camera_NODE_still_runs():
-    """Authority removed, sensor kept. Track 2 uses it, the recording is still evidence,
-    and its cloud is what will timestamp when the mount moved. Disabling a sensor and
-    disabling its authority are different acts and only one of them was ordered."""
+    """Authority removed, sensor kept — and then the monocular detector retired.
+    The camera itself stays (recognition, semantic map, the recordings are
+    evidence). The low-obstacle NODE was deleted 2026-08-21 with bucket zero of
+    the project review (the 2026-08-10 rangefinder decision made ToF the
+    low-obstacle sense); this guard now pins BOTH facts: camera present,
+    monocular detector gone and staying gone without a new ratification."""
     assert (ROOT / "launch" / "camera.launch.py").exists(), (
         "the camera launch was removed; Scott's direction was that its FEEDBACK must "
-        "not guide the rover, not that the camera comes off the robot")
-    assert "/camera/low_obstacles" in (ROOT / "src" / "sphero_rvr_driver"
-                                      / "low_obstacle_node.py").read_text(), (
-        "the camera's low-obstacle node no longer publishes its cloud; authority was "
-        "meant to be removed, not the sensor. Track 2 uses it, its recording is still "
-        "evidence, and its cloud is what will timestamp when the mount moved")
-
+        "not guide the rover, not that the camera comes off the robot"
+    )
+    assert not (ROOT / "src" / "sphero_rvr_driver" / "low_obstacle_node.py").exists(), (
+        "the monocular low-obstacle node is back — it was RETIRED by the 2026-08-21 "
+        "project review on the ratified rangefinder decision; returning it needs a "
+        "ratification, not a revert")
 
 def test_the_configs_limits_are_written_down_beside_it():
     """A layer has to say what it is doing in the file a future reader opens, not only

@@ -107,22 +107,25 @@ def test_exactly_one_launch_names_the_simulator_and_it_is_the_sim_rig():
 
 # --- the fake scan is the most dangerous thing in this repo -------------------------
 
-def test_the_clear_scan_node_refuses_without_explicit_consent():
-    """A fake all-clear /scan would blind the collision supervisor into granting every
-    command. On a real robot that is worse than a bad controller: it removes the reflex
-    layer that has never failed. So it refuses to start unless asked explicitly."""
+def test_the_fake_scan_node_refuses_without_explicit_consent():
+    """A fake /scan would blind the collision supervisor into granting every
+    command. On a real robot that is worse than a bad controller: it removes the
+    reflex layer that has never failed. So it refuses to start unless asked
+    explicitly. (Repointed 2026-08-21: sim_clear_scan retired with bucket zero —
+    superseded by the raycast node, which carries the SAME consent contract this
+    guard has always demanded of whatever fake-scan publisher exists.)"""
     # Read at source level: importing the module needs rclpy, which is absent on the
     # Mac, and this guard must run everywhere the suite runs.
-    source = (ROOT / "src" / "sphero_rvr_driver" / "sim_clear_scan.py").read_text()
+    source = (ROOT / "src" / "sphero_rvr_driver" / "sim_raycast_scan.py").read_text()
 
-    assert "SimClearScanRefused" in source
+    assert "SimScanRefused" in source
     assert "declare_parameter(CONSENT_PARAMETER, False)" in source, (
         "the consent parameter must DEFAULT to false"
     )
     assert 'CONSENT_PARAMETER = "i_understand' in source, (
         "the parameter name should make an operator read what they are agreeing to"
     )
-    assert "raise SimClearScanRefused" in source, "it must actually refuse"
+    assert "raise SimScanRefused" in source, "it must actually refuse"
 
 
 @pytest.mark.parametrize(

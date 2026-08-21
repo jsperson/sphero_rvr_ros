@@ -56,3 +56,10 @@ strictly cheaper.
    *undercounts*. The next mission's bag will carry `motor_stall_events` directly, and that
    is the recording to re-prove against — at which point the reconstruction in the test
    fixture can be deleted.
+
+---
+**RETIRED 2026-08-21 (project review, bucket zero, Scott's word):** the
+`blind_contact` helper module and its test were deleted; the BT node was never
+built. The three-evidence doctrine it prototyped lives on in the touch port
+(`contact_marking` + the D48 diagnostics counter). The stamped-event-topic fix
+idea above remains valid if the sub-second-stall case ever matters.

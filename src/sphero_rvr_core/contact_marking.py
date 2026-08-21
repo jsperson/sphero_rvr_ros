@@ -24,7 +24,9 @@ THE CASE THAT BREAKS IT, named rather than discovered later: a stall shorter tha
 diagnostic period. Then the delta arrives after the robot has resumed and the mark
 lands wherever the robot got to. Nothing here can fix that from a counter alone -- the
 fix is a stamped event topic from the driver, and it is written down in
-`docs/blind_contact_bt_node_TODO.md` rather than pretended away.
+`docs/blind_contact_bt_node_TODO.md` rather than pretended away (the
+blind_contact MODULE retired with bucket zero 2026-08-21 — the unbuilt BT
+node's helper; the stamped-event fix idea and this named case remain).
 """
 
 from __future__ import annotations

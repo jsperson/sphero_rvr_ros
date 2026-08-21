@@ -1,89 +1,24 @@
-"""Tests for the inverse-perspective-mapping ground projection core."""
+"""The surviving clear-ray function (bucket zero, 2026-08-21, retired the rest:
+the monocular IPM core died with the optical low-obstacle path; clear_ray_point
+lives because semantic_map's stale-mark clearing depends on it)."""
 
 import math
 
 import pytest
 
-from sphero_rvr_core.ground_projection import ground_to_cell, pixel_to_ground
-
-FX = FY = 500.0
-CX = CY = 250.0
-
-
-def test_center_ray_down_tilt_hits_expected_distance():
-    # Camera 1 m up, optical axis 0.5 rad below horizontal; the center pixel meets
-    # the floor at forward = h / tan(tilt), directly ahead.
-    fwd, left = pixel_to_ground(CX, CY, FX, FY, CX, CY, cam_height_m=1.0, cam_tilt_down_rad=0.5)
-    assert fwd == pytest.approx(1.0 / math.tan(0.5), rel=1e-3)
-    assert left == pytest.approx(0.0, abs=1e-6)
-
-
-def test_up_tilted_center_ray_has_no_ground_hit():
-    # Our real camera is tilted ~3 deg UP: the center ray points above the horizon.
-    assert pixel_to_ground(CX, CY, FX, FY, CX, CY, cam_height_m=0.114, cam_tilt_down_rad=-0.0524) is None
-
-
-def test_lower_pixel_hits_ground_even_when_up_tilted():
-    # A pixel well below the principal point still points down -> hits the floor
-    # ahead (this is how the low, slightly-up camera sees near low obstacles).
-    res = pixel_to_ground(CX, 450.0, FX, FY, CX, CY, cam_height_m=0.114, cam_tilt_down_rad=-0.0524)
-    assert res is not None
-    fwd, left = res
-    assert fwd > 0.0
-    assert left == pytest.approx(0.0, abs=1e-6)
-
-
-def test_pixel_to_right_maps_to_negative_left():
-    # u to the right of center -> the ground point is to the robot's right (y_left<0).
-    fwd, left = pixel_to_ground(350.0, CY, FX, FY, CX, CY, cam_height_m=1.0, cam_tilt_down_rad=0.5)
-    assert fwd > 0.0
-    assert left < 0.0
-
-
-def test_ground_to_cell_at_origin():
-    assert ground_to_cell(1.0, 0.5, origin_x=0.0, origin_y=0.0, res=0.05) == (20, 10)
-
-
-def test_ground_to_cell_with_robot_pose():
-    # Robot at (2,0) facing +y (yaw 90deg): a point 1 m forward is at world (2,1).
-    cell = ground_to_cell(1.0, 0.0, origin_x=0.0, origin_y=0.0, res=0.5, robot_x=2.0, robot_y=0.0, robot_yaw=math.pi / 2)
-    assert cell == (4, 2)  # world (2.0, 1.0) / 0.5
-
-
-def test_object_height_scales_with_range_and_pixels():
-    from sphero_rvr_core.ground_projection import object_height_m
-    # 34 px rise at 0.54 m with fy=170 -> ~0.108 m
-    assert abs(object_height_m(34, 0.54, 170.0) - 0.108) < 0.01
-    # tall/near-zero fy guards
-    assert object_height_m(10, 1.0, 0.0) == float("inf")
-    # farther object, same pixels -> taller
-    assert object_height_m(30, 2.0, 170.0) > object_height_m(30, 1.0, 170.0)
+from sphero_rvr_core.ground_projection import clear_ray_point
 
 
 def test_clear_ray_point_centre_is_straight_ahead():
-    from sphero_rvr_core.ground_projection import clear_ray_point
     fwd, left = clear_ray_point(u=100.0, cx=100.0, fx=170.0, range_m=1.8)
     assert fwd == pytest.approx(1.8) and left == pytest.approx(0.0)
 
 
 def test_clear_ray_point_right_column_is_negative_left():
-    from sphero_rvr_core.ground_projection import clear_ray_point
     _, left = clear_ray_point(u=150.0, cx=100.0, fx=170.0, range_m=1.8)
-    assert left < 0  # right of centre -> -y, matching pixel_to_ground's convention
+    assert left < 0  # right of centre -> -y, the optical-frame convention
 
 
 def test_clear_ray_point_preserves_range():
-    from sphero_rvr_core.ground_projection import clear_ray_point
     fwd, left = clear_ray_point(u=40.0, cx=100.0, fx=170.0, range_m=1.8)
     assert math.hypot(fwd, left) == pytest.approx(1.8)
-
-
-def test_clear_ray_bearing_matches_pixel_to_ground():
-    """A clear ray and a real ground hit on the same column share a bearing."""
-    from sphero_rvr_core.ground_projection import clear_ray_point, pixel_to_ground
-    fx = fy = 170.0
-    cx, cy, u = 100.0, 75.0, 140.0
-    g = pixel_to_ground(u, 130.0, fx, fy, cx, cy, 0.1143, -0.0524)
-    assert g is not None
-    c = clear_ray_point(u, cx, fx, 1.8)
-    assert math.atan2(g[1], g[0]) == pytest.approx(math.atan2(c[1], c[0]), abs=0.02)

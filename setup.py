@@ -83,7 +83,6 @@ setup(
     entry_points={
         "console_scripts": [
             "rvr_node = sphero_rvr_driver.rvr_node:main",
-            "sim_clear_scan = sphero_rvr_driver.sim_clear_scan:main",
             "sim_raycast_scan = sphero_rvr_driver.sim_raycast_scan:main",
             "sim_laggy_map_tf = sphero_rvr_driver.sim_laggy_map_tf:main",
             "refusal_watcher = sphero_rvr_driver.refusal_watcher_node:main",
@@ -93,7 +92,6 @@ setup(
             "contact_marker = sphero_rvr_driver.contact_marker_node:main",
             "vlm_scene = sphero_rvr_driver.vlm_scene_node:main",
             "tof = sphero_rvr_driver.tof_node:main",
-            "vlm_explorer = sphero_rvr_driver.vlm_explorer_node:main",
             "semantic_map = sphero_rvr_driver.semantic_map_node:main",
             "task_node = sphero_rvr_driver.task_node:main",
             "task_client = sphero_rvr_driver.task_client:main",

@@ -92,3 +92,12 @@ front range can gate it too.
 4. Publish `/camera/low_obstacles` PointCloud2; wire into the costmap obstacle
    layer first (planner avoidance), then optionally the brake (hard stop).
 5. Hardware test against the actual chair-leg scenario.
+
+---
+**RETIRED PATH NOTE 2026-08-21:** the monocular detector this design describes
+(`low_obstacle_node`, `floor_obstacle_detection`, most of `ground_projection`)
+was deleted in the project review's bucket zero — the 2026-08-10 rangefinder
+decision made ToF the low-obstacle sense. Load-bearing survivors: the ADDITIVE
+BRAKE (`low_obstacle_brake`, now fed by /tof/obstacles in the supervisor) and
+`clear_ray_point` (semantic_map's stale-mark clearing). The design's lessons
+(height-gating, clear rays, brake-not-trap) transferred to the ToF port.
