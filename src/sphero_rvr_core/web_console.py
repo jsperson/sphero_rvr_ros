@@ -194,13 +194,20 @@ class EventBroker:
         self._next_client_id = 1
         self._feed_size = feed_size
 
-    def publish(self, event):
-        """Stamp, remember, fan out. Returns the stamped event."""
+    def publish(self, event, remember=True):
+        """Stamp, remember, fan out. Returns the stamped event.
+
+        `remember=False` is for the periodic state tick: it goes to every live
+        client but stays out of the replay ring, because a ring full of hour-old
+        ticks would flush the actual transcript out of a reconnecting client's
+        replay — the one thing the ring exists to preserve.
+        """
         with self._lock:
             event = dict(event)
             event["id"] = self._next_event_id
             self._next_event_id += 1
-            self._ring.append(event)
+            if remember:
+                self._ring.append(event)
             feeds = list(self._clients.values())
         for feed in feeds:
             feed.offer(event)
