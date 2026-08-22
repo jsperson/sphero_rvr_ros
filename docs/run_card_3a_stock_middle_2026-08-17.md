@@ -50,6 +50,22 @@ through that gap with `ComputePathToPose`.
   flying an over-inflated config would reproduce "stock cannot navigate this room" for the
   same reason as last time: a config value, not an architecture.
 
+**RESULT (answered 2026-08-22 — six days late, found unanswered by the project
+review's field day): PATH EXISTS.** Instrument: the rig (map_server on mission 2's
+own saved map + the deployed stock yaml) after the bag-replay form of this check
+failed its own control (TF tolerance broke at 2× playback; a NO with no
+demonstrated YES certifies nothing — the control caught it). Calibrated probe:
+control pair PLAN EXISTS (0.40 m); then ComputePathToPose THREADS both driven
+pinches — the 0.78 m corridor at (0.52, −0.11) both directions (14 poses,
+0.83 m, straight through) and the 0.75 m corridor at (−1.40, 0.61) (15 poses).
+Verdict per this card's own branches: the 46 % window is what a chair-legged
+corner looks like; deployed inflation does NOT close the doorways this robot
+drives. (Deployed-inflation geometry, same sitting: hard blocking floor is
+2×inscribed ≈ 0.31 m at ANY inflation_radius; corridors 0.31–0.60 m are
+costed-but-plannable with no legal goal cell INSIDE; detours win only where a
+cheaper one exists — the 2026-08-22 field route-around and these threaded plans
+are one cost model.)
+
 ### P2. `slam_toolbox` lifecycle (MUST)
 
 **`slam_toolbox` does not self-activate.** Launched without autostart it sits
