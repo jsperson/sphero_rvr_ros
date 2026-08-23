@@ -41,6 +41,8 @@ import rclpy
 import tf2_ros
 from action_msgs.srv import CancelGoal
 from nav_msgs.msg import OccupancyGrid
+from sensor_msgs.msg import LaserScan
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
@@ -50,7 +52,7 @@ from std_srvs.srv import Trigger
 
 from sphero_rvr_core.task_agent import Budget, availability_note, run_instruction
 from sphero_rvr_core.web_console import (EventBroker, build_state, classify_line,
-                                         grid_to_png)
+                                         grid_to_png, project_scan)
 from sphero_rvr_core.web_console_http import make_server, shutdown_server
 from sphero_rvr_driver.task_client import ToolRunner, make_model_caller
 
@@ -79,6 +81,13 @@ class WebConsoleNode(Node):
         self.create_subscription(OccupancyGrid, "/map", self._on_map, MAP_QOS)
         self.create_subscription(String, "/coverage_explorer/status",
                                  self._on_status, 10)
+        # THE LIVE LIDAR OVERLAY (Scott's ask, 2026-08-21). Read-only subscriber
+        # on the sensor's own QoS; the console projects the LATEST scan at tick
+        # rate rather than forwarding every message, so the browser sees 1 Hz of
+        # points and the robot's pipeline sees one more subscriber.
+        self._scan = None
+        self.create_subscription(LaserScan, "/scan", self._on_scan,
+                                 qos_profile_sensor_data)
         # The stop pair: the ratified goto action's own cancel door (standard
         # action protocol -- an empty goal id means "cancel all"), and task/stop.
         self._cancel_goto = self.create_client(
@@ -103,6 +112,10 @@ class WebConsoleNode(Node):
             self._map_msg = msg
             self._map_meta = meta
 
+    def _on_scan(self, msg):
+        with self._lock:
+            self._scan = (time.monotonic(), msg)
+
     def _on_status(self, msg):
         try:
             payload = json.loads(msg.data)
@@ -126,6 +139,30 @@ class WebConsoleNode(Node):
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         return {"x": round(t.x, 3), "y": round(t.y, 3),
                 "yaw_deg": round(math.degrees(yaw), 1)}
+
+    def scan_points(self, max_age_s=2.0):
+        """Latest scan as map-frame points, or None.
+
+        None when there is no scan, when it is STALE, or when the map->laser
+        transform is unavailable — three different ways of not knowing, all of
+        which mean the same thing to a viewer: do not draw a claim about the
+        floor. (Same refusal-not-guess rule as the pose.)
+        """
+        with self._lock:
+            entry = self._scan
+        if entry is None or time.monotonic() - entry[0] > max_age_s:
+            return None
+        msg = entry[1]
+        try:
+            tf = self._tf_buffer.lookup_transform("map", msg.header.frame_id,
+                                                  rclpy.time.Time())
+        except Exception:
+            return None
+        t, q = tf.transform.translation, tf.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return project_scan(msg.ranges, msg.angle_min, msg.angle_increment,
+                            msg.range_min, msg.range_max, (t.x, t.y, yaw))
 
     def status_entry(self):
         with self._lock:
@@ -316,7 +353,8 @@ class ConsoleApp:
     def state(self):
         return build_state(self._node.pose(), self._node.status_entry(),
                            time.monotonic(), self._status_max_age_s,
-                           self._mission.state(), self._node.map_meta())
+                           self._mission.state(), self._node.map_meta(),
+                           scan=self._node.scan_points())
 
     def start_instruction(self, text):
         return self._mission.start(text)

@@ -8,6 +8,7 @@ pane silently rendering everything as unstyled notes.
 """
 
 import json
+import math
 import os
 import struct
 import zlib
@@ -19,7 +20,7 @@ from sphero_rvr_core.task_agent import Budget, run_instruction
 from sphero_rvr_core.task_tools import tool_result
 from sphero_rvr_core.web_console import (
     EventBroker, SSE_HEARTBEAT, build_state, classify_line, extract_look,
-    format_sse, grid_to_png, safe_photo_path,
+    format_sse, grid_to_png, project_scan, safe_photo_path,
 )
 
 
@@ -297,3 +298,71 @@ def test_photo_confinement_symlink_escape(tmp_path):
     secret.write_bytes(b"secret")
     (root / "link.jpg").symlink_to(secret)
     assert safe_photo_path(str(root), "link.jpg") is None
+
+
+# ---------------------------------------------------------------------------
+# the live lidar overlay (Scott's ask 2026-08-21) — geometry, honesty, budget
+# ---------------------------------------------------------------------------
+
+def test_projection_uses_the_laser_pose_not_the_robot_origin():
+    """The mount matters: this rover's laser sits rotated ~179 deg from the body,
+    so a projection that assumed the robot's own yaw would draw the room BEHIND
+    the rover. The laser pose is passed in whole, from the same TF the costmaps
+    read."""
+    pts = project_scan([2.0], 0.0, 0.1, 0.1, 10.0, (1.0, 0.0, math.pi))
+    assert pts[0][0] == pytest.approx(-1.0, abs=1e-3)   # 2 m along +x rotated pi
+    assert pts[0][1] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_invalid_returns_are_DROPPED_not_drawn():
+    """A dot on the floor plan is a claim that something is there. inf/nan and
+    out-of-band ranges are absences, not obstacles at a guessed distance."""
+    pts = project_scan([float("inf"), float("nan"), 0.05, 99.0, 1.0],
+                       0.0, 0.1, 0.1, 10.0, (0.0, 0.0, 0.0))
+    # only index 4 survives, and it keeps ITS OWN bearing (4 * 0.1 rad) — a
+    # projection that collapsed survivors onto the first angle would draw the
+    # room rotated
+    assert len(pts) == 1
+    assert pts[0][0] == pytest.approx(math.cos(0.4), abs=1e-3)
+    assert pts[0][1] == pytest.approx(math.sin(0.4), abs=1e-3)
+
+
+def test_decimation_spans_the_whole_field_of_view():
+    """Keeping every Nth beam, not the first N: a decimated scan must still see
+    behind the robot, or the overlay would silently crop the room."""
+    ranges = [1.0] * 720
+    pts = project_scan(ranges, -math.pi, 2 * math.pi / 720, 0.1, 10.0,
+                       (0.0, 0.0, 0.0), max_points=60)
+    assert len(pts) <= 60
+    xs = [p[0] for p in pts]
+    assert min(xs) < -0.9 and max(xs) > 0.9, "decimation cropped the field of view"
+
+
+def test_empty_and_zero_length_scans_are_empty_not_crashes():
+    assert project_scan([], 0.0, 0.1, 0.1, 10.0, (0.0, 0.0, 0.0)) == []
+
+
+def test_state_carries_the_scan_and_None_is_honest():
+    """None means the robot is NOT SEEING (no scan, stale, or no TF) — the
+    viewer must be able to tell that from an empty room."""
+    with_scan = build_state(None, None, 10.0, 3.0, {"state": "idle"}, None,
+                            scan=[[1.0, 0.0]])
+    assert with_scan["scan"] == [[1.0, 0.0]]
+    without = build_state(None, None, 10.0, 3.0, {"state": "idle"}, None)
+    assert without["scan"] is None
+
+
+def test_the_tick_stays_small_enough_to_send_at_1hz():
+    """Budget guard: the console's costless property is certified, and a scan
+    overlay is the first thing that could quietly spend it. A full 720-beam scan
+    must serialize to a few KB, not tens."""
+    pts = project_scan([2.0] * 720, -math.pi, 2 * math.pi / 720, 0.1, 10.0,
+                       (0.0, 0.0, 0.0))
+    payload = json.dumps(build_state({"x": 0.0, "y": 0.0, "yaw_deg": 0.0}, None,
+                                     10.0, 3.0, {"state": "idle"},
+                                     {"stamp": "1", "width": 10, "height": 10,
+                                      "resolution_m": 0.05,
+                                      "origin": {"x": 0.0, "y": 0.0},
+                                      "known_pct": 50.0},
+                                     scan=pts))
+    assert len(payload) < 8000, f"state tick grew to {len(payload)} bytes"

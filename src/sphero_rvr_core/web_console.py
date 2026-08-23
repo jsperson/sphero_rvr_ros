@@ -17,6 +17,7 @@ client machinery is that nothing about the mission changes when a browser watche
 """
 
 import json
+import math
 import os
 import re
 import struct
@@ -103,10 +104,49 @@ def classify_line(line):
 
 
 # ---------------------------------------------------------------------------
+# the live lidar overlay (Scott's ask, 2026-08-21: "just show me what the lidar
+# can see right now")
+# ---------------------------------------------------------------------------
+
+def project_scan(ranges, angle_min, angle_increment, range_min, range_max,
+                 laser_pose, max_points=240):
+    """Scan ranges -> map-frame [x, y] points, decimated and rounded.
+
+    PURE so the geometry is testable without a robot: `laser_pose` is the
+    laser's own (x, y, yaw) in the map frame, which the node looks up from TF —
+    the SAME transform the supervisor and the costmaps use, so the overlay
+    cannot drift from what the stack believes (and the ~179 deg mount rotation
+    is inherited rather than reimplemented, which is where a second author of
+    this maths would go wrong).
+
+    Invalid returns (inf/nan, outside [range_min, range_max]) are DROPPED, not
+    drawn at a guessed distance: a dot on the floor plan is a claim that
+    something is there. Decimation keeps every Nth beam rather than the first N,
+    so a decimated scan still spans the full field of view.
+    """
+    lx, ly, lyaw = laser_pose
+    total = len(ranges)
+    if total == 0:
+        return []
+    step = max(1, math.ceil(total / max_points)) if max_points else 1
+    points = []
+    for i in range(0, total, step):
+        r = ranges[i]
+        if r is None or r != r or r in (float("inf"), float("-inf")):
+            continue
+        if not (range_min < r < range_max):
+            continue
+        a = lyaw + angle_min + i * angle_increment
+        points.append([round(lx + r * math.cos(a), 3),
+                       round(ly + r * math.sin(a), 3)])
+    return points
+
+
+# ---------------------------------------------------------------------------
 # the state tick
 # ---------------------------------------------------------------------------
 
-def build_state(pose, mission_entry, now, max_age_s, chat, map_meta):
+def build_state(pose, mission_entry, now, max_age_s, chat, map_meta, scan=None):
     """The 1 Hz state tick, with task/status's age-honesty inherited verbatim.
 
     `pose` arrives already null-honest (the node passes None when the TF lookup
@@ -131,7 +171,11 @@ def build_state(pose, mission_entry, now, max_age_s, chat, map_meta):
             mission = {"available": True, "stale": False,
                        "age_s": round(age, 2), "data": payload}
     return {"type": "state", "pose": pose, "mission": mission,
-            "chat": chat, "map": map_meta}
+            "chat": chat, "map": map_meta,
+            # scan: map-frame [x, y] points, or None when no fresh scan / no TF.
+            # None is HONEST — an absent overlay means the robot is not seeing,
+            # which is exactly what the operator needs to notice.
+            "scan": scan}
 
 
 # ---------------------------------------------------------------------------

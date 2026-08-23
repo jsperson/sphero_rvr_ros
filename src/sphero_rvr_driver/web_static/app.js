@@ -185,13 +185,15 @@ function onState(ev) {
   pillEl.className = "pill " + cls;
   poseBadge.classList.toggle("hidden", !!ev.pose);
   if (ev.pose) targetPose = ev.pose;
+  scanPoints = ev.scan || null;   // null = not seeing; draw nothing rather than a stale claim
   if (ev.map) {
     if (!mapMeta || ev.map.stamp !== mapMeta.stamp) fetchMap(ev.map);
     mapMeta = ev.map;
     mapMetaEl.textContent =
       `${(ev.map.width * ev.map.resolution_m).toFixed(1)}×` +
       `${(ev.map.height * ev.map.resolution_m).toFixed(1)} m · ` +
-      `${ev.map.known_pct}% known`;
+      `${ev.map.known_pct}% known · ` +
+      (scanPoints ? `${scanPoints.length} lidar returns` : "lidar not seeing");
   }
 }
 
@@ -281,6 +283,7 @@ $("stopbtn").addEventListener("click", async () => {
 let mapMeta = null;                  // latest meta from the state tick
 let mapImage = null;                 // decoded PNG
 let targetPose = null;               // latest pose from the tick
+let scanPoints = null;               // live lidar returns, map-frame [x,y]
 let shownPose = null;                // eased pose actually drawn
 let view = { scale: 1, x: 0, y: 0, fitted: false };
 
@@ -322,6 +325,18 @@ function draw() {
     ctx.setTransform(dpr * view.scale, 0, 0, dpr * view.scale,
                      dpr * view.x, dpr * view.y);
     ctx.drawImage(mapImage, 0, 0);
+    // LIVE LIDAR (Scott's ask): map-frame returns as small dots, drawn UNDER
+    // the pose arrow so the robot never hides behind its own sensor.
+    if (scanPoints && scanPoints.length) {
+      ctx.fillStyle = "rgba(90, 200, 250, 0.85)";
+      const r = Math.max(1.1 / view.scale, 0.35);
+      for (const p of scanPoints) {
+        const [px, py] = worldToPng(p[0], p[1]);
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, 6.283);
+        ctx.fill();
+      }
+    }
     if (targetPose) {
       // ease toward the tick's pose so motion reads as motion, not teleports
       if (!shownPose) shownPose = { ...targetPose };
