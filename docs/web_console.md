@@ -73,3 +73,19 @@ done latch — a fresh mission can be armed after a clear). The fresh map starts
 nearly empty and grows only as the robot moves — a small map right after
 clearing is normal. On the static-map rig the slam step reports itself absent
 honestly; marks and costmaps still clear.
+
+## The live lidar overlay
+
+The map pane draws every current lidar return (cyan) over the mapped room, from
+the state tick's `scan` field — map-frame points projected in the node from the
+same `map->laser` TF the costmaps read, so the overlay cannot disagree with what
+the stack believes. `scan: null` means the robot is NOT SEEING (no scan, stale
+>2 s, or no transform) and the meta line says "lidar not seeing" rather than
+drawing an empty room.
+
+**The 1 Hz update rate is a MEASURED choice, not a natural constant.** The
+console's costless property is certified by the counter method, and this feature
+was re-certified against it (≤1.2% deviation on /scan, explorer status and
+/diagnostics; tick 4.8 KB with 240 points against an 8 KB test guard). If a
+smoother overlay is wanted, re-run those windows at the new rate and keep the
+receipt — do not nudge the rate because it feels fine.

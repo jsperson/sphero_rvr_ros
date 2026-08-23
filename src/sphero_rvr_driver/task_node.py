@@ -301,9 +301,39 @@ class TaskNode(Node):
 
     # --- the bridge round 1 handlers ------------------------------------------
 
+    def _map_source(self):
+        """Who is publishing /map, and therefore what KIND of map this is.
+
+        ASSERT, DON'T INFER (2026-08-21 honesty seam): in the console's first
+        real session the model told Scott about "the map it has built" while a
+        recorded map was being served back by map_server. The model could not
+        have known better — where_am_i handed it size and known-percent with no
+        provenance. The map's kind is not guessable from its contents; it IS the
+        identity of its publisher, so that is what gets read, live, from the
+        graph at answer time (a stack restart can change it).
+        """
+        try:
+            pubs = self.get_publishers_info_by_topic("/map")
+        except Exception:
+            return "unknown", "cannot tell who is publishing the map"
+        names = {p.node_name for p in pubs}
+        if any("slam" in n for n in names):
+            return "slam", ("LIVE SLAM map — it grows as the robot moves, and "
+                            "starts small after a map clear")
+        if any("map_server" in n for n in names):
+            return "static", ("a RECORDED map being served back — it will NOT "
+                              "grow no matter how far the robot drives; do not "
+                              "describe it as a map the robot has built")
+        if not names:
+            return "none", "no publisher on /map at all"
+        return "unknown", f"published by {sorted(names)}, which is neither slam nor map_server"
+
     def _on_map(self, msg):
         known = sum(1 for v in msg.data if v >= 0)
+        source, source_note = self._map_source()
         self._map_meta = {
+            "source": source,
+            "source_note": source_note,
             "size_m": [round(msg.info.width * msg.info.resolution, 2),
                        round(msg.info.height * msg.info.resolution, 2)],
             "resolution_m": round(msg.info.resolution, 3),

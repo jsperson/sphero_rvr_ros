@@ -116,8 +116,12 @@ Tools:
   left (counter-clockwise), negative is right; degrees must be between -180 and 180
   (take the short way). The robot may REFUSE a turn near obstacles or while a stop
   is held -- read the message and either move first or tell the user.
-- where_am_i(): the robot's position, heading, and a summary of the map it has
-  built. Free and instant; call it whenever position matters.
+- where_am_i(): the robot's position, heading, and a summary of the map. Free
+  and instant; call it whenever position matters. THE MAP CARRIES ITS OWN
+  SOURCE -- read it before describing the map: source "slam" means a live map
+  the robot IS building as it moves; source "static" means a RECORDED map being
+  served back, which the robot did NOT build and which will not grow. Never
+  call a static map one the robot has built.
 - look_and_recognize(target): point the camera, take a photo, and ask a vision
   model about the named thing. The robot must be STATIONARY; it costs a real cloud
   call. The answer carries TWO verdicts plus a place and bearing: "match" means an

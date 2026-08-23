@@ -102,3 +102,34 @@ def test_every_tool_has_a_predicate():
             if isinstance(node, ast.Constant) and isinstance(node.value, str)}
     missing = set(TOOL_SCHEMAS) - keys
     assert not missing, f"tools without capability predicates: {sorted(missing)}"
+
+
+# ---------------------------------------------------------------------------
+# map provenance (2026-08-21 honesty seam: "the map it has built" about a
+# recorded map). The node half is source-scanned; the contract half is pinned.
+# ---------------------------------------------------------------------------
+
+def test_the_prompt_forbids_calling_a_static_map_one_the_robot_built():
+    from sphero_rvr_core.task_agent import SYSTEM_PROMPT
+    assert "source \"slam\"" in SYSTEM_PROMPT and "source \"static\"" in SYSTEM_PROMPT
+    assert "Never" in SYSTEM_PROMPT and "built" in SYSTEM_PROMPT
+
+
+def test_map_source_is_read_from_the_PUBLISHER_not_inferred():
+    """assert-don't-infer: the map's kind is its publisher's identity. A version
+    that guessed from cell counts or from a config flag would pass a smoke test
+    and lie the first time the rig served a recorded map."""
+    import inspect
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver"
+           / "task_node.py").read_text()
+    body = src[src.index("def _map_source"):]
+    body = body[:body.index("\n    def ")]
+    assert "get_publishers_info_by_topic" in body, (
+        "map source is no longer read from the graph's publishers")
+    assert '"slam"' in body and '"static"' in body and '"none"' in body
+    # the note must tell the model what NOT to say. Normalise first: the
+    # sentence is wrapped across source lines, and matching raw text would fail
+    # on a reflow rather than on a meaning change.
+    flat = " ".join(body.split()).replace('" "', "")
+    assert "do not describe it as a map the robot has built" in flat
