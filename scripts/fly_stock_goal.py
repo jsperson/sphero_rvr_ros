@@ -27,6 +27,11 @@ BEFORE ANY SEND, two gates, both learned in the field on 2026-08-18:
 from __future__ import annotations
 
 import argparse
+import os
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "src"))
+from sphero_rvr_core.goal_legality import Grid, assess  # noqa: E402
 import math
 import sys
 import time
@@ -75,6 +80,13 @@ def trinity_verdict(map_val, cost_val):
     if cost_val != 0:
         return False, f"global costmap holds cost {cost_val} here"
     return True, "mapped free, cost 0"
+
+
+def _grid(node, which):
+    """Adapt a live OccupancyGrid to the pure classifier's Grid (D64)."""
+    g = node.grids[which]
+    return Grid(g.data, g.info.width, g.info.height, g.info.resolution,
+                g.info.origin.position.x, g.info.origin.position.y)
 
 
 def qprof():
@@ -134,6 +146,14 @@ def main() -> int:
                        help="metres ahead along the current nose")
     ap.add_argument("--y", type=float, help="map-frame goal y (with --x)")
     ap.add_argument("--tf-wait-s", type=float, default=30.0)
+    # D64: the gate is unchanged; this only decides whether the operator has to
+    # retype the proposal the tool already computed.
+    ap.add_argument("--nearest", action="store_true",
+                    help="if the requested goal is illegal, FLY the nearest legal "
+                         "cell instead (announced loudly, still trinity-gated)")
+    ap.add_argument("--max-offset-m", type=float, default=1.5,
+                    help="how far a proposal may sit from the request (default 1.5); "
+                         "beyond this it is a different errand and none is offered")
     args = ap.parse_args()
     if args.x is not None and args.y is None:
         ap.error("--x needs --y")
@@ -179,9 +199,39 @@ def main() -> int:
         f"goal ({gx:.3f},{gy:.3f}), {math.hypot(gx - t.x, gy - t.y):.2f} m away; "
         f"cell verdict: {reason}")
     if not ok:
-        say("REFUSED: the goal cell fails the trinity -- pick a spot the map has "
-            "actually seen free.")
-        return 2
+        # D64. The trinity above is unchanged and still decides; this only says
+        # WHY in words that name the operator's next action, and points at the
+        # nearest legal cell instead of leaving a human to guess (154 s of it on
+        # 2026-08-22, with Scott standing there).
+        verdict = assess(_grid(node, "map"), _grid(node, "cost"),
+                         (t.x, t.y), (gx, gy), args.max_offset_m)
+        say(f"WHY: {verdict.code} -- {verdict.reason}")
+        if verdict.nearest is None:
+            say(f"REFUSED: no legal cell within {args.max_offset_m:.2f} m of the "
+                f"request; a proposal further out is a different errand.")
+            return 2
+        nx, ny = verdict.nearest
+        say(f"NEAREST LEGAL: ({nx:.3f},{ny:.3f}) -- "
+            f"{verdict.nearest_offset_m:.2f} m from your request, "
+            f"{math.hypot(nx - t.x, ny - t.y):.2f} m from the robot")
+        if not args.nearest:
+            say(f"REFUSED: the goal cell fails the trinity. Re-run with "
+                f"--x {nx:.3f} --y {ny:.3f}, or pass --nearest to fly the "
+                f"proposal.")
+            return 2
+        say(f"SUBSTITUTING the proposal for your request (--nearest): "
+            f"({gx:.3f},{gy:.3f}) -> ({nx:.3f},{ny:.3f})")
+        gx, gy = nx, ny
+        gyaw = math.atan2(gy - t.y, gx - t.x)
+        ok, reason = trinity_verdict(node.cell("map", gx, gy),
+                                     node.cell("cost", gx, gy))
+        say(f"ANNOUNCE: substituted goal ({gx:.3f},{gy:.3f}); cell verdict: {reason}")
+        if not ok:
+            # The proposal must pass the SAME gate; a tool that flies its own
+            # suggestion past the check would be the gate deciding nothing.
+            say("REFUSED: the proposal did not pass the trinity -- refusing rather "
+                "than flying an unverified cell.")
+            return 2
 
     planner = ActionClient(node, ComputePathToPose, "compute_path_to_pose")
     if not planner.wait_for_server(timeout_sec=15.0):
