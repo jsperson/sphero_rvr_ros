@@ -486,6 +486,15 @@ Landed a red test on 2026-08-22 (D62), caught in the same breath, amended,
 force-with-lease on an unreviewed tip. The defect was one character of
 convenience.
 
+**AND THE REASON IT BIT A THIRD TIME IS THE LESSON UNDER THE LESSON.** The
+pipe-eats-exit-code rule had been learned twice before — and lived only in one
+participant's memory, never in this file. Nobody else could read it, so
+everybody else re-learned it. **A rule that lives in one head will be
+re-discovered by every head that does not have it, at full price each time.**
+If a lesson is worth a norm, it goes in the repo where the next person — or the
+next session — will actually meet it. Three occurrences is the receipt for this
+one.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
