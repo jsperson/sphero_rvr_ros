@@ -435,6 +435,39 @@ the tool. Third member of the manifest family (uninstalled config, unrecorded
 `/diagnostics`, unrecorded `/tof/obstacles`), and the first where the protection already
 existed and was walked past.
 
+## 16. A skip-decorator hides a file from PARSING, not just from running
+
+Found 2026-08-22 by a syntax error that reached the Pi: a duplicated keyword
+argument in `coverage_explorer_node.py` passed **1,393 green tests on the Mac**
+and failed at `colcon build`. The reason is structural, not careless — every
+driver-module test begins `pytest.importorskip("rclpy")`, so on a host without
+ROS those files are never imported, and a file that is never imported is never
+PARSED. A whole package's syntax was unverified on the machine where the work
+happens, and had been for months.
+
+**The rule: any test population gated on an unavailable import is blind to
+syntax in the files it skips. Something ROS-free must parse them.**
+`tests/test_driver_sources_are_wellformed.py` does exactly that, and its
+must-flip was run in both directions (the exact duplicate re-inserted, seen to
+fail, restored, seen to pass) before it was trusted. The same file pins that
+every `build_report` call site carries the same counter set — the generalised
+form of the defect, since a report that lies by omission at ONE call site
+(START_BLOCKED, until 2026-08-16) is the same class.
+
+## 17. Never chain a commit behind a test run in one command
+
+`pytest && git commit && git push` reads as safe and is not: if the patch that
+was supposed to fix a test silently failed to apply, the suite fails, and the
+commit still runs — because `&&` only chains on the *previous* command's status,
+and a shell one-liner that mixes verification with landing gives the landing a
+status that is not the verification's. It happened on 2026-08-22 (D62): a red
+test was pushed, caught in the same breath, amended, force-with-lease on an
+unreviewed tip.
+
+**Land and verify as SEPARATE steps.** Run the suite, read the number, then
+commit. The commit does not know the test failed, and neither does a reviewer
+reading only the SHA.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
