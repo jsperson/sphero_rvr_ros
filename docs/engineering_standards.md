@@ -495,6 +495,26 @@ If a lesson is worth a norm, it goes in the repo where the next person — or th
 next session — will actually meet it. Three occurrences is the receipt for this
 one.
 
+## 18. A log query over ssh can match its own reflection
+
+2026-08-22, investigating the Pi's shutdown hang: `journalctl | grep "failed set
+request"` reported USB errors on a boot where the device had never been used.
+They were not errors. **`tailscaled` logs the full command line of every ssh
+session it starts, so journald contained tailscaled's record of the grep itself,
+and the pattern matched its own text.** The same effect inflated shutdown-marker
+counts on a boot that had never shut down.
+
+The cost was not noise, it was a REVERSED FINDING: the self-echo made a
+three-boot correlation look perfect (USB errors ⇒ hung shutdown). Filtering the
+echo and widening to six boots broke it — two boots carried the errors and shut
+down normally — so a report already sent had to be withdrawn.
+
+**Rules:** use `journalctl -k` when the fact is a kernel fact (tailscaled is not
+kernel), otherwise `| grep -v tailscaled` before counting anything. Treat any
+log-derived count taken over ssh as contaminated until one of those is applied.
+An instrument that records the observer's question inside the observed data will
+manufacture agreement with whatever the observer is looking for.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
