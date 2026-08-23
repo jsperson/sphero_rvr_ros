@@ -1284,3 +1284,4 @@ def test_d62_the_counter_lives_at_the_single_cancel_site():
     assert "self._goals_cancelled_at_end += 1" in body, (
         "the counter moved away from the cancel site")
     assert "cancel_goal_async" in body
+
