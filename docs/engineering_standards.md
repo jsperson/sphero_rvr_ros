@@ -515,6 +515,47 @@ log-derived count taken over ssh as contaminated until one of those is applied.
 An instrument that records the observer's question inside the observed data will
 manufacture agreement with whatever the observer is looking for.
 
+## 19. A graph count over ssh is warm-up-sensitive, so one read is not an observation
+
+2026-08-23, a restarted worker's first five minutes. Three consecutive
+`ros2 node list` calls over ssh against an unchanged Pi returned **5, then 18,
+then 21**, and two further reads returned 21. Nothing started, nothing died, and
+nothing was launched between them: the demo had been fully up the whole time.
+Had the first read been reported, it would have said the standing demo was dead
+— and it would have said so with no task_node and no web_console on the list,
+which is exactly the shape of a real failure.
+
+The mechanism is discovery, not flakiness. `ros2 node list` spawns a **brand-new
+DDS participant** which must discover its peers before it can enumerate them,
+and it prints whatever it has heard by the end of its short wait. Over ssh every
+invocation is a fresh process on a fresh connection with no warm cache, so
+**every read is a cold read** — the warm-up is paid again each time, and it is
+paid in the same direction every time.
+
+**That direction is the whole reason this is dangerous.** A cold read can only
+under-report: it can miss nodes that exist, never invent nodes that do not. So
+the error mode is a **false negative** — "the node is gone", "the demo is dead",
+"the stack came down" — which is precisely the class of claim that gets acted on
+urgently. And the instrument gives no hint: it exits 0 and prints a short,
+plausible, well-formed list.
+
+**Rules:**
+1. **Repeat until stable.** A count is an observation only when at least two
+   consecutive reads agree; on a graph this size, take three.
+2. **Report how many reads agreed**, not just the number. "21 nodes, stable
+   across 3 reads" is evidence; "21 nodes" is a sample.
+3. **Never report an absence from a first read.** Absence is the failure mode
+   this instrument has; re-read before telling anyone something is missing.
+4. The same discipline covers the sibling CLIs that each spawn their own
+   participant — `ros2 topic list`, `ros2 service list`, `ros2 node info`.
+
+This is the fourth member of one family, and the family is the actual standard:
+**the instrument the observer brings can distort the thing observed** — the
+tailscaled echo of norm 18, a shielded run read as unshielded, a leaked
+`ROS_DOMAIN_ID`, and now cold discovery. Three of the four produced a confident
+wrong answer that someone had to withdraw. Before any count over ssh becomes a
+finding, name what the act of measuring added or removed.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
