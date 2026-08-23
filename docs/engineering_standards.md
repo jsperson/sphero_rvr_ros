@@ -454,19 +454,37 @@ every `build_report` call site carries the same counter set — the generalised
 form of the defect, since a report that lies by omission at ONE call site
 (START_BLOCKED, until 2026-08-16) is the same class.
 
-## 17. Never chain a commit behind a test run in one command
+## 17. A PIPE SWALLOWS THE EXIT CODE, so `&&` cannot protect a landing
 
-`pytest && git commit && git push` reads as safe and is not: if the patch that
-was supposed to fix a test silently failed to apply, the suite fails, and the
-commit still runs — because `&&` only chains on the *previous* command's status,
-and a shell one-liner that mixes verification with landing gives the landing a
-status that is not the verification's. It happened on 2026-08-22 (D62): a red
-test was pushed, caught in the same breath, amended, force-with-lease on an
-unreviewed tip.
+Stated wrong on the first attempt (2026-08-22) and corrected the same night by
+review, because a norm with a wrong mechanism is itself a lie-generator. The
+first draft blamed `&&`. That is exactly backwards: `&&` works — a failing
+`pytest` returns non-zero and the next command never runs.
 
-**Land and verify as SEPARATE steps.** Run the suite, read the number, then
-commit. The commit does not know the test failed, and neither does a reviewer
-reading only the SHA.
+**What actually failed was the PIPE.** The command was:
+
+```
+python3 -m pytest tests/ -q 2>&1 | tail -1 && git add -A && git commit ...
+```
+
+A pipeline's exit status is its LAST command's. `tail` succeeds at tailing a
+report of failures, so the pipeline exits 0, and `&&` cheerfully proceeds to
+commit a red suite. The protective construction was defeated by the convenience
+of trimming output — and the trimming is why the failure was invisible: `-q |
+tail -1` prints one summary line that says "1 failed" while the shell reports
+success.
+
+**The rules, both of them:**
+1. **Landing commands take a BARE exit code.** Never put a pipe between a
+   verification command and the `&&` that guards a commit, push or deploy. Read
+   the output in a separate step, or use `set -o pipefail` where the shell
+   supports it.
+2. **Read the number before you land.** A summary line that says "1 failed" is
+   only useful to someone who looks at it; the commit does not.
+
+Landed a red test on 2026-08-22 (D62), caught in the same breath, amended,
+force-with-lease on an unreviewed tip. The defect was one character of
+convenience.
 
 ## Appendix B: operational traps that look like bugs
 
