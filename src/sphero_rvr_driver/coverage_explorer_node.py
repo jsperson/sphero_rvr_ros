@@ -121,6 +121,7 @@ MAP_CLEAR_RESETS = {
     "_goals_aborted_after_recovery": int,
     "_goals_aborted_without_recovery": int,
     "_goals_stall_killed": int,
+    "_goals_cancelled_at_end": int,
     "_planner_rejections": int,
     "_planner_queries": int,
     "_standoff_skips": int,
@@ -392,6 +393,9 @@ class CoverageExplorerNode(Node):
         # ride-along ended "ABORTED_GOALS_KEEP_FAILING" with aborted=0 in every
         # bucket: a report an autopsy would read as "nothing failed".
         self._goals_stall_killed = 0
+        # D62: goals cancelled IN FLIGHT by mission give-up/stop/map-clear. Until
+        # 2026-08-22 these landed in no counter and the ledger did not total.
+        self._goals_cancelled_at_end = 0
         self._planner_rejections = 0
         # the planner_rejections counter's honest siblings (cert attempt 3's
         # conflation): queries = times the planner was actually ASKED;
@@ -718,6 +722,7 @@ class CoverageExplorerNode(Node):
                 "goals_aborted_after_recovery": self._goals_aborted_after_recovery,
                 "goals_aborted_without_recovery": self._goals_aborted_without_recovery,
                 "goals_stall_killed": self._goals_stall_killed,
+                "goals_cancelled_at_end": self._goals_cancelled_at_end,
                 "planner_rejections": self._planner_rejections,
                 "standoff_skips": self._standoff_skips,
                 "covered_cells": len(self._covered),
@@ -859,6 +864,8 @@ class CoverageExplorerNode(Node):
                     goals_aborted_after_recovery=self._goals_aborted_after_recovery,
                     goals_aborted_without_recovery=self._goals_aborted_without_recovery,
                     goals_stall_killed=self._goals_stall_killed,
+            goals_cancelled_at_end=self._goals_cancelled_at_end,
+                    goals_cancelled_at_end=self._goals_cancelled_at_end,
                     planner_rejections=self._planner_rejections,
                     standoff_skips=self._standoff_skips,
                     # THE FORENSIC FIELDS, which this call site omitted until
@@ -1828,13 +1835,22 @@ class CoverageExplorerNode(Node):
             return None
 
     def _cancel_active(self):
-        """Cancel the in-flight goal. The result callback needs no special case:
-        nothing is written off on a cancel."""
+        """Cancel the in-flight goal, AND COUNT IT (D62).
+
+        The old comment here said "nothing is written off on a cancel", which
+        was true and was the defect: a goal cancelled mid-flight by give-up,
+        operator stop or map clear left the ledger short by one with no name for
+        the difference, and the d53 invariant raced on that gap. This is the
+        ONE place a live goal is cancelled, so it is the one place the counter
+        belongs -- same single-incrementer discipline the planner_rejections
+        re-anchor established (cert 3, 2026-08-19).
+        """
         with self._lock:
             handle = self._active_goal_handle
             self._active_goal_handle = None
             self._active_goal_cell = None
         if handle is not None:
+            self._goals_cancelled_at_end += 1
             handle.cancel_goal_async()
 
     def _prune_stalled(self):

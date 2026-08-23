@@ -121,6 +121,15 @@ def build_report(
     # a zero from a caller that predates the field reads as "nothing was
     # stall-killed", which is exactly the lie the field exists to remove.
     goals_stall_killed=None,
+    # D62 (filed 2026-08-21, found by the shield-era rule's first customer): a
+    # goal CANCELLED by mission give-up while in flight landed in no counter at
+    # all -- `_cancel_active`'s own comment said "nothing is written off on a
+    # cancel" -- so the ledger could end with sent > succeeded+aborted+
+    # stall_killed and no name for the difference. The d53 invariant raced on
+    # exactly that gap. UNKNOWN by default like its siblings: a zero from a
+    # caller that predates this field reads as "no goal was ever cancelled",
+    # which is the fabricated-zero this module exists to refuse.
+    goals_cancelled_at_end=None,
     planner_rejections=0,
     # Distinct from planner_rejections BY RULING (cert attempt 3's conflation,
     # 2026-08-19): approach poses the safety envelope filtered before any
@@ -180,6 +189,12 @@ def build_report(
             "sent": int(goals_sent),
             "succeeded": int(goals_succeeded),
             "aborted": int(goals_aborted),
+            # D62: the ending a cancel used to have no name for. With this, the
+            # ledger TOTALS -- sent == succeeded + aborted + stall_killed +
+            # cancelled_at_end -- and a reader can no longer find goals that
+            # simply vanished.
+            "cancelled_at_end": (None if goals_cancelled_at_end is None
+                                 else int(goals_cancelled_at_end)),
             # THE ABORT SPLIT. `aborted` alone cannot support the conclusion that
             # ABORTED_GOALS_KEEP_FAILING implies -- that the rover tried and the room
             # refused. Only the aborts where a RECOVERY ran carry that evidence; an

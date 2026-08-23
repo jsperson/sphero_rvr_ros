@@ -690,10 +690,18 @@ def test_d53_stall_kills_are_a_named_counter_in_the_report(stack):
         "counter is not wired through")
     assert goals["stall_killed"] >= 3
     assert goals["aborted"] == 0, "hold-mode goals cannot ABORT; harness drifted"
-    assert goals["sent"] - goals["succeeded"] == goals["stall_killed"], (
+    # D62 (2026-08-22): the invariant now sums EVERY named ending, not the old
+    # three terms. A goal cancelled in flight by give-up used to land in no
+    # counter, so this assertion raced -- it passed or failed depending on
+    # whether give-up fired while a goal was live. Summing all four makes the
+    # ledger TOTAL and the race can no longer decide whether the gap is visible.
+    named = (goals["succeeded"] + goals["aborted"] + (goals["stall_killed"] or 0)
+             + (goals["cancelled_at_end"] or 0))
+    assert goals["sent"] == named, (
         "the goal ledger still has endings no counter names: "
         f"sent={goals['sent']} succeeded={goals['succeeded']} "
-        f"stall_killed={goals['stall_killed']}"
+        f"aborted={goals['aborted']} stall_killed={goals['stall_killed']} "
+        f"cancelled_at_end={goals['cancelled_at_end']}"
     )
 
 
@@ -1246,3 +1254,33 @@ def test_d36_a_costmap_gated_escape_is_RECORDED_not_swallowed(stack):
         f"a costmap-refused escape was recorded as CLEARED: {escapes.get('outcomes')}. "
         "The explorer is reporting an escape that moved nothing as one that moved the "
         "rover, which is D36 wearing the fix's clothes")
+
+
+def test_d62_cancelled_at_end_is_UNKNOWN_not_zero_for_old_callers():
+    """The module's standing rule, applied to the new field: a caller that
+    predates it must publish null, not 0. A fabricated zero here reads as "no
+    goal was ever cancelled" — the most reassuring possible claim about the
+    exact ending that used to vanish."""
+    from sphero_rvr_core.mission_report import build_report
+    old_caller = build_report("COMPLETE", 10, 0.05, 1.0, goals_sent=1,
+                              goals_succeeded=1)
+    assert old_caller["goals"]["cancelled_at_end"] is None
+    new_caller = build_report("COMPLETE", 10, 0.05, 1.0, goals_sent=2,
+                              goals_succeeded=1, goals_cancelled_at_end=1)
+    assert new_caller["goals"]["cancelled_at_end"] == 1
+
+
+def test_d62_the_counter_lives_at_the_single_cancel_site():
+    """One incrementer, at the one place a live goal is cancelled — the same
+    discipline the planner_rejections re-anchor established. A second
+    incrementer elsewhere would double-count exactly the endings this row
+    exists to make countable."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "src" / "sphero_rvr_driver"
+           / "coverage_explorer_node.py").read_text()
+    assert src.count("self._goals_cancelled_at_end += 1") == 1
+    body = src[src.index("def _cancel_active"):]
+    body = body[:body.index("\n    def ")]
+    assert "self._goals_cancelled_at_end += 1" in body, (
+        "the counter moved away from the cancel site")
+    assert "cancel_goal_async" in body

@@ -63,6 +63,10 @@ def test_goal_counts_and_map_files_round_trip():
                           # watchdog stall-kill class, named 2026-08-19 after
                           # five of them ended a flight with aborted=0)
                           "stall_killed": None,
+                          # D62 (2026-08-22): the cancelled-in-flight ending that used
+                          # to land in no counter. UNKNOWN-not-zero for callers that
+                          # predate it, exactly like its siblings above.
+                          "cancelled_at_end": None,
                           "planner_rejections": 7,
                           # UNKNOWN-not-zero, same as its siblings (the field
                           # arrived with cert 3's conflation fix, 2026-08-19)
