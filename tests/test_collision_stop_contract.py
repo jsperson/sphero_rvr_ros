@@ -77,10 +77,16 @@ def test_supervised_launch_remaps_driver_away_from_public_cmd_vel_and_private_se
     assert "lidar_collision_stop_supervisor" in source
     assert "collision_stop.yaml" in source
     assert "condition=IfCondition(start_supervisor)" in source
-    assert '"front_slow_min_angle_deg"' in source
-    assert '"front_slow_max_angle_deg"' in source
-    assert "ParameterValue" in source
-    assert "Startup-only forward slow-corridor" in source
+    # The three lines that used to sit here pinned a launch-argument override of
+    # the slow corridor ("Startup-only forward slow-corridor", 57e26be). That
+    # override SHADOWED collision_stop.yaml -- ROS 2 launch lets the later
+    # parameters entry win -- so the YAML's +/-35 was dead for 23 days while the
+    # node ran the launch default's +/-45. The override was removed on
+    # 2026-08-25; asserting its presence would now pin the defect.
+    # The replacement obligation is structural and lives in
+    # tests/test_launch_does_not_shadow_config.py: the supervisor's parameters
+    # come from the YAML and nothing may be layered on top.
+    assert "parameters=[str(collision_stop_config)]" in source
 
 
 def test_mapping_motor_capable_launch_uses_supervised_graph_by_default():

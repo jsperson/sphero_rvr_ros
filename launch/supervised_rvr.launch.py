@@ -20,11 +20,6 @@ def generate_launch_description():
     serial_port = LaunchConfiguration("serial_port")
     rvr_params_file = LaunchConfiguration("rvr_params_file")
     start_supervisor = LaunchConfiguration("start_collision_stop")
-    front_slow_min_angle_deg = LaunchConfiguration("front_slow_min_angle_deg")
-    front_slow_max_angle_deg = LaunchConfiguration("front_slow_max_angle_deg")
-    trajectory_clearance_margin_m = LaunchConfiguration(
-        "trajectory_clearance_margin_m"
-    )
     enable_imu_fusion = LaunchConfiguration("enable_imu_fusion")
     imu_x = LaunchConfiguration("imu_x")
     imu_y = LaunchConfiguration("imu_y")
@@ -66,23 +61,26 @@ def generate_launch_description():
         executable="lidar_collision_stop_supervisor",
         name="lidar_collision_stop_supervisor",
         output="screen",
-        parameters=[
-            str(collision_stop_config),
-            {
-                "front_slow_min_angle_deg": ParameterValue(
-                    front_slow_min_angle_deg,
-                    value_type=float,
-                ),
-                "front_slow_max_angle_deg": ParameterValue(
-                    front_slow_max_angle_deg,
-                    value_type=float,
-                ),
-                "trajectory_clearance_margin_m": ParameterValue(
-                    trajectory_clearance_margin_m,
-                    value_type=float,
-                ),
-            },
-        ],
+        # ONE source for this node's parameters. A second entry here shadows the
+        # file (ROS 2 launch: the later entry wins), and a shadowed key makes the
+        # YAML a lie that nothing can see -- +/-35 sat dead in the file for 23 days
+        # behind a +/-45 launch default. tests/test_launch_does_not_shadow_config.py
+        # fails if anything is ever layered on top again.
+        #
+        # A CAPABILITY WAS REMOVED HERE BY DECISION, NOT BY OVERSIGHT. 57e26be
+        # (2026-07-23) added launch-time overrides for front_slow_min/max_angle_deg
+        # and trajectory_clearance_margin_m on purpose -- "Make attended collision
+        # corridor override explicit" -- so someone once wanted to tune the slow
+        # corridor at launch. After 2026-08-25 there is no launch argument for it:
+        # widening or narrowing the corridor means editing collision_stop.yaml.
+        #
+        # The evidence that this trade is right: on 2026-08-02, someone who wanted
+        # exactly that change edited the YAML (4bb920d, "trim timid brake") rather
+        # than passing the launch argument. That is which interface people actually
+        # reach for -- and the override's only observable effect across those 23
+        # days was to silently defeat them. A knob nobody turns, which quietly
+        # overrides the file everybody edits, is worse than no knob.
+        parameters=[str(collision_stop_config)],
         remappings=[
             ("cmd_vel", "/cmd_vel"),
             ("cmd_vel_motor", "/cmd_vel_motor"),
@@ -140,30 +138,6 @@ def generate_launch_description():
             "start_collision_stop",
             default_value="true",
             description="Must remain true for motor-capable launches; false starts no driver and is test/development-only.",
-        ),
-        DeclareLaunchArgument(
-            "front_slow_min_angle_deg",
-            default_value="-45.0",
-            description=(
-                "Startup-only forward slow-corridor minimum bearing. Narrowing "
-                "requires an attended, reviewed physical-layout decision."
-            ),
-        ),
-        DeclareLaunchArgument(
-            "front_slow_max_angle_deg",
-            default_value="45.0",
-            description=(
-                "Startup-only forward slow-corridor maximum bearing. Narrowing "
-                "requires an attended, reviewed physical-layout decision."
-            ),
-        ),
-        DeclareLaunchArgument(
-            "trajectory_clearance_margin_m",
-            default_value="0.02",
-            description=(
-                "Startup-only margin added to the footprint swept along the "
-                "current command trajectory. Changes require reviewed geometry."
-            ),
         ),
         rvr_node,
         collision_stop_node,
