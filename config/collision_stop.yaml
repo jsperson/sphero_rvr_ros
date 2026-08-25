@@ -287,11 +287,23 @@ lidar_collision_stop_supervisor:
     # believed later. The safe direction here is downward: a near edge set too high
     # silently drops the closest obstacles, which are the ones there is least time for.
     low_obstacle_min_range_m: 0.14
-    # The binding requirement is only `>= low_obstacle_slow_distance_m` (0.30) -- the
-    # brake takes no action on anything further, so a wider window cannot cause one.
-    # 0.60 buys headroom on purpose: it covers rule B's true reach of 0.598 m (row 3,
-    # 0.498 m in the broken frame), so pinning rule B needs no second change here.
-    # Nothing is published beyond rule A's 0.297 m while B is gated.
+    # The binding requirement is only `>= low_obstacle_slow_distance_m` -- the brake
+    # takes no action on anything further, so a wider window cannot cause one. It
+    # covers rule B's reach of 0.598 m (row 3, 0.498 m in the broken frame), so
+    # pinning rule B needed no second change here.
+    #
+    # CORRECTED 2026-08-25, AND THE HEADROOM IS GONE. This block read
+    # "`>= low_obstacle_slow_distance_m` (0.30) ... 0.60 buys headroom on purpose".
+    # The (0.30) was the PRE-2026-08-14 slow distance; the widening recorded at
+    # L264-273 took slow to 0.60, so the requirement is now met at EXACT EQUALITY --
+    # 0.60 >= 0.60, zero headroom, not the 0.30 m the sentence promised. The
+    # direction that matters: a further widening of the slow band ALONE would push
+    # slow past this window and would look free to anyone reading the old prose.
+    # tests/test_collision_stop_derivations.py pins both the invariant and the fact
+    # that its margin is now zero.
+    # (Dropped with it: "nothing is published beyond rule A's 0.297 m while B is
+    # gated" -- rule B has been live since 2026-08-14, so that clause described a
+    # state this config no longer has.)
     low_obstacle_max_range_m: 0.60
     low_obstacle_min_forward_scale: 0.60
     # ~2 frames at the measured 6.5-7.6 Hz (2 / 6.5 = 0.308 s). THE BUDGET IS TRAVEL,
@@ -342,9 +354,15 @@ lidar_collision_stop_supervisor:
     #   5.8 mm. That is a range DECREASE, not travel; on a broad sloping object new
     #   nearer points appear without the rover moving, and calling it creep would
     #   state cloud evolution as physics.
-    #   The HOLD covers objects that vanish. Its threshold (0.227 m) is deliberately
+    #   The HOLD covers objects that vanish. Its threshold (0.272 m) is deliberately
     #   larger than the stop distance, because the trigger is a lost belief rather
     #   than a stopping distance.
+    #   CORRECTED 2026-08-25: this read 0.227 -- the pre-speed-raise figure, quoted
+    #   as current twelve lines after the block above had already labelled it old.
+    #   NOTHING DEPLOYED MOVED: both operands are read live in the node, so the
+    #   threshold has been 0.272 since the 2026-08-19 raise and only the prose was
+    #   behind. There is no constant here to pin, which is exactly why it could rot
+    #   unnoticed -- tests/test_collision_stop_derivations.py now pins the figure.
     # Thin objects vanish EARLIER than the structural floor -- run 1's leg was lost at
     # 0.181 m, 17 mm above it -- so no stop distance derived from any single specimen
     # can promise visibility. This hold is the load-bearing mechanism for the vanish
