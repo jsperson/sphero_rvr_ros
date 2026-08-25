@@ -53,7 +53,8 @@ from std_srvs.srv import Trigger
 from sphero_rvr_core.task_agent import Budget, availability_note, run_instruction
 from sphero_rvr_core.web_console import (EventBroker, build_state, classify_line,
                                          grid_to_png, project_scan)
-from sphero_rvr_core.web_console_http import make_server, shutdown_server
+from sphero_rvr_core.web_console_http import (install_stop_handlers,
+                                              make_server, shutdown_server)
 from sphero_rvr_driver.task_client import ToolRunner, make_model_caller
 
 #: Matches map_server's and slam_toolbox's latched publisher, so the last map is
@@ -428,6 +429,9 @@ def main(argv=None):
     tick_thread.start()
 
     server = make_server(args.host, args.port, app)
+    # D74: rclpy's own SIGTERM handler does not interrupt serve_forever, so
+    # without this the process ignores SIGTERM and systemd waits it out.
+    install_stop_handlers(server)
     node.get_logger().info(
         f"web console listening on http://{args.host}:{args.port}/ "
         f"({'chat enabled' if ask else 'WATCH-ONLY, no model key'})")

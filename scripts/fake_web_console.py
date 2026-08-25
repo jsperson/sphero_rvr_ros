@@ -34,7 +34,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
 
 from sphero_rvr_core.web_console import (EventBroker, build_state,  # noqa: E402
                                          classify_line, grid_to_png)
-from sphero_rvr_core.web_console_http import make_server  # noqa: E402
+from sphero_rvr_core.web_console_http import (install_stop_handlers,
+                                              make_server)  # noqa: E402
 
 #: The canned mission: one line per transcript beat, every ending class present.
 CANNED = (
@@ -130,6 +131,7 @@ def main():
 
     threading.Thread(target=tick, daemon=True).start()
     server = make_server("127.0.0.1", args.port, app)
+    install_stop_handlers(server)          # the shipped stop path, exercised here
     print(f"fake console on http://127.0.0.1:{server.server_address[1]}/ "
           f"(static: {args.static_dir})", flush=True)
     try:

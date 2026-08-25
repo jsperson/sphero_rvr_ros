@@ -28,6 +28,8 @@ blocks on anyone's network.
 
 import json
 import os
+import signal
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -205,3 +207,47 @@ def shutdown_server(server, join_timeout_s=None):
     server.app.stopping.set()
     server.shutdown()
     server.server_close()
+
+
+def install_stop_handlers(server, signums=(signal.SIGTERM, signal.SIGINT)):
+    """Make SIGTERM actually stop the console. D74.
+
+    2026-08-25 teardown: this process survived a process-group SIGINT, a direct
+    SIGINT and a SIGTERM, and was still answering HTTP 200 half a minute later.
+    Python's DEFAULT SIGTERM disposition would have killed it -- so something had
+    installed a handler, and in this process the only candidate is `rclpy.init()`,
+    whose handlers ask the ROS context to shut down and know nothing about a
+    blocking `serve_forever()` on the main thread. The signal was delivered,
+    handled, and changed nothing.
+
+    A SIGTERM-deaf process reparented to init is what systemd WAITS OUT for a full
+    TimeoutStopUSec, which is why this is a shutdown-slowness fix.
+
+    Two details that are load-bearing rather than stylistic:
+
+    * `server.shutdown()` BLOCKS until the accept loop exits, and the accept loop
+      is the thread the signal handler runs on. Calling it inline self-deadlocks,
+      so the stop runs on its own thread and the handler returns immediately.
+    * The previous handler is CHAINED, not replaced. rclpy still gets to shut its
+      context down; we only add the half it was never going to do.
+
+    Returns `serve_forever()` to its caller; the caller's own `finally` still owns
+    the teardown (`shutdown_server`, which is what frees the port).
+    """
+    previous = {}
+
+    def _stop(signum, frame):
+        threading.Thread(target=server.shutdown, name="console-stop",
+                         daemon=True).start()
+        earlier = previous.get(signum)
+        if callable(earlier):
+            earlier(signum, frame)
+
+    for signum in signums:
+        try:
+            previous[signum] = signal.signal(signum, _stop)
+        except (ValueError, OSError):
+            # not the main thread, or a platform without this signal: the caller
+            # keeps whatever behaviour it had rather than losing the server.
+            continue
+    return server
