@@ -1,0 +1,58 @@
+# The standing demo as a systemd SERVICE, replacing `setsid nohup ... &` inside an
+# SSH session. Prepared 2026-08-25, HELD FOR INSTALL.
+#
+# WHAT THIS FIXES, and what it does NOT:
+#   IT IS THE SLOWNESS FIX, NOT THE HANG FIX. The session-scope shutdown story was
+#   FALSIFIED on 2026-08-22 by a 31 s clean reboot in exactly that state, and this
+#   unit is not being revived on that claim. Its merit is different and measured:
+#   a process launched with `setsid nohup` from an SSH session lands in a session
+#   scope with TimeoutStopUSec=1min 30s, and anything that does not exit promptly
+#   is WAITED OUT for the whole of it. On 2026-08-25 `web_console` was exactly that
+#   process -- it survived a group SIGINT, a direct SIGINT and a SIGTERM and was
+#   still answering HTTP 200 half a minute later (D74).
+#
+#   D74's code fix makes the console obey SIGTERM. This unit does the other half:
+#   it bounds the wait explicitly, and it kills the whole CGROUP so that a child
+#   which outlives its launcher -- `ros2 launch`'s children, or a `ros2 run` node
+#   reparented to init -- is stopped rather than orphaned. Neither half replaces
+#   the other: the code fix makes the process mortal, the unit makes the group
+#   accountable.
+
+[Unit]
+Description=Sphero RVR standing demo (sim rig + task_node + web console)
+Documentation=file:///home/jsperson/ros2_ws/src/sphero_rvr_ros/docs/web_console.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jsperson
+WorkingDirectory=/home/jsperson/ros2_ws
+ExecStart=/home/jsperson/ros2_ws/src/sphero_rvr_ros/scripts/rvr_demo_up.sh
+
+# EVERY descendant belongs to this unit's cgroup, so stopping the unit stops the
+# tree -- including a node whose `ros2 run` wrapper has already died. This is the
+# default, stated explicitly because it is the entire point of the unit.
+KillMode=control-group
+KillSignal=SIGTERM
+
+# DERIVED, not chosen for feel: the console now exits on SIGTERM in ~0.6 s
+# (measured, D74), the rig's nav2 nodes settle in ~11.6 s at BRINGUP and stop
+# faster than they start. 20 s is comfortably above the slowest observed stop and
+# an order below the 90 s session-scope default that produced the complaint. If a
+# stop ever reaches this bound, that is a DEFECT TO REPORT, not a number to raise.
+TimeoutStopSec=20
+
+# SIGKILL only after the bound above has actually elapsed.
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+
+# The demo is a convenience, not a safety component: if it dies, leave it dead and
+# let a human look, rather than restarting a rover-facing process unattended.
+Restart=no
+
+StandardOutput=append:/home/jsperson/rvr_demo.log
+StandardError=append:/home/jsperson/rvr_demo.log
+
+[Install]
+WantedBy=multi-user.target
