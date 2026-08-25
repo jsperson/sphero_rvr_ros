@@ -18,6 +18,18 @@
 #   the other: the code fix makes the process mortal, the unit makes the group
 #   accountable.
 
+# DO NOT `systemctl enable` THIS UNIT, and the reason is not bureaucratic.
+#   The demo is "chassis-free" only in the sense that it needs no MOTION: the rig
+#   runs the real driver and holds a live link to the chassis, which is how the
+#   console can report /battery_state at all. Measured 2026-08-25: **93% -> 78% in
+#   about six hours with the demo merely standing** -- the same shape as the flat
+#   battery of 2026-08-03. Enabling this unit means the chassis drains every time
+#   the Pi is powered on: while it is being charged, and overnight.
+#   INSTALLED-BUT-DISABLED IS THE INTENDED STATE. `systemctl start` it when someone
+#   wants a console; enable it only when a human has decided they want a console at
+#   boot AND has accepted that battery cost. It looks like an obvious convenience.
+#   It is not a free one.
+
 [Unit]
 Description=Sphero RVR standing demo (sim rig + task_node + web console)
 Documentation=file:///home/jsperson/ros2_ws/src/sphero_rvr_ros/docs/web_console.md
