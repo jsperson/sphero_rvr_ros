@@ -549,12 +549,64 @@ plausible, well-formed list.
 4. The same discipline covers the sibling CLIs that each spawn their own
    participant — `ros2 topic list`, `ros2 service list`, `ros2 node info`.
 
+**And the spawning is not free either — see norm 20.** The same DDS participant
+that has to warm up before it can answer also costs the machine something to
+create, and enough of them starved a safety sensor below its consumer's staleness
+bound. One trap, two faces: this norm is what a cheap-looking question gets WRONG,
+norm 20 is what it COSTS.
+
 This is the fourth member of one family, and the family is the actual standard:
 **the instrument the observer brings can distort the thing observed** — the
 tailscaled echo of norm 18, a shielded run read as unshielded, a leaked
 `ROS_DOMAIN_ID`, and now cold discovery. Three of the four produced a confident
 wrong answer that someone had to withdraw. Before any count over ssh becomes a
 finding, name what the act of measuring added or removed.
+
+## 20. Verification commands issued during a run CONTAMINATE the run
+
+Norm 19 says the instrument misreports what it observes. This one is worse, and it
+is measured: **the act of measuring degraded a safety sensor's input below the bound
+its consumer depends on.**
+
+2026-08-25, `~/field_2026-08-25_stoptier/bag_20260825_085930`. After the stack
+reached READY, ordinary operator probing — repeated `ros2 node list`, `ros2 topic
+echo`, `tf2_echo`, `ros2 topic hz`, each a fresh process AND a fresh DDS participant
+— **starved the ToF sensor to 2.53 Hz for roughly 100 seconds.** At 2.53 Hz the
+inter-frame gap is **0.395 s** against `low_obstacle_max_age_s: 0.30`, so the
+low-obstacle brake's input was out of spec for 44 s. Across the whole run, 13% of
+rows (1,084 of 8,348) sat below the 6.5 Hz band the bringup gate enforces.
+
+**The control is inside the same recording, and it is what makes the cause credible.**
+Bringing the entire stack up — nav2 activating, SLAM starting, the recorder and bag
+spawning, the busiest moment the machine sees — held the ToF at **6.51–6.94 Hz** with
+the supervisor's `slot_tick_overruns` at 0.00–0.10/s. Degradation begins only at
+t+60 s, *after* READY, when the probing starts: overruns **1.15–2.56/s**, ToF
+**2.53–4.23 Hz**. Load and starvation move together; **the stack alone does not
+produce it.** Confirmed by the sensor's own frames counter across >=10 s spans, so it
+is real starvation and not a jitter artifact of the 5 s `rate_hz` field.
+
+**The limit of the claim, stated:** `/diagnostics` carries no CPU or load field, so
+this is a correlation against the owner's published overrun counters plus a named
+candidate cause. No CPU attribution was measured and no controlled A/B was run.
+
+**Rules:**
+1. **During any attended run, probing is minimal.** Decide before the run what must
+   be observed; take it from the recording afterwards wherever the recording can
+   answer it. The bag is not contaminated by being read later.
+2. **Whatever probing does happen gets its windows recorded**, so the evidence
+   carries its own contamination and a later reader can exclude it. An unlabelled
+   contaminated window is indistinguishable from a rover defect.
+3. **Never conclude a sensor is unhealthy from a window you were probing in** — and
+   never conclude it is healthy from one either.
+
+**The mechanism is the same one as norm 19, and that is the point of
+cross-referencing them: every `ros2` CLI invocation spawns a DDS participant.** Norm
+19's symptom is a cold read that under-reports the graph; this norm's symptom is the
+load that spawning costs. One trap, two faces — a cheap-looking question that is
+neither cheap nor passive.
+
+Today's flight itself reached 6.30 Hz and no harm came of it. That was the luck of
+when the probing happened to stop, not a property of the design.
 
 ## Appendix B: operational traps that look like bugs
 
