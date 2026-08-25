@@ -622,3 +622,20 @@ Not standards, but they have each cost a session and are invisible from a log:
 * **`ros2 topic echo` truncates arrays** — use `--full-length` for anything with ranges.
 * **Same-byte-length Python edits can run a stale `.pyc`.** Verify tiny fixes with a must-flip
   test or clear `__pycache__`.
+* **TWO CHECKS SHARE THE NAME "installed tree matches source" AND DO NOT SHARE A
+  POPULATION.** `preflight_pi.py`'s `installed_tree_matches` walks `src/**/*.py` — 57
+  files. `launch_and_arm.py`'s verify walks those *plus* `config/*.yaml`,
+  `launch/*.py` and `behavior_trees/*.xml` — 75 files. On 2026-08-25 a docs-only
+  fast-forward carried a **comment-only** edit to a shipped `config/*.yaml`; the
+  57-file check passed it happily and the 75-file check would have stopped the next
+  bringup dead, at the moment an operator was standing over a staged rover. Neither
+  check is wrong; the *name* is, because it invites you to believe you already ran the
+  other one. **Two checks with one name should either share a population or stop
+  sharing a name** — and until they do, the count is the tell: read the number the
+  check prints, not the sentence. This is measure-the-right-population living inside
+  our own tooling.
+* **A "docs-only" change is not automatically deploy-only.** `config/*.yaml`,
+  `launch/*.py` and `behavior_trees/*.xml` are SHIPPED files: editing a comment in one
+  makes the installed copy stale by byte-compare even though nothing functional moved.
+  Deciding a fast-forward needs no rebuild is a claim about which *paths* it touches,
+  not about how important they look — check the shipped-file list before saying it.
