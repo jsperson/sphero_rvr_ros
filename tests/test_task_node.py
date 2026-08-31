@@ -392,10 +392,18 @@ def test_move_relative_inherits_gotos_busy_refusal(stack):
     """CONDITION 2. One drive at a time is `goto`'s rule and this verb must not become
     a second path around it."""
     stack.world.nav_mode = "hold"
+    before = len(stack.world.nav_goals)
     holder = threading.Thread(target=lambda: stack.send_goto(1.0, 0.0, timeout=8.0),
                               daemon=True)
     holder.start()
-    time.sleep(1.0)                       # let the first drive take the lock
+    # WAIT ON STATE, NOT ON A SLEEP. The first version slept 1.0 s and hoped the
+    # holder had taken the lock; on a loaded Pi it sometimes had not, and the test
+    # failed for a reason that had nothing to do with busy semantics. The world
+    # records a goal the instant it arrives, so wait for that fact.
+    deadline = time.monotonic() + 10.0
+    while len(stack.world.nav_goals) == before and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(stack.world.nav_goals) > before, "the holding drive never started"
     payload = _move(stack, 1.0, timeout=12.0)
     assert payload["ok"] is False, "a second drive was accepted while one was running"
     assert "already running" in payload["message"] or "refused" in payload["message"]
