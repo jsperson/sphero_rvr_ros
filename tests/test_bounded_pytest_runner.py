@@ -191,3 +191,67 @@ def test_bounded_runner_rejects_concurrent_test_owner(tmp_path: Path) -> None:
     assert result.returncode == 75
     assert "BOUNDED_PYTEST_CONCURRENT" in result.stderr
     assert "NO VERDICT" in result.stderr
+
+
+def test_bounded_runner_exits_promptly_when_the_session_finished_but_pytest_hangs(
+    tmp_path: Path,
+) -> None:
+    """THE CORPSE TRAP, ENCODED. Measured 2026-08-31: ten of ten full Pi suites exited
+    on the hard deadline because pytest prints its summary and then SITS. Every run
+    paid the full timeout in wall-clock for testing that had already finished.
+
+    The runner now watches for the session's own junit report -- written in the
+    session-finish hook, BEFORE the interpreter hangs -- and reaps the group once it
+    appears. This test hangs the interpreter the way the real thing does: a non-daemon
+    thread that outlives the session.
+    """
+    test_file = tmp_path / "test_finished_then_hangs.py"
+    test_file.write_text(
+        "import threading, time\n"
+        "def test_pass():\n"
+        "    threading.Thread(target=lambda: time.sleep(120)).start()\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    started = time.monotonic()
+    result = _run("--timeout", "60", str(test_file), "-vv", timeout=70.0)
+    elapsed = time.monotonic() - started
+    assert elapsed < 30.0, (
+        f"the runner took {elapsed:.1f}s for a session that finished in under a second "
+        f"-- it is still waiting for the process instead of the report")
+    assert result.returncode == 0, (
+        f"a passing session was reaped and reported {result.returncode}")
+    assert "BOUNDED_PYTEST_SESSION_DONE" in result.stdout
+    assert "DERIVED FROM THE REPORT" in result.stderr, (
+        "the exit code changed source and the runner did not say so")
+
+
+def test_bounded_runner_derives_a_failing_verdict_from_the_report(tmp_path: Path) -> None:
+    """The reaped path must not launder a red into a green. Same hang, failing test."""
+    test_file = tmp_path / "test_fails_then_hangs.py"
+    test_file.write_text(
+        "import threading, time\n"
+        "def test_fail():\n"
+        "    threading.Thread(target=lambda: time.sleep(120)).start()\n"
+        "    assert False\n",
+        encoding="utf-8",
+    )
+    result = _run("--timeout", "60", str(test_file), "-vv", timeout=70.0)
+    assert result.returncode == 1, (
+        f"a FAILING session that hung reported {result.returncode} -- a red must not "
+        f"become a green because the process would not exit")
+
+
+def test_a_genuinely_hung_pytest_still_hits_the_bound(tmp_path: Path) -> None:
+    """DO NOT FIX THE FAST PATH BY BREAKING THE STUCK ONE. A pytest that hangs WITHOUT
+    finishing writes no report, so there is nothing to gate on and the hard deadline is
+    still the only thing that ends it."""
+    test_file = tmp_path / "test_hangs_forever.py"
+    _write_hang_test(test_file)
+    started = time.monotonic()
+    result = _run("--timeout", "3", str(test_file), "-vv", timeout=40.0)
+    elapsed = time.monotonic() - started
+    assert result.returncode != 0, "a hung session must never report success"
+    assert "BOUNDED_PYTEST_TIMEOUT" in result.stderr, (
+        f"the deadline path did not run: rc={result.returncode} stderr={result.stderr[:300]}")
+    assert elapsed >= 3.0, "it did not wait for the deadline at all"

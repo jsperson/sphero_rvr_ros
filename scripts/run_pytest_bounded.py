@@ -119,6 +119,82 @@ def _restore_signal_handlers(previous: dict[int, Any]) -> None:
         signal.signal(signum, handler)
 
 
+#: How long a finished session is allowed to exit on its own before we reap it. Long
+#: enough for an ordinary interpreter shutdown, far short of the hard deadline -- the
+#: whole point is not to pay the deadline for a session that has already answered.
+SESSION_EXIT_GRACE_S = 5.0
+
+
+def _session_finished(junit_path: Path | None) -> bool:
+    """Has pytest written a COMPLETE junit report? The closing tag is the test: a
+    partially-flushed file means the hook is still running, and treating that as
+    'finished' would reap a session mid-write."""
+    if junit_path is None or not junit_path.exists():
+        return False
+    try:
+        tail = junit_path.read_bytes()[-64:]
+    except OSError:
+        return False
+    return b"</testsuites>" in tail or b"</testsuite>" in tail
+
+
+def _verdict_from_junit(junit_path: Path) -> int:
+    """Exit code derived from the report when the process had to be reaped.
+
+    ONLY used when pytest finished testing and then refused to exit. The number a
+    landing gates on then comes from the ARTIFACT rather than from the process, which
+    is a real change of source and is announced loudly at the call site.
+    """
+    try:
+        text = junit_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return CLEANUP_FAILURE_EXIT_CODE
+    failures = re.search(r'failures="(\d+)"', text)
+    errors = re.search(r'errors="(\d+)"', text)
+    bad = int(failures.group(1) if failures else 0) + int(errors.group(1) if errors else 0)
+    return 0 if bad == 0 else 1
+
+
+def _wait_for_session(
+    process: "subprocess.Popen[bytes]",
+    junit_path: Path | None,
+    timeout_seconds: float,
+    grace_seconds: float,
+) -> int:
+    """Wait for pytest to FINISH TESTING, not merely to die."""
+    deadline = time.monotonic() + timeout_seconds
+    finished_at: float | None = None
+    while True:
+        code = process.poll()
+        if code is not None:
+            return code                      # the ordinary path, unchanged
+        now = time.monotonic()
+        if finished_at is None and _session_finished(junit_path):
+            finished_at = now
+            print(
+                f"BOUNDED_PYTEST_SESSION_DONE pid={process.pid}; report written, "
+                f"allowing {SESSION_EXIT_GRACE_S:g}s for a normal exit",
+                flush=True,
+            )
+        if finished_at is not None and now - finished_at >= SESSION_EXIT_GRACE_S:
+            print(
+                f"BOUNDED_PYTEST_REAPED pid={process.pid}; the session finished and the "
+                f"process did not exit within {SESSION_EXIT_GRACE_S:g}s (the known "
+                f"teardown hang). Reaping the group; THE EXIT CODE IS DERIVED FROM THE "
+                f"REPORT, not from pytest.",
+                file=sys.stderr,
+                flush=True,
+            )
+            cleaned = _terminate_process_group(process, grace_seconds)
+            if not cleaned:
+                return CLEANUP_FAILURE_EXIT_CODE
+            assert junit_path is not None
+            return _verdict_from_junit(junit_path)
+        if now >= deadline:
+            raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+        time.sleep(0.05)
+
+
 def run_pytest(
     pytest_args: Sequence[str],
     *,
@@ -140,7 +216,27 @@ def run_pytest(
     process: subprocess.Popen[bytes] | None = None
     previous_handlers = _install_signal_handlers()
     try:
-        command = [sys.executable, "-m", "pytest", *pytest_args]
+        # GATE ON THE ARTIFACT, THEN REAP THE CORPSE. Measured 2026-08-31: TEN of ten
+        # full suites on the Pi exited rc=124 -- the hard deadline -- because pytest
+        # prints its summary and then SITS (an asyncio teardown hang that has been on
+        # the books since 2026-08-18). Every bounded run paid the full timeout in
+        # wall-clock: 300 s of deadline for 150 s of testing. The corpse trap is not
+        # intermittent here, it is the normal path.
+        #
+        # So the wait watches for the session's own ARTIFACT rather than for the
+        # process to die. `--junitxml` is written in pytest's session-finish hook,
+        # BEFORE the interpreter hangs, so its appearance means "the testing is done"
+        # even when the process will never exit. This is the same two-step an operator
+        # does by hand -- read the summary, then kill by pid -- encoded.
+        #
+        # It does NOT touch the stuck path: a pytest that hangs without finishing
+        # writes no artifact and still hits the deadline exactly as before.
+        junit_path: Path | None = None
+        args = list(pytest_args)
+        if not any(str(a).startswith("--junitxml") for a in args):
+            junit_path = Path(tempfile.mkdtemp(prefix="bounded-pytest-")) / "session.xml"
+            args.append(f"--junitxml={junit_path}")
+        command = [sys.executable, "-m", "pytest", *args]
         process = subprocess.Popen(command, start_new_session=True)
         print(
             f"BOUNDED_PYTEST_START pid={process.pid} timeout_s={timeout_seconds:g} "
@@ -148,7 +244,8 @@ def run_pytest(
             flush=True,
         )
         try:
-            return_code = process.wait(timeout=timeout_seconds)
+            return_code = _wait_for_session(
+                process, junit_path, timeout_seconds, grace_seconds)
         except subprocess.TimeoutExpired:
             print(
                 f"BOUNDED_PYTEST_TIMEOUT pid={process.pid} timeout_s={timeout_seconds:g}; "
