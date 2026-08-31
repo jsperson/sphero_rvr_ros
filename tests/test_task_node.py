@@ -188,7 +188,23 @@ def stack(request):
     params = {"max_goal_distance_m": 5.0, "goal_timeout_s": 6.0, "plan_timeout_s": 2.0}
     params.update(getattr(request, "param", {}))
     s = Stack(params)
-    time.sleep(0.5)   # let TF and discovery settle
+    # WAIT ON THE FACT, NOT ON A SLEEP -- and on the NODE'S OWN clients, because they
+    # are what the assertions depend on.
+    #
+    # D79: `test_goto_refused_when_the_planner_finds_no_path` failed 3 of 10 clean Pi
+    # runs. Not flakiness in the usual sense -- `_plannable` degrades FAIL-OPEN when
+    # `compute_path_to_pose` is not discovered within 1.0 s ("skipping the precheck",
+    # by design), so the node never asks the planner, drives, and the test sees a
+    # successful goto where it asserted an abort. The production code was right and
+    # this fixture's only guarantee was `sleep(0.5)`.
+    #
+    # This STRENGTHENS a precondition and weakens no assertion: every check below stays
+    # exactly as strict, and a test that now runs is one that is testing what it says.
+    assert s.task._planner.wait_for_server(timeout_sec=20.0), (
+        "the node's planner client never discovered the fake compute_path_to_pose")
+    assert s.task._nav.wait_for_server(timeout_sec=20.0), (
+        "the node's nav client never discovered the fake navigate_to_pose")
+    time.sleep(0.5)   # TF still needs a broadcast or two to be lookup-able
     yield s
     s.close()
 
