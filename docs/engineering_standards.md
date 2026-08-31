@@ -622,6 +622,18 @@ Not standards, but they have each cost a session and are invisible from a log:
 * **`ros2 topic echo` truncates arrays** — use `--full-length` for anything with ranges.
 * **Same-byte-length Python edits can run a stale `.pyc`.** Verify tiny fixes with a must-flip
   test or clear `__pycache__`.
+* **READ THE ERROR CODE AT SOURCE, DO NOT RECOGNISE IT.** 2026-08-31, scenario 4:
+  `ComputePathToPose` returned ABORTED with `error_code: 204`, which fitted the
+  prediction ("the planner refuses the gap") perfectly. **204 is `GOAL_OUTSIDE_MAP`.
+  `NO_VALID_PATH` is 208.** The goal had been placed at x=2.0 in a 4 m room whose
+  clear floor ends at 1.90, so the planner was never asked about the gap at all.
+  The enum is one `grep` away in
+  `/opt/ros/jazzy/share/nav2_msgs/action/ComputePathToPose.action`. A numeric code
+  that CONFIRMS YOUR PREDICTION is the one to check hardest — same rule as the pivot
+  rate (±3.55 is `rotate_to_heading_angular_vel`, read from the config, not guessed)
+  and the port (read the listener from the socket table, not the shell's job id).
+  Worth noting what the correction bought: re-running it properly added a wide-gap
+  control arm, so the experiment ended up stronger than its original design.
 * **TWO CHECKS SHARE THE NAME "installed tree matches source" AND DO NOT SHARE A
   POPULATION.** `preflight_pi.py`'s `installed_tree_matches` walks `src/**/*.py` — 57
   files. `launch_and_arm.py`'s verify walks those *plus* `config/*.yaml`,
