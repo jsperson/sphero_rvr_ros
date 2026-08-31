@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from sphero_rvr_core.task_agent import TOOL_SCHEMAS
+from sphero_rvr_core.task_agent import ARG_BOUNDS, TOOL_SCHEMAS
 
 #: Scott's six classes, each mapped to the tool that would have to carry it.
 CLASSES = {
@@ -56,24 +56,27 @@ def test_scenario_8_all_six_instruction_classes_are_expressible():
         f" -- available tools: {sorted(TOOL_SCHEMAS)}")
 
 
-def test_scenario_8_there_is_no_relative_motion_primitive():
-    """THE GAP AS A FINDING, pinned separately from the score.
+def test_scenario_8_the_relative_motion_gap_is_closed_in_the_TOOL_SURFACE():
+    """THE GAP, AND ITS CLOSING, pinned separately from the score.
 
-    `goto` takes absolute map-frame x/y. "Forward 2 m" is therefore not a command the
-    robot has -- it is a computation the agent would have to do for itself from
-    `where_am_i`, with the yaw trigonometry unguarded and untested. This test states
-    the absence rather than the workaround, because a composed workaround that nobody
-    has verified is not the same as a verb.
+    UNTIL 2026-08-31 this test asserted the ABSENCE: `goto` takes absolute map-frame
+    x/y, so "forward 2 m" was not a command the robot had -- it was trigonometry the
+    agent would do for itself from `where_am_i`, unguarded and untested, and an
+    unverified composition is not a verb. It was the smallest of the three gaps and
+    the one Scott named twice.
 
-    It is also the SMALLEST of the three gaps and the one Scott named twice ("move
-    forward 2 metres", "drive forward 1 m").
+    `move_relative` closed it in the tool surface. THE ROW HAS NOT BEEN RE-SCORED
+    YET, DELIBERATELY: the schema existing is not the verb working, and the bar for
+    5-of-6 is the wiring proven ON THE PI -- self-call completes, busy semantics
+    inherited, inner refusal carried, stale pose refused. Until that passes, the
+    six-class xfail below stays exactly where it is. A tool surface is a promise; the
+    bench is where it becomes a capability.
     """
     assert "goto" in TOOL_SCHEMAS
     assert set(TOOL_SCHEMAS["goto"]) == {"x", "y"}, (
-        "goto's arguments changed -- re-read whether relative motion arrived")
-    relative = [name for name in TOOL_SCHEMAS
-                if any(k in ("distance", "distance_m", "forward", "forward_m", "metres")
-                       for k in TOOL_SCHEMAS[name])]
-    assert not relative, (
-        f"a relative-motion verb exists after all: {relative} -- scenario 8 must be "
-        f"re-scored")
+        "goto's arguments changed -- re-read what relative motion now means")
+    assert "move_relative" in TOOL_SCHEMAS, "the relative-motion verb went away again"
+    assert set(TOOL_SCHEMAS["move_relative"]) == {"distance_m", "heading_deg"}
+    assert ARG_BOUNDS["move_relative"]["distance_m"][0] == 0.15, (
+        "the 0.15 m floor is a fact about the deployed stack -- xy_goal_tolerance is "
+        "0.12 m, so a shorter move reports SUCCESS with the rover motionless")

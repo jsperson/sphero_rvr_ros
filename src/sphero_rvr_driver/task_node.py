@@ -69,6 +69,8 @@ from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
 import tf2_ros
 
+from sphero_rvr_core.relative_motion import (RelativeMotionError, describe,
+                                             relative_goal)
 from sphero_rvr_core.task_tools import (
     assemble_capabilities,
     describe_mission,
@@ -96,6 +98,18 @@ class TaskNode(Node):
         # the goal would go to anyway -- and it turns "drove at a wall for two
         # minutes then aborted" into an immediate typed refusal. False = send blind.
         self.declare_parameter("precheck_reachable", True)
+        # move_relative arguments, typed for the same reason query_* are:
+        # `ros2 param set` segfaults on a JSON string, and a typed scalar is
+        # self-describing and range-checkable.
+        self.declare_parameter("move_distance_m", 0.0)
+        self.declare_parameter("move_heading_deg", 0.0)
+        # DERIVED, not chosen. The transform reads the pose at dispatch; a pose
+        # stale by dt puts the computed goal max_forward_mps * dt away from
+        # where it was meant. At 0.35 m/s that exceeds xy_goal_tolerance (0.12 m)
+        # after 0.34 s -- i.e. the goal would land outside its own tolerance of
+        # the intended point. "Forward 2 m from where the rover WAS" is exactly
+        # the silent wrongness this refuses to commit.
+        self.declare_parameter("move_pose_max_age_s", 0.3)
         self.declare_parameter("mission_start_service",
                                "/coverage_explorer/mission/start")
         self.declare_parameter("mission_stop_service",
@@ -195,6 +209,18 @@ class TaskNode(Node):
         # the gateway's admission remains the safety layer and its refusal comes
         # back as an ok=false the model reads like any envelope answer.
         self.declare_parameter("turn_degrees", 0.0)
+        # THE SELF-CALL, and it is deliberate. `move_relative` is a coordinate
+        # transform in front of `task/goto`: it computes a map-frame destination and
+        # then goes through THIS NODE'S OWN goto action, so the envelope check, the
+        # plannability precheck, the one-goto-at-a-time lock and every downstream gate
+        # are traversed in the existing code rather than copied beside it. A copy
+        # would be a second author on the motion path; this is none.
+        #
+        # Safe only because the executor is MultiThreaded with reentrant groups --
+        # the goto's execute callback runs on another thread while this handler waits.
+        # That is asserted by test, not assumed: see the Pi-only proving test.
+        self._self_goto = ActionClient(self, NavigateToPose, "task/goto",
+                                       callback_group=cbg)
         self._turn_client = ActionClient(self, Spin, "/collision_stop/precise_turn",
                                          callback_group=cbg)
         self.create_service(Trigger, "task/turn", self._on_turn,
@@ -206,6 +232,8 @@ class TaskNode(Node):
         self._map_meta = None
         self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos,
                                  callback_group=cbg)
+        self.create_service(Trigger, "task/move_relative", self._on_move_relative,
+                            callback_group=cbg)
         self.create_service(Trigger, "task/where_am_i", self._on_where_am_i,
                             callback_group=cbg)
         # look_and_recognize: forwards to the recognition node's verb.
@@ -299,6 +327,29 @@ class TaskNode(Node):
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         return t.x, t.y, yaw
 
+    def _robot_pose_yaw_aged(self):
+        """(pose, age_seconds) or (None, None).
+
+        `lookup_transform` with `Time()` asks for the LATEST transform, which can be
+        arbitrarily old and says nothing about it. A relative move computed from a
+        stale pose is measured from where the rover WAS -- the same class of silent
+        wrongness as every other believed-but-unchecked fact this project has paid
+        for. The age is returned so the caller can refuse rather than guess.
+        """
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._map_frame, self._base_frame, rclpy.time.Time()
+            )
+        except Exception:
+            return None, None
+        t, q = tf.transform.translation, tf.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        stamp = tf.header.stamp
+        age = (self.get_clock().now().nanoseconds
+               - (int(stamp.sec) * 10**9 + int(stamp.nanosec))) / 1e9
+        return (t.x, t.y, yaw), age
+
     # --- the bridge round 1 handlers ------------------------------------------
 
     def _map_source(self):
@@ -355,6 +406,93 @@ class TaskNode(Node):
             True, "where_am_i", "",
             x=round(x, 3), y=round(y, 3), yaw_deg=round(math.degrees(yaw), 1),
             map=self._map_meta or "no map received yet")
+        return response
+
+    def _on_move_relative(self, request, response):
+        """Body-frame move, expressed as a map-frame destination and driven through
+        THIS NODE'S OWN `task/goto`.
+
+        NO NEW MOTION AUTHORITY. Everything that could refuse a goto still refuses
+        this: the envelope, the plannability precheck, the one-goto-at-a-time lock,
+        the trinity and the supervisor. What is new is the EXPRESSION -- "forward
+        2 m" was previously trigonometry the language agent had to do for itself.
+
+        AND IT IS A DESTINATION, NOT A PROMISE TO DRIVE STRAIGHT. The planner and
+        controller choose the route through every gate they already enforce; this
+        verb only says where the rover should end up.
+        """
+        distance = float(self.get_parameter("move_distance_m").value)
+        heading = float(self.get_parameter("move_heading_deg").value)
+
+        pose, age = self._robot_pose_yaw_aged()
+        max_age = float(self.get_parameter("move_pose_max_age_s").value)
+        if pose is not None and age is not None and age > max_age:
+            response.success = False
+            response.message = tool_result(
+                False, "move_relative",
+                f"pose is {age:.2f}s old (bound {max_age:.2f}s): a relative move "
+                f"computed from a stale pose is measured from where the rover WAS",
+                pose_age_s=round(age, 3))
+            return response
+        try:
+            gx, gy = relative_goal(pose, distance, heading)
+        except RelativeMotionError as exc:
+            response.success = False
+            response.message = tool_result(False, "move_relative", str(exc))
+            return response
+
+        if not self._self_goto.wait_for_server(timeout_sec=5.0):
+            response.success = False
+            response.message = tool_result(
+                False, "move_relative", "task/goto is not available")
+            return response
+
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = self._map_frame
+        goal.pose.pose.position.x = gx
+        goal.pose.pose.position.y = gy
+        goal.pose.pose.orientation.w = 1.0
+
+        deadline = time.monotonic() + float(
+            self.get_parameter("goal_timeout_s").value) + 10.0
+        handle = self._await(self._self_goto.send_goal_async(goal), deadline)
+        if handle is None or not handle.accepted:
+            # BUSY SEMANTICS ARE INHERITED, NOT REINVENTED. `_accept_goto` rejects
+            # when a drive is already running; the self-call sees that rejection and
+            # reports it, so this verb cannot become a second path around the
+            # one-active-goal rule.
+            response.success = False
+            response.message = tool_result(
+                False, "move_relative",
+                "task/goto refused the goal (a drive may already be running)",
+                x=round(gx, 3), y=round(gy, 3))
+            return response
+
+        result = self._await(handle.get_result_async(), deadline)
+        if result is None:
+            handle.cancel_goal_async()
+            response.success = False
+            response.message = tool_result(
+                False, "move_relative", "the drive did not finish in time",
+                x=round(gx, 3), y=round(gy, 3))
+            return response
+
+        # THE INNER REASON IS CARRIED, NOT SWALLOWED. `task/goto` already answers in
+        # this project's structured form -- including D64's classification when the
+        # refusal came from goal legality -- and a generic "move failed" here would
+        # throw away the only sentence that says WHY.
+        inner = getattr(result.result, "error_msg", "") or ""
+        succeeded = result.status == GoalStatus.STATUS_SUCCEEDED
+        response.success = succeeded
+        if succeeded:
+            response.message = tool_result(
+                True, "move_relative", f"moved {describe(distance, heading)}",
+                x=round(gx, 3), y=round(gy, 3))
+        else:
+            response.message = tool_result(
+                False, "move_relative",
+                f"{describe(distance, heading)} did not complete",
+                x=round(gx, 3), y=round(gy, 3), goto_said=inner)
         return response
 
     def _on_turn(self, request, response):
