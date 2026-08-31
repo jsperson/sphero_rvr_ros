@@ -30,25 +30,47 @@ from sphero_rvr_core.task_agent import ARG_BOUNDS, TOOL_SCHEMAS
 CLASSES = {
     "explore and map this room": "explore",
     "locate a specific object": "look_and_recognize",
-    "drive around looking busy for 10 min": None,      # no such verb
-    "move forward 2 metres": None,                     # no relative motion
+    "drive around looking busy for 10 min": None,      # still no such verb
+    # RE-SCORED 2026-08-31, and only after the wiring was PROVEN on the Pi:
+    # self-call completes 6/6 across three runs, busy semantics inherited, the inner
+    # refusal carried, and the stale-pose guard re-derived as a liveness bound from a
+    # measured TF-age distribution. The schema existing was never the bar --
+    # "a tool surface is a promise; the bench is where it becomes a capability."
+    "move forward 2 metres": "move_relative",
     "turn right/left 90 degrees": "turn",
-    "pivot 180 degrees and drive forward 1 m": None,   # needs relative motion
+    # A COMPOSE OF TWO EXISTING VERBS, not a new primitive: turn(180) then
+    # move_relative(1.0). tests/test_relative_motion.py asserts the two spellings of
+    # that destination agree, so the composition is verified rather than assumed --
+    # which was the whole objection to counting it before.
+    "pivot 180 degrees and drive forward 1 m": "turn+move_relative",
 }
 
 
 def test_scenario_8_the_three_classes_that_are_expressible_today():
-    """The positive half, asserted so the score is not just a list of absences."""
+    """The positive half, asserted so the score is not just a list of absences.
+
+    SCORE: 5 of 6 as of 2026-08-31 (was 3 of 6). The remaining gap is "drive around
+    looking busy for 10 min" -- a duration-bounded aimless-motion verb that does not
+    exist and was not built, because nothing else on Scott's list needed it and
+    inventing it to close a score would be exactly backwards.
+    """
     for phrase, tool in CLASSES.items():
         if tool is None:
             continue
-        assert tool in TOOL_SCHEMAS, f"{phrase!r} needs {tool!r}, which is gone"
+        for name in tool.split("+"):
+            assert name in TOOL_SCHEMAS, f"{phrase!r} needs {name!r}, which is gone"
+    covered = sum(1 for t in CLASSES.values() if t is not None)
+    assert covered == 5, (
+        f"{covered} of 6 instruction classes are expressible, not 5 -- the row's score "
+        f"moved and the table has not been re-scored with it")
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "SCENARIO 8: 3 of Scott's 6 instruction classes have no tool that can express "
-    "them. Strict xfail so the bar stays at SIX rather than at three, and so the day "
-    "a relative-motion verb lands this test fails loudly and forces a re-score."))
+    "SCENARIO 8: 1 of Scott's 6 instruction classes has no tool that can express it "
+    "-- 'drive around looking busy for 10 min'. Was 3 of 6 until move_relative landed "
+    "and was proven on the Pi (2026-08-31). Strict xfail so the bar stays at SIX, and "
+    "so the day a looking-busy verb lands this test fails loudly and forces the final "
+    "re-score."))
 def test_scenario_8_all_six_instruction_classes_are_expressible():
     missing = [phrase for phrase, tool in CLASSES.items() if tool is None]
     assert not missing, (
