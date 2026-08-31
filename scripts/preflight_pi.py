@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import pathlib
 import re
 import shlex
 import signal
@@ -345,6 +346,36 @@ def gate_installed_tree_matches():
         return Result(FAIL, f"{len(missing)} source file(s) not installed at all: "
                             f"{missing[:5]}",
                       remedy="colcon build --symlink-install")
+
+    # ORPHANS: INSTALLED FILES WITH NO SOURCE AT ALL. The comparison above walks SOURCE
+    # files and checks each has a matching twin -- so a file that exists in the install
+    # tree and NOT in the source tree is structurally invisible to it. `colcon build`
+    # copies source->install and never deletes, so every return from a branch that
+    # added a module leaves that module behind.
+    #
+    # OBSERVED TWICE, 2026-08-31, and the second time is why this exists rather than a
+    # defect row: `sphero_rvr_core/relative_motion.py` survived two separate returns
+    # from a test branch to main. Harmless there -- nothing imports it on main -- but
+    # the shape is not: a DELETED module that stays importable lets a stale `import`
+    # succeed on a machine whose source no longer has it, and this gate would have said
+    # PASS both times.
+    orphans = []
+    for root in roots:
+        for package in ("sphero_rvr_core", "sphero_rvr_driver"):
+            for installed in sorted((pathlib.Path(root) / package).glob("*.py")):
+                if installed.name == "__init__.py":
+                    continue
+                if (SRC_TREE / "src" / package / installed.name).exists():
+                    continue
+                if os.path.realpath(installed).startswith(os.path.realpath(SRC_TREE)):
+                    continue          # --symlink-install: the same inode, not an orphan
+                orphans.append(f"{package}/{installed.name}")
+    if orphans:
+        return Result(FAIL,
+                      f"{len(orphans)} installed file(s) have no source: {orphans[:5]}",
+                      remedy="rm the orphan(s), or `rm -rf build install` and rebuild; "
+                             "colcon never deletes, so a branch excursion leaves its "
+                             "modules behind and a stale import can still succeed")
 
     # SAY WHAT THIS PASS IS WORTH, because for most of these files it is worth nothing
     # and a bare PASS would claim otherwise.

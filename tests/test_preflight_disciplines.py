@@ -193,3 +193,42 @@ def test_every_failure_path_tells_the_operator_what_to_do(preflight):
         src = gate.run.__doc__ or ""
         assert src.strip(), f"{gate.name} has no docstring explaining itself"
         assert gate.why, f"{gate.name} has no `why`"
+
+
+def test_an_installed_file_with_no_source_is_caught_as_an_orphan(preflight, monkeypatch, tmp_path):
+    """THE ORPHAN, PLANTED AND CAUGHT.
+
+    `colcon build` copies source->install and never deletes, so every return from a
+    branch that added a module leaves that module behind. The file-by-file comparison
+    walks SOURCE files and checks each has a twin -- a file that exists only in the
+    install tree is structurally invisible to it, and the gate said PASS over exactly
+    that on 2026-08-31, twice, for the same file.
+
+    This plants a fake orphan and asserts the gate now fails with a remedy that names
+    the cause. Without it the check would be prose in a docstring.
+    """
+    src = tmp_path / "src" / "sphero_rvr_ros"
+    (src / "src" / "sphero_rvr_core").mkdir(parents=True)
+    (src / "src" / "sphero_rvr_core" / "real.py").write_text("x = 1\n", encoding="utf-8")
+    install = tmp_path / "install" / "sphero_rvr_core"
+    install.mkdir(parents=True)
+    (install / "real.py").write_text("x = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(preflight, "SRC_TREE", src)
+    monkeypatch.setattr(preflight, "INSTALL_TREE", tmp_path / "install")
+    monkeypatch.setattr(preflight, "_deployed_roots", lambda: [tmp_path / "install"])
+
+    clean = preflight.gate_installed_tree_matches()
+    assert clean.verdict == preflight.PASS, (
+        f"a matching tree did not pass: {clean.detail} -- the orphan check must not "
+        f"fire on a healthy install")
+
+    # now the orphan: present in install, absent from source
+    (install / "ghost.py").write_text("gone_from_source = True\n", encoding="utf-8")
+    dirty = preflight.gate_installed_tree_matches()
+    assert dirty.verdict == preflight.FAIL, "the planted orphan was not caught"
+    assert "ghost.py" in dirty.detail, f"the orphan was not named: {dirty.detail}"
+    assert "no source" in dirty.detail
+    assert dirty.remedy and "colcon never deletes" in dirty.remedy, (
+        "the remedy must name the cause, or the next person re-runs the build that "
+        "cannot fix it")
