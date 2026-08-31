@@ -417,6 +417,10 @@ def test_move_relative_refuses_a_stale_pose_rather_than_computing_from_history(s
     age -- so a rover whose TF stopped an hour ago still answers, confidently, from
     where it WAS. "Forward 2 m" from a stale pose is a destination in the wrong place.
     """
+    # The test sets its own bound rather than inheriting the deployed 0.5, because
+    # what is under test is the REFUSAL, not the number: a test that waited out the
+    # production bound would be slower and would silently re-tune itself every time
+    # the constant moved.
     stack.task.set_parameters(
         [rclpy.parameter.Parameter("move_pose_max_age_s", value=0.3)])
     stack.world.tf_enabled = False
