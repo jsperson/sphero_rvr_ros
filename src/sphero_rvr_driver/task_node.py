@@ -103,13 +103,33 @@ class TaskNode(Node):
         # self-describing and range-checkable.
         self.declare_parameter("move_distance_m", 0.0)
         self.declare_parameter("move_heading_deg", 0.0)
-        # DERIVED, not chosen. The transform reads the pose at dispatch; a pose
-        # stale by dt puts the computed goal max_forward_mps * dt away from
-        # where it was meant. At 0.35 m/s that exceeds xy_goal_tolerance (0.12 m)
-        # after 0.34 s -- i.e. the goal would land outside its own tolerance of
-        # the intended point. "Forward 2 m from where the rover WAS" is exactly
-        # the silent wrongness this refuses to commit.
-        self.declare_parameter("move_pose_max_age_s", 0.3)
+        # A LIVENESS BOUND, RE-DERIVED 2026-08-31 AFTER THE FIRST DERIVATION WAS
+        # FOUND TO DESCRIBE A WORLD THAT CANNOT OCCUR.
+        #
+        # The first version reasoned: a pose stale by dt puts the goal
+        # max_forward_mps * dt from where it was meant, so bound dt at
+        # xy_goal_tolerance / max_forward_mps = 0.12 / 0.35 = 0.34 s. Real
+        # arithmetic, real constants, and answering a question that never arises:
+        # this verb REFUSES while a drive is running (it inherits task/goto's
+        # one-at-a-time lock), so THE ROVER IS STATIONARY AT DISPATCH BY
+        # CONSTRUCTION. A 0.35 s-old pose of a stationary rover is exactly as
+        # accurate as a fresh one. The Pi found it by refusing a 5 cm contract
+        # test for staleness under ordinary load.
+        #
+        # The guard's real subject is LIVENESS -- is this pose from a publisher
+        # that is still alive -- and that is a different quantity entirely.
+        # MEASURED on the rig (235 samples of map->base_link age, 1 Hz):
+        #     idle       median 0.0019  p99 0.0027  max 0.109
+        #     under load median 0.0524  p99 0.0534  max 0.053   (a colcon build,
+        #                                                        run as the variable)
+        # Worst healthy observation across both: 0.109 s. slam_toolbox republishes
+        # map->odom at transform_publish_period 0.02, so the flight chain is
+        # refreshed at 50 Hz and should not be slower than the rig's.
+        # 0.5 s is ~4.6x the worst healthy sample, inside this project's loosest
+        # existing staleness idiom (the supervisor's max_scan_stamp_age_s 0.75),
+        # and a DEAD publisher crosses it within half a second. It bounds silence,
+        # not motion.
+        self.declare_parameter("move_pose_max_age_s", 0.5)
         self.declare_parameter("mission_start_service",
                                "/coverage_explorer/mission/start")
         self.declare_parameter("mission_stop_service",
