@@ -77,6 +77,13 @@ D22 gets a free data point: the recorder CSV now carries `cam_cloud_age` via
      clean. A stray global-frame TF publisher is two answers to "where is the robot",
      which is the seam class this project keeps paying for.
 
+9. **The corridor the node actually runs matches the deployed config.** A bench read,
+   no chassis, ~20 s — see `docs/bench_config_read.md`. Added 2026-08-31 after a
+   deliberate safety tune sat dead in `collision_stop.yaml` for 23 days behind a launch
+   override that shadowed it, with nothing in the project able to reveal it because
+   every check read the FILE. Do NOT substitute the rig for this: the rig's supervisor
+   never carried the override, so it would have passed throughout the defect.
+
 ## Bringup order (separate terminals / tmux panes on the Pi)
 
 ```bash
