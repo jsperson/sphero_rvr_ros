@@ -330,7 +330,17 @@ def test_query_arguments_are_cli_settable_as_plain_scalars(stack):
 # Every one is bounded. A deadlock must present as a FAILED test, never as a hang:
 # that is the corpse-trap lesson applied to a test rather than to a suite.
 
-def _move(stack, distance, heading=0.0, timeout=15.0):
+def _move(stack, distance, heading=0.0, timeout=15.0, warm=True):
+    if warm:
+        # WAIT FOR THE GRAPH, NOT FOR LUCK. The node's own action client has to
+        # DISCOVER the node's own action server, and on a cold graph 5 s is not always
+        # enough -- measured on the Pi 2026-08-31: the first move_relative after
+        # startup refused with "task/goto is not available" while every later one
+        # succeeded. That is a discovery race in the HARNESS (the fixture settles for
+        # 0.5 s; on the robot task_node is up for minutes before an instruction
+        # arrives), not a deadlock, and it is worth naming because the handler's
+        # refusal is indistinguishable from a genuinely absent server.
+        assert stack.goto.wait_for_server(timeout_sec=15.0), "task/goto never appeared"
     stack.task.set_parameters([
         rclpy.parameter.Parameter("move_distance_m", value=float(distance)),
         rclpy.parameter.Parameter("move_heading_deg", value=float(heading)),
