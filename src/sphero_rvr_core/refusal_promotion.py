@@ -50,6 +50,14 @@ MIN_RECOVERIES_IN_WINDOW = 2
 #: (254 lethal / 253 inscribed) -- both costmap_raw streams are on the wire.
 LETHAL = 254
 INSCRIBED = 253
+#: DIVERGED 2026-08-31 AND DELIBERATELY NOT RE-DERIVED. The deployed costmaps now
+#: declare a POLYGON (the measured rectangle) rather than `robot_radius`, so the real
+#: inscribed radius is 0.0965 (0.1065 padded) and the circumscribed is 0.1560 (0.1702
+#: padded). The figures below describe the CIRCLE-era costmap and are kept unchanged on
+#: purpose: re-deriving them in the same batch as the footprint would put two variables
+#: in one change, and one of them -- refusal_promotion's corridor half-width -- is the
+#: mechanism that painted D60's door shut, whose falsifier is a certification bar for
+#: that very change. See D76 for the re-derivation, which is its own round.
 CORRIDOR_HALF_WIDTH_M = 0.1519      # the costmap's inscribed radius (M1)
 LOOKAHEAD_M = 1.0
 

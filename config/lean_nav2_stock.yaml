@@ -142,12 +142,34 @@ global_costmap:
       always_send_full_costmap: true
       transform_tolerance: 0.4
       initial_transform_timeout: 15.0
-      robot_radius: 0.145
-      # DECLARED for the same reason as the local costmap: nav2 pads the footprint by
-      # this and derives BOTH the inscribed radius inflation uses AND the polygon
-      # footprint clearing erases from out of the PADDED shape. Measured (M1):
-      # 16 vertices, vertex radii 0.1550-0.1591, apothem 0.1519. `robot_radius` is a
-      # request; the published footprint is the answer.
+      # THE ROBOT IS A RECTANGLE AND IS NOW DECLARED AS ONE (2026-08-31, Scott's word).
+      # Corners are base_link-relative from the supervisor's own tape-derived extents in
+      # collision_stop.yaml -- front 0.0965, rear 0.1145, left 0.098, right 0.106 -- so
+      # the planner and the supervisor finally describe the same shape. The asymmetry is
+      # real and is carried, not idealised to a centred box.
+      # tests/test_footprint_derivation.py fails if this string and those extents diverge.
+      #
+      # WHAT IT BUYS: the circle's inscribed radius was 0.1519 m, so a plannable corridor
+      # needed 0.304 m and Scott's 0.254 m gap -- which the 0.204 m-wide rover physically
+      # fits with 2.5 cm each side -- returned NO_VALID_PATH. The rectangle's inscribed
+      # radius is 0.0965 (0.1065 padded), so the floor falls to 0.213 m.
+      #
+      # THE LIMITATION WE ACCEPT KNOWINGLY, ruled by Scott 2026-08-31 as option "(a)":
+      # A 0.254 m gap admits this rover in TRANSLATION (0.204 m) and forbids it from
+      # TURNING inside -- a pivot sweeps 2 x circumscribed = 0.312 m (0.340 m padded).
+      # SmacPlanner2D is orientation-blind and there is no reversing planner, so nothing
+      # upstream refuses a path that would need a turn inside a pinch. ONE-WAY GAPS ARE
+      # ACCEPTED. What bounds the risk: RPP runs use_collision_detection with a 1.0 s
+      # forward footprint projection, and the supervisor's left/right spin sectors refuse
+      # a pivot with blocked flanks -- so the failure mode is STUCK, not scraped, and the
+      # D39 turn-escape family still applies while stopped. A rotation-clearance guard is
+      # the named follow-up IF this is ever hit in the field, not before.
+      footprint: "[[0.0965, 0.098], [0.0965, -0.106], [-0.1145, -0.106], [-0.1145, 0.098]]"
+      # Padding KEPT at the measured 0.01. On a polygon nav2 pushes each vertex outward
+      # rather than growing a radius, so 0.01 stays 0.01 of real clearance on every edge.
+      # It is the wrong moment to drop a measured margin while relaxing the inscribed
+      # radius by 5.5 cm. (Pre-2026-08-31 this line sat under `robot_radius: 0.145`, and
+      # the padded circle measured 16 vertices at 0.1550-0.1591 with apothem 0.1519.)
       footprint_padding: 0.01
       plugins: ["static_layer", "scan_layer", "touch_layer", "inflation_layer"]
 
@@ -210,6 +232,14 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
+        # WHAT THE 253 BAND MEANS CHANGED ON 2026-08-31, and it must not be
+        # rediscovered by autopsy. With a circle, "inscribed" was 0.1519 -- larger than
+        # the robot in every direction, so a cell outside the band was safe at ANY
+        # orientation. With the rectangle, the inscribed radius is set by the NEAREST
+        # edge, the FRONT at 0.0965 (0.1065 padded) -- which is SMALLER than the
+        # half-width (0.102, 0.112 padded). So the band now UNDER-COVERS the flanks by
+        # about 5 mm: a cell just outside it is not a lateral guarantee. RPP's footprint
+        # collision check is what covers that gap; the inflation band alone no longer does.
         cost_scaling_factor: 4.0
         # 0.30, matching the local costmap: at 0.16 the gradient was 8 mm wide and
         # the planner had no information with which to prefer clearance. See the
@@ -358,8 +388,32 @@ local_costmap:
       height: 3
       resolution: 0.05
       # Measured extents (Scott's tape, 2026-08-15) -- see tests/test_footprint_
-      # derivation.py. robot_radius is the circumscribed radius of that rectangle.
-      robot_radius: 0.145
+      # derivation.py. Until 2026-08-31 this was `robot_radius: 0.145`, the
+      # CIRCUMSCRIBED radius of that rectangle, which is why the rover was declared
+      # bigger than it is in every direction but one.
+      # THE ROBOT IS A RECTANGLE AND IS NOW DECLARED AS ONE (2026-08-31, Scott's word).
+      # Corners are base_link-relative from the supervisor's own tape-derived extents in
+      # collision_stop.yaml -- front 0.0965, rear 0.1145, left 0.098, right 0.106 -- so
+      # the planner and the supervisor finally describe the same shape. The asymmetry is
+      # real and is carried, not idealised to a centred box.
+      # tests/test_footprint_derivation.py fails if this string and those extents diverge.
+      #
+      # WHAT IT BUYS: the circle's inscribed radius was 0.1519 m, so a plannable corridor
+      # needed 0.304 m and Scott's 0.254 m gap -- which the 0.204 m-wide rover physically
+      # fits with 2.5 cm each side -- returned NO_VALID_PATH. The rectangle's inscribed
+      # radius is 0.0965 (0.1065 padded), so the floor falls to 0.213 m.
+      #
+      # THE LIMITATION WE ACCEPT KNOWINGLY, ruled by Scott 2026-08-31 as option "(a)":
+      # A 0.254 m gap admits this rover in TRANSLATION (0.204 m) and forbids it from
+      # TURNING inside -- a pivot sweeps 2 x circumscribed = 0.312 m (0.340 m padded).
+      # SmacPlanner2D is orientation-blind and there is no reversing planner, so nothing
+      # upstream refuses a path that would need a turn inside a pinch. ONE-WAY GAPS ARE
+      # ACCEPTED. What bounds the risk: RPP runs use_collision_detection with a 1.0 s
+      # forward footprint projection, and the supervisor's left/right spin sectors refuse
+      # a pivot with blocked flanks -- so the failure mode is STUCK, not scraped, and the
+      # D39 turn-escape family still applies while stopped. A rotation-clearance guard is
+      # the named follow-up IF this is ever hit in the field, not before.
+      footprint: "[[0.0965, 0.098], [0.0965, -0.106], [-0.1145, -0.106], [-0.1145, 0.098]]"
       # DECLARED, not defaulted, because the default was silently inflating every
       # geometric derivation in this project (M1, 2026-08-18). nav2 pads the footprint
       # by `footprint_padding` (default 0.01) and then derives BOTH the inscribed radius
@@ -372,10 +426,14 @@ local_costmap:
       # hypot(0.15,0.05)=0.1581 from a lethal cell reads 245, and
       # 252*exp(-4*(0.1581-0.1519)) = 245.8. Two readings, three decimals, agreeing.
       #
-      # Kept at the default VALUE so nothing changes behaviourally -- this line exists to
-      # make the number visible, because a default that participates in safety geometry
-      # is a claim the config was not making out loud. Anyone deriving mark or standoff
-      # geometry must use 0.1519 / 0.1591, NOT 0.145.
+      # Kept at the default VALUE, and it is now the only thing padding the shape --
+      # this line exists to make the number visible, because a default that participates
+      # in safety geometry is a claim the config was not making out loud.
+      #
+      # THE FIGURES ABOVE ARE THE CIRCLE'S AND ARE HISTORY as of 2026-08-31. The polygon's
+      # inscribed radius is 0.0965 (0.1065 padded) and its circumscribed is 0.1560
+      # (0.1702 padded). Anything still deriving geometry from 0.1519 / 0.1591 is
+      # describing a costmap that no longer exists -- see D76.
       footprint_padding: 0.01
       always_send_full_costmap: false
       plugins: ["scan_layer", "touch_layer", "tof_layer", "inflation_layer"]
@@ -498,6 +556,14 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
+        # WHAT THE 253 BAND MEANS CHANGED ON 2026-08-31, and it must not be
+        # rediscovered by autopsy. With a circle, "inscribed" was 0.1519 -- larger than
+        # the robot in every direction, so a cell outside the band was safe at ANY
+        # orientation. With the rectangle, the inscribed radius is set by the NEAREST
+        # edge, the FRONT at 0.0965 (0.1065 padded) -- which is SMALLER than the
+        # half-width (0.102, 0.112 padded). So the band now UNDER-COVERS the flanks by
+        # about 5 mm: a cell just outside it is not a lateral guarantee. RPP's footprint
+        # collision check is what covers that gap; the inflation band alone no longer does.
         cost_scaling_factor: 4.0
         # 0.30, RAISED FROM 0.16 ON 2026-08-18 BECAUSE 0.16 LEFT NO GRADIENT AT ALL.
         #

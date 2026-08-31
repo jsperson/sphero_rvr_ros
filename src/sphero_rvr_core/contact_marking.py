@@ -100,6 +100,12 @@ HALF_WIDTH_RIGHT_M = 0.106
 #: Circumscribed radius of that footprint AS CONFIGURED (`lean_nav2_stock.yaml:
 #: robot_radius`). This is what we ASK for. It is not what the costmap uses -- see below,
 #: and do not derive mark geometry from it.
+#: DIVERGED 2026-08-31: this is the CIRCLE the costmap used to be asked for, and it is
+#: still what `contact_marker_node` declares `mark_radius_m` from. The robot is a
+#: 0.204 x 0.211 m rectangle; 0.145 is its circumscribed radius, so a mark drawn at this
+#: radius is larger than the robot's actual half-width. NOT changed here for the reason
+#: above -- mark size is a behavioural claim of its own and belongs in D76, not in a
+#: footprint batch.
 ROBOT_RADIUS_M = 0.145
 
 #: WHAT THE COSTMAP ACTUALLY USES, measured 2026-08-18 on the deployed binary (M1/M2).
@@ -118,6 +124,14 @@ ROBOT_RADIUS_M = 0.145
 #: THE LESSON, because it cost this project both of its mark-geometry derivations: a
 #: config field's value is not the deployed value once a framework default transforms it.
 #: `robot_radius` is a request; the published footprint is the answer.
+#: DIVERGED 2026-08-31 AND DELIBERATELY NOT RE-DERIVED. The deployed costmaps now
+#: declare a POLYGON (the measured rectangle) rather than `robot_radius`, so the real
+#: inscribed radius is 0.0965 (0.1065 padded) and the circumscribed is 0.1560 (0.1702
+#: padded). The figures below describe the CIRCLE-era costmap and are kept unchanged on
+#: purpose: re-deriving them in the same batch as the footprint would put two variables
+#: in one change, and one of them -- refusal_promotion's corridor half-width -- is the
+#: mechanism that painted D60's door shut, whose falsifier is a certification bar for
+#: that very change. See D76 for the re-derivation, which is its own round.
 COSTMAP_INSCRIBED_RADIUS_M = 0.1519
 COSTMAP_CIRCUMSCRIBED_RADIUS_M = 0.1591
 

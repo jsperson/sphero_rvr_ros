@@ -225,3 +225,81 @@ def test_the_contact_reconstruction_agrees_with_the_tape():
     front, _, _, _ = tape_in_base_link()
     leg_at_contact_m = 0.181 - 0.090
     assert abs(front - leg_at_contact_m) == pytest.approx(0.0055, abs=5e-4)
+
+
+# --- ONE SOURCE, DERIVED TWICE, PINNED ------------------------------------------------
+# 2026-08-31: the costmaps stopped declaring `robot_radius: 0.145` (the rectangle's
+# CIRCUMSCRIBED radius, which made the rover bigger than it is in every direction but
+# one) and started declaring the rectangle itself. The supervisor already carried those
+# extents. There is no runtime derivation available -- nav2's footprint is a static
+# string -- so THIS TEST IS THE AGREEMENT MECHANISM, and it must fail if either side
+# moves, saying which one.
+
+NAV2_CFG = ROOT / "config" / "lean_nav2_stock.yaml"
+
+
+def _declared_footprints():
+    """Every `footprint:` polygon in the deployed nav2 config, as lists of (x, y)."""
+    out = []
+    for line in NAV2_CFG.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("footprint:"):
+            continue
+        body = stripped.split(":", 1)[1].strip().strip('"')
+        pairs = re.findall(r"\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]", body)
+        out.append([(float(x), float(y)) for x, y in pairs])
+    return out
+
+
+def _supervisor_rectangle():
+    """The same rectangle, built from the supervisor's deployed extents."""
+    front, rear = _yaml_float("footprint_front_m"), _yaml_float("footprint_rear_m")
+    left, right = _yaml_float("footprint_left_m"), _yaml_float("footprint_right_m")
+    return [(front, left), (front, -right), (-rear, -right), (-rear, left)]
+
+
+def test_both_costmaps_declare_the_supervisors_rectangle():
+    """The planner and the supervisor must describe the SAME robot.
+
+    Before this, the planner was told a circle of circumscribed radius while the
+    supervisor carried the true rectangle -- a planner promising what the supervisor
+    would refuse. If this fails, read WHICH side moved from the message: a changed
+    nav2 string is a config edit, a changed expectation is someone re-measuring the
+    robot, and those want opposite responses.
+    """
+    declared = _declared_footprints()
+    assert len(declared) == 2, (
+        f"expected a footprint in each of the two costmaps, found {len(declared)} -- "
+        f"if a costmap went back to robot_radius, the two shapes have diverged again")
+    want = _supervisor_rectangle()
+    for i, got in enumerate(declared):
+        assert got == pytest.approx(want, abs=1e-9), (
+            f"costmap #{i + 1}'s footprint {got} does not match the rectangle built "
+            f"from collision_stop.yaml's extents {want}. NAV2 SIDE MOVED if the config "
+            f"string changed; SUPERVISOR SIDE MOVED if the extents did -- check both "
+            f"against Scott's tape before changing either.")
+
+
+def test_no_costmap_still_declares_a_robot_radius():
+    """`robot_radius` and `footprint` are alternatives; nav2 takes the footprint when
+    both are present, so a leftover radius is a silent lie rather than an error."""
+    live = [line.strip() for line in NAV2_CFG.read_text().splitlines()
+            if line.strip().startswith("robot_radius:")]
+    assert not live, f"a costmap still declares {live} beside a footprint"
+
+
+def test_the_polygon_geometry_that_the_change_was_made_for():
+    """The arithmetic Scott's requirement turns on, asserted rather than remembered."""
+    front, rear = _yaml_float("footprint_front_m"), _yaml_float("footprint_rear_m")
+    left, right = _yaml_float("footprint_left_m"), _yaml_float("footprint_right_m")
+    padding = 0.01
+    inscribed = min(front, rear, left, right)
+    circumscribed = math.hypot(max(front, rear), max(left, right))
+    assert inscribed == pytest.approx(0.0965, abs=1e-6)
+    assert circumscribed == pytest.approx(0.1560, abs=5e-4)
+    # the win: a plannable corridor now needs 0.213 m, not 0.304 m
+    assert 2 * (inscribed + padding) == pytest.approx(0.213, abs=1e-3)
+    # the accepted limitation: a pivot still needs 0.34 m, so a 0.254 m gap is one-way
+    pivot_needs = 2 * math.hypot(max(front, rear) + padding, max(left, right) + padding)
+    assert pivot_needs > 0.254, "a 0.254 m gap would admit a pivot -- re-read the ruling"
+    assert (left + right) < 0.254, "the rover no longer fits Scott's gap in translation"

@@ -360,10 +360,26 @@ def test_no_denoise_layer():
 def test_inflation_is_the_only_place_the_robot_radius_is_applied():
     """D42's double-booking: we painted marks as 0.14 m robot-radius discs and then let
     the costmap inflate them AGAIN, sterilising ~0.56 m per touch. Marks are points
-    now; the radius enters once."""
+    now; the robot's extent enters once.
+
+    THE LITERAL MOVED ON 2026-08-31, THE OBLIGATION DID NOT. This asserted
+    `robot_radius: 0.14` because that was where the robot's size was declared. The
+    costmaps now declare the measured POLYGON instead, so the assertion follows the
+    declaration rather than the string -- what is being guarded is that the extent is
+    stated in exactly one place per costmap and inflation applies it once, not that a
+    particular key exists. `tests/test_footprint_derivation.py` pins the polygon's
+    VALUES against the supervisor's extents; this pins its SINGULARITY.
+    """
     text = cfg()
     assert re.search(r"inflation_radius:\s*[0-9.]+", text)
-    assert "robot_radius: 0.14" in text or "robot_radius: 0.145" in text
+    assert "robot_radius:" not in text, (
+        "a costmap declares both a footprint and a robot_radius -- nav2 takes the "
+        "footprint, so the radius is a silent lie rather than an error")
+    declarations = re.findall(r"^\s*footprint:", text, re.M)
+    assert len(declarations) == 2, (
+        f"the robot's extent must be declared once per costmap, found "
+        f"{len(declarations)} declarations (a substring match here would also count "
+        f"footprint_padding and published_footprint -- anchor on the key)")
 
 
 def test_inflation_leaves_a_gradient_the_planner_can_use():
