@@ -646,6 +646,14 @@ Not standards, but they have each cost a session and are invisible from a log:
   sharing a name** — and until they do, the count is the tell: read the number the
   check prints, not the sentence. This is measure-the-right-population living inside
   our own tooling.
+  **2026-08-31, and the gap was wider than the name:** BOTH checks walk SOURCE files
+  and ask whether each has an installed twin, so **neither could see a file that exists
+  in `install/` and not in `src/`**. `colcon build` copies and never deletes, so every
+  return from a branch that added a module leaves that module behind — observed twice
+  on the same file in one day, with the gate reporting PASS both times. The orphan scan
+  now lives in `preflight_pi.py`'s gate **only**; `launch_and_arm.py`'s 75-file verify
+  still cannot see an orphan, which is one more reason the two want merging rather than
+  mirroring.
 * **A "docs-only" change is not automatically deploy-only.** `config/*.yaml`,
   `launch/*.py` and `behavior_trees/*.xml` are SHIPPED files: editing a comment in one
   makes the installed copy stale by byte-compare even though nothing functional moved.
