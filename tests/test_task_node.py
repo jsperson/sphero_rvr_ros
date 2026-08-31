@@ -73,12 +73,18 @@ class FakeWorld(Node):
         self.create_service(Trigger, "observe", self._observe, callback_group=cbg)
         self._objects_pub = self.create_publisher(String, "/semantic_map/objects", 10)
         self._tf = TransformBroadcaster(self)
+        # Switchable so a test can let the pose GO STALE: tf2 keeps serving the last
+        # transform it heard, with an ever-growing stamp age that lookup_transform
+        # will not mention. That silence is what move_relative refuses.
+        self.tf_enabled = True
         self.create_timer(0.02, self._broadcast_tf, callback_group=cbg)
 
     def publish_objects(self, text=CANNED_OBJECTS):
         self._objects_pub.publish(String(data=text))
 
     def _broadcast_tf(self):
+        if not self.tf_enabled:
+            return
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = "map"
@@ -309,3 +315,97 @@ def test_query_arguments_are_cli_settable_as_plain_scalars(stack):
         param = stack.task.get_parameter(name)
         assert isinstance(param.value, (str, float)), f"{name} must be a scalar"
         assert not str(param.value).startswith("{")
+
+
+# --- move_relative: the SELF-CALL, proven rather than reasoned ----------------
+#
+# `move_relative` computes a map-frame destination and drives it through THIS NODE'S
+# OWN `task/goto` action. That is a shape which exists nowhere else in this codebase,
+# and its risk is a deadlock: a service handler waiting on an action served by the
+# same node. It is safe only because the executor is MultiThreaded with reentrant
+# groups. THESE TESTS ARE WHY WE BELIEVE THAT, and they run on the Pi against the real
+# executor -- a Mac approximation of executor threading would prove nothing about the
+# deadlock that matters.
+#
+# Every one is bounded. A deadlock must present as a FAILED test, never as a hang:
+# that is the corpse-trap lesson applied to a test rather than to a suite.
+
+def _move(stack, distance, heading=0.0, timeout=15.0):
+    stack.task.set_parameters([
+        rclpy.parameter.Parameter("move_distance_m", value=float(distance)),
+        rclpy.parameter.Parameter("move_heading_deg", value=float(heading)),
+    ])
+    client = stack.client.create_client(Trigger, "task/move_relative")
+    return stack.call(client, timeout=timeout)
+
+
+def test_move_relative_self_call_completes_and_reaches_nav2(stack):
+    """CONDITION 1: the self-call returns. If the node deadlocked on its own action
+    server this call would never come back, and the bounded `call` turns that into a
+    failure with a name instead of a hung suite."""
+    payload = _move(stack, 2.0)
+    assert payload["ok"] is True, payload
+    assert stack.world.nav_goals[-1] == pytest.approx((2.0, 0.0), abs=1e-6), (
+        "the transformed destination did not reach nav2 -- the self-call did not "
+        "traverse the goto path")
+
+
+def test_move_relative_uses_the_rovers_heading_not_the_maps(stack):
+    """The verb's whole reason to exist: the rover in this harness faces east, so
+    'forward' is +x. A heading of +90 must be its LEFT, not map-north by accident."""
+    payload = _move(stack, 1.0, heading=90.0)
+    assert payload["ok"] is True, payload
+    assert stack.world.nav_goals[-1] == pytest.approx((0.0, 1.0), abs=1e-6)
+
+
+def test_move_relative_refuses_a_move_the_goal_tolerance_would_swallow(stack):
+    """Refused in words at the contract, before any ROS call."""
+    before = len(stack.world.nav_goals)
+    payload = _move(stack, 0.05)
+    assert payload["ok"] is False and "minimum" in payload["message"]
+    assert len(stack.world.nav_goals) == before, "a refused move still reached nav2"
+
+
+@pytest.mark.parametrize("stack", [{"max_goal_distance_m": 1.0}], indirect=True)
+def test_move_relative_carries_the_inner_refusal_rather_than_flattening_it(stack):
+    """CONDITION 3. The envelope belongs to `goto`; this verb must report WHY it
+    refused, in goto's own words. A generic 'move failed' would throw away the only
+    sentence that says which gate spoke."""
+    payload = _move(stack, 2.0)
+    assert payload["ok"] is False, payload
+    assert "goto_said" in payload, (
+        f"the inner reason was swallowed: {payload}")
+    assert payload["goto_said"], "goto_said is empty -- the inner reason is lost"
+
+
+def test_move_relative_inherits_gotos_busy_refusal(stack):
+    """CONDITION 2. One drive at a time is `goto`'s rule and this verb must not become
+    a second path around it."""
+    stack.world.nav_mode = "hold"
+    holder = threading.Thread(target=lambda: stack.send_goto(1.0, 0.0, timeout=8.0),
+                              daemon=True)
+    holder.start()
+    time.sleep(1.0)                       # let the first drive take the lock
+    payload = _move(stack, 1.0, timeout=12.0)
+    assert payload["ok"] is False, "a second drive was accepted while one was running"
+    assert "already running" in payload["message"] or "refused" in payload["message"]
+    holder.join(timeout=12.0)
+
+
+def test_move_relative_refuses_a_stale_pose_rather_than_computing_from_history(stack):
+    """CONDITION 4, and the class of silent wrongness this week has been about.
+
+    `lookup_transform(Time())` returns the LATEST transform and says nothing about its
+    age -- so a rover whose TF stopped an hour ago still answers, confidently, from
+    where it WAS. "Forward 2 m" from a stale pose is a destination in the wrong place.
+    """
+    stack.task.set_parameters(
+        [rclpy.parameter.Parameter("move_pose_max_age_s", value=0.3)])
+    stack.world.tf_enabled = False
+    time.sleep(1.0)                       # older than the bound, by wall clock
+    before = len(stack.world.nav_goals)
+    payload = _move(stack, 1.0)
+    assert payload["ok"] is False, "a stale pose was used to compute a destination"
+    assert "stale" in payload["message"] or "old" in payload["message"], payload
+    assert len(stack.world.nav_goals) == before, "the stale move still reached nav2"
+    stack.world.tf_enabled = True

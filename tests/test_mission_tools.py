@@ -94,7 +94,7 @@ def test_the_tool_count_in_the_prompt_matches_the_schema():
     its own instructions -- and this one said three until the day it said six."""
     n = len(TOOL_SCHEMAS)
     words = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
-             8: "eight", 9: "nine", 10: "ten"}
+             8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve"}
     assert f"exactly {words[n]} tools" in re.sub(r"\s+", " ", SYSTEM_PROMPT), (
         f"{n} tools exist but the prompt does not say 'exactly {words[n]} tools'")
 

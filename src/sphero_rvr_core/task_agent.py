@@ -58,6 +58,16 @@ TOOL_SCHEMAS: dict[str, dict[str, tuple[type, bool]]] = {
     # Map clear (Scott's pick-it-up-and-move-it order, 2026-08-21): one verb,
     # no arguments, no motion authority.
     "clear_map": {},
+    # Relative motion (2026-08-31, PM-ratified; Scott named it twice). `goto` is
+    # ABSOLUTE map-frame x/y, so "forward 2 metres" was not a command the rover had --
+    # it was trigonometry the model had to do from `where_am_i`, unguarded. This is a
+    # coordinate transform in front of goto: no new motion authority, every existing
+    # gate unchanged. `heading_deg` is the BODY frame -- 0 ahead, +90 the rover's
+    # left, 180 behind -- and it is a DESTINATION, not a promise to drive straight.
+    "move_relative": {
+        "distance_m": ((int, float), True),
+        "heading_deg": ((int, float), False),
+    },
 }
 
 #: CONTRACT-LAYER RANGE BOUNDS (consensus pin b): sanity lives at the schema,
@@ -69,6 +79,11 @@ TOOL_SCHEMAS: dict[str, dict[str, tuple[type, bool]]] = {
 #: tests/test_task_agent.py so neither can quietly absorb the other's job.
 ARG_BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
     "turn": {"degrees": (-180.0, 180.0)},
+    # Same two-layer discipline as `turn`: sanity at the schema, safety at the
+    # admission. The node re-checks both bounds authoritatively, and the 0.15 m floor
+    # is a fact about the deployed stack -- xy_goal_tolerance is 0.12 m, so a shorter
+    # move would report SUCCESS with the rover motionless.
+    "move_relative": {"distance_m": (0.15, 5.0), "heading_deg": (-180.0, 180.0)},
 }
 
 #: String arguments that must be non-empty after strip: an empty target is a
@@ -77,7 +92,7 @@ NONEMPTY_STRINGS: dict[str, tuple[str, ...]] = {
     "look_and_recognize": ("target",),
 }
 
-SYSTEM_PROMPT = """You control a small ground robot through exactly ten tools.
+SYSTEM_PROMPT = """You control a small ground robot through exactly eleven tools.
 
 Reply with ONE JSON object and nothing else. Either call a tool:
   {"tool": "goto", "args": {"x": 1.0, "y": 0.5}}
@@ -86,6 +101,8 @@ Reply with ONE JSON object and nothing else. Either call a tool:
   {"tool": "explore", "args": {}}
   {"tool": "stop", "args": {}}
   {"tool": "status", "args": {}}
+  {"tool": "move_relative", "args": {"distance_m": 2.0}}            -> forward 2 m
+  {"tool": "move_relative", "args": {"distance_m": 1.0, "heading_deg": 180}}
 or finish by speaking to the user:
   {"say": "There is a pink shoe about a metre ahead."}
 

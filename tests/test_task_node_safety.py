@@ -64,7 +64,7 @@ def test_task_node_is_wired_as_a_real_entry_point():
     assert "task_node = sphero_rvr_driver.task_node:main" in setup
 
 
-def test_task_node_exposes_exactly_the_ELEVEN_tools_and_no_more():
+def test_task_node_exposes_exactly_the_TWELVE_tools_and_no_more():
     """A surface that quietly grows is how a thin node stops being thin, so the tool
     set is a WHITELIST and adding to it is a deliberate edit here.
 
@@ -82,7 +82,17 @@ def test_task_node_exposes_exactly_the_ELEVEN_tools_and_no_more():
     have it work): `clear_map` -- forget-and-rebuild via slam_toolbox's own
     Reset + Nav2's own clear services + the /map_clear event our state owners
     subscribe to. NO motion authority; non-motion, so no review round (Scott's
-    standing rule of 2026-08-21). A TWELFTH tool fails this test.
+    standing rule of 2026-08-21).
+    WIDENED 11 -> 12 on 2026-08-31, PM-ratified, for a feature Scott named twice
+    ("move forward 2 metres", "drive forward 1 m") and which scenario 8 scored as one
+    of three instruction classes the robot had no verb for: `move_relative`.
+    NO NEW MOTION AUTHORITY -- it is a coordinate transform in front of `task/goto`
+    and drives through THIS NODE'S OWN goto action, so the envelope, the plannability
+    precheck, the one-goto-at-a-time lock, the trinity and the supervisor all still
+    refuse exactly what they refused before. What is new is the EXPRESSION: `goto`
+    takes absolute map-frame x/y, so "forward 2 m" used to be trigonometry the
+    language agent did for itself, unguarded and untested -- and an unverified
+    composition is not a verb. A THIRTEENTH tool fails this test.
 
     Still out of scope and still asserted: `set_search_classes`, `capture_photo`, and
     anything that would give this surface its own motion authority. An e-stop tool in
@@ -93,7 +103,7 @@ def test_task_node_exposes_exactly_the_ELEVEN_tools_and_no_more():
     tools = ("task/goto", "task/observe", "task/query_semantic_map",
              "task/explore", "task/stop", "task/status",
              "task/turn", "task/where_am_i", "task/look_and_recognize",
-             "task/capabilities", "task/clear_map")
+             "task/capabilities", "task/clear_map", "task/move_relative")
     for tool in tools:
         assert f'"{tool}"' in source, f"{tool} is no longer exposed"
 
