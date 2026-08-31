@@ -1,0 +1,7 @@
+resolution 0.05000000074505806
+origin_x -1.96986851168831
+origin_y -2.55578075219421
+open_t 220.3
+closed_t 249.8
+newly_blocked 447
+newly_lethal 23
