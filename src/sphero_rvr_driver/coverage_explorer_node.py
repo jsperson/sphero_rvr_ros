@@ -429,6 +429,14 @@ class CoverageExplorerNode(Node):
         self._freeze_events = []
         self._active_goal_cell = None
         self._active_goal_handle = None
+        # HAS THIS GOAL ALREADY BEEN GIVEN AN ENDING? D75: the ledger's invariant is
+        # that `sent` equals the sum of every named ending, which is only true if the
+        # endings are MUTUALLY EXCLUSIVE. They were not: a stall-kill books
+        # stall_killed AND then cancels the live handle, which booked
+        # cancelled_at_end for the same goal -- one goal, two endings, and the
+        # tightened d53 assertion could not hold. The single-incrementer discipline
+        # was honoured per COUNTER and not per GOAL. This flag is the per-goal half.
+        self._active_goal_ended = False
         # DID THE CONTROLLER ATTEMPT A RECOVERY ON THIS GOAL? Set from the controller's
         # own `ladder_active` publication -- never inferred from progress, a timer, or
         # the shape of the abort. See `_goals_aborted_without_recovery`.
@@ -919,6 +927,14 @@ class CoverageExplorerNode(Node):
                     f"coverage goal {active_cell} planned but made no progress in "
                     f"{self._goal_progress_timeout_s:.0f}s — dropping it"
                 )
+                # D75 ORDERING: the stall-kill is booked BEFORE the cancel that
+                # effects it. `_cancel_active` books cancelled_at_end only for a goal
+                # with no ending yet, so if the cancel ran first it would take the
+                # ending that belongs here -- the cancel is the MEANS of this ending,
+                # not an ending of its own.
+                with self._lock:
+                    self._goals_stall_killed += 1
+                    self._active_goal_ended = True
                 self._cancel_active()
                 # A watchdog cancel IS a failed drive and must count as one. Its
                 # result status is CANCELED, which the result callback counts as
@@ -931,8 +947,6 @@ class CoverageExplorerNode(Node):
                 #
                 # D53: counted PUBLICLY too. Five of these ended the 2026-08-19
                 # ride-along while status and report said aborted=0 everywhere.
-                with self._lock:
-                    self._goals_stall_killed += 1
                 self._note_failure(active_cell, self._active_goal_generation,
                                    kind="stall_killed")
                 if self._mission_done:
@@ -1391,6 +1405,7 @@ class CoverageExplorerNode(Node):
             self._goal_inflight = True
             self._active_goal_cell = cell
             self._active_goal_saw_ladder = False
+            self._active_goal_ended = False          # D75: a fresh goal, no ending yet
             self._goals_sent += 1
             # The generation THIS goal belongs to. A freeze is claimed against the
             # goal it happened during, and the abort arrives on an async result
@@ -1480,6 +1495,7 @@ class CoverageExplorerNode(Node):
             # to delete it. Same narrow, expiring shape as the stall suppression.
             with self._lock:
                 self._goals_aborted += 1
+                self._active_goal_ended = True   # D75
                 if saw_ladder:
                     self._goals_aborted_after_recovery += 1
                 else:
@@ -1494,6 +1510,7 @@ class CoverageExplorerNode(Node):
         elif status == GoalStatus.STATUS_SUCCEEDED:
             with self._lock:
                 self._goals_succeeded += 1
+                self._active_goal_ended = True   # D75
                 self._consecutive_failures = 0
                 self._consecutive_freezes = 0
                 self._failure_streak = []
@@ -1847,10 +1864,18 @@ class CoverageExplorerNode(Node):
         """
         with self._lock:
             handle = self._active_goal_handle
+            ended = self._active_goal_ended
             self._active_goal_handle = None
             self._active_goal_cell = None
         if handle is not None:
-            self._goals_cancelled_at_end += 1
+            # D75: only if nothing has already named this goal's ending. A stall-kill,
+            # an abort and a success each claim the goal before or as they finish; a
+            # cancel that follows one of them is the MECHANISM of that ending, not a
+            # second ending. Counting both is what made `sent == sum(endings)` false.
+            if not ended:
+                with self._lock:
+                    self._goals_cancelled_at_end += 1
+                    self._active_goal_ended = True
             handle.cancel_goal_async()
 
     def _prune_stalled(self):

@@ -29,6 +29,13 @@ ALLOWED_UNRESET = {
     # runs — cancel needs the live handle, so these cannot be table rows.
     "_active_goal_handle",
     "_active_goal_cell",
+    # D75's per-goal ending flag. It describes the GOAL, not the map: every
+    # `_send_goal` re-initialises it to False, and `_cancel_active` -- which
+    # `_on_map_clear` calls -- reads it to decide whether the goal it is about to
+    # cancel already has a named ending. A registry row would zero it AFTER that
+    # read and before the next send, changing nothing; putting it in the table
+    # would imply a map-tied belief it does not hold.
+    "_active_goal_ended",
 }
 
 

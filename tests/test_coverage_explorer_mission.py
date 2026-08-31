@@ -1285,3 +1285,45 @@ def test_d62_the_counter_lives_at_the_single_cancel_site():
         "the counter moved away from the cancel site")
     assert "cancel_goal_async" in body
 
+
+
+def test_d75_a_stall_killed_goal_gets_exactly_one_named_ending(stack):
+    """D75: one goal, ONE ending. The endings must be mutually exclusive or the d53
+    invariant (`sent` == sum of every named ending) cannot hold.
+
+    THE DEFECT: `_cancel_active` incremented `cancelled_at_end` for any live handle it
+    cleared, without asking whether the goal had already been booked. A stall-kill
+    cancels its own goal, so the same goal landed in `stall_killed` AND
+    `cancelled_at_end` -- measured on the Pi 2026-08-31 as
+    `sent=3 stall_killed=3 cancelled_at_end=3`, asserting 3 == 6. The single-incrementer
+    discipline had been honoured per COUNTER and not per GOAL.
+
+    AND THE ORDER MATTERED MORE THAN THE RULE. "The first terminal ending wins" is the
+    right principle, but `_cancel_active` ran BEFORE the stall_killed increment, so
+    first-wins would have handed the ending to the cancel -- backwards, since the cancel
+    is the MEANS of a stall-kill rather than an ending of its own. The fix books the
+    stall-kill first and lets the cancel see a goal that already has an ending.
+    """
+    stack.world.nav_mode = "hold"          # accepted, never progresses -> watchdog
+    stack.world.publish_map(make_map())
+    assert wait_until(
+        lambda: any(r.get("outcome") == "ABORTED_GOALS_KEEP_FAILING"
+                    for r in stack.world.reports), 30.0
+    ), "the stalled mission never gave up"
+    goals = [r for r in stack.world.reports
+             if r.get("outcome") == "ABORTED_GOALS_KEEP_FAILING"][-1]["goals"]
+
+    assert goals["stall_killed"] >= 3, "the watchdog path did not run; nothing is proven"
+    named = (goals["succeeded"] + goals["aborted"]
+             + goals["stall_killed"] + goals["cancelled_at_end"])
+    assert goals["sent"] == named, (
+        "a goal has been given more than one ending: "
+        f"sent={goals['sent']} succeeded={goals['succeeded']} "
+        f"aborted={goals['aborted']} stall_killed={goals['stall_killed']} "
+        f"cancelled_at_end={goals['cancelled_at_end']}")
+    # The sharper form: in a hold-mode mission EVERY goal dies by the watchdog, so
+    # cancelled_at_end must be zero. A non-zero value here is the double-book itself,
+    # even when the sum happens to balance.
+    assert goals["cancelled_at_end"] == 0, (
+        f"cancelled_at_end={goals['cancelled_at_end']} in a mission where every goal "
+        f"ended as a stall-kill -- the cancel is being counted as a second ending")
