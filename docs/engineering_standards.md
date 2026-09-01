@@ -650,6 +650,46 @@ A green board after such a change means the underlying event did not happen to o
 not that it was addressed. Decide which of those a pass would mean **before** running,
 or a lucky ten will read as a fix.
 
+## 22. A measurement must CARRY the conditions it was taken under
+
+2026-08-31. Every rate this project measured in one afternoon was taken on a Pi
+carrying between one and four orphaned pytest sessions, load average 30 on four
+cores. Nothing said so, because nothing was asked to.
+
+**The cause was a flag.** Teardowns used `pkill -x pytest`. `-x` matches the
+executable's `comm`; these processes are `python3 -m pytest`, whose comm is
+`python3`. **It never matched once.** A cleanup that cannot clean, exiting 0 every
+time it ran, for a whole day — and each "stopped" loop left a full suite running at
+40-60% of a core while the next one started beside it.
+
+**Norm 20 was not enough and this is the gap.** Norm 20 says verification commands
+issued DURING a run contaminate it, and it is about the operator's hands. These
+suites were nobody's hands: they were residue. The operator can hold perfectly still
+and the machine can still be loud. "I am not touching it" is a claim about
+behaviour; "load was 0.18 and the graph was empty across three reads" is a claim
+about conditions, and only the second one is checkable by the person reading the
+result later.
+
+**The rule:** an experiment records its conditions into its own artifact, per
+trial, before the trial. Not in a message, not in a memory — in the file the number
+lives in. And where a condition can be enforced rather than merely recorded, enforce
+it: the loop now **refuses to start a run until load average drops below 2**, and
+writes the load it actually started at beside every run.
+
+**The cost of not doing it was not the wasted runs.** It was that the baseline —
+the one number believed clean, the one every later comparison was anchored to — turned
+out to have been measured beside an orphaned suite that had been running for 26
+minutes when it started, and *that* orphan was a suite which stands up fake action
+servers on the DDS graph: the exact population the flaky tests under measurement
+discover against. A contaminated experiment is recoverable. A contaminated
+**baseline** silently re-scales everything measured against it.
+
+**And a stated condition beats a believed one even when both are true.** The
+verification run that returned zero reds was taken under two extra suites. Nobody
+knew, so nobody could say it — and "clean board under worse conditions than claimed"
+is a strictly stronger result than the one that was reported. Recording conditions
+does not only catch bad news.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
@@ -736,3 +776,18 @@ Not standards, but they have each cost a session and are invisible from a log:
   restores the file will exit at the runner and leave the mutation behind. Same family
   as `set -u` killing a watcher before it sourced ROS. Put restores in a `trap`, or
   drop `set -e` in any script whose middle step is allowed to fail.
+* **`pkill -x <name>` MATCHES `comm`, NOT THE COMMAND LINE.** `python3 -m pytest` has
+  comm `python3`, so `pkill -x pytest` matches nothing and exits as though it worked.
+  Five orphaned suites accumulated behind that flag on 2026-08-31, the oldest running
+  5h08m. Kill by walking `/proc` and matching **cmdline**, with your own ancestry
+  excluded — the same discipline the `pkill -f` trap already demanded, for the opposite
+  reason: `-f` matches too much (your own ssh), `-x` matches too little.
+* **A `/proc` SCAN MATCHES ITS OWN COMMAND LINE — norm 18, third disguise.** A counter
+  written as `case "$a" in *"-m pytest"*)` counts the shell running it, because that
+  string is *in* that shell's cmdline. On 2026-08-31 it reported "3 before, 3 after" and
+  came within one step of convicting `run_pytest_bounded.py` of leaking its children;
+  the corrected counter (own ancestry excluded) reported 0 and 0, and the runner was
+  innocent on both exit paths. **Test the instrument against the accusation before
+  filing it** — the same rule as reading an error code at source, applied to a process
+  count. Ledger sightings of this family: `journalctl` greps matching the ssh that ran
+  them, `pgrep -f` matching its own invocation, and now a `/proc` walk matching itself.
