@@ -200,11 +200,25 @@ def stack(request):
     #
     # This STRENGTHENS a precondition and weakens no assertion: every check below stays
     # exactly as strict, and a test that now runs is one that is testing what it says.
-    assert s.task._planner.wait_for_server(timeout_sec=20.0), (
-        "the node's planner client never discovered the fake compute_path_to_pose")
-    assert s.task._nav.wait_for_server(timeout_sec=20.0), (
-        "the node's nav client never discovered the fake navigate_to_pose")
-    time.sleep(0.5)   # TF still needs a broadcast or two to be lookup-able
+    #
+    # THE try/finally IS LOAD-BEARING AND IT COST A WHOLE EXPERIMENT. In its first form
+    # these asserts sat between `Stack(params)` and `yield`, so a failed precondition
+    # skipped teardown: the context stayed initialised, `rclpy.init` then raised for every
+    # later test in the file, and ONE genuine discovery failure became 16 errors. Runs
+    # stopped being independent samples, which is fatal to the very measurement the
+    # precondition was added for. A fixture that fails before its yield owns the cleanup
+    # of everything it has already built.
+    try:
+        assert s.task._planner.wait_for_server(timeout_sec=20.0), (
+            "the node's planner client never discovered the fake compute_path_to_pose "
+            "in 20 s -- this is D79's mechanism firing honestly, NOT a flake: the test "
+            "did not run, rather than running against an undiscovered planner")
+        assert s.task._nav.wait_for_server(timeout_sec=20.0), (
+            "the node's nav client never discovered the fake navigate_to_pose in 20 s")
+        time.sleep(0.5)   # TF still needs a broadcast or two to be lookup-able
+    except BaseException:
+        s.close()
+        raise
     yield s
     s.close()
 
