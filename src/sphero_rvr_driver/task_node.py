@@ -730,6 +730,23 @@ class TaskNode(Node):
 
         Fails CLOSED for this one request (no path -> refuse) but never latches:
         every call re-asks, so a planner hiccup costs one tool call, not a session.
+
+        THAT SENTENCE IS TRUE OF THE ANSWER AND FALSE OF THE ASKING, and the difference
+        is a whole failure mode. If the planner cannot be DISCOVERED within 1.0 s the
+        branch below returns True -- fails OPEN -- and the goto proceeds with no
+        plannability check at all, announced by one `warn` line and nothing else. The
+        robot then accepts and attempts goals the planner would have refused.
+
+        THE RATE IS NOT NEGLIGIBLE AND IT IS MEASURED, NOT ASSUMED (D79, 2026-08-31). A
+        test fixture on a QUIET Pi, waiting TWENTY seconds for this same discovery, saw
+        it fail. Whatever that rate is, this branch's one second is a strictly worse bet
+        than the twenty that already failed. The fail-open itself is a deliberate policy
+        -- blocking all motion on a discovery miss is worse -- but it was priced as rare
+        and it is not known to be. See D80.
+
+        The sibling wait in `_on_goto` (`self._nav.wait_for_server(timeout_sec=5.0)`)
+        fails CLOSED, so a discovery miss THERE refuses rather than drives. Two bounded
+        waits, two opposite policies, in one code path.
         """
         if not self._planner.server_is_ready():
             if not self._planner.wait_for_server(timeout_sec=1.0):
