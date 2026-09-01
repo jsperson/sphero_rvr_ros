@@ -305,6 +305,15 @@ def gate_worktree_is_head():
     just made catches ONE instance and proves more about it; do both, because they fail
     differently: the string grep cannot see a second file staged from somewhere else, and
     this cannot see a file that is correct in git and wrong on disk.
+
+    AND THIS GATE ALONE PROVES A FACT ABOUT THE WRONG TREE. The Pi runs `install/`, not
+    `src/`. What makes the pair useful is the CHAIN, and the chain is the ORDER of the
+    GATES list: this gate says source == HEAD, and `installed_tree_matches` immediately
+    after says install == source in BOTH directions (its orphan scan is the return half;
+    without that, a file present in install and absent from source is invisible to a
+    walk over source). Only together do they say install derives from the SHA. The
+    ordering is asserted in `tests/test_preflight_disciplines.py`, because a chain that
+    depends on list order is an accident until something tests it.
     """
     if not SRC_TREE.exists():
         return Result(UNKNOWN, f"source tree not found at {SRC_TREE}",

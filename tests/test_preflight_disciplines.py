@@ -303,3 +303,23 @@ def test_a_borrowed_file_left_staged_is_caught_and_ordinary_dirt_is_not(prefligh
     git("checkout", "HEAD", "--", "f.py")
     assert (repo / "f.py").read_text(encoding="utf-8") == "VALUE = 'new'\n"
     assert preflight.gate_worktree_is_head().verdict == preflight.PASS
+
+
+def test_the_source_check_runs_BEFORE_the_install_check(preflight):
+    """The chain is what proves anything, and the chain is the list order.
+
+    `worktree_is_head` says the source tree is HEAD. `installed_tree_matches` says the
+    install tree is the source tree, in both directions (its orphan scan is the return
+    half). Neither alone says the deployed artifact derives from the SHA -- the Pi runs
+    `install/`, not `src/`, so the first gate on its own proves a fact about a tree that
+    is not the one under test.
+
+    Run in the other order the pair still passes and still means less, which is exactly
+    the kind of thing that survives a review. Asserted rather than assumed, and named by
+    worker sphero-rvr-ros-4f, who asked whether anything held the two together.
+    """
+    names = [g.name for g in preflight.GATES if g.stage == "pre"]
+    assert "worktree_is_head" in names and "installed_tree_matches" in names
+    assert names.index("worktree_is_head") < names.index("installed_tree_matches"), (
+        "the source check must precede the install check, or the pair proves "
+        "install == source == some-tree rather than install == source == HEAD")
