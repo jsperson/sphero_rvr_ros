@@ -258,6 +258,56 @@ def _supervisor_rectangle():
     return [(front, left), (front, -right), (-rear, -right), (-rear, left)]
 
 
+def _nav2_float(name):
+    m = re.search(rf"^\s*{name}:\s*([0-9.]+)", NAV2_CFG.read_text(), re.M)
+    assert m, f"{name} is not declared in the nav2 config -- an invisible default is the defect"
+    return float(m.group(1))
+
+
+def costmap_radii():
+    """(inscribed, circumscribed) as nav2 derives them from the DEPLOYED declaration.
+
+    THE SINGLE AUTHOR OF THESE TWO NUMBERS. They used to be transcribed constants in
+    `contact_marking.py`; when the costmaps went from `robot_radius` to a polygon they
+    silently became false and the suite stayed green, because the tests compared the two
+    copies to each other rather than to the declaration (D76). Computing them here means
+    there is no copy to diverge.
+
+    nav2's rule, written out rather than remembered: pad every vertex sign-wise by
+    `footprint_padding`, then take the inscribed radius as the shortest distance from the
+    origin to a footprint SEGMENT and the circumscribed as the longest distance to a
+    VERTEX. Segment distance, not vertex distance, is what makes the inscribed radius the
+    apothem of a rectangle rather than its half-diagonal.
+
+    DERIVED, NOT MEASURED. M1/M2 read the circle-era radii off the running costmap; this
+    reads the config and does nav2's arithmetic. An M1-style re-measurement under the
+    polygon is owed (D76). Do not quote the output of this function as measured.
+    """
+    pad = _nav2_float("footprint_padding")
+    pts = _declared_footprints()[0]
+    padded = [(x + math.copysign(pad, x), y + math.copysign(pad, y)) for x, y in pts]
+
+    def _origin_to_segment(p, q):
+        (px, py), (qx, qy) = p, q
+        dx, dy = qx - px, qy - py
+        t = max(0.0, min(1.0, -(px * dx + py * dy) / (dx * dx + dy * dy)))
+        return math.hypot(px + t * dx, py + t * dy)
+
+    n = len(padded)
+    inscribed = min(_origin_to_segment(padded[i], padded[(i + 1) % n]) for i in range(n))
+    circumscribed = max(math.hypot(x, y) for x, y in padded)
+    return inscribed, circumscribed
+
+
+def test_the_two_costmaps_would_not_derive_different_radii():
+    """`costmap_radii` reads the FIRST declared footprint; that is only honest while the
+    two costmaps declare the same shape. The sibling test asserts both match the
+    supervisor's rectangle, which implies this -- asserted separately anyway, because the
+    helper's correctness should not depend on reading a different test's assertions."""
+    declared = _declared_footprints()
+    assert declared[0] == pytest.approx(declared[1], abs=1e-9)
+
+
 def test_both_costmaps_declare_the_supervisors_rectangle():
     """The planner and the supervisor must describe the SAME robot.
 

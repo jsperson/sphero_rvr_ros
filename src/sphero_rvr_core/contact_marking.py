@@ -108,32 +108,33 @@ HALF_WIDTH_RIGHT_M = 0.106
 #: footprint batch.
 ROBOT_RADIUS_M = 0.145
 
-#: WHAT THE COSTMAP ACTUALLY USES, measured 2026-08-18 on the deployed binary (M1/M2).
+#: WHAT THE COSTMAP ACTUALLY USES -- AND WHY THIS MODULE NO LONGER HOLDS A COPY OF IT.
 #:
-#: nav2 pads the footprint by `footprint_padding` (default 0.01, now DECLARED in the YAML
-#: so it stops being invisible) and then derives BOTH the inscribed radius the inflation
-#: layer uses AND the polygon that footprint clearing erases from, out of the PADDED
-#: shape. So `robot_radius: 0.145` never reaches the geometry.
+#: nav2 pads the declared footprint by `footprint_padding` and derives BOTH the inscribed
+#: radius the inflation layer uses AND the polygon that footprint clearing erases from,
+#: out of the PADDED shape. The config field is a REQUEST; the padded shape is the answer.
+#: That lesson cost this project both of its mark-geometry derivations and it still holds.
 #:
-#: M1, off `/local_costmap/published_footprint`: 16 vertices, vertex radii 0.1550-0.1591,
-#: apothem 0.1519. M2, independently, off a radial cost profile: a cell at diagonal
-#: distance hypot(0.15,0.05)=0.1581 from a lethal cell reads 245, and
-#: `computeCost` (read from the deployed `inflation_layer.hpp`) gives
+#: THE CIRCLE-ERA MEASUREMENT, kept as history because it is the evidence FOR that lesson
+#: and because it was measured rather than computed. With `robot_radius: 0.145` deployed,
+#: M1 (off `/local_costmap/published_footprint`) read 16 vertices, radii 0.1550-0.1591,
+#: apothem 0.1519. M2, independently, off a radial cost profile: a cell at
+#: hypot(0.15,0.05)=0.1581 from a lethal cell read 245, against `computeCost`'s
 #: 252*exp(-4*(0.1581-0.1519)) = 245.8. Two methods, three decimals, agreeing.
 #:
-#: THE LESSON, because it cost this project both of its mark-geometry derivations: a
-#: config field's value is not the deployed value once a framework default transforms it.
-#: `robot_radius` is a request; the published footprint is the answer.
-#: DIVERGED 2026-08-31 AND DELIBERATELY NOT RE-DERIVED. The deployed costmaps now
-#: declare a POLYGON (the measured rectangle) rather than `robot_radius`, so the real
-#: inscribed radius is 0.0965 (0.1065 padded) and the circumscribed is 0.1560 (0.1702
-#: padded). The figures below describe the CIRCLE-era costmap and are kept unchanged on
-#: purpose: re-deriving them in the same batch as the footprint would put two variables
-#: in one change, and one of them -- refusal_promotion's corridor half-width -- is the
-#: mechanism that painted D60's door shut, whose falsifier is a certification bar for
-#: that very change. See D76 for the re-derivation, which is its own round.
-COSTMAP_INSCRIBED_RADIUS_M = 0.1519
-COSTMAP_CIRCUMSCRIBED_RADIUS_M = 0.1591
+#: D76, 2026-08-31 -- WHY THE CONSTANTS ARE GONE RATHER THAN RE-STATED. Those two numbers
+#: lived here as `COSTMAP_INSCRIBED_RADIUS_M` and `COSTMAP_CIRCUMSCRIBED_RADIUS_M`. When
+#: the costmaps switched from `robot_radius` to a POLYGON they became false, and the whole
+#: suite stayed green through it -- because the tests asserted relations BETWEEN the two
+#: copies, so nothing was watching the declaration they claimed to describe. Re-stating
+#: them would have restored the numbers and kept the class. Deleting them removes it: the
+#: deployed YAML is the single author, `tests/test_footprint_derivation.py:costmap_radii`
+#: computes the radii from it, and a number with one author cannot diverge from itself.
+#:
+#: NOT RE-MEASURED, AND THAT MATTERS. The polygon-era radii are DERIVED from the
+#: declaration; M1/M2 were READ OFF the running costmap. An M1-style re-measurement on the
+#: deployed binary is owed and belongs to D76's round. Until it lands, do not quote a
+#: polygon-era radius as measured.
 
 
 class ContactPoseUnavailable(RuntimeError):
@@ -303,7 +304,9 @@ def default_margin_m(mark_radius_m: float = ROBOT_RADIUS_M) -> float:
     SUPERSEDED IN ITS ARITHMETIC, 2026-08-18, and left standing only because the geometry
     that replaces it has not been agreed yet. Two things above are now known to be false.
     (1) The derivation uses `ROBOT_RADIUS_M` = 0.145, which the costmap does not use --
-    the real inscribed radius is `COSTMAP_INSCRIBED_RADIUS_M` = 0.1519 (M1/M2). (2) The
+    the real inscribed radius is whatever nav2 derives from the DEPLOYED declaration
+    (`tests/test_footprint_derivation.py:costmap_radii`), which was 0.1519 in the circle
+    era and is smaller than 0.145 under the polygon. (2) The
     claim that the disc's near edge "sits exactly on the footprint's front edge" describes
     a cell that footprint clearing deletes: the near cap of every disc is erased, and what
     actually survives is a crescent starting ~0.169 m out that nobody designed. The disc

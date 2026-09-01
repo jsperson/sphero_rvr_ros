@@ -395,13 +395,23 @@ def test_inflation_leaves_a_gradient_the_planner_can_use():
     So the invariant is not a number, it is a margin: inflation must reach meaningfully
     beyond the circumscribed radius, or the planner and the controller disagree about
     what is drivable. Pinning the literal is what let the defect sit here unnoticed while
-    a test claimed to be guarding it."""
-    from sphero_rvr_core.contact_marking import COSTMAP_CIRCUMSCRIBED_RADIUS_M
+    a test claimed to be guarding it.
+
+    AND THEN IT HAPPENED AGAIN, ONE LEVEL UP (D76, 2026-08-31). The relationship was
+    right; the radius fed into it was a TRANSCRIBED circle-era constant. When the costmaps
+    switched to a polygon, this guard went on measuring the gradient against a
+    circumscribed radius the costmap had stopped building -- 0.1591 where the padded
+    polygon reaches 0.1702 -- and stayed green throughout, because nothing compared its
+    input to the declaration. The margin survives the correction (141 mm -> 130 mm against
+    a 100 mm bar), so no verdict flips; the lesson does. It now derives the radius from the
+    deployed footprint, so the input cannot go stale without the declaration changing."""
+    from tests.test_footprint_derivation import costmap_radii
+    _, circumscribed = costmap_radii()
     value = scalar(cfg(), "inflation_radius")
-    margin = value - COSTMAP_CIRCUMSCRIBED_RADIUS_M
+    margin = value - circumscribed
     assert margin >= 0.10, (
         f"inflation_radius={value} leaves only {margin * 1000:.0f} mm beyond the "
-        f"circumscribed radius {COSTMAP_CIRCUMSCRIBED_RADIUS_M}. The planner needs a "
+        f"circumscribed radius {circumscribed:.4f}. The planner needs a "
         f"gradient to prefer clearance; without one it plans paths the controller "
         f"refuses, which is exactly what 0.16 did.")
 

@@ -8,8 +8,6 @@ import math
 import pytest
 
 from sphero_rvr_core.contact_marking import (
-    COSTMAP_CIRCUMSCRIBED_RADIUS_M,
-    COSTMAP_INSCRIBED_RADIUS_M,
     FOOTPRINT_FRONT_M,
     FOOTPRINT_REAR_M,
     HALF_WIDTH_LEFT_M,
@@ -123,36 +121,71 @@ def test_the_footprint_is_the_measured_body_not_a_padded_number():
     assert (HALF_WIDTH_LEFT_M, HALF_WIDTH_RIGHT_M) == pytest.approx((left, right))
 
 
-def test_the_costmap_radii_are_not_the_configured_robot_radius():
-    """M1/M2, 2026-08-18. `robot_radius: 0.145` is a REQUEST; nav2 pads it by
-    `footprint_padding` and derives the inscribed radius -- and the polygon footprint
-    clearing erases from -- out of the padded shape. Measured on the deployed binary:
-    apothem 0.1519, vertex radii to 0.1591.
+def test_the_costmap_radii_are_not_any_number_written_in_the_config():
+    """M1/M2 2026-08-18; re-pointed at the deployed declaration 2026-08-31 (D76).
 
-    This test exists because BOTH mark-geometry derivations this project produced were
-    computed from 0.145, a number the costmap never sees. If someone 'tidies' these back
-    to robot_radius, that whole class of error comes back."""
-    assert COSTMAP_INSCRIBED_RADIUS_M != ROBOT_RADIUS_M
-    assert COSTMAP_INSCRIBED_RADIUS_M > ROBOT_RADIUS_M, (
-        "padding makes the deployed body BIGGER than configured, never smaller")
-    assert COSTMAP_CIRCUMSCRIBED_RADIUS_M > COSTMAP_INSCRIBED_RADIUS_M
+    The config field -- `robot_radius` then, `footprint` now -- is a REQUEST. nav2 pads
+    it and derives the inscribed radius the inflation layer uses, and the polygon that
+    footprint clearing erases from, out of the PADDED shape. So neither radius equals any
+    number the config states. This test exists because BOTH mark-geometry derivations this
+    project produced were computed from a config field the costmap never uses.
+
+    IT USED TO BE ABLE TO PASS WHILE FALSE. The previous version compared two transcribed
+    constants in `contact_marking.py` to each other; when the costmaps switched to a
+    polygon both constants went stale and this test never noticed, because neither side of
+    its comparison was the declaration. It now derives from the deployed YAML.
+    """
+    from tests.test_footprint_derivation import costmap_radii
+    inscribed, circumscribed = costmap_radii()
+    assert circumscribed > inscribed, (
+        "the longest vertex must reach past the shortest edge, or the derivation has "
+        "confused vertex distance with segment distance")
+    assert inscribed != pytest.approx(ROBOT_RADIUS_M, abs=1e-6)
+    assert circumscribed != pytest.approx(ROBOT_RADIUS_M, abs=1e-6)
 
 
-def test_the_declared_padding_explains_the_measured_radii():
-    """Guard the DERIVATION, not just the numbers: the config now declares
-    `footprint_padding`, and it must remain the value that accounts for the measured
-    footprint. A padding edited without re-measuring would leave these constants
-    describing a robot the costmap no longer builds."""
-    import re
-    from pathlib import Path
-    cfg = (Path(__file__).resolve().parents[1] / "config" / "lean_nav2_stock.yaml").read_text()
-    m = re.search(r"^\s*footprint_padding:\s*([0-9.]+)", cfg, re.M)
-    assert m, "footprint_padding must stay DECLARED -- an invisible default is the defect"
-    padding = float(m.group(1))
-    # nav2 pads sign-wise per vertex, so the on-axis vertex moves out by exactly padding.
-    assert ROBOT_RADIUS_M + padding == pytest.approx(0.1550, abs=5e-4), (
-        "the smallest measured vertex radius (0.1550) is robot_radius + padding; if this "
-        "no longer holds, re-run M1 rather than editing the constants")
+def test_the_declared_padding_explains_the_derived_radii():
+    """Guard the DERIVATION, not the numbers: `footprint_padding` must stay DECLARED, and
+    it must remain the thing that accounts for the gap between the shape we ask for and
+    the shape the costmap builds. A padding edited without re-deriving would leave every
+    consumer describing a robot the costmap no longer builds.
+
+    The rectangle's inscribed radius is its shortest half-extent plus the padding -- that
+    identity is the whole content of "nav2 pads sign-wise", and it is what breaks first if
+    someone changes the padding or reshapes the footprint.
+    """
+    from tests.test_footprint_derivation import _declared_footprints, _nav2_float
+    padding = _nav2_float("footprint_padding")
+    from tests.test_footprint_derivation import costmap_radii
+    inscribed, _ = costmap_radii()
+    pts = _declared_footprints()[0]
+    shortest_half_extent = min(min(abs(x) for x, _ in pts), min(abs(y) for _, y in pts))
+    assert inscribed == pytest.approx(shortest_half_extent + padding, abs=1e-9), (
+        "the inscribed radius is no longer shortest-half-extent + padding; re-derive "
+        "rather than editing the expectation")
+
+
+def test_the_mark_disc_is_now_wider_than_the_costmaps_inscribed_radius():
+    """RECORDED, NOT RATIFIED. This is D76's live row, held visible as a test.
+
+    `contact_marker_node` declares `mark_radius_m` from `ROBOT_RADIUS_M` = 0.145, the
+    CIRCLE-era circumscribed radius. Under the circle costmap the mark was NARROWER than
+    the inscribed radius (0.145 < 0.1519). Under the polygon it is WIDER, because the
+    polygon's inscribed radius is the robot's short half-width plus padding rather than
+    its half-diagonal. Nothing decided that inversion; it fell out of a footprint change,
+    which is exactly the kind of geometry drift this file exists to notice.
+
+    THIS TEST IS MEANT TO GO RED. When D76 re-derives `ROBOT_RADIUS_M` from the polygon,
+    the inversion disappears and this fails -- which is the point: it forces D76's row to
+    be closed deliberately rather than drifted past. Delete it in that batch, with the
+    new mark geometry asserted in its place.
+    """
+    from tests.test_footprint_derivation import costmap_radii
+    inscribed, _ = costmap_radii()
+    assert ROBOT_RADIUS_M > inscribed, (
+        "the mark disc is no longer wider than the inscribed radius -- if D76 re-derived "
+        "the mark geometry, this test has done its job and should be replaced by an "
+        "assertion about the NEW shape, not repaired")
 
 
 def test_the_lateral_half_extents_are_not_the_longitudinal_ones():
