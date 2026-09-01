@@ -22,6 +22,7 @@ TIMEOUT_EXIT_CODE = 124
 CLEANUP_FAILURE_EXIT_CODE = 125
 INTERRUPTED_EXIT_CODE = 130
 CONCURRENT_RUN_EXIT_CODE = 75
+FOREIGN_SESSION_EXIT_CODE = 76
 
 
 class _ExternalTermination(Exception):
@@ -44,6 +45,87 @@ def _acquire_lock(path: Path) -> TextIO | None:
     lock.write(f"pid={os.getpid()} cwd={Path.cwd()}\n")
     lock.flush()
     return lock
+
+
+# --------------------------------------------------------------------------
+# machine state -- norm 22: a measurement carries the conditions it was taken under
+# --------------------------------------------------------------------------
+
+def _own_ancestry() -> set[int]:
+    """This process and every ancestor.
+
+    A scan for `-m pytest` in `/proc/*/cmdline` MATCHES THE SCANNER, because that
+    string is in the scanning process's own command line the moment it is written
+    down. That trap has now cost this project three sightings in one day, the last of
+    which nearly filed a fabricated defect against this very file. Excluded by
+    construction rather than by remembering.
+    """
+    pids: set[int] = set()
+    pid = os.getpid()
+    while pid > 1:
+        pids.add(pid)
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            pid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            break
+    return pids
+
+
+def foreign_pytest_sessions(proc_root: Path = Path("/proc")) -> list[tuple[int, str]] | None:
+    """Other pytest sessions on this machine, or None if we cannot tell.
+
+    WHY THIS IS NOT THE LOCK'S JOB. The repository lock catches a COOPERATING runner:
+    something that took the lock and is holding it. It cannot see a bare
+    `python3 -m pytest` somebody started by hand and walked away from, and it cannot see
+    a child orphaned when its parent was killed. On 2026-08-31 five such sessions
+    accumulated -- the oldest running 5h08m -- and every rate measured that afternoon,
+    INCLUDING THE BASELINE every later number was compared against, was taken beside
+    them at load 30 on four cores.
+
+    None means "cannot tell", which on a machine without `/proc` is the honest answer
+    and is REPORTED rather than silently treated as clean.
+    """
+    if not proc_root.is_dir():
+        return None
+    mine = _own_ancestry()
+    found: list[tuple[int, str]] = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in mine:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", "replace")
+        except OSError:
+            continue
+        if "-m pytest" in cmdline or "run_pytest_bounded" in cmdline:
+            found.append((pid, cmdline.strip()[:120]))
+    return found
+
+
+def machine_state_line() -> str:
+    """The conditions, printed into the artifact before the run rather than believed.
+
+    Load comes from `os.getloadavg`, which is portable; the session scan needs `/proc`
+    and says so when it is absent. Printed unconditionally, including when everything is
+    fine -- a clean board is only strong evidence if the conditions it was taken under
+    were recorded at the time. The zero-red verification run on 2026-08-31 turned out to
+    have been taken under two concurrent suites, which made it a BETTER result than the
+    one reported, and nobody could say so because nobody had written the number down.
+    """
+    try:
+        load = "%.2f %.2f %.2f" % os.getloadavg()
+    except (OSError, AttributeError):
+        load = "unavailable"
+    sessions = foreign_pytest_sessions()
+    if sessions is None:
+        state = "foreign_pytest=UNKNOWN (no /proc)"
+    else:
+        state = f"foreign_pytest={len(sessions)}"
+    return f"BOUNDED_PYTEST_MACHINE_STATE load={load} {state}"
 
 
 def _process_group_exists(process_group: int) -> bool:
@@ -315,6 +397,12 @@ def _parser() -> argparse.ArgumentParser:
         default=Path(tempfile.gettempdir()) / "sphero-rvr-ros-pytest.lock",
         help="repository-wide nonblocking lock file",
     )
+    parser.add_argument(
+        "--require-quiet", action="store_true",
+        help=("refuse to run when another pytest session is already on this machine. "
+              "A measurement wants this; an ordinary local run does not, which is why "
+              "it is opt-in rather than the default."),
+    )
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     return parser
 
@@ -345,6 +433,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if pytest_args[:1] == ["--"]:
         pytest_args = pytest_args[1:]
     pytest_args = _enforce_verbose(pytest_args, parser)
+    print(machine_state_line(), flush=True)
+    if args.require_quiet:
+        sessions = foreign_pytest_sessions()
+        if sessions is None:
+            print("BOUNDED_PYTEST_FOREIGN_UNKNOWN --require-quiet was asked for and this "
+                  "machine has no /proc, so the condition CANNOT BE CHECKED; refusing "
+                  "rather than measuring under conditions nobody can state.", flush=True)
+            return FOREIGN_SESSION_EXIT_CODE
+        if sessions:
+            for pid, cmdline in sessions:
+                print(f"BOUNDED_PYTEST_FOREIGN pid={pid} :: {cmdline}", flush=True)
+            print(f"BOUNDED_PYTEST_FOREIGN_REFUSED {len(sessions)} other pytest "
+                  "session(s) are running; a rate measured beside them is not a rate. "
+                  "Kill them by walking /proc and matching CMDLINE -- `pkill -x pytest` "
+                  "matches comm and has never matched one of these.", flush=True)
+            return FOREIGN_SESSION_EXIT_CODE
     return run_pytest(
         pytest_args,
         timeout_seconds=args.timeout,

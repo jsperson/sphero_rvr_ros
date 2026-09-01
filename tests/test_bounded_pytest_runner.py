@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import importlib.util
 import os
 import re
 import shlex
@@ -10,9 +11,27 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_pytest_bounded.py"
+
+
+@pytest.fixture(scope="module")
+def runner_module():
+    """The runner imported as a module, for the parts that are pure predicates.
+
+    Everything else in this file drives the runner as a SUBPROCESS, which is right for
+    behaviour that only exists across a process boundary (signals, groups, exit codes).
+    The machine-state scan is a pure function over a directory tree, so it is tested
+    directly -- and can therefore be tested against a FAKE `/proc`, which is the only
+    way to plant a foreign session without starting one.
+    """
+    spec = importlib.util.spec_from_file_location("run_pytest_bounded", RUNNER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(*args: str, timeout: float = 10.0) -> subprocess.CompletedProcess[str]:
@@ -123,8 +142,19 @@ def test_bounded_runner_cleans_group_when_wrapper_receives_sigterm(tmp_path: Pat
         stderr=subprocess.PIPE,
     )
     assert wrapper.stdout is not None
-    start_line = wrapper.stdout.readline()
-    match = re.search(r"BOUNDED_PYTEST_START pid=(\d+)", start_line)
+    # READ UNTIL THE MARKER, NOT THE FIRST LINE. The runner prints its machine-state
+    # header (norm 22: a measurement carries its conditions) before starting the group,
+    # so the START marker is no longer line 1. Position was never the contract.
+    start_line = ""
+    match = None
+    for _ in range(10):
+        line = wrapper.stdout.readline()
+        if not line:
+            break
+        start_line += line
+        match = re.search(r"BOUNDED_PYTEST_START pid=(\d+)", line)
+        if match:
+            break
     assert match is not None, start_line
     process_group = int(match.group(1))
 
@@ -266,3 +296,104 @@ def test_a_genuinely_hung_pytest_still_hits_the_bound(tmp_path: Path) -> None:
     assert "BOUNDED_PYTEST_TIMEOUT" in result.stderr, (
         f"the deadline path did not run: rc={result.returncode} stderr={result.stderr[:300]}")
     assert elapsed >= 3.0, "it did not wait for the deadline at all"
+
+
+# --- norm 22: the runner states the conditions, and can refuse to measure under bad ones
+
+
+def test_the_scan_does_not_count_itself(runner_module):
+    """THE TRAP THAT NEARLY FILED A DEFECT AGAINST THIS FILE.
+
+    A scan for `-m pytest` in `/proc/*/cmdline` matches the SCANNER, because the string
+    is in the scanning process's own command line. On 2026-08-31 the naive form reported
+    "3 sessions before, 3 after" and came one step from convicting `run_pytest_bounded`
+    of leaking its children; the runner was innocent on both exit paths.
+
+    This test runs inside pytest, so the scanner's own ancestry IS a pytest session --
+    which makes it the perfect fixture: if ancestry exclusion is dropped, this test
+    finds itself.
+    """
+    found = runner_module.foreign_pytest_sessions()
+    if found is None:
+        pytest.skip("no /proc on this machine; the scan cannot run here")
+    mine = runner_module._own_ancestry()
+    assert all(pid not in mine for pid, _ in found), (
+        f"the scan returned a process from its own ancestry: {found}")
+
+
+def test_a_planted_foreign_session_is_found_and_a_stranger_is_not(runner_module, tmp_path):
+    """Plant the condition rather than describe it, using a FAKE /proc.
+
+    Two things must both hold or the gate is useless: a foreign pytest session is FOUND
+    (or the gate never fires), and an unrelated process is NOT (or the gate fires on
+    everything and gets turned off, which is the same as never firing).
+    """
+    proc = tmp_path / "proc"
+    for pid, cmdline in (
+        ("4242", "/usr/bin/python3 -m pytest tests/ -vv"),
+        ("4243", "/usr/bin/python3 scripts/run_pytest_bounded.py --timeout 600 tests/"),
+        ("4244", "/usr/lib/systemd/systemd --user"),
+        ("4245", "sshd: jsperson@notty"),
+    ):
+        d = proc / pid
+        d.mkdir(parents=True)
+        (d / "cmdline").write_bytes(cmdline.replace(" ", "\0").encode())
+    (proc / "not-a-pid").mkdir()
+
+    found = runner_module.foreign_pytest_sessions(proc_root=proc)
+    pids = sorted(pid for pid, _ in found)
+    assert pids == [4242, 4243], (
+        f"expected exactly the two pytest sessions, got {found} -- a gate that also "
+        f"fires on sshd is a gate that gets disabled")
+
+
+def test_no_proc_reports_UNKNOWN_rather_than_clean(runner_module, tmp_path):
+    """"Could not tell" must never render as "nothing found".
+
+    The whole failure this gate exists for is a condition that was true and unstated.
+    A scan that cannot run returning an empty list would state the opposite of what it
+    knows, which is worse than not scanning.
+    """
+    assert runner_module.foreign_pytest_sessions(proc_root=tmp_path / "absent") is None
+
+
+def test_require_quiet_refuses_when_it_cannot_check(runner_module, tmp_path, monkeypatch, capsys):
+    """--require-quiet on a machine with no /proc must REFUSE, not proceed.
+
+    Opposite ruling from the same fact as the test above, and deliberately so: reporting
+    an unknown is honest, but MEASURING under an unknown after being asked for quiet is
+    the exact thing that produced today's void numbers.
+    """
+    monkeypatch.setattr(runner_module, "foreign_pytest_sessions", lambda *a, **k: None)
+    rc = runner_module.main(["--require-quiet", "--lock-file", str(tmp_path / "l"),
+                             "--", "tests/", "-vv"])
+    assert rc == runner_module.FOREIGN_SESSION_EXIT_CODE
+    assert "CANNOT BE CHECKED" in capsys.readouterr().out
+
+
+def test_require_quiet_refuses_and_names_every_offender(runner_module, tmp_path, monkeypatch, capsys):
+    """The refusal must NAME them, or the operator cannot act on it -- and the remedy
+    must say why the obvious kill does not work, because `pkill -x pytest` matches comm
+    and never matched one of these all day."""
+    monkeypatch.setattr(runner_module, "foreign_pytest_sessions",
+                        lambda *a, **k: [(4242, "python3 -m pytest tests/ -vv")])
+    rc = runner_module.main(["--require-quiet", "--lock-file", str(tmp_path / "l"),
+                             "--", "tests/", "-vv"])
+    out = capsys.readouterr().out
+    assert rc == runner_module.FOREIGN_SESSION_EXIT_CODE
+    assert "pid=4242" in out
+    assert "pkill -x pytest" in out and "comm" in out
+
+
+def test_the_conditions_are_printed_even_when_nothing_is_wrong(runner_module, monkeypatch, capsys):
+    """A clean board is only strong evidence if its conditions were recorded AT THE TIME.
+
+    The zero-red verification run on 2026-08-31 turned out to have been taken beside two
+    concurrent suites, which made it a better result than the one reported -- and nobody
+    could say so, because the number had never been written down. So the header prints
+    unconditionally, including on a quiet machine.
+    """
+    monkeypatch.setattr(runner_module, "foreign_pytest_sessions", lambda *a, **k: [])
+    line = runner_module.machine_state_line()
+    assert line.startswith("BOUNDED_PYTEST_MACHINE_STATE")
+    assert "load=" in line and "foreign_pytest=0" in line
