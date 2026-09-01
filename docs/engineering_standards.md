@@ -608,6 +608,48 @@ neither cheap nor passive.
 Today's flight itself reached 6.30 Hz and no harm came of it. That was the luck of
 when the probing happened to stop, not a property of the design.
 
+## 21. A fixture that fails BEFORE its yield owns the cleanup of everything it built
+
+2026-08-31, D79's own experiment, destroyed by D79's own fix.
+
+The `stack` fixture in `tests/test_task_node.py` was given a precondition: wait for
+the node's action clients to discover the fake servers, and fail loudly rather than
+run a test against an undiscovered planner. The precondition was right and it fired
+for a real reason on the first run of a ten-run measurement.
+
+Then it took the file down with it. The asserts sat between `Stack(params)` and
+`yield`, so a failed precondition **skipped `s.close()`**. The rclpy context stayed
+initialised, `rclpy.init` raised for every later test in the file, and **one genuine
+failure became sixteen errors** — including both of the tests the experiment existed
+to measure, neither of which ran.
+
+**The damage is not the sixteen errors. It is that the runs stopped being independent
+samples.** A measurement of how often something fails cannot survive a failure mode
+that changes the population of the next fifteen tests. The fix had silently converted
+a rate experiment into a single-trial one, and every run would have reported a number.
+
+**The rule:** anything a fixture constructs before its `yield` must be torn down on
+the path where the fixture raises. `try: ... except BaseException: s.close(); raise`
+— `BaseException`, because `KeyboardInterrupt` and a bounded runner's timeout are
+exactly when a leaked context does the most harm.
+
+**The must-flip evidence, because this class is invisible without it.** Force the
+precondition to fail and compare shapes, not counts:
+
+| | honest errors | cascade errors | tests that still passed |
+|---|---|---|---|
+| repaired | 16 | 0 | 4 |
+| pre-fix | 1 | 19 | 0 |
+
+One genuine failure with fifteen collateral ones looks, in any summary line, exactly
+like a run that went badly. It is not: it is a run that stopped measuring.
+
+**And the sibling rule for the thing being measured.** The precondition did not remove
+the flake and could not have: it converts a **wrong verdict** into an **honest error**.
+A green board after such a change means the underlying event did not happen to occur,
+not that it was addressed. Decide which of those a pass would mean **before** running,
+or a lucky ten will read as a fix.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
@@ -659,3 +701,30 @@ Not standards, but they have each cost a session and are invisible from a log:
   makes the installed copy stale by byte-compare even though nothing functional moved.
   Deciding a fast-forward needs no rebuild is a claim about which *paths* it touches,
   not about how important they look — check the shipped-file list before saying it.
+* **A RESULT RECORDER MUST COUNT EVERY KIND OF RED.** 2026-08-31, D79's loop: the
+  summary line was `grep -E '^FAILED tests/'`. The run it was summarising had **16
+  ERRORs and 0 FAILEDs** — setup failures spell `ERROR`, not `FAILED` — so the
+  experiment's own recorder wrote **zero reds** for the run that contained the finding.
+  The raw log had it all along. Grep `^(FAILED|ERROR)`, and print both counts
+  separately so a shift between the two kinds is visible rather than absorbed.
+* **A WATCHER'S PATTERN MUST BE CALIBRATED AGAINST A LINE THE FILE ACTUALLY WRITES.**
+  Same night: the progress watcher matched `^run ` while the file wrote `run1`. It
+  would have stayed silent from 0 to 10 and then fired once — never a false alarm and
+  never a true one. An instrument never seen to say YES cannot be trusted saying NO;
+  before walking away, confirm the watcher fires on a line that already exists.
+* **`git checkout <commit> -- <path>` WRITES THE INDEX.** So the reflexive restore,
+  `git checkout -- <path>`, hands back the **borrowed** version, not `HEAD`'s. On
+  2026-08-31 an A/B on the Pi left the pre-fix test file staged, showing a `M ` that
+  reads like ordinary dirt; the next step would have measured the unrepaired code while
+  every operation reported success. Restore with `git checkout HEAD -- <path>` (or
+  `git restore --source=HEAD --staged --worktree <path>`), and then **verify by
+  content**: grep the deployed file for a string unique to the change. This is
+  certify-the-survivor arriving through git rather than through a log line — and it
+  defeats every duplicate-hunting discipline we have, because nothing is duplicated and
+  nothing is stale. The single author is correct; the working copy is the wrong version
+  of it.
+* **`set -e` exits before your cleanup line.** A script that mutates a file, runs a
+  command that legitimately returns non-zero (a test runner finding failures), then
+  restores the file will exit at the runner and leave the mutation behind. Same family
+  as `set -u` killing a watcher before it sourced ROS. Put restores in a `trap`, or
+  drop `set -e` in any script whose middle step is allowed to fail.
