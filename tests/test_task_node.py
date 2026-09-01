@@ -145,7 +145,13 @@ class Stack:
         self.query = self.client.create_client(Trigger, "task/query_semantic_map")
 
     def call(self, client, timeout=10.0):
-        assert client.wait_for_service(timeout_sec=5.0), "service never appeared"
+        # TAGGED SO THE CAUSE IS RECORDED, NOT GREPPED. Three different clients on this
+        # seam fail discovery at three different bounds, and on 2026-08-31 the only way
+        # to tell which had fired was to read tracebacks by hand afterwards. A rate whose
+        # causes cannot be tallied is a count.
+        assert client.wait_for_service(timeout_sec=5.0), (
+            "PRECONDITION_FAILED client=test_client.service "
+            f"target={client.srv_name} bound_s=5.0 -- service never appeared")
         future = client.call_async(Trigger.Request())
         end = time.monotonic() + timeout
         while not future.done() and time.monotonic() < end:
@@ -154,7 +160,9 @@ class Stack:
         return json.loads(future.result().message)
 
     def send_goto(self, x, y, timeout=20.0):
-        assert self.goto.wait_for_server(timeout_sec=5.0), "task/goto never appeared"
+        assert self.goto.wait_for_server(timeout_sec=5.0), (
+            "PRECONDITION_FAILED client=test_client.goto target=task/goto bound_s=5.0 "
+            "-- task/goto never appeared")
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = "map"
         goal.pose.pose.position.x = float(x)
@@ -210,11 +218,15 @@ def stack(request):
     # of everything it has already built.
     try:
         assert s.task._planner.wait_for_server(timeout_sec=20.0), (
-            "the node's planner client never discovered the fake compute_path_to_pose "
-            "in 20 s -- this is D79's mechanism firing honestly, NOT a flake: the test "
-            "did not run, rather than running against an undiscovered planner")
+            "PRECONDITION_FAILED client=task_node._planner "
+            "target=compute_path_to_pose bound_s=20.0 -- the node's planner client "
+            "never discovered the fake server. This is D80's mechanism firing on the "
+            "test bench, NOT a flake: the test did not run, rather than running against "
+            "an undiscovered planner. The LIVE path gives `_plannable` 1.0 s before it "
+            "fails open and drives with no plannability check at all.")
         assert s.task._nav.wait_for_server(timeout_sec=20.0), (
-            "the node's nav client never discovered the fake navigate_to_pose in 20 s")
+            "PRECONDITION_FAILED client=task_node._nav target=navigate_to_pose "
+            "bound_s=20.0 -- the node's nav client never discovered the fake server")
         time.sleep(0.5)   # TF still needs a broadcast or two to be lookup-able
     except BaseException:
         s.close()
