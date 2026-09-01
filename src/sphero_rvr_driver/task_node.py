@@ -800,6 +800,12 @@ class TaskNode(Node):
             "goto": (self._nav.server_is_ready() and pose is not None,
                      ("navigate_to_pose server unavailable"
                       if not self._nav.server_is_ready() else no_pose)),
+            # move_relative is a transform in front of task/goto, so its readiness is
+            # goto's readiness plus a pose to measure FROM -- the pose is not optional
+            # here the way it is for a tool that takes absolute coordinates.
+            "move_relative": (self._self_goto.server_is_ready() and pose is not None,
+                              ("task/goto is not available"
+                               if not self._self_goto.server_is_ready() else no_pose)),
             "turn": (self._turn_client.server_is_ready(),
                      "the precise-turn gateway is not available"),
             "observe": (self._observe_client.service_is_ready(),
