@@ -193,6 +193,14 @@ def test_bounded_runner_rejects_concurrent_test_owner(tmp_path: Path) -> None:
     assert "NO VERDICT" in result.stderr
 
 
+# THESE THREE PASS THEIR OWN --lock-file, AND THAT IS NOT COSMETIC. The runner takes a
+# REPOSITORY lock, so a test that invokes it from inside a suite which is itself running
+# under the runner contends with the outer lock and gets NO VERDICT (exit 75). On the
+# Mac, where the suite is usually run as bare `pytest`, there is no outer lock and the
+# omission is invisible: 1,447 green there, 4-of-4 red on the Pi. Every pre-existing
+# test in this file already passed `--lock-file`; I did not copy the idiom, and the
+# machine that runs the suite the way it is actually run found it.
+
 def test_bounded_runner_exits_promptly_when_the_session_finished_but_pytest_hangs(
     tmp_path: Path,
 ) -> None:
@@ -214,7 +222,8 @@ def test_bounded_runner_exits_promptly_when_the_session_finished_but_pytest_hang
         encoding="utf-8",
     )
     started = time.monotonic()
-    result = _run("--timeout", "60", str(test_file), "-vv", timeout=70.0)
+    result = _run("--timeout", "60", "--lock-file", str(tmp_path / "pytest.lock"),
+                  "--", str(test_file), "-vv", timeout=70.0)
     elapsed = time.monotonic() - started
     assert elapsed < 30.0, (
         f"the runner took {elapsed:.1f}s for a session that finished in under a second "
@@ -236,7 +245,8 @@ def test_bounded_runner_derives_a_failing_verdict_from_the_report(tmp_path: Path
         "    assert False\n",
         encoding="utf-8",
     )
-    result = _run("--timeout", "60", str(test_file), "-vv", timeout=70.0)
+    result = _run("--timeout", "60", "--lock-file", str(tmp_path / "pytest.lock"),
+                  "--", str(test_file), "-vv", timeout=70.0)
     assert result.returncode == 1, (
         f"a FAILING session that hung reported {result.returncode} -- a red must not "
         f"become a green because the process would not exit")
@@ -249,7 +259,8 @@ def test_a_genuinely_hung_pytest_still_hits_the_bound(tmp_path: Path) -> None:
     test_file = tmp_path / "test_hangs_forever.py"
     _write_hang_test(test_file)
     started = time.monotonic()
-    result = _run("--timeout", "3", str(test_file), "-vv", timeout=40.0)
+    result = _run("--timeout", "3", "--lock-file", str(tmp_path / "pytest.lock"),
+                  "--", str(test_file), "-vv", timeout=40.0)
     elapsed = time.monotonic() - started
     assert result.returncode != 0, "a hung session must never report success"
     assert "BOUNDED_PYTEST_TIMEOUT" in result.stderr, (
