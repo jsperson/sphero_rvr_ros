@@ -690,6 +690,46 @@ knew, so nobody could say it — and "clean board under worse conditions than cl
 is a strictly stronger result than the one that was reported. Recording conditions
 does not only catch bad news.
 
+## 23. A population defined by VARIANCE cannot see a CONSTANT
+
+2026-08-31. A characterisation loop ran the Pi suite ten times to catalogue the
+timing-flake population and produced a clean by-name table: 3/10, 1/10, 1/10. Those
+three names became a defect row, a prediction table, and an evening of work.
+
+**A fourth name was in the same file at 10/10 and nobody saw it.** It was not hidden,
+not truncated, not in a log anyone failed to open — it was the first line of the
+tally, sorted to the top by count. It fell out because the *question* was "what fails
+sometimes", and a test that fails every time is not an answer to that question. The
+catalogue was of variance, and a constant has none.
+
+**The failure is in the framing, and framings are invisible from inside.** Every
+downstream step inherited it faithfully: the row listed three names, the prediction
+table predicted three names, the re-runs measured three names, and each of those
+artifacts looked complete because it was complete *with respect to the question*. It
+took reading the baseline file for an unrelated reason to notice a 10 sitting above
+the 3.
+
+**This is measure-the-right-population inverted.** That norm is about arithmetic done
+correctly over the wrong set. This is a set that silently *excludes by its own
+definition* — no arithmetic error, no wrong denominator, just a category that cannot
+contain the worst member. Same family as D31's red-blindness seen from the other side:
+there, a standing red was normalised until nobody read it; here, a standing red was
+never eligible to be read.
+
+**Rules:**
+1. **Print the whole tally, not the filtered one.** A characterisation run reports
+   every name that appeared, with its count, before anything selects among them.
+2. **A count of N-out-of-N is a finding, not an outlier to drop.** It is the most
+   severe thing in the table and the least likely to be described as flaky.
+3. **When defining a population, say out loud what it EXCLUDES.** "The timing-flake
+   population" excludes deterministic failures; that sentence, written down at the
+   time, is the whole defence.
+
+**And the cost was not just the miss.** When the same test later appeared at 1/10 on a
+branch, the 10/10 baseline was what turned it from "a flake in my new code" into "the
+residue of a defect this branch fixed" — a fix nobody had measured, because its effect
+lived in the gap between two questions.
+
 ## Appendix B: operational traps that look like bugs
 
 Not standards, but they have each cost a session and are invisible from a log:
@@ -791,3 +831,11 @@ Not standards, but they have each cost a session and are invisible from a log:
   filing it** — the same rule as reading an error code at source, applied to a process
   count. Ledger sightings of this family: `journalctl` greps matching the ssh that ran
   them, `pgrep -f` matching its own invocation, and now a `/proc` walk matching itself.
+* **A RELAUNCH IS AN EVIDENCE-DESTROYING ACT unless the instrument says otherwise.**
+  The characterisation loop opens with `rm -f ~/d79_*.log`, so starting the next round
+  deleted the per-run log of the failure someone had asked about minutes earlier. The
+  wildcard looked like tidiness and was the only copy. **Write each round into a
+  timestamped directory; never a wildcard `rm` in a script whose output is evidence.**
+  And a corollary that bit in the same minute: **do not edit a shell script while it is
+  running** — bash reads the file incrementally, so an edit lands in the middle of a
+  loop that is still executing it. Wait for the round to finish, however obvious the fix.
