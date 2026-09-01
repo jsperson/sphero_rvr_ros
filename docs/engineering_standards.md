@@ -714,11 +714,19 @@ Not standards, but they have each cost a session and are invisible from a log:
   before walking away, confirm the watcher fires on a line that already exists.
 * **`git checkout <commit> -- <path>` WRITES THE INDEX.** So the reflexive restore,
   `git checkout -- <path>`, hands back the **borrowed** version, not `HEAD`'s. On
-  2026-08-31 an A/B on the Pi left the pre-fix test file staged, showing a `M ` that
-  reads like ordinary dirt; the next step would have measured the unrepaired code while
-  every operation reported success. Restore with `git checkout HEAD -- <path>` (or
-  `git restore --source=HEAD --staged --worktree <path>`), and then **verify by
-  content**: grep the deployed file for a string unique to the change. This is
+  2026-08-31 an A/B on the Pi left the pre-fix test file staged; the next step would
+  have measured the unrepaired code while every operation reported success. Restore with
+  `git checkout HEAD -- <path>` (or `git restore --source=HEAD --staged --worktree
+  <path>`), and then **verify by content**: grep the deployed file for a string unique
+  to the change.
+  **`git status --porcelain` DOES tell the two apart, and `git status` does not.** The
+  two-column code is the discriminator — `M ` is staged-with-a-clean-worktree, which is
+  what a borrow leaves; ` M` is the ordinary unstaged edit you learn to scroll past.
+  Both render as "modified:" in the human output. So a pre-flight can grep porcelain for
+  a leading `M` and catch the CLASS, where the unique-string grep only proves one known
+  fix is present; run both, because they fail differently. (Reproduced independently in
+  a scratch repo by worker sphero-rvr-ros-4f and again here before being written down.)
+  This is
   certify-the-survivor arriving through git rather than through a log line — and it
   defeats every duplicate-hunting discipline we have, because nothing is duplicated and
   nothing is stale. The single author is correct; the working copy is the wrong version

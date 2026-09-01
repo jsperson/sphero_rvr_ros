@@ -232,3 +232,74 @@ def test_an_installed_file_with_no_source_is_caught_as_an_orphan(preflight, monk
     assert dirty.remedy and "colcon never deletes" in dirty.remedy, (
         "the remedy must name the cause, or the next person re-runs the build that "
         "cannot fix it")
+
+
+def test_a_borrowed_file_left_staged_is_caught_and_ordinary_dirt_is_not(preflight, monkeypatch, tmp_path):
+    """THE BORROW, PLANTED AND CAUGHT -- and the near-miss it comes from.
+
+    `git checkout <commit> -- <path>` WRITES THE INDEX, so the reflexive restore
+    `git checkout -- <path>` reads from the index and hands the borrowed version back.
+    On 2026-08-31 that left the pre-fix version of a test file on the Pi while every
+    command reported success, one step before a ten-run measurement of that very file.
+
+    The gate must catch the borrow WITHOUT firing on ordinary unstaged edits, or it
+    becomes the check everyone skips. Both halves are asserted here, because a gate that
+    fails on everything is the same as a gate that fails on nothing.
+    """
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args],
+                              capture_output=True, text=True, check=True)
+
+    git("init", "-q", ".")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "f.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "one")
+    old = git("rev-parse", "--short", "HEAD").stdout.strip()
+    (repo / "f.py").write_text("VALUE = 'new'\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "two")
+
+    monkeypatch.setattr(preflight, "SRC_TREE", repo)
+
+    clean = preflight.gate_worktree_is_head()
+    assert clean.verdict == preflight.PASS, (
+        f"a clean checkout did not pass: {clean.detail}")
+
+    # ORDINARY DIRT must NOT fire the gate: it is ' M' in porcelain, not 'M '.
+    (repo / "f.py").write_text("VALUE = 'edited by hand'\n", encoding="utf-8")
+    dirty = preflight.gate_worktree_is_head()
+    assert dirty.verdict == preflight.PASS, (
+        f"the gate fired on an ordinary unstaged edit ({dirty.detail}) -- a gate that "
+        f"fails on everything is skipped, and then it catches nothing")
+    git("checkout", "--", "f.py")
+
+    # THE BORROW: the file is now the OLD version, staged, worktree clean.
+    git("checkout", old, "--", "f.py")
+    assert (repo / "f.py").read_text(encoding="utf-8") == "VALUE = 'old'\n"
+    borrowed = preflight.gate_worktree_is_head()
+    assert borrowed.verdict == preflight.FAIL, (
+        "the planted borrow was not caught -- this is the exact state that nearly got "
+        "measured as if it were HEAD")
+    assert "f.py" in borrowed.detail, f"the borrowed file was not named: {borrowed.detail}"
+    assert borrowed.remedy and "git checkout HEAD --" in borrowed.remedy, (
+        "the remedy must name the restore that actually works, because the obvious one "
+        "is the one that silently does nothing")
+
+    # AND THE REFLEXIVE RESTORE MUST NOT CLEAR IT -- the whole point of the trap.
+    git("checkout", "--", "f.py")
+    assert (repo / "f.py").read_text(encoding="utf-8") == "VALUE = 'old'\n", (
+        "`git checkout -- <path>` restored from HEAD; if git ever changes this, the "
+        "gate is still correct but this norm needs rewriting")
+    assert preflight.gate_worktree_is_head().verdict == preflight.FAIL
+
+    # the remedy the gate prints must be the one that works
+    git("checkout", "HEAD", "--", "f.py")
+    assert (repo / "f.py").read_text(encoding="utf-8") == "VALUE = 'new'\n"
+    assert preflight.gate_worktree_is_head().verdict == preflight.PASS

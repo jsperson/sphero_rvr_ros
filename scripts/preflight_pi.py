@@ -285,6 +285,49 @@ def _deployed_roots():
     return roots
 
 
+def gate_worktree_is_head():
+    """The checkout must BE `HEAD`, not merely look modified in a familiar way.
+
+    2026-08-31, and it nearly cost a ten-run measurement. An A/B borrowed an old version
+    of one test file with `git checkout <commit> -- <path>`, and that command WRITES THE
+    INDEX. The reflexive restore, `git checkout -- <path>`, then reads FROM the index and
+    faithfully hands back the borrowed version. Every command reported success, `git
+    status` said "modified:" the way it says it a hundred times a day, and the machine was
+    carrying the pre-fix file while the operator believed the fix was deployed.
+
+    THE DISCRIMINATOR IS IN THE PORCELAIN AND NOWHERE ELSE. `git status --porcelain` uses
+    two columns: `M ` is staged-with-a-clean-worktree, which is what a borrow leaves, and
+    ` M` is the ordinary unstaged edit. The human `git status` renders both as
+    "modified:". So this gate reads porcelain and refuses only on the staged column --
+    ordinary dirt is the operator's business, a silently staged file is not.
+
+    This catches the CLASS. Grepping a deployed file for a string unique to the fix you
+    just made catches ONE instance and proves more about it; do both, because they fail
+    differently: the string grep cannot see a second file staged from somewhere else, and
+    this cannot see a file that is correct in git and wrong on disk.
+    """
+    if not SRC_TREE.exists():
+        return Result(UNKNOWN, f"source tree not found at {SRC_TREE}",
+                      remedy="adjust WS_ROOT at the top of this script")
+    rc, out = sh(["git", "-C", str(SRC_TREE), "status", "--porcelain"])
+    if rc != 0:
+        return Result(UNKNOWN, f"git status failed: {out.strip()[:200]}",
+                      remedy="check that the source tree is a git checkout")
+    staged = [line for line in out.splitlines() if line[:1] not in ("", "?", " ")]
+    if staged:
+        names = ", ".join(line[3:] for line in staged[:5])
+        return Result(
+            FAIL,
+            f"{len(staged)} file(s) STAGED with the worktree clean: {names}",
+            remedy=("this is the shape a `git checkout <commit> -- <path>` borrow leaves "
+                    "behind, and the file on disk is the BORROWED version, not HEAD's. "
+                    "Restore with `git checkout HEAD -- <path>`, then grep the file for a "
+                    "string unique to the change you expect to be there."),
+        )
+    rc, head = sh(["git", "-C", str(SRC_TREE), "rev-parse", "--short", "HEAD"])
+    return Result(PASS, f"worktree matches the index at {head.strip()}")
+
+
 def gate_installed_tree_matches():
     """The installed tree must match the source tree, file by file.
 
@@ -598,6 +641,8 @@ GATES = [
          "leftover nodes hold devices and make every later gate ambiguous"),
     Gate("serial_port_free", "pre", gate_serial_port_free,
          "a held port produces serial timeouts that read as a dead chassis"),
+    Gate("worktree_is_head", "pre", gate_worktree_is_head,
+         "a borrowed file restored the reflexive way stays borrowed, and reads as normal"),
     Gate("installed_tree_matches", "pre", gate_installed_tree_matches,
          "a stale install is code you are not testing; caught twice in one day"),
     Gate("chassis_alive", "pre", gate_chassis_alive,
